@@ -35,6 +35,9 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   StreamSubscription<Message>? _messageSubscription;
   Agent? _agent;
 
+  String get _conversationId =>
+      Conversation.generateId(widget.instanceId, widget.agentId);
+
   @override
   void initState() {
     super.initState();
@@ -65,7 +68,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         await messageRepo.insert(msg);
       }
       if (mounted) {
-        ref.read(chatRefreshProvider.notifier).state++;
+        ref.read(chatRefreshProvider(_conversationId).notifier).state++;
       }
     } catch (_) {
       // History fetch failed — proceed with local messages
@@ -74,12 +77,21 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     // Subscribe to real-time messages
     _messageSubscription = gatewayClient
         .messageStream(widget.instanceId)
-        .listen((msg) async {
-      await messageRepo.insert(msg);
-      if (mounted) {
-        ref.read(chatRefreshProvider.notifier).state++;
-      }
-    });
+        .listen(
+          (msg) async {
+            await messageRepo.insert(msg);
+            if (mounted) {
+              ref.read(chatRefreshProvider(_conversationId).notifier).state++;
+            }
+          },
+          onError: (error, stackTrace) {
+            debugPrint(
+              'Message stream error for ${widget.instanceId}: $error\n$stackTrace',
+            );
+            // Stream error (e.g. WebSocket disconnect) — silently continue;
+            // the connection manager handles reconnection independently.
+          },
+        );
   }
 
   Future<void> _sendMessage(String text) async {
@@ -94,7 +106,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     );
 
     // Refresh UI
-    ref.read(chatRefreshProvider.notifier).state++;
+    ref.read(chatRefreshProvider(_conversationId).notifier).state++;
   }
 
   @override
@@ -104,20 +116,15 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     super.dispose();
   }
 
-  Color _parseColor(String hex) {
-    final cleaned = hex.replaceFirst('#', '');
-    final intValue = int.parse(cleaned, radix: 16);
-    return Color(intValue | 0xFF000000);
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final conversationId = Conversation.generateId(
-      widget.instanceId,
-      widget.agentId,
-    );
-    final messagesAsync = ref.watch(chatMessagesProvider(conversationId));
+    final messagesAsync = ref.watch(chatMessagesProvider(_conversationId));
+
+    // 预计算 Agent 颜色，避免 build 热路径重复解析
+    final agentColor = _agent != null
+        ? ColorExtension.fromHex(_agent!.themeColor)
+        : null;
 
     return Scaffold(
       appBar: AppBar(
@@ -126,9 +133,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                 children: [
                   CircleAvatar(
                     radius: 16,
-                    backgroundColor: _parseColor(_agent!.themeColor),
-                    foregroundColor:
-                        _parseColor(_agent!.themeColor).contrastingTextColor(),
+                    backgroundColor: agentColor,
+                    foregroundColor: agentColor!.contrastingTextColor(),
                     child: Text(
                       _agent!.displayName.characters.first,
                       style: const TextStyle(
@@ -167,17 +173,19 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
           Expanded(
             child: messagesAsync.when(
               loading: () => const LoadingSkeleton(count: 3),
-              error: (err, _) => Center(
-                child: Text('Failed to load messages: $err'),
-              ),
+              error: (err, _) =>
+                  Center(child: Text('Failed to load messages: $err')),
               data: (messages) {
                 if (messages.isEmpty) {
                   return Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.chat_bubble_outline,
-                            size: 48, color: theme.colorScheme.outline),
+                        Icon(
+                          Icons.chat_bubble_outline,
+                          size: 48,
+                          color: theme.colorScheme.outline,
+                        ),
                         const SizedBox(height: 12),
                         Text(
                           'Send a message to start',
@@ -196,7 +204,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   itemCount: messages.length,
                   itemBuilder: (context, index) {
-                    final message = messages[messages.length - 1 - index];
+                    final message = messages[index];
                     return MessageBubble(
                       message: message,
                       agentName: _agent?.displayName ?? 'Agent',

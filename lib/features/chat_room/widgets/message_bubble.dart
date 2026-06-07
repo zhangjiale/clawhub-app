@@ -48,8 +48,9 @@ class MessageBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
-        mainAxisAlignment:
-            _isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: _isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (!_isUser) ...[
@@ -70,8 +71,9 @@ class MessageBubble extends StatelessWidget {
           ],
           Flexible(
             child: Column(
-              crossAxisAlignment:
-                  _isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              crossAxisAlignment: _isUser
+                  ? CrossAxisAlignment.end
+                  : CrossAxisAlignment.start,
               children: [
                 if (!_isUser)
                   Padding(
@@ -100,8 +102,7 @@ class MessageBubble extends StatelessWidget {
                       bottomRight: Radius.circular(_isUser ? 4 : 16),
                     ),
                     border: message.status == MessageStatus.failed
-                        ? Border.all(
-                            color: AppColors.messageFailed, width: 1.5)
+                        ? Border.all(color: AppColors.messageFailed, width: 1.5)
                         : null,
                   ),
                   child: Text(

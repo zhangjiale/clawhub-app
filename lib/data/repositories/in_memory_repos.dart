@@ -120,6 +120,7 @@ class InMemoryAgentRepo implements IAgentRepo {
         // Update existing agent while preserving local customizations
         final updated = existing.copyWith(
           name: remote.name,
+          description: remote.description,
           // Preserve local customizations
           nickname: existing.nickname,
           avatarUrl: existing.avatarUrl,
