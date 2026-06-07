@@ -150,6 +150,7 @@ class MockGatewayClient implements IGatewayClient {
             instanceId: a['instanceId'] as String,
             name: a['name'] as String,
             themeColor: a['themeColor'] as String? ?? '#007AFF',
+            description: a['description'] as String?,
           ),
         )
         .toList();
