@@ -1,0 +1,194 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:claw_hub/app/di/providers.dart';
+import 'package:claw_hub/domain/models/instance.dart';
+import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/features/instance_manager/providers/instance_providers.dart';
+
+/// 添加/编辑实例页 (P0 MVP)
+class AddInstancePage extends ConsumerStatefulWidget {
+  final String? instanceId; // null = new, non-null = edit
+
+  const AddInstancePage({super.key, this.instanceId});
+
+  @override
+  ConsumerState<AddInstancePage> createState() => _AddInstancePageState();
+}
+
+class _AddInstancePageState extends ConsumerState<AddInstancePage> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  late final TextEditingController _urlController;
+  late final TextEditingController _tokenController;
+  bool _isSaving = false;
+
+  bool get isEditing => widget.instanceId != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController();
+    _urlController = TextEditingController();
+    _tokenController = TextEditingController();
+
+    if (isEditing) {
+      _loadExistingInstance();
+    }
+  }
+
+  Future<void> _loadExistingInstance() async {
+    final repo = ref.read(instanceRepoProvider);
+    final instance = await repo.getById(widget.instanceId!);
+    if (instance != null && mounted) {
+      _nameController.text = instance.name;
+      _urlController.text = instance.gatewayUrl;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _urlController.dispose();
+    _tokenController.dispose();
+    super.dispose();
+  }
+
+  String? _validateName(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Instance name is required';
+    }
+    return null;
+  }
+
+  String? _validateUrl(String? value) {
+    if (value == null || value.trim().isEmpty) return 'Gateway URL is required';
+    if (!Instance.isValidGatewayUrl(value.trim())) {
+      return 'Invalid Gateway URL (e.g. wss://host:18789)';
+    }
+    return null;
+  }
+
+  Future<void> _onSave() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isSaving = true);
+
+    try {
+      final repo = ref.read(instanceRepoProvider);
+      final gatewayClient = ref.read(gatewayClientProvider);
+
+      if (isEditing) {
+        // Edit path: update the existing instance with name uniqueness check
+        final existing = await repo.getById(widget.instanceId!);
+        if (existing == null) {
+          throw ArgumentError('Instance not found');
+        }
+        final newName = _nameController.text.trim();
+        // Check name uniqueness (excluding the current instance)
+        if (newName != existing.name) {
+          final nameTaken = await repo.nameExists(
+            newName,
+            excludeId: widget.instanceId,
+          );
+          if (nameTaken) {
+            throw ArgumentError('实例名称“$newName”已存在');
+          }
+        }
+        final updated = existing.copyWith(
+          name: newName,
+          gatewayUrl: _urlController.text.trim(),
+          tokenRef: _tokenController.text.trim(),
+        );
+        // Test connectivity with the new URL
+        final isOnline = await gatewayClient.testConnection(updated);
+        await repo.save(
+          updated.copyWith(
+            healthStatus: isOnline ? HealthStatus.online : HealthStatus.offline,
+            lastConnectedAt: isOnline
+                ? DateTime.now().millisecondsSinceEpoch ~/ 1000
+                : null,
+          ),
+        );
+      } else {
+        // Create path: use the use case (includes name uniqueness check + connectivity test)
+        final useCase = ref.read(addInstanceUseCaseProvider);
+        await useCase.execute(
+          name: _nameController.text.trim(),
+          gatewayUrl: _urlController.text.trim(),
+          token: _tokenController.text.trim(),
+        );
+      }
+
+      // Invalidate provider to refresh list
+      ref.invalidate(instanceListProvider);
+
+      if (mounted) {
+        context.pop();
+      }
+    } on ArgumentError catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message ?? 'Validation error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(isEditing ? 'Edit Instance' : 'Add Instance')),
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            TextFormField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'Instance Name',
+                hintText: 'e.g. My MacBook',
+              ),
+              validator: _validateName,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _urlController,
+              decoration: const InputDecoration(
+                labelText: 'Gateway URL',
+                hintText: 'wss://host:18789',
+              ),
+              validator: _validateUrl,
+              keyboardType: TextInputType.url,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _tokenController,
+              decoration: const InputDecoration(
+                labelText: 'Auth Token',
+                hintText: 'OpenClaw Gateway token',
+              ),
+              obscureText: true,
+            ),
+            const SizedBox(height: 32),
+            FilledButton(
+              onPressed: _isSaving ? null : _onSave,
+              child: _isSaving
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

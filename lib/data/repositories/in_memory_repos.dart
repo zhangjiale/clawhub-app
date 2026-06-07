@@ -1,0 +1,394 @@
+import '../../domain/models/models.dart';
+import '../../domain/repositories/repositories.dart';
+
+/// 内存版实例仓库（MVP 开发用，后续替换为 drift/SQLite 实现）
+class InMemoryInstanceRepo implements IInstanceRepo {
+  final Map<String, Instance> _store = {};
+
+  @override
+  Future<List<Instance>> getAll() async {
+    final list = _store.values.toList();
+    list.sort(
+      (a, b) => (b.lastConnectedAt ?? 0).compareTo(a.lastConnectedAt ?? 0),
+    );
+    return list;
+  }
+
+  @override
+  Future<Instance?> getById(String id) async => _store[id];
+
+  @override
+  Future<Instance> save(Instance instance) async {
+    _store[instance.id] = instance;
+    return instance;
+  }
+
+  @override
+  Future<void> delete(String id) async => _store.remove(id);
+
+  @override
+  Future<bool> nameExists(String name, {String? excludeId}) async {
+    return _store.values.any(
+      (i) => i.name == name && (excludeId == null || i.id != excludeId),
+    );
+  }
+
+  @override
+  Future<Instance> updateHealthStatus(String id, HealthStatus status) async {
+    final instance = _store[id];
+    if (instance == null) throw StateError('实例不存在: $id');
+    final updated = instance.copyWith(healthStatus: status);
+    _store[id] = updated;
+    return updated;
+  }
+
+  @override
+  Future<void> updateLastConnectedAt(String id, int timestamp) async {
+    final instance = _store[id];
+    if (instance != null) {
+      _store[id] = instance.copyWith(lastConnectedAt: timestamp);
+    }
+  }
+
+  @override
+  Future<void> batchUpdateStatusByNetwork({
+    required bool isLocalNetwork,
+    required HealthStatus status,
+  }) async {
+    for (final entry in _store.entries) {
+      if (entry.value.isLocalNetwork == isLocalNetwork) {
+        _store[entry.key] = entry.value.copyWith(healthStatus: status);
+      }
+    }
+  }
+}
+
+/// 内存版 Agent 仓库
+class InMemoryAgentRepo implements IAgentRepo {
+  final Map<String, Agent> _store = {}; // localId -> Agent
+  final Map<String, Agent> _byCompositeKey =
+      {}; // "instanceId:remoteId" -> Agent
+
+  /// Shared sort comparator: pinned first, then by name.
+  int _compareAgents(Agent a, Agent b) {
+    if (a.isPinned != b.isPinned) return b.isPinned ? 1 : -1;
+    return a.name.compareTo(b.name);
+  }
+
+  List<Agent> _sorted(Iterable<Agent> agents) {
+    final list = agents.toList();
+    list.sort(_compareAgents);
+    return list;
+  }
+
+  String _compositeKey(String instanceId, String remoteId) =>
+      '$instanceId:$remoteId';
+
+  @override
+  Future<List<Agent>> getByInstanceId(String instanceId) async {
+    return _sorted(_store.values.where((a) => a.instanceId == instanceId));
+  }
+
+  @override
+  Future<List<Agent>> getAll() async {
+    return _sorted(_store.values);
+  }
+
+  @override
+  Future<Agent?> getById(String localId) async => _store[localId];
+
+  @override
+  Future<Agent?> findByCompositeKey(String instanceId, String remoteId) async {
+    return _byCompositeKey[_compositeKey(instanceId, remoteId)];
+  }
+
+  /// Add or update an agent in both indexes.
+  void _putAgent(Agent agent) {
+    _store[agent.localId] = agent;
+    _byCompositeKey[_compositeKey(agent.instanceId, agent.remoteId)] = agent;
+  }
+
+  @override
+  Future<List<Agent>> syncFromGateway(
+    String instanceId,
+    List<Agent> remoteAgents,
+  ) async {
+    final results = <Agent>[];
+    for (final remote in remoteAgents) {
+      final existing = await findByCompositeKey(instanceId, remote.remoteId);
+      if (existing != null) {
+        // Update existing agent while preserving local customizations
+        final updated = existing.copyWith(
+          name: remote.name,
+          // Preserve local customizations
+          nickname: existing.nickname,
+          avatarUrl: existing.avatarUrl,
+          themeColor: existing.themeColor,
+        );
+        _putAgent(updated);
+        results.add(updated);
+      } else {
+        // New agent
+        _putAgent(remote);
+        results.add(remote);
+      }
+    }
+    return results;
+  }
+
+  @override
+  Future<Agent> updateLocalProfile(
+    String localId, {
+    String? nickname,
+    String? avatarUrl,
+    String? themeColor,
+  }) async {
+    final agent = _store[localId];
+    if (agent == null) throw StateError('Agent 不存在: $localId');
+    final updated = agent.copyWith(
+      nickname: nickname,
+      avatarUrl: avatarUrl,
+      themeColor: themeColor,
+    );
+    _putAgent(updated);
+    return updated;
+  }
+
+  @override
+  Future<Agent> togglePin(String localId) async {
+    final agent = _store[localId];
+    if (agent == null) throw StateError('Agent 不存在: $localId');
+    final updated = agent.copyWith(isPinned: !agent.isPinned);
+    _putAgent(updated);
+    return updated;
+  }
+
+  @override
+  Future<void> deleteByInstanceId(String instanceId) async {
+    final toRemove = _store.values
+        .where((a) => a.instanceId == instanceId)
+        .toList();
+    for (final agent in toRemove) {
+      _store.remove(agent.localId);
+      _byCompositeKey.remove(_compositeKey(agent.instanceId, agent.remoteId));
+    }
+  }
+}
+
+/// 内存版消息仓库
+class InMemoryMessageRepo implements IMessageRepo {
+  final Map<String, Message> _byClientId = {};
+  final Map<String, Message> _byServerId = {};
+
+  @override
+  Future<Message> insert(Message message) async {
+    _byClientId[message.clientId] = message;
+    if (message.serverId != null) {
+      _byServerId[message.serverId!] = message;
+    }
+    return message;
+  }
+
+  @override
+  Future<Message?> getByClientId(String clientId) async =>
+      _byClientId[clientId];
+
+  @override
+  Future<Message?> getByServerId(String serverId) async =>
+      _byServerId[serverId];
+
+  @override
+  Future<List<Message>> getByConversation(
+    String conversationId, {
+    String? before,
+    int limit = 50,
+  }) async {
+    var messages = _byClientId.values
+        .where((m) => m.conversationId == conversationId)
+        .toList();
+    messages.sort((a, b) => b.logicalClock.compareTo(a.logicalClock));
+    if (before != null) {
+      final beforeMsg = _byClientId[before];
+      if (beforeMsg != null) {
+        messages = messages
+            .where((m) => m.logicalClock < beforeMsg.logicalClock)
+            .toList();
+      }
+    }
+    return messages.take(limit).toList();
+  }
+
+  @override
+  Future<List<Message>> getAnchorWindow(
+    String conversationId, {
+    required String targetClientId,
+    int before = 5,
+    int after = 10,
+  }) async {
+    final target = _byClientId[targetClientId];
+    if (target == null) return [];
+
+    final all = _byClientId.values
+        .where((m) => m.conversationId == conversationId)
+        .toList();
+    all.sort((a, b) => a.logicalClock.compareTo(b.logicalClock));
+
+    final idx = all.indexWhere((m) => m.clientId == targetClientId);
+    if (idx < 0) return [];
+
+    final start = (idx - before).clamp(0, all.length);
+    final end = (idx + after + 1).clamp(0, all.length);
+    return all.sublist(start, end);
+  }
+
+  @override
+  Future<Message> updateStatus(String clientId, MessageStatus status) async {
+    final msg = _byClientId[clientId];
+    if (msg == null) throw StateError('消息不存在: $clientId');
+    final updated = msg.transitionTo(status); // 使用领域模型的状态机验证
+    _byClientId[clientId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Message> bindServerId(String clientId, String serverId) async {
+    final msg = _byClientId[clientId];
+    if (msg == null) throw StateError('消息不存在: $clientId');
+    final updated = msg.bindServerId(serverId);
+    _byClientId[clientId] = updated;
+    _byServerId[serverId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<List<Message>> getOutbox(String agentId) async {
+    return _byClientId.values
+        .where(
+          (m) =>
+              m.agentId == agentId &&
+              (m.status == MessageStatus.pending ||
+                  m.status == MessageStatus.failed),
+        )
+        .toList();
+  }
+
+  @override
+  Future<List<Message>> search(
+    String query, {
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final lower = query.toLowerCase();
+    final results = _byClientId.values
+        .where(
+          (m) => m.content != null && m.content!.toLowerCase().contains(lower),
+        )
+        .toList();
+    results.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return results.skip(offset).take(limit).toList();
+  }
+
+  @override
+  Future<int> cleanupOldMessages(String agentId, {int keep = 1000}) async {
+    final agentMsgs = _byClientId.values
+        .where((m) => m.agentId == agentId)
+        .toList();
+    if (agentMsgs.length <= keep) return 0;
+
+    agentMsgs.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    final toRemove = agentMsgs.skip(keep);
+    for (final msg in toRemove) {
+      _byClientId.remove(msg.clientId);
+      if (msg.serverId != null) _byServerId.remove(msg.serverId);
+    }
+    return toRemove.length;
+  }
+
+  @override
+  Future<int> getMessageCount(String agentId) async {
+    return _byClientId.values.where((m) => m.agentId == agentId).length;
+  }
+
+  @override
+  Future<void> deleteByClientId(String clientId) async {
+    final msg = _byClientId.remove(clientId);
+    if (msg?.serverId != null) _byServerId.remove(msg!.serverId);
+  }
+}
+
+/// 内存版会话仓库
+class InMemoryConversationRepo implements IConversationRepo {
+  final Map<String, Conversation> _store = {};
+
+  @override
+  Future<Conversation> getOrCreate(String instanceId, String agentId) async {
+    final id = Conversation.generateId(instanceId, agentId);
+    return _store.putIfAbsent(
+      id,
+      () => Conversation(agentId: agentId, instanceId: instanceId),
+    );
+  }
+
+  @override
+  Future<List<Conversation>> getAllWithMessages() async {
+    final list = _store.values.where((c) => c.lastMessageTime > 0).toList();
+    list.sort((a, b) => b.lastMessageTime.compareTo(a.lastMessageTime));
+    return list;
+  }
+
+  @override
+  Future<Conversation?> getById(String id) async => _store[id];
+
+  @override
+  Future<Conversation> updateLastMessage({
+    required String conversationId,
+    required String messageId,
+    required String preview,
+    required int timestamp,
+  }) async {
+    final conv = _store[conversationId];
+    if (conv == null) throw StateError('会话不存在: $conversationId');
+    final updated = conv.updateLastMessage(
+      messageId: messageId,
+      preview: preview,
+      timestamp: timestamp,
+    );
+    _store[conversationId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Conversation> incrementUnread(
+    String conversationId, {
+    int count = 1,
+  }) async {
+    final conv = _store[conversationId];
+    if (conv == null) throw StateError('会话不存在: $conversationId');
+    final updated = conv.copyWith(unreadCount: conv.unreadCount + count);
+    _store[conversationId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Conversation> clearUnread(String conversationId) async {
+    final conv = _store[conversationId];
+    if (conv == null) throw StateError('会话不存在: $conversationId');
+    final updated = conv.clearUnread();
+    _store[conversationId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Conversation> toggleMute(String conversationId) async {
+    final conv = _store[conversationId];
+    if (conv == null) throw StateError('会话不存在: $conversationId');
+    final updated = conv.copyWith(isMuted: !conv.isMuted);
+    _store[conversationId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<void> deleteByInstanceId(String instanceId) async {
+    _store.removeWhere((_, c) => c.instanceId == instanceId);
+  }
+}
