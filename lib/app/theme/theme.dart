@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/ui_kit/theme_color_utils.dart';
 
 /// ClawHub 全局应用主题
 /// 对齐: 架构 vFinal 5.7 (动态主题), 8.2 (全局主题色)
@@ -79,6 +80,9 @@ class AppColors {
 
 /// Color 扩展
 extension ColorExtension on Color {
+  /// 从 Hex 字符串解析颜色（委托给 ui_kit 的 parseHexColor，支持 #RGB/#RRGGBB 格式）
+  static Color fromHex(String hex) => parseHexColor(hex);
+
   /// 输出 6 位 Hex 字符串（如 #007AFF）
   /// 使用位提取避免 Flutter 3.x 广色域下的值偏差
   String toHex() {

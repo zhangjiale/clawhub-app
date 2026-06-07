@@ -14,16 +14,10 @@ class AgentCard extends StatelessWidget {
     required this.onTap,
   });
 
-  Color _parseColor(String hex) {
-    final cleaned = hex.replaceFirst('#', '');
-    final intValue = int.parse(cleaned, radix: 16);
-    return Color(intValue | 0xFF000000);
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color = _parseColor(agent.themeColor);
+    final color = ColorExtension.fromHex(agent.themeColor);
     final firstChar = agent.displayName.characters.first;
 
     return Card(
