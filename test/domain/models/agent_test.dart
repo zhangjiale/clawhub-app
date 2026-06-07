@@ -118,6 +118,30 @@ void main() {
       );
     });
 
+    test('description 可选字段默认为 null', () {
+      final agent = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+      );
+      expect(agent.description, isNull);
+    });
+
+    test('copyWith 保留 description 字段', () {
+      final original = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        description: '产品规划、需求分析',
+      );
+      expect(original.description, '产品规划、需求分析');
+
+      final updated = original.copyWith(name: '新名称');
+      expect(updated.description, '产品规划、需求分析'); // 未被覆盖
+    });
+
     test('copyWith 正确创建修改副本', () {
       final original = Agent(
         localId: 'local-a1',

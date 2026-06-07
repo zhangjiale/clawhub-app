@@ -11,6 +11,7 @@ class Agent {
   final String? nickname; // 用户自定义本地昵称，最多20字符
   final String? avatarUrl; // 本地沙盒路径或远程URL
   final String themeColor; // 动态主题色 Hex，默认 #007AFF
+  final String? description; // Gateway 同步的描述，如"产品规划、需求分析"
   final bool isPinned; // 是否置顶
   final int createdAt; // 创建时间(秒)
 
@@ -22,6 +23,7 @@ class Agent {
     this.nickname,
     this.avatarUrl,
     this.themeColor = '#007AFF',
+    this.description,
     this.isPinned = false,
     int? createdAt,
   }) : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000 {
@@ -59,6 +61,7 @@ class Agent {
     String? nickname,
     String? avatarUrl,
     String? themeColor,
+    String? description,
     bool? isPinned,
     int? createdAt,
   }) {
@@ -70,6 +73,7 @@ class Agent {
       nickname: nickname ?? this.nickname,
       avatarUrl: avatarUrl ?? this.avatarUrl,
       themeColor: themeColor ?? this.themeColor,
+      description: description ?? this.description,
       isPinned: isPinned ?? this.isPinned,
       createdAt: createdAt ?? this.createdAt,
     );
@@ -87,5 +91,5 @@ class Agent {
 
   @override
   String toString() =>
-      'Agent(localId: $localId, remoteId: $remoteId, instanceId: $instanceId, name: $name)';
+      'Agent(localId: $localId, remoteId: $remoteId, instanceId: $instanceId, name: $name, description: $description)';
 }
