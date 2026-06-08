@@ -34,18 +34,19 @@ Color parseHexColor(String hex) {
 /// 计算两个颜色的 WCAG 2.1 对比度
 /// 返回 [1.0, 21.0] 范围内的值
 double wcagContrastRatio(Color color1, Color color2) {
-  final l1 = _relativeLuminance(color1);
-  final l2 = _relativeLuminance(color2);
+  final l1 = relativeLuminance(color1);
+  final l2 = relativeLuminance(color2);
   final lighter = math.max(l1, l2);
   final darker = math.min(l1, l2);
   return (lighter + 0.05) / (darker + 0.05);
 }
 
 /// 计算相对亮度 (sRGB)
-double _relativeLuminance(Color color) {
+/// 公开供 contrastTextColor 等工具复用
+double relativeLuminance(Color color) {
   // Extract raw sRGB from int value for reliable computation
   // (avoids wide-gamut issues with Color.red/green/blue in Flutter 3.x)
-  final intValue = color.value;
+  final intValue = color.toARGB32();
   final r = ((intValue >> 16) & 0xFF) / 255.0;
   final g = ((intValue >> 8) & 0xFF) / 255.0;
   final b = (intValue & 0xFF) / 255.0;
@@ -64,4 +65,11 @@ double _relativeLuminance(Color color) {
 /// 是否满足 WCAG AA 对比度标准 (≥ 4.5:1)
 bool meetsWCAGAA(Color foreground, Color background) {
   return wcagContrastRatio(foreground, background) >= 4.5;
+}
+
+/// 根据背景色亮度选择白色或深色文字
+/// 返回 [Colors.white] 或 [Colors.black87]，确保与背景有足够对比度
+Color contrastTextColor(Color background) {
+  final luminance = relativeLuminance(background);
+  return luminance > 0.55 ? Colors.black87 : Colors.white;
 }
