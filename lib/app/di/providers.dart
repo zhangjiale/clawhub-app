@@ -4,7 +4,8 @@ import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
-import 'package:claw_hub/domain/usecases/add_instance.dart';
+import 'package:claw_hub/domain/usecases/save_instance.dart';
+import 'package:claw_hub/domain/usecases/sync_agents.dart';
 
 /// ============================================================
 /// ClawHub 依赖注入容器 (Riverpod)
@@ -54,9 +55,17 @@ final sendMessageUseCaseProvider = Provider<SendMessageUseCase>((ref) {
   );
 });
 
-final addInstanceUseCaseProvider = Provider<AddInstanceUseCase>((ref) {
-  return AddInstanceUseCase(
+final saveInstanceUseCaseProvider = Provider<SaveInstanceUseCase>((ref) {
+  return SaveInstanceUseCase(
     instanceRepo: ref.watch(instanceRepoProvider),
+    gatewayClient: ref.watch(gatewayClientProvider),
+  );
+});
+
+final syncAgentsUseCaseProvider = Provider<SyncAgentsUseCase>((ref) {
+  return SyncAgentsUseCase(
+    instanceRepo: ref.watch(instanceRepoProvider),
+    agentRepo: ref.watch(agentRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
   );
 });

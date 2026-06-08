@@ -1,14 +1,27 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/app/di/providers.dart';
+import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 
-/// 刷新计数器 — 每次递增时对应会话的 chatMessagesProvider 重新拉取消息列表
-final chatRefreshProvider = StateProvider.family<int, String>((ref, conversationId) => 0);
-
-/// 会话消息列表 Provider
-final chatMessagesProvider = FutureProvider.family<List<Message>, String>(
-  (ref, conversationId) async {
-    ref.watch(chatRefreshProvider(conversationId)); // 监听该会话的刷新信号
-    return ref.watch(messageRepoProvider).getByConversation(conversationId);
+/// ChatViewModel provider — owns the full lifecycle of a chat session.
+///
+/// Created on first read for a given (instanceId, agentId) pair,
+/// initialised immediately, and disposed when the provider is no longer watched.
+final chatViewModelProvider = Provider.family<ChatViewModel, ({
+  String instanceId,
+  String agentId,
+})>(
+  (ref, params) {
+    final vm = ChatViewModel(
+      agentRepo: ref.watch(agentRepoProvider),
+      conversationRepo: ref.watch(conversationRepoProvider),
+      messageRepo: ref.watch(messageRepoProvider),
+      gatewayClient: ref.watch(gatewayClientProvider),
+      sendMessageUseCase: ref.watch(sendMessageUseCaseProvider),
+      instanceId: params.instanceId,
+      agentId: params.agentId,
+    );
+    vm.init();
+    ref.onDispose(() => vm.dispose());
+    return vm;
   },
 );

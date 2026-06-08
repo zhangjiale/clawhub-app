@@ -1,19 +1,17 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/theme/theme.dart';
-import 'package:claw_hub/domain/models/agent.dart';
-import 'package:claw_hub/domain/models/message.dart';
-import 'package:claw_hub/domain/models/conversation.dart';
-import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/chat_input_bar.dart';
+import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
+import 'package:claw_hub/ui_kit/async_state.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收
+///
+/// Thin UI layer — all orchestration lives in [ChatViewModel].
 class ChatRoomPage extends ConsumerStatefulWidget {
   final String agentId;
   final String instanceId;
@@ -32,86 +30,26 @@ class ChatRoomPage extends ConsumerStatefulWidget {
 
 class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ScrollController? _scrollController;
-  StreamSubscription<Message>? _messageSubscription;
-  Agent? _agent;
-
-  String get _conversationId =>
-      Conversation.generateId(widget.instanceId, widget.agentId);
+  ChatViewModel? _vm;
 
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
-    _initChat();
-  }
-
-  Future<void> _initChat() async {
-    // Look up the agent
-    final agentRepo = ref.read(agentRepoProvider);
-    _agent = await agentRepo.getById(widget.agentId);
-    if (!mounted) return;
-    setState(() {});
-
-    // Get or create conversation
-    final conversationRepo = ref.read(conversationRepoProvider);
-    await conversationRepo.getOrCreate(widget.instanceId, widget.agentId);
-
-    // Fetch message history
-    final gatewayClient = ref.read(gatewayClientProvider);
-    final messageRepo = ref.read(messageRepoProvider);
-    try {
-      final history = await gatewayClient.fetchMessageHistory(
-        instanceId: widget.instanceId,
-        agentId: _agent?.remoteId ?? '',
-      );
-      for (final msg in history.messages) {
-        await messageRepo.insert(msg);
-      }
-      if (mounted) {
-        ref.read(chatRefreshProvider(_conversationId).notifier).state++;
-      }
-    } catch (_) {
-      // History fetch failed — proceed with local messages
-    }
-
-    // Subscribe to real-time messages
-    _messageSubscription = gatewayClient
-        .messageStream(widget.instanceId)
-        .listen(
-          (msg) async {
-            await messageRepo.insert(msg);
-            if (mounted) {
-              ref.read(chatRefreshProvider(_conversationId).notifier).state++;
-            }
-          },
-          onError: (error, stackTrace) {
-            debugPrint(
-              'Message stream error for ${widget.instanceId}: $error\n$stackTrace',
-            );
-            // Stream error (e.g. WebSocket disconnect) — silently continue;
-            // the connection manager handles reconnection independently.
-          },
-        );
-  }
-
-  Future<void> _sendMessage(String text) async {
-    if (_agent == null) return;
-
-    final useCase = ref.read(sendMessageUseCaseProvider);
-    await useCase.execute(
+    _vm = ref.read(chatViewModelProvider((
       instanceId: widget.instanceId,
-      agent: _agent!,
-      content: text,
-      type: MessageType.text,
-    );
+      agentId: widget.agentId,
+    )));
+    _vm!.addListener(_onVmChanged);
+  }
 
-    // Refresh UI
-    ref.read(chatRefreshProvider(_conversationId).notifier).state++;
+  void _onVmChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _messageSubscription?.cancel();
+    _vm?.removeListener(_onVmChanged);
     _scrollController?.dispose();
     super.dispose();
   }
@@ -119,16 +57,17 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final messagesAsync = ref.watch(chatMessagesProvider(_conversationId));
+    final vm = _vm!;
+    final agent = vm.agent;
 
     // 预计算 Agent 颜色，避免 build 热路径重复解析
-    final agentColor = _agent != null
-        ? ColorExtension.fromHex(_agent!.themeColor)
+    final agentColor = agent != null
+        ? ColorExtension.fromHex(agent.themeColor)
         : null;
 
     return Scaffold(
       appBar: AppBar(
-        title: _agent != null
+        title: agent != null
             ? Row(
                 children: [
                   CircleAvatar(
@@ -136,7 +75,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                     backgroundColor: agentColor,
                     foregroundColor: agentColor!.contrastingTextColor(),
                     child: Text(
-                      _agent!.displayName.characters.first,
+                      agent.displayName.characters.first,
                       style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
@@ -149,12 +88,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _agent!.displayName,
+                          agent.displayName,
                           style: theme.textTheme.titleSmall,
                         ),
-                        if (_agent!.description != null)
+                        if (agent.description != null)
                           Text(
-                            _agent!.description!,
+                            agent.description!,
                             style: theme.textTheme.labelSmall?.copyWith(
                               color: theme.colorScheme.outline,
                             ),
@@ -171,13 +110,14 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       body: Column(
         children: [
           Expanded(
-            child: messagesAsync.when(
-              loading: () => const LoadingSkeleton(count: 3),
-              error: (err, _) =>
-                  Center(child: Text('Failed to load messages: $err')),
-              data: (messages) {
-                if (messages.isEmpty) {
-                  return Center(
+            child: ValueListenableBuilder(
+              valueListenable: vm.messagesNotifier,
+              builder: (context, state, _) => switch (state) {
+                LoadInProgress() => const LoadingSkeleton(count: 3),
+                LoadError(:final error) =>
+                  Center(child: Text('Failed to load messages: $error')),
+                LoadData(:final value) when value.isEmpty =>
+                  Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -195,26 +135,25 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                         ),
                       ],
                     ),
-                  );
-                }
-
-                return ListView.builder(
-                  controller: _scrollController,
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    final message = messages[index];
-                    return MessageBubble(
-                      message: message,
-                      agentName: _agent?.displayName ?? 'Agent',
-                    );
-                  },
-                );
+                  ),
+                LoadData(:final value) =>
+                  ListView.builder(
+                    controller: _scrollController,
+                    reverse: true,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: value.length,
+                    itemBuilder: (context, index) {
+                      final message = value[index];
+                      return MessageBubble(
+                        message: message,
+                        agentName: agent?.displayName ?? 'Agent',
+                      );
+                    },
+                  ),
               },
             ),
           ),
-          ChatInputBar(onSend: _sendMessage),
+          ChatInputBar(onSend: (text) => vm.send(text)),
         ],
       ),
     );

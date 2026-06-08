@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/features/agent_list/agent_list_page.dart';
 import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
+import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 
 void main() {

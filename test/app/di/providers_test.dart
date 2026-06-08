@@ -62,8 +62,8 @@ void main() {
       final sendMessage = container.read(sendMessageUseCaseProvider);
       expect(sendMessage, isNotNull);
 
-      final addInstance = container.read(addInstanceUseCaseProvider);
-      expect(addInstance, isNotNull);
+      final saveInstance = container.read(saveInstanceUseCaseProvider);
+      expect(saveInstance, isNotNull);
     });
   });
 }

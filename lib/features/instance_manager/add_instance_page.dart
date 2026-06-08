@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/domain/models/instance.dart';
-import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/instance_manager/providers/instance_providers.dart';
 
 /// 添加/编辑实例页 (P0 MVP)
@@ -75,50 +74,13 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
     setState(() => _isSaving = true);
 
     try {
-      final repo = ref.read(instanceRepoProvider);
-      final gatewayClient = ref.read(gatewayClientProvider);
-
-      if (isEditing) {
-        // Edit path: update the existing instance with name uniqueness check
-        final existing = await repo.getById(widget.instanceId!);
-        if (existing == null) {
-          throw ArgumentError('Instance not found');
-        }
-        final newName = _nameController.text.trim();
-        // Check name uniqueness (excluding the current instance)
-        if (newName != existing.name) {
-          final nameTaken = await repo.nameExists(
-            newName,
-            excludeId: widget.instanceId,
-          );
-          if (nameTaken) {
-            throw ArgumentError('实例名称“$newName”已存在');
-          }
-        }
-        final updated = existing.copyWith(
-          name: newName,
-          gatewayUrl: _urlController.text.trim(),
-          tokenRef: _tokenController.text.trim(),
-        );
-        // Test connectivity with the new URL
-        final isOnline = await gatewayClient.testConnection(updated);
-        await repo.save(
-          updated.copyWith(
-            healthStatus: isOnline ? HealthStatus.online : HealthStatus.offline,
-            lastConnectedAt: isOnline
-                ? DateTime.now().millisecondsSinceEpoch ~/ 1000
-                : null,
-          ),
-        );
-      } else {
-        // Create path: use the use case (includes name uniqueness check + connectivity test)
-        final useCase = ref.read(addInstanceUseCaseProvider);
-        await useCase.execute(
-          name: _nameController.text.trim(),
-          gatewayUrl: _urlController.text.trim(),
-          token: _tokenController.text.trim(),
-        );
-      }
+      final useCase = ref.read(saveInstanceUseCaseProvider);
+      await useCase.execute(
+        name: _nameController.text.trim(),
+        gatewayUrl: _urlController.text.trim(),
+        token: _tokenController.text.trim(),
+        instanceId: widget.instanceId,
+      );
 
       // Invalidate provider to refresh list
       ref.invalidate(instanceListProvider);
