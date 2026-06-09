@@ -48,15 +48,28 @@ void main() {
       expect(const Color(0xFFFFFFFF).toHex(), '#FFFFFF');
     });
 
-    test('ColorExtension contrastingTextColor returns black or white', () {
-      // White background → dark text
-      expect(const Color(0xFFFFFFFF).contrastingTextColor(), Colors.black);
+    test('ColorExtension contrastingTextColor returns black87 or white', () {
+      // White background → dark text (WCAG AA via 0.55 threshold)
+      expect(
+        const Color(0xFFFFFFFF).contrastingTextColor(),
+        Colors.black87,
+      );
       // Black background → light text
       expect(const Color(0xFF000000).contrastingTextColor(), Colors.white);
-      // Blue → light text (dark background)
+      // Blue → light text (luminance ≈0.21 < 0.55)
       expect(const Color(0xFF007AFF).contrastingTextColor(), Colors.white);
-      // Yellow → dark text (light background)
-      expect(const Color(0xFFFFEB3B).contrastingTextColor(), Colors.black);
+      // Yellow → dark text (luminance ≈0.81 > 0.55)
+      expect(
+        const Color(0xFFFFEB3B).contrastingTextColor(),
+        Colors.black87,
+      );
+      // Mid-luminance teal → white text (luminance ≈0.45 < 0.55)
+      expect(const Color(0xFF00A86B).contrastingTextColor(), Colors.white);
+      // Light gray → dark text (luminance ≈0.53 < 0.55, borderline)
+      expect(
+        const Color(0xFFBDBDBD).contrastingTextColor(),
+        Colors.white,
+      );
     });
   });
 }

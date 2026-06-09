@@ -45,8 +45,11 @@ void main() {
         agentId: 'local-1',
       );
       await vm.init();
-      vm.messagesNotifier.value = const LoadData(<Message>[]);
-      addTearDown(vm.dispose);
+      vm.state = const ChatSessionState(
+        messages: LoadData(<Message>[]),
+      );
+      // No manual vm.dispose() — ProviderScope manages the lifecycle.
+      // StateNotifier.debugIsMounted rejects dispose() while listeners exist.
 
       // ---- Pump widget ----
       await tester.pumpWidget(

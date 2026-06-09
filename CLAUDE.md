@@ -115,12 +115,12 @@ Use Conventional Commits: `feat(scope):`, `fix(scope):`, `perf(scope):`, `docs:`
 
 ### Next Actions (from 2026-06-09 architecture review)
 
-Priority technical debt to repay before Phase 6/7. See `.claude/skills/flutter-architecture-review/` for full report.
+All priority technical debt has been repaid. See `docs/iron-laws.md` for the living document of unbreakable coding rules derived from this work.
 
-| # | Task | Effort | Why |
-|---|------|--------|-----|
-| 1 | ~~**补新 Widget 测试** — StatsBar / ThinkingIndicator / ToolCallCard / QuickCommandBar 各 2 个最小用例~~ ✅ 已完成 (2026-06-09) | ~1h | 建立重构安全网，4 个新组件无测试覆盖 |
-| 2 | **合并 ChatViewModel 状态** — isThinking + timeout → ThinkingState enum，减少分散的 ValueNotifier | ~3h | ChatViewModel 已膨胀为 5 个 ValueNotifier，加新功能前先瘦身 |
-| 3 | **StatsProvider 批量查询** — N+1 → 单次 `getMessageCountsByAgent`，在 IMessageRepo 加批量接口 | ~2h | 切换 Drift 后的性能隐雷，50 agent = 50 次顺序 query |
+| # | Task | Status |
+|---|------|--------|
+| 1 | 补新 Widget 测试 — StatsBar / ThinkingIndicator / ToolCallCard / QuickCommandBar | ✅ 已完成 (2026-06-09) |
+| 2 | 合并 ChatViewModel 状态 — isThinking + timeout → ThinkingState enum + StateNotifier | ✅ 已完成 (2026-06-09) |
+| 3 | StatsProvider 批量查询 — N+1 → 单次 `getMessageCountsByAgent` | ✅ 已完成 (2026-06-09) |
 
-**AI 协作约定**: 下次接手新功能时，优先从表中挑一个偿还，再开始写新代码。
+**AI 协作约定**: 开始任何代码改动前，确认不违反 `docs/iron-laws.md` 的 15 条铁律。每违反一条需在 commit message 中说明理由。
