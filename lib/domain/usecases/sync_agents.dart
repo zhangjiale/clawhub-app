@@ -1,4 +1,6 @@
 import '../models/agent.dart';
+import '../models/instance.dart';
+import '../models/enums.dart';
 import '../repositories/i_agent_repo.dart';
 import '../repositories/i_instance_repo.dart';
 import '../../core/acl/i_gateway_client.dart';
@@ -7,10 +9,12 @@ import '../../core/acl/i_gateway_client.dart';
 class AgentListData {
   final List<Agent> agents;
   final Map<String, String> instanceNames; // instanceId → instanceName
+  final Map<String, HealthStatus> instanceStatuses; // instanceId → healthStatus
 
   const AgentListData({
     required this.agents,
     required this.instanceNames,
+    required this.instanceStatuses,
   });
 }
 
@@ -37,8 +41,10 @@ class SyncAgentsUseCase {
     final instances = await _instanceRepo.getAll();
 
     final instanceNames = <String, String>{};
+    final instanceStatuses = <String, HealthStatus>{};
     for (final instance in instances) {
       instanceNames[instance.id] = instance.name;
+      instanceStatuses[instance.id] = instance.healthStatus;
       try {
         final remoteAgents = await _gatewayClient.fetchAgents(instance.id);
         await _agentRepo.syncFromGateway(instance.id, remoteAgents);
@@ -48,6 +54,10 @@ class SyncAgentsUseCase {
     }
 
     final agents = await _agentRepo.getAll();
-    return AgentListData(agents: agents, instanceNames: instanceNames);
+    return AgentListData(
+      agents: agents,
+      instanceNames: instanceNames,
+      instanceStatuses: instanceStatuses,
+    );
   }
 }

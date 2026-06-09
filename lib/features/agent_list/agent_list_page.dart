@@ -2,14 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
+import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
+import 'package:claw_hub/features/agent_list/providers/stats_providers.dart';
 import 'package:claw_hub/features/agent_list/widgets/agent_card.dart';
+import 'package:claw_hub/features/agent_list/widgets/stats_bar.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/ui_kit/empty_state.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 
 /// Agent 列表页 (P0 MVP Phase 4)
-/// 按实例分组展示所有 Agent，支持搜索过滤，点击进入聊天
+/// 按实例分组展示所有 Agent，支持搜索过滤、折叠分组、在线状态
 class AgentListPage extends ConsumerStatefulWidget {
   const AgentListPage({super.key});
 
@@ -21,6 +25,9 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
   bool _isSearching = false;
   final _searchController = TextEditingController();
   String _query = '';
+
+  /// 已折叠的分组 header（按 instanceName 标识）
+  final Set<String> _collapsedGroups = {};
 
   @override
   void dispose() {
@@ -38,6 +45,16 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
     });
   }
 
+  void _toggleGroup(String key) {
+    setState(() {
+      if (_collapsedGroups.contains(key)) {
+        _collapsedGroups.remove(key);
+      } else {
+        _collapsedGroups.add(key);
+      }
+    });
+  }
+
   List<Agent> _filter(List<Agent> agents) {
     if (_query.isEmpty) return agents;
     final lower = _query.toLowerCase();
@@ -50,6 +67,7 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
   @override
   Widget build(BuildContext context) {
     final dataAsync = ref.watch(agentListProvider);
+    final statsAsync = ref.watch(statsProvider);
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -123,46 +141,142 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
               return a.compareTo(b);
             });
 
-          return ListView.builder(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: sortedKeys.length,
-            itemBuilder: (context, index) {
-              final key = sortedKeys[index];
-              final groupAgents = groups[key]!;
-              final header = key ?? 'Unknown Instance';
+          // Build flat list: stats bar + group headers + agent cards
+          final items = <Widget>[];
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                    child: Text(
-                      header,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: theme.colorScheme.primary,
+          // Stats bar
+          items.add(
+            statsAsync.when(
+              loading: () => const SizedBox.shrink(),
+              error: (_, _) => const SizedBox.shrink(),
+              data: (stats) => StatsBar(
+                activeInstances: stats.activeInstances,
+                totalInstances: stats.totalInstances,
+                onlineAgents: stats.onlineAgents,
+                totalAgents: stats.totalAgents,
+                totalMessages: stats.totalMessages,
+              ),
+            ),
+          );
+
+          for (final key in sortedKeys) {
+            final groupAgents = groups[key]!;
+            final header = key ?? 'Unknown Instance';
+
+            // Determine instance online status from first agent in group
+            final firstAgent = groupAgents.first;
+            final instanceStatus =
+                data.instanceStatuses[firstAgent.instanceId] ??
+                    HealthStatus.unknown;
+            final isInstanceOnline = instanceStatus.isConnectable;
+            final isCollapsed = _collapsedGroups.contains(key);
+
+            // Group header with collapse toggle and online dot
+            items.add(
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: InkWell(
+                  onTap: () => _toggleGroup(key!),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Row(
+                    children: [
+                      // Online status dot for the instance
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: isInstanceOnline
+                              ? AppColors.statusOnline
+                              : AppColors.statusOffline,
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
-                  ),
-                  ...groupAgents.map(
-                    (agent) => AgentCard(
-                      agent: agent,
-                      onTap: () {
-                        context.push(
-                          AppRoutes.chatWithParams(
-                            agent.localId,
-                            agent.instanceId,
-                            source: 'claws',
+                      const SizedBox(width: 8),
+                      // Instance name
+                      Expanded(
+                        child: Text(
+                          header,
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: isInstanceOnline
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.outline,
+                            fontWeight: FontWeight.w600,
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                      ),
+                      // Agent count badge
+                      Text(
+                        '${groupAgents.length}',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.outline,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      // Collapse/expand icon
+                      AnimatedRotation(
+                        turns: isCollapsed ? -0.25 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: Icon(
+                          Icons.expand_more,
+                          size: 20,
+                          color: theme.colorScheme.outline,
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              );
-            },
+                ),
+              ),
+            );
+
+            // Agent cards (hidden if collapsed)
+            if (!isCollapsed) {
+              for (final agent in groupAgents) {
+                // Determine agent online status
+                final agentOnline = data
+                    .instanceStatuses[agent.instanceId]
+                    ?.isConnectable ?? false;
+
+                // Last active: use instance lastConnectedAt
+                // In the future, this would come from agent-specific stats
+                items.add(
+                  AgentCard(
+                    agent: agent,
+                    isOnline: agentOnline,
+                    lastActiveAt: _getLastActiveForAgent(
+                        agent, data.instanceStatuses),
+                    onTap: () {
+                      context.push(
+                        AppRoutes.chatWithParams(
+                          agent.localId,
+                          agent.instanceId,
+                          source: 'claws',
+                        ),
+                      );
+                    },
+                  ),
+                );
+              }
+            }
+          }
+
+          return ListView(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            children: items,
           );
         },
       ),
     );
+  }
+
+  /// Get last active timestamp for an agent.
+  /// Uses instance lastConnectedAt as a proxy in MVP.
+  int? _getLastActiveForAgent(
+    Agent agent,
+    Map<String, HealthStatus> statuses,
+  ) {
+    // In MVP, we don't have per-agent last active time yet.
+    // Return null to show "Never" — will be populated when
+    // per-agent stats are implemented (US-019).
+    return null;
   }
 }

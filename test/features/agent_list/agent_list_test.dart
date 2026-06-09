@@ -5,6 +5,7 @@ import 'package:claw_hub/features/agent_list/agent_list_page.dart';
 import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/enums.dart';
 
 void main() {
   group('AgentListPage', () {
@@ -15,6 +16,7 @@ void main() {
             agentListProvider.overrideWith((ref) async => const AgentListData(
               agents: [],
               instanceNames: {},
+              instanceStatuses: {},
             )),
           ],
           child: const MaterialApp(home: AgentListPage()),
@@ -38,6 +40,7 @@ void main() {
                 ),
               ],
               instanceNames: {'inst-1': 'My MacBook'},
+              instanceStatuses: {'inst-1': HealthStatus.online},
             )),
           ],
           child: const MaterialApp(home: AgentListPage()),
@@ -62,6 +65,7 @@ void main() {
                 ),
               ],
               instanceNames: {'inst-1': 'My MacBook'},
+              instanceStatuses: {'inst-1': HealthStatus.online},
             )),
           ],
           child: const MaterialApp(home: AgentListPage()),
@@ -91,6 +95,7 @@ void main() {
                 ),
               ],
               instanceNames: {'inst-1': 'My MacBook'},
+              instanceStatuses: {'inst-1': HealthStatus.online},
             )),
           ],
           child: const MaterialApp(home: AgentListPage()),
@@ -126,6 +131,7 @@ void main() {
                 ),
               ],
               instanceNames: {'inst-1': 'My MacBook'},
+              instanceStatuses: {'inst-1': HealthStatus.online},
             )),
           ],
           child: const MaterialApp(home: AgentListPage()),

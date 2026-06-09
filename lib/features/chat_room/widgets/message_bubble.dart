@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/enums.dart';
@@ -6,7 +7,7 @@ import 'package:claw_hub/ui_kit/status_icon.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 
 /// 消息气泡组件
-/// 用户消息右对齐蓝色气泡，Agent 消息左对齐灰色气泡
+/// 用户消息右对齐蓝色气泡，Agent 消息左对齐并支持 Markdown 渲染
 class MessageBubble extends StatelessWidget {
   final Message message;
   final String agentName;
@@ -87,7 +88,7 @@ class MessageBubble extends StatelessWidget {
                   ),
                 Container(
                   constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.7,
+                    maxWidth: MediaQuery.of(context).size.width * 0.78,
                   ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,
@@ -105,10 +106,12 @@ class MessageBubble extends StatelessWidget {
                         ? Border.all(color: AppColors.messageFailed, width: 1.5)
                         : null,
                   ),
-                  child: Text(
-                    _displayContent,
-                    style: TextStyle(color: _textColor(theme)),
-                  ),
+                  child: _isUser
+                      ? Text(
+                          _displayContent,
+                          style: TextStyle(color: _textColor(theme)),
+                        )
+                      : _buildMarkdownContent(theme),
                 ),
               ],
             ),
@@ -118,6 +121,77 @@ class MessageBubble extends StatelessWidget {
             StatusIcon(status: message.status, size: 14),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildMarkdownContent(ThemeData theme) {
+    return MarkdownBody(
+      data: _displayContent,
+      selectable: true,
+      styleSheet: MarkdownStyleSheet(
+        p: TextStyle(color: _textColor(theme), fontSize: 15),
+        h1: TextStyle(
+          color: _textColor(theme),
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+        h2: TextStyle(
+          color: _textColor(theme),
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
+        h3: TextStyle(
+          color: _textColor(theme),
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
+        strong: TextStyle(
+          color: _textColor(theme),
+          fontWeight: FontWeight.bold,
+        ),
+        em: TextStyle(
+          color: _textColor(theme),
+          fontStyle: FontStyle.italic,
+        ),
+        a: TextStyle(
+          color: AppColors.primaryBlue,
+          decoration: TextDecoration.underline,
+        ),
+        code: TextStyle(
+          backgroundColor: theme.colorScheme.surfaceContainerHighest,
+          color: AppColors.statusConnecting,
+          fontSize: 13,
+          fontFamily: 'monospace',
+        ),
+        codeblockDecoration: BoxDecoration(
+          color: theme.brightness == Brightness.dark
+              ? Colors.black.withAlpha(60)
+              : Colors.grey.withAlpha(20),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: theme.dividerColor.withAlpha(80),
+          ),
+        ),
+        codeblockPadding: const EdgeInsets.all(12),
+        blockquoteDecoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(
+              color: AppColors.primaryBlue.withAlpha(150),
+              width: 3,
+            ),
+          ),
+        ),
+        blockquotePadding: const EdgeInsets.only(left: 12),
+        tableBorder: TableBorder.all(
+          color: theme.dividerColor.withAlpha(100),
+        ),
+        tableHead: TextStyle(
+          color: _textColor(theme),
+          fontWeight: FontWeight.bold,
+        ),
+        tableBody: TextStyle(color: _textColor(theme)),
+        listBullet: TextStyle(color: _textColor(theme)),
       ),
     );
   }

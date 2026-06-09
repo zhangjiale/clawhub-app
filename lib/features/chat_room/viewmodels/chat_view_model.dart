@@ -6,6 +6,7 @@ import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 
@@ -17,12 +18,11 @@ import 'package:claw_hub/domain/usecases/send_message.dart';
 /// - Message history fetch from Gateway
 /// - Real-time message stream subscription
 /// - Message sending via SendMessageUseCase
+/// - Connection state tracking (for disconnect banner)
+/// - Waiting/thinking state (for loading animation)
+/// - Timeout detection (>60s without reply)
 ///
-/// Exposes a reactive [messagesNotifier] for the message list body and
-/// extends [ChangeNotifier] so the owning widget can rebuild when
-/// [agent] transitions from null → loaded.
-///
-/// The widget observes [messagesNotifier] and calls [send]; nothing else leaks out.
+/// Exposes reactive notifiers so the widget observes and calls [send].
 class ChatViewModel extends ChangeNotifier {
   final IAgentRepo _agentRepo;
   final IConversationRepo _conversationRepo;
@@ -33,11 +33,31 @@ class ChatViewModel extends ChangeNotifier {
   final String agentId;
 
   StreamSubscription<Message>? _messageSubscription;
+  StreamSubscription<GatewayConnectionState>? _connectionSubscription;
+  StreamSubscription<ToolCall>? _toolCallSubscription;
+  Timer? _timeoutTimer;
   Agent? _agent;
 
   /// Reactive messages notifier — the single source of truth for the UI.
   final ValueNotifier<LoadState<List<Message>>> messagesNotifier =
       ValueNotifier(const LoadInProgress());
+
+  /// Whether the agent is currently "thinking" (user sent a message, no reply yet).
+  final ValueNotifier<bool> isThinkingNotifier = ValueNotifier(false);
+
+  /// Current connection state.
+  final ValueNotifier<GatewayConnectionState> connectionStateNotifier =
+      ValueNotifier(GatewayConnectionState.disconnected);
+
+  /// Whether a timeout occurred (agent took >60s to reply).
+  final ValueNotifier<bool> timeoutNotifier = ValueNotifier(false);
+
+  /// Tool calls keyed by messageId.
+  final ValueNotifier<Map<String, ToolCall>> toolCallsNotifier =
+      ValueNotifier({});
+
+  /// Called when stats should be refreshed (message sent or received).
+  VoidCallback? onStatsChanged;
 
   ChatViewModel({
     required IAgentRepo agentRepo,
@@ -60,14 +80,10 @@ class ChatViewModel extends ChangeNotifier {
       Conversation.generateId(instanceId, agentId);
 
   /// Initialise: load agent, create conversation, fetch history, subscribe to stream.
-  ///
-  /// Called once by the provider that owns this ViewModel's lifecycle.
-  /// Safe to call even if the widget is already unmounted — errors from history
-  /// or stream failures are handled internally.
   Future<void> init() async {
     // 1. Look up the agent
     _agent = await _agentRepo.getById(agentId);
-    notifyListeners(); // agent 从 null 变为已加载，触发 widget rebuild
+    notifyListeners();
 
     // 2. Get or create conversation (idempotent)
     await _conversationRepo.getOrCreate(instanceId, agentId);
@@ -75,7 +91,14 @@ class ChatViewModel extends ChangeNotifier {
     // 3. Load local messages immediately (fast path)
     await _loadMessages();
 
-    // 4. Fetch message history from Gateway (best-effort)
+    // 4. Subscribe to connection state
+    _connectionSubscription = _gatewayClient
+        .connectionStateStream(instanceId)
+        .listen((state) {
+      connectionStateNotifier.value = state;
+    });
+
+    // 5. Fetch message history from Gateway (best-effort)
     if (_agent != null) {
       try {
         final history = await _gatewayClient.fetchMessageHistory(
@@ -91,22 +114,34 @@ class ChatViewModel extends ChangeNotifier {
       }
     }
 
-    // 5. Subscribe to real-time messages
+    // 6. Subscribe to real-time messages
     _messageSubscription = _gatewayClient
         .messageStream(instanceId)
         .listen(
           (msg) async {
             await _messageRepo.insert(msg);
             await _loadMessages();
+            // Agent replied — stop thinking + cancel timeout
+            if (msg.role == MessageRole.agent) {
+              _stopThinking();
+              onStatsChanged?.call();
+            }
           },
           onError: (error, stackTrace) {
             debugPrint(
               'Message stream error for $instanceId: $error\n$stackTrace',
             );
-            // Stream error (e.g. WebSocket disconnect) — silently continue;
-            // the connection manager handles reconnection independently.
           },
         );
+
+    // 7. Subscribe to tool call events
+    _toolCallSubscription = _gatewayClient
+        .toolCallStream(instanceId)
+        .listen((tc) {
+      final current = Map<String, ToolCall>.from(toolCallsNotifier.value);
+      current[tc.messageId] = tc;
+      toolCallsNotifier.value = current;
+    });
   }
 
   /// Send a text message.
@@ -121,6 +156,38 @@ class ChatViewModel extends ChangeNotifier {
     );
 
     await _loadMessages();
+
+    // Start "thinking" state
+    _startThinking();
+
+    onStatsChanged?.call();
+  }
+
+  /// Dismiss the timeout banner and cancel waiting.
+  void dismissTimeout() {
+    timeoutNotifier.value = false;
+    _stopThinking();
+  }
+
+  /// Continue waiting — dismiss the timeout banner and restart the timer.
+  void continueWaiting() {
+    timeoutNotifier.value = false;
+    _startThinking();
+  }
+
+  void _startThinking() {
+    isThinkingNotifier.value = true;
+    timeoutNotifier.value = false;
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(const Duration(seconds: 60), () {
+      timeoutNotifier.value = true;
+      isThinkingNotifier.value = false;
+    });
+  }
+
+  void _stopThinking() {
+    isThinkingNotifier.value = false;
+    _timeoutTimer?.cancel();
   }
 
   /// Reload messages from the repository and push to the notifier.
@@ -137,7 +204,14 @@ class ChatViewModel extends ChangeNotifier {
   @override
   void dispose() {
     _messageSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _toolCallSubscription?.cancel();
+    _timeoutTimer?.cancel();
     messagesNotifier.dispose();
+    isThinkingNotifier.dispose();
+    connectionStateNotifier.dispose();
+    timeoutNotifier.dispose();
+    toolCallsNotifier.dispose();
     super.dispose();
   }
 }

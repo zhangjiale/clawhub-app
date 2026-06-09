@@ -144,14 +144,32 @@ class MockGatewayClient implements IGatewayClient {
     return _mockAgents
         .where((a) => a['instanceId'] == instanceId)
         .map(
-          (a) => Agent(
-            localId: _uuid.v4(),
-            remoteId: a['remoteId'] as String,
-            instanceId: a['instanceId'] as String,
-            name: a['name'] as String,
-            themeColor: a['themeColor'] as String? ?? '#007AFF',
-            description: a['description'] as String?,
-          ),
+          (a) {
+            // Parse quick commands from mock data
+            final qcList = <QuickCommand>[];
+            final rawCommands = a['quickCommands'] as List<dynamic>?;
+            if (rawCommands != null) {
+              for (var i = 0; i < rawCommands.length; i++) {
+                final cmd = rawCommands[i] as Map<String, dynamic>;
+                qcList.add(QuickCommand(
+                  id: _uuid.v4(),
+                  agentId: a['remoteId'] as String,
+                  label: cmd['label'] as String,
+                  payload: cmd['payload'] as String,
+                  sortOrder: i,
+                ));
+              }
+            }
+            return Agent(
+              localId: _uuid.v4(),
+              remoteId: a['remoteId'] as String,
+              instanceId: a['instanceId'] as String,
+              name: a['name'] as String,
+              themeColor: a['themeColor'] as String? ?? '#007AFF',
+              description: a['description'] as String?,
+              quickCommands: qcList,
+            );
+          },
         )
         .toList();
   }

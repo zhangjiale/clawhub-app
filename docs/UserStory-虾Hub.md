@@ -94,9 +94,9 @@
 **Story Points**：3
 
 **Acceptance Criteria**：
-- [ ] Given 用户打开"虾列表"Tab, When 数据加载完成, Then 按实例分组展示Agent卡片，每个分组头显示实例名称和在线状态点，分组可折叠/展开
-- [ ] Given 每个Agent卡片, When 渲染完成, Then 展示虾头像（自动生成）、名称、描述、在线状态指示灯、最后活跃时间
-- [ ] Given 某实例处于离线状态, When 渲染该分组, Then 该分组下所有Agent显示为离线状态，卡片视觉降级（灰色调）
+- [x] Given 用户打开"虾列表"Tab, When 数据加载完成, Then 按实例分组展示Agent卡片，每个分组头显示实例名称和在线状态点，分组可折叠/展开
+- [x] Given 每个Agent卡片, When 渲染完成, Then 展示虾头像（自动生成）、名称、描述、在线状态指示灯、最后活跃时间
+- [x] Given 某实例处于离线状态, When 渲染该分组, Then 该分组下所有Agent显示为离线状态，卡片视觉降级（灰色调）
 - [ ] Given Agent列表拉取失败（Gateway不可达）, When 打开页面, Then 展示本地缓存的上次数据，顶部提示"无法获取最新列表"
 
 **依赖**：US-003（需实例配置数据）；WebSocket连接管理器基础模块
@@ -113,9 +113,9 @@
 **Story Points**：2
 
 **Acceptance Criteria**：
-- [ ] Given 用户打开虾列表Tab, When 页面渲染完成, Then 顶部横向展示3个统计卡片：活跃实例数（在线/总数）、在线虾数（在线/总数）、总消息数
-- [ ] Given 用户发送了一条消息并收到回复, When 消息处理完成, Then 总消息数统计实时更新
-- [ ] Given 某实例从在线变为离线, When 状态变化被检测到, Then 活跃实例数和在线虾数同步更新
+- [x] Given 用户打开虾列表Tab, When 页面渲染完成, Then 顶部横向展示3个统计卡片：活跃实例数（在线/总数）、在线虾数（在线/总数）、总消息数
+- [x] Given 用户发送了一条消息并收到回复, When 消息处理完成, Then 总消息数统计实时更新
+- [x] Given 某实例从在线变为离线, When 状态变化被检测到, Then 活跃实例数和在线虾数同步更新
 
 **依赖**：US-004（需Agent列表数据）
 **技术备注**：统计数据从本地数据实时计算，不需网络请求；使用响应式数据绑定
@@ -149,12 +149,12 @@
 **Story Points**：8
 
 **Acceptance Criteria**：
-- [ ] Given 用户从虾列表或消息页点击一只在线虾, When 对话页加载完成, Then 展示虾头像、名称、在线状态，加载本地历史消息，WebSocket连接已建立
-- [ ] Given 用户输入文字并点击发送, When 消息发出, Then 立即展示用户消息气泡（右侧），左侧出现"虾思考中"加载动画（三点跳动）
-- [ ] Given Agent处理完成返回回复, When 消息到达客户端, Then 替换加载动画为Agent消息气泡（左侧），支持Markdown渲染（粗体、列表、链接）
-- [ ] Given Agent回复包含代码块, When 渲染完成, Then 代码块有语法高亮和独立背景色，可横向滚动
-- [ ] Given WebSocket连接已断开, When 用户发送消息, Then 消息标记为"待发送"（灰色时钟图标），顶部横幅"连接已断开，正在重连..."
-- [ ] Given Agent超过60秒无回复, When 超时触发, Then 展示提示"虾思考时间较长，可能正在处理复杂任务。继续等待/取消"
+- [x] Given 用户从虾列表或消息页点击一只在线虾, When 对话页加载完成, Then 展示虾头像、名称、在线状态，加载本地历史消息，WebSocket连接已建立
+- [x] Given 用户输入文字并点击发送, When 消息发出, Then 立即展示用户消息气泡（右侧），左侧出现"虾思考中"加载动画（三点跳动）
+- [x] Given Agent处理完成返回回复, When 消息到达客户端, Then 替换加载动画为Agent消息气泡（左侧），支持Markdown渲染（粗体、列表、链接）
+- [x] Given Agent回复包含代码块, When 渲染完成, Then 代码块有语法高亮和独立背景色，可横向滚动
+- [x] Given WebSocket连接已断开, When 用户发送消息, Then 消息标记为"待发送"（灰色时钟图标），顶部横幅"连接已断开，正在重连..."
+- [x] Given Agent超过60秒无回复, When 超时触发, Then 展示提示"虾思考时间较长，可能正在处理复杂任务。继续等待/取消"
 
 **依赖**：US-004（需Agent数据）、WebSocket连接管理器
 **技术备注**：WebSocket消息格式遵循OpenClaw Gateway协议；Markdown渲染库选型（如marked/markdown-it）；输入框自动高度调整
@@ -170,9 +170,9 @@
 **Story Points**：3
 
 **Acceptance Criteria**：
-- [ ] Given Agent在回复过程中调用了工具, When 工具调用事件通过WebSocket到达, Then 在消息流中插入工具调用卡片，展示工具名称和"进行中"状态
-- [ ] Given 工具调用完成, When 状态更新事件到达, Then 卡片状态变为"✅ 完成"，展示结果摘要
-- [ ] Given 工具调用失败, When 错误事件到达, Then 卡片状态变为"❌ 失败"，展示错误原因
+- [x] Given Agent在回复过程中调用了工具, When 工具调用事件通过WebSocket到达, Then 在消息流中插入工具调用卡片，展示工具名称和"进行中"状态
+- [x] Given 工具调用完成, When 状态更新事件到达, Then 卡片状态变为"✅ 完成"，展示结果摘要
+- [x] Given 工具调用失败, When 错误事件到达, Then 卡片状态变为"❌ 失败"，展示错误原因
 
 **依赖**：US-007（需对话界面基础）
 **技术备注**：工具调用是OpenClaw Agent的核心能力，WebSocket事件流中有专门的tool_call事件类型
@@ -188,9 +188,9 @@
 **Story Points**：2
 
 **Acceptance Criteria**：
-- [ ] Given 用户进入对话页面, When 页面渲染完成, Then 输入框上方横向展示该虾的快捷指令标签（可滚动）
-- [ ] Given 用户点击某个快捷指令标签, When 点击触发, Then 指令文本自动填入输入框并立即发送
-- [ ] Given 该虾没有配置快捷指令, When 进入对话, Then 快捷指令区域不展示，输入栏正常显示
+- [x] Given 用户进入对话页面, When 页面渲染完成, Then 输入框上方横向展示该虾的快捷指令标签（可滚动）
+- [x] Given 用户点击某个快捷指令标签, When 点击触发, Then 指令文本自动填入输入框并立即发送
+- [x] Given 该虾没有配置快捷指令, When 进入对话, Then 快捷指令区域不展示，输入栏正常显示
 
 **依赖**：US-007（需对话界面）
 **技术备注**：MVP阶段快捷指令从Agent配置中读取（预设），用户自定义配置在US-014（个性化）中实现

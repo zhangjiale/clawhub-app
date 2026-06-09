@@ -1,3 +1,5 @@
+import 'quick_command.dart';
+
 /// Agent (虾) 实体
 /// 对齐: 架构 vFinal 4.0 (核心领域模型), 5.7 (动态主题)
 ///
@@ -13,6 +15,7 @@ class Agent {
   final String themeColor; // 动态主题色 Hex，默认 #007AFF
   final String? description; // Gateway 同步的描述，如"产品规划、需求分析"
   final bool isPinned; // 是否置顶
+  final List<QuickCommand> quickCommands; // 预设快捷指令（MVP 从 mock 数据读取）
   final int createdAt; // 创建时间(秒)
 
   Agent({
@@ -25,6 +28,7 @@ class Agent {
     this.themeColor = '#007AFF',
     this.description,
     this.isPinned = false,
+    this.quickCommands = const [],
     int? createdAt,
   }) : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000 {
     _validate();
@@ -63,6 +67,7 @@ class Agent {
     String? themeColor,
     String? description,
     bool? isPinned,
+    List<QuickCommand>? quickCommands,
     int? createdAt,
   }) {
     return Agent(
@@ -75,6 +80,7 @@ class Agent {
       themeColor: themeColor ?? this.themeColor,
       description: description ?? this.description,
       isPinned: isPinned ?? this.isPinned,
+      quickCommands: quickCommands ?? this.quickCommands,
       createdAt: createdAt ?? this.createdAt,
     );
   }

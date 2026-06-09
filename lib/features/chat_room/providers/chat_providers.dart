@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
+import 'package:claw_hub/features/agent_list/providers/stats_providers.dart';
 
 /// ChatViewModel provider — owns the full lifecycle of a chat session.
 ///
@@ -20,6 +21,9 @@ final chatViewModelProvider = Provider.family<ChatViewModel, ({
       instanceId: params.instanceId,
       agentId: params.agentId,
     );
+    // Invalidate stats provider whenever a message is sent or received,
+    // so the stats bar in the agent list tab reflects updated message counts.
+    vm.onStatsChanged = () => ref.invalidate(statsProvider);
     vm.init();
     ref.onDispose(() => vm.dispose());
     return vm;
