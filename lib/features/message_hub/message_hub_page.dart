@@ -39,7 +39,7 @@ class _MessageHubPageState extends ConsumerState<MessageHubPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Messages'),
+        title: const Text('消息'),
       ),
       body: dataAsync.when(
         loading: () => const LoadingSkeleton(count: 5),

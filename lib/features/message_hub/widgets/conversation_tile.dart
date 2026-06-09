@@ -21,7 +21,9 @@ class ConversationTile extends StatelessWidget {
     final agent = preview.agent;
 
     final hasUnread = conv.unreadCount > 0;
-    final previewText = _truncate(conv.lastMessagePreview ?? '');
+    final rawPreview = conv.lastMessagePreview ?? '';
+    final isUser = conv.lastMessageRole == MessageRole.user;
+    final previewText = _truncate(isUser ? '你: $rawPreview' : rawPreview);
 
     return InkWell(
       onTap: onTap,

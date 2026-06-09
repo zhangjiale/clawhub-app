@@ -37,15 +37,22 @@ class AgentCard extends StatelessWidget {
     final firstChar = agent.displayName.characters.first;
     final dimmed = !isOnline;
 
-    return Card(
+    return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+        border: Border(
+          left: BorderSide(color: dimmed ? Colors.grey : color, width: 3),
+        ),
+      ),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         child: Opacity(
           opacity: dimmed ? 0.55 : 1.0,
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(14),
             child: Row(
               children: [
                 // Avatar circle with online status dot
@@ -163,7 +170,8 @@ class AgentCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                const Icon(Icons.chevron_right, color: Colors.grey),
+                const SizedBox(width: 4),
+                Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
               ],
             ),
           ),

@@ -68,20 +68,35 @@ class InstanceListPage extends ConsumerWidget {
     final instancesAsync = ref.watch(instanceListProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Instances')),
+      appBar: AppBar(title: const Text('实例管理')),
       body: instancesAsync.when(
         data: (instances) {
           if (instances.isEmpty) {
-            return const EmptyState(
-              icon: Icons.dns_outlined,
-              title: 'No Instances',
-              subtitle: 'Add your first OpenClaw instance',
+            return Column(
+              children: [
+                const Expanded(
+                  child: EmptyState(
+                    icon: Icons.dns_outlined,
+                    title: 'No Instances',
+                    subtitle: 'Add your first OpenClaw instance',
+                  ),
+                ),
+                _AddInstanceCard(
+                  onTap: () => _showAddOptions(context),
+                ),
+                const SizedBox(height: 16),
+              ],
             );
           }
           return ListView.builder(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: instances.length,
+            itemCount: instances.length + 1, // +1 for inline add card
             itemBuilder: (context, index) {
+              if (index == instances.length) {
+                return _AddInstanceCard(
+                  onTap: () => _showAddOptions(context),
+                );
+              }
               final instance = instances[index];
               return InstanceCard(
                 instance: instance,
@@ -95,9 +110,55 @@ class InstanceListPage extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (err, _) => Center(child: Text('Error: $err')),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddOptions(context),
-        child: const Icon(Icons.add),
+    );
+  }
+}
+
+/// 内联"添加实例"虚线卡片 — 对齐原型设计
+class _AddInstanceCard extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _AddInstanceCard({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: theme.colorScheme.outline.withAlpha(60),
+              strokeAlign: BorderSide.strokeAlignInside,
+            ),
+            // Dashed effect via dotted border pattern
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.add,
+                size: 20,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '添加新实例',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

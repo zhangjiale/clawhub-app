@@ -82,7 +82,7 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
                 ),
                 onChanged: (value) => setState(() => _query = value),
               )
-            : const Text('Claws'),
+            : const Text('🦐 ClawHub'),
         actions: [
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search),
@@ -192,10 +192,10 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      // Instance name
+                      // Instance name with emoji
                       Expanded(
                         child: Text(
-                          header,
+                          '🖥️ $header',
                           style: theme.textTheme.labelLarge?.copyWith(
                             color: isInstanceOnline
                                 ? theme.colorScheme.primary
@@ -204,9 +204,9 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
                           ),
                         ),
                       ),
-                      // Agent count badge
+                      // Agent count badge with "只虾"
                       Text(
-                        '${groupAgents.length}',
+                        '${groupAgents.length} 只虾',
                         style: theme.textTheme.labelSmall?.copyWith(
                           color: theme.colorScheme.outline,
                         ),

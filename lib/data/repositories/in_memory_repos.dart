@@ -362,6 +362,7 @@ class InMemoryConversationRepo implements IConversationRepo {
     required String messageId,
     required String preview,
     required int timestamp,
+    required MessageRole role,
   }) async {
     final conv = _store[conversationId];
     if (conv == null) throw StateError('会话不存在: $conversationId');
@@ -369,6 +370,7 @@ class InMemoryConversationRepo implements IConversationRepo {
       messageId: messageId,
       preview: preview,
       timestamp: timestamp,
+      role: role,
     );
     _store[conversationId] = updated;
     return updated;

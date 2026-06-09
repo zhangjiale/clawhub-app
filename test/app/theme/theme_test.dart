@@ -19,7 +19,7 @@ void main() {
     });
 
     test('AppColors defines all required colors', () {
-      expect(AppColors.primaryBlue, const Color(0xFF007AFF));
+      expect(AppColors.primaryBlue, const Color(0xFF6C5CE7));
       expect(AppColors.agentColors, isNotEmpty);
       expect(AppColors.agentColors.length, greaterThanOrEqualTo(7));
     });
@@ -56,8 +56,8 @@ void main() {
       );
       // Black background → light text
       expect(const Color(0xFF000000).contrastingTextColor(), Colors.white);
-      // Blue → light text (luminance ≈0.21 < 0.55)
-      expect(const Color(0xFF007AFF).contrastingTextColor(), Colors.white);
+      // Purple (ClawHub accent) → light text (luminance ≈0.16 < 0.55)
+      expect(const Color(0xFF6C5CE7).contrastingTextColor(), Colors.white);
       // Yellow → dark text (luminance ≈0.81 > 0.55)
       expect(
         const Color(0xFFFFEB3B).contrastingTextColor(),

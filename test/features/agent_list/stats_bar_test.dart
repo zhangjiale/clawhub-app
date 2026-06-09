@@ -27,21 +27,21 @@ void main() {
     testWidgets('renders instance stat with ratio', (tester) async {
       await tester.pumpWidget(buildBar(activeInstances: 2, totalInstances: 3));
 
-      expect(find.text('Instances'), findsOneWidget);
+      expect(find.text('活跃实例'), findsOneWidget);
       expect(find.text('2/3'), findsOneWidget);
     });
 
     testWidgets('renders online claw stat with ratio', (tester) async {
       await tester.pumpWidget(buildBar(onlineAgents: 5, totalAgents: 7));
 
-      expect(find.text('Online'), findsOneWidget);
+      expect(find.text('在线虾'), findsOneWidget);
       expect(find.text('5/7'), findsOneWidget);
     });
 
     testWidgets('renders messages stat', (tester) async {
       await tester.pumpWidget(buildBar(totalMessages: 42));
 
-      expect(find.text('Messages'), findsOneWidget);
+      expect(find.text('总消息数'), findsOneWidget);
       expect(find.text('42'), findsOneWidget);
     });
 
@@ -72,12 +72,13 @@ void main() {
       expect(find.text('10.0k'), findsOneWidget);
     });
 
-    testWidgets('renders three icon widgets', (tester) async {
+    testWidgets('renders three stat chip labels', (tester) async {
       await tester.pumpWidget(buildBar());
 
-      expect(find.byIcon(Icons.dns), findsOneWidget);
-      expect(find.byIcon(Icons.pets), findsOneWidget);
-      expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget);
+      // New pill-chip design uses emoji text instead of Material icons
+      expect(find.text('🖥️'), findsOneWidget);
+      expect(find.text('🦐'), findsOneWidget);
+      expect(find.text('💬'), findsOneWidget);
     });
   });
 }

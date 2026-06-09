@@ -24,7 +24,7 @@ void main() {
       expect(find.text('Add your first OpenClaw instance'), findsOneWidget);
     });
 
-    testWidgets('has FAB to add instance', (tester) async {
+    testWidgets('has inline add instance card when empty', (tester) async {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
@@ -35,7 +35,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byType(FloatingActionButton), findsOneWidget);
+      // Inline "添加新实例" card appears at bottom of empty list
+      expect(find.text('添加新实例'), findsOneWidget);
     });
 
     testWidgets('shows instance cards when instances exist', (tester) async {

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/conversation.dart';
+import 'package:claw_hub/domain/models/enums.dart';
 
 void main() {
   group('Conversation', () {
@@ -59,6 +60,7 @@ void main() {
         messageId: 'msg-001',
         preview: '你好，这是一条测试消息...',
         timestamp: 1717766400000,
+        role: MessageRole.agent,
       );
 
       expect(updated.lastMessageId, 'msg-001');

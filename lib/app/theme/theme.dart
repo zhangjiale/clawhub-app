@@ -45,7 +45,7 @@ class AppColors {
   AppColors._();
 
   /// 主色调 — ClawHub Blue
-  static const Color primaryBlue = Color(0xFF007AFF);
+  static const Color primaryBlue = Color(0xFF6C5CE7); // ClawHub accent purple
 
   /// Agent 主题色预设（12 色）
   static const List<Color> agentColors = [

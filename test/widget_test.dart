@@ -11,8 +11,9 @@ void main() {
     // The app should render with the 3-tab navigation bar
     // (Text may appear in both AppBar title and NavBar label)
     expect(find.byType(NavigationBar), findsOneWidget);
-    expect(find.text('Claws'), findsAtLeast(1));
-    expect(find.text('Messages'), findsAtLeast(1));
-    expect(find.text('Instances'), findsAtLeast(1));
+    expect(find.text('🦐 ClawHub'), findsAtLeast(1));
+    expect(find.text('虾列表'), findsAtLeast(1));
+    expect(find.text('消息'), findsAtLeast(1));
+    expect(find.text('实例'), findsAtLeast(1));
   });
 }

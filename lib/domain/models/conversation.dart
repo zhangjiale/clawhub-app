@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
+import 'enums.dart';
 
 /// 会话聚合根
 /// 对齐: 架构 vFinal 4.0 (Conversation 聚合根), 5.2 (预览生成引擎)
@@ -11,6 +12,7 @@ class Conversation {
   final String instanceId; // 冗余: 用于路由和统计
   final String? lastMessageId; // 关联 messages.clientId
   final String? lastMessagePreview; // 预览引擎生成的40字预览
+  final MessageRole? lastMessageRole; // 最后消息的角色(用于"你:"前缀)
   final int lastMessageTime; // 用于消息页时间降序排列(毫秒)
   final int unreadCount; // 未读角标
   final bool isMuted; // 是否免打扰
@@ -21,6 +23,7 @@ class Conversation {
     required this.instanceId,
     this.lastMessageId,
     this.lastMessagePreview,
+    this.lastMessageRole,
     this.lastMessageTime = 0,
     this.unreadCount = 0,
     this.isMuted = false,
@@ -47,11 +50,13 @@ class Conversation {
     required String messageId,
     required String preview,
     required int timestamp,
+    required MessageRole role,
   }) {
     return copyWith(
       lastMessageId: messageId,
       lastMessagePreview: preview,
       lastMessageTime: timestamp,
+      lastMessageRole: role,
     );
   }
 
@@ -61,6 +66,7 @@ class Conversation {
     String? instanceId,
     String? lastMessageId,
     String? lastMessagePreview,
+    MessageRole? lastMessageRole,
     int? lastMessageTime,
     int? unreadCount,
     bool? isMuted,
@@ -71,6 +77,7 @@ class Conversation {
       instanceId: instanceId ?? this.instanceId,
       lastMessageId: lastMessageId ?? this.lastMessageId,
       lastMessagePreview: lastMessagePreview ?? this.lastMessagePreview,
+      lastMessageRole: lastMessageRole ?? this.lastMessageRole,
       lastMessageTime: lastMessageTime ?? this.lastMessageTime,
       unreadCount: unreadCount ?? this.unreadCount,
       isMuted: isMuted ?? this.isMuted,

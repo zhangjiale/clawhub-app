@@ -76,6 +76,7 @@ void main() {
           messageId: any(named: 'messageId'),
           preview: any(named: 'preview'),
           timestamp: any(named: 'timestamp'),
+          role: any(named: 'role'),
         )).thenAnswer((_) async => testConversation);
     when(() => messageRepo.insert(any()))
         .thenAnswer((inv) async => inv.positionalArguments[0] as Message);

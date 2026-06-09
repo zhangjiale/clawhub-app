@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:claw_hub/app/theme/theme.dart';
 
 /// 统计数据条组件
 /// 对齐: PRD 3.2 US-005 (虾列表状态统计栏)
 ///
-/// 横向展示 3 个统计卡片：活跃实例数、在线虾数、总消息数
+/// 横向可滚动的 pill 芯片，展示活跃实例数、在线虾数、总消息数
 class StatsBar extends StatelessWidget {
   final int activeInstances;
   final int totalInstances;
@@ -26,39 +25,33 @@ class StatsBar extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: _StatCard(
-              label: 'Instances',
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _StatChip(
+              emoji: '🖥️',
               value: '$activeInstances/$totalInstances',
-              icon: Icons.dns,
-              color: AppColors.primaryBlue,
+              label: '活跃实例',
               theme: theme,
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _StatCard(
-              label: 'Online',
+            const SizedBox(width: 8),
+            _StatChip(
+              emoji: '🦐',
               value: '$onlineAgents/$totalAgents',
-              icon: Icons.pets,
-              color: AppColors.statusOnline,
+              label: '在线虾',
               theme: theme,
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _StatCard(
-              label: 'Messages',
+            const SizedBox(width: 8),
+            _StatChip(
+              emoji: '💬',
               value: _formatCount(totalMessages),
-              icon: Icons.chat_bubble_outline,
-              color: AppColors.statusConnecting,
+              label: '总消息数',
               theme: theme,
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -71,52 +64,56 @@ class StatsBar extends StatelessWidget {
   }
 }
 
-class _StatCard extends StatelessWidget {
-  final String label;
+/// 单个统计 pill 芯片
+///
+/// emoji 图标 + 数值/标签纵向排列，原型对齐
+class _StatChip extends StatelessWidget {
+  final String emoji;
   final String value;
-  final IconData icon;
-  final Color color;
+  final String label;
   final ThemeData theme;
 
-  const _StatCard({
-    required this.label,
+  const _StatChip({
+    required this.emoji,
     required this.value,
-    required this.icon,
-    required this.color,
+    required this.label,
     required this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: color.withAlpha(20),
-        borderRadius: BorderRadius.circular(12),
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: theme.colorScheme.surfaceContainerHighest,
+        ),
       ),
-      child: Column(
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
+          Text(emoji, style: const TextStyle(fontSize: 14)),
+          const SizedBox(width: 6),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 14, color: color),
-              const SizedBox(width: 4),
               Text(
                 value,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: color,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.outline,
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.outline,
-            ),
           ),
         ],
       ),

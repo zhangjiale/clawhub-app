@@ -187,17 +187,17 @@ class _TabScaffold extends StatelessWidget {
           NavigationDestination(
             icon: Icon(Icons.pets),
             selectedIcon: Icon(Icons.pets, color: _selectedColor),
-            label: 'Claws',
+            label: '虾列表',
           ),
           NavigationDestination(
             icon: Icon(Icons.chat_bubble_outline),
             selectedIcon: Icon(Icons.chat_bubble, color: _selectedColor),
-            label: 'Messages',
+            label: '消息',
           ),
           NavigationDestination(
             icon: Icon(Icons.dns_outlined),
             selectedIcon: Icon(Icons.dns, color: _selectedColor),
-            label: 'Instances',
+            label: '实例',
           ),
         ],
       ),

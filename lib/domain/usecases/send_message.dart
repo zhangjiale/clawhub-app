@@ -82,6 +82,7 @@ class SendMessageUseCase {
       messageId: clientId,
       preview: preview,
       timestamp: message.timestamp,
+      role: message.role,
     );
 
     // 4. 检查实例状态

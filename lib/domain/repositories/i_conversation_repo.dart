@@ -1,4 +1,5 @@
 import '../models/conversation.dart';
+import '../models/enums.dart';
 
 /// 会话仓库接口
 /// 对齐: 架构 vFinal 5.2 (消息中心聚合与预览生成引擎)
@@ -18,6 +19,7 @@ abstract class IConversationRepo {
     required String messageId,
     required String preview,
     required int timestamp,
+    required MessageRole role,
   });
 
   /// 增量未读数

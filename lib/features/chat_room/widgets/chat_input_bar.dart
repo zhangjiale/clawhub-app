@@ -32,6 +32,13 @@ class _ChatInputBarState extends State<ChatInputBar> {
     _controller.clear();
   }
 
+  void _showAttachmentOptions() {
+    // Placeholder: attachment picker (image/file/camera)
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('附件功能：图片/文件/拍照 (开发中)')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
@@ -48,6 +55,15 @@ class _ChatInputBarState extends State<ChatInputBar> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          // [+] 圆形按钮 — 附件入口
+          _CircularButton(
+            icon: Icons.add,
+            backgroundColor: theme.colorScheme.surfaceContainerHighest,
+            iconColor: theme.colorScheme.onSurfaceVariant,
+            onPressed: _showAttachmentOptions,
+          ),
+          const SizedBox(width: 8),
+          // 消息输入框
           Expanded(
             child: TextField(
               controller: _controller,
@@ -55,7 +71,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
               maxLines: 5,
               textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
-                hintText: 'Type a message...',
+                hintText: '输入消息...',
                 filled: true,
                 fillColor: theme.colorScheme.surfaceContainerHighest,
                 border: OutlineInputBorder(
@@ -71,14 +87,49 @@ class _ChatInputBarState extends State<ChatInputBar> {
             ),
           ),
           const SizedBox(width: 8),
-          IconButton(
-            onPressed: _hasText ? _send : null,
-            icon: const Icon(Icons.send),
-            color: _hasText
+          // 发送按钮 — 圆形实心
+          _CircularButton(
+            icon: Icons.send,
+            backgroundColor: _hasText
                 ? AppColors.primaryBlue
-                : theme.colorScheme.outline,
+                : theme.colorScheme.surfaceContainerHighest,
+            iconColor:
+                _hasText ? Colors.white : theme.colorScheme.outline,
+            onPressed: _hasText ? _send : null,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 36×36 圆形按钮，用于输入栏 [+] 和发送钮
+class _CircularButton extends StatelessWidget {
+  final IconData icon;
+  final Color backgroundColor;
+  final Color iconColor;
+  final VoidCallback? onPressed;
+
+  const _CircularButton({
+    required this.icon,
+    required this.backgroundColor,
+    required this.iconColor,
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 36,
+      height: 36,
+      child: Material(
+        color: backgroundColor,
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onPressed,
+          child: Icon(icon, color: iconColor, size: 20),
+        ),
       ),
     );
   }

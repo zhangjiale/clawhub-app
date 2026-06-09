@@ -73,7 +73,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('My MacBook'), findsOneWidget);
+      expect(find.text('🖥️ My MacBook'), findsOneWidget);
     });
 
     testWidgets('filters agents by search query', (tester) async {

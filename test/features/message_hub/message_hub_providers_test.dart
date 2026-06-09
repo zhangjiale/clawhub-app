@@ -83,6 +83,7 @@ void main() {
         messageId: 'msg-1',
         preview: '你好，有什么可以帮你的？',
         timestamp: DateTime.now().millisecondsSinceEpoch,
+        role: MessageRole.agent,
       );
 
       final container = createContainer(
@@ -119,6 +120,7 @@ void main() {
         messageId: 'msg-1',
         preview: 'test',
         timestamp: DateTime.now().millisecondsSinceEpoch,
+        role: MessageRole.agent,
       );
 
       final container = createContainer(
@@ -166,6 +168,7 @@ void main() {
         messageId: 'msg-1',
         preview: 'hello',
         timestamp: DateTime.now().millisecondsSinceEpoch,
+        role: MessageRole.agent,
       );
 
       final container = createContainer(

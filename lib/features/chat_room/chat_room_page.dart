@@ -16,6 +16,7 @@ import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
+import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -103,62 +104,87 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             onPressed: _handleBack,
           ),
           title: agent != null
-            ? Row(
-                children: [
-                  CircleAvatar(
-                    radius: 16,
-                    backgroundColor: agentColor,
-                    foregroundColor: agentColor!.contrastingTextColor(),
-                    child: Text(
-                      agent.displayName.characters.first,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
+            ? GestureDetector(
+                onTap: () {
+                  // Navigate to agent profile
+                  context.push(
+                    AppRoutes.agentProfileWithParams(
+                      agent.localId,
+                      source: widget.source,
+                    ),
+                  );
+                },
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 16,
+                      backgroundColor: agentColor,
+                      foregroundColor: agentColor!.contrastingTextColor(),
+                      child: Text(
+                        agent.displayName.characters.first,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                agent.displayName,
-                                style: theme.textTheme.titleSmall,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            // Connection status dot
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: _connectionDotColor(
-                                  session.connectionState,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  agent.displayName,
+                                  style: theme.textTheme.titleSmall,
                                 ),
-                                shape: BoxShape.circle,
                               ),
-                            ),
-                          ],
-                        ),
-                        if (agent.description != null)
-                          Text(
-                            agent.description!,
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.outline,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                              const SizedBox(width: 6),
+                              // Connection status dot
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: _connectionDotColor(
+                                    session.connectionState,
+                                  ),
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            ],
                           ),
-                      ],
+                          if (agent.description != null)
+                            Text(
+                              agent.description!,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.outline,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               )
             : const Text('Chat'),
+          actions: [
+            if (agent != null)
+              IconButton(
+                icon: const Icon(Icons.more_vert),
+                onPressed: () {
+                  context.push(
+                    AppRoutes.agentProfileWithParams(
+                      agent.localId,
+                      source: widget.source,
+                    ),
+                  );
+                },
+              ),
+          ],
         ),
         body: Column(
           children: [
