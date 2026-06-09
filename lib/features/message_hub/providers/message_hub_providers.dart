@@ -4,9 +4,6 @@ import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/app/di/providers.dart';
 
-/// 消息页刷新计数器 — 每次递增时 [conversationListProvider] 重新拉取数据
-final messageHubRefreshProvider = StateProvider<int>((ref) => 0);
-
 /// 单条对话预览（Converation + Agent + 实例名 + 在线状态）
 class ConversationPreview {
   final Conversation conversation;
@@ -29,11 +26,12 @@ class ConversationListData {
   const ConversationListData({required this.previews});
 }
 
-/// 对话列表 Provider — 获取所有有消息的会话并按最后消息时间降序返回
+/// 对话列表 Provider — 获取所有有消息的会话并按最后消息时间降序返回。
+///
+/// 调用方通过 [ref.invalidate(conversationListProvider)] 触发刷新，
+/// 不再依赖旧的 int 计数器 hack。
 final conversationListProvider =
     FutureProvider<ConversationListData>((ref) async {
-  ref.watch(messageHubRefreshProvider); // 监听刷新触发
-
   final conversations =
       await ref.watch(conversationRepoProvider).getAllWithMessages();
 

@@ -7,7 +7,10 @@ import 'package:claw_hub/features/agent_list/providers/stats_providers.dart';
 ///
 /// Created on first read for a given (instanceId, agentId) pair,
 /// initialised immediately, and disposed when the provider is no longer watched.
-final chatViewModelProvider = Provider.family<ChatViewModel, ({
+///
+/// Uses [StateNotifierProvider.family] so the UI can observe
+/// [ChatSessionState] via [ref.watch] — no manual listener bridge.
+final chatViewModelProvider = StateNotifierProvider.family<ChatViewModel, ChatSessionState, ({
   String instanceId,
   String agentId,
 })>(

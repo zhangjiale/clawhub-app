@@ -47,11 +47,10 @@ final statsProvider = FutureProvider<StatsData>((ref) async {
   final onlineAgents =
       agents.where((a) => onlineInstanceIds.contains(a.instanceId)).length;
 
-  // 总消息数（累加所有 Agent）
-  int totalMessages = 0;
-  for (final agent in agents) {
-    totalMessages += await messageRepo.getMessageCount(agent.localId);
-  }
+  // 总消息数（批量查询，避免 N+1）
+  final agentIds = agents.map((a) => a.localId).toList();
+  final counts = await messageRepo.getMessageCountsByAgent(agentIds);
+  final totalMessages = counts.values.fold<int>(0, (sum, c) => sum + c);
 
   return StatsData(
     activeInstances: activeInstances,

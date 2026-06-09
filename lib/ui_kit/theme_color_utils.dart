@@ -68,7 +68,7 @@ bool meetsWCAGAA(Color foreground, Color background) {
 }
 
 /// 根据背景色亮度选择白色或深色文字
-/// 返回 [Colors.white] 或 [Colors.black87]，确保与背景有足够对比度
+/// 返回 [Colors.white] 或 [Colors.black87]，确保 WCAG AA 级对比度
 Color contrastTextColor(Color background) {
   final luminance = relativeLuminance(background);
   return luminance > 0.55 ? Colors.black87 : Colors.white;

@@ -74,7 +74,8 @@ class _QrScannerPageState extends State<QrScannerPage> {
     } on FormatException catch (e) {
       _showError(e.message);
       _isProcessing = false;
-    } catch (_) {
+    } catch (error, stackTrace) {
+      debugPrint('QR scan parse error: $error\n$stackTrace');
       _showError('无法识别的二维码，请确认这是 OpenClaw 配置二维码');
       _isProcessing = false;
     }

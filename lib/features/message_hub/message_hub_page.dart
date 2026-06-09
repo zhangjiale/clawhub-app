@@ -22,14 +22,14 @@ class _MessageHubPageState extends ConsumerState<MessageHubPage> {
   @override
   void initState() {
     super.initState();
-    // 首次进入时触发数据加载
+    // Ensure initial load happens after first frame (avoids build-during-build).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(messageHubRefreshProvider.notifier).state++;
+      ref.invalidate(conversationListProvider);
     });
   }
 
   Future<void> _refresh() async {
-    ref.read(messageHubRefreshProvider.notifier).state++;
+    ref.invalidate(conversationListProvider);
   }
 
   @override

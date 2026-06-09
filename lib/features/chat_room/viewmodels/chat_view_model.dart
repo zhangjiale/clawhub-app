@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
@@ -9,6 +10,67 @@ import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
+
+/// The agent's thinking/waiting state — mutually exclusive states that
+/// replace the previous (isThinking, timeout) boolean pair.
+enum ThinkingState {
+  /// No message in flight; agent is idle.
+  idle,
+
+  /// User sent a message; waiting for the agent to reply.
+  thinking,
+
+  /// Agent has been thinking for >60s without a reply.
+  timeout,
+}
+
+/// Single immutable snapshot of the chat session, replacing the 5
+/// independent [ValueNotifier]s that previously scattered across the
+/// ViewModel.
+///
+/// Bundles messages, thinking state, connection state, and tool calls
+/// so the UI observes one cohesive source of truth instead of juggling
+/// multiple notifiers.
+class ChatSessionState {
+  final LoadState<List<Message>> messages;
+  final ThinkingState thinkingState;
+  final GatewayConnectionState connectionState;
+  final Map<String, ToolCall> toolCalls;
+
+  const ChatSessionState({
+    this.messages = const LoadInProgress(),
+    this.thinkingState = ThinkingState.idle,
+    this.connectionState = GatewayConnectionState.disconnected,
+    this.toolCalls = const {},
+  });
+
+  ChatSessionState copyWith({
+    LoadState<List<Message>>? messages,
+    ThinkingState? thinkingState,
+    GatewayConnectionState? connectionState,
+    Map<String, ToolCall>? toolCalls,
+  }) {
+    return ChatSessionState(
+      messages: messages ?? this.messages,
+      thinkingState: thinkingState ?? this.thinkingState,
+      connectionState: connectionState ?? this.connectionState,
+      toolCalls: toolCalls ?? this.toolCalls,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChatSessionState &&
+          thinkingState == other.thinkingState &&
+          connectionState == other.connectionState &&
+          messages == other.messages &&
+          toolCalls == other.toolCalls;
+
+  @override
+  int get hashCode =>
+      Object.hash(thinkingState, connectionState, messages, toolCalls);
+}
 
 /// ChatViewModel — deep module behind a single-seam interface.
 ///
@@ -22,8 +84,10 @@ import 'package:claw_hub/domain/usecases/send_message.dart';
 /// - Waiting/thinking state (for loading animation)
 /// - Timeout detection (>60s without reply)
 ///
-/// Exposes reactive notifiers so the widget observes and calls [send].
-class ChatViewModel extends ChangeNotifier {
+/// Extends [StateNotifier] so the UI observes one cohesive
+/// [ChatSessionState] via Riverpod's [ref.watch] — no manual
+/// listener or setState bridge needed.
+class ChatViewModel extends StateNotifier<ChatSessionState> {
   final IAgentRepo _agentRepo;
   final IConversationRepo _conversationRepo;
   final IMessageRepo _messageRepo;
@@ -37,24 +101,6 @@ class ChatViewModel extends ChangeNotifier {
   StreamSubscription<ToolCall>? _toolCallSubscription;
   Timer? _timeoutTimer;
   Agent? _agent;
-
-  /// Reactive messages notifier — the single source of truth for the UI.
-  final ValueNotifier<LoadState<List<Message>>> messagesNotifier =
-      ValueNotifier(const LoadInProgress());
-
-  /// Whether the agent is currently "thinking" (user sent a message, no reply yet).
-  final ValueNotifier<bool> isThinkingNotifier = ValueNotifier(false);
-
-  /// Current connection state.
-  final ValueNotifier<GatewayConnectionState> connectionStateNotifier =
-      ValueNotifier(GatewayConnectionState.disconnected);
-
-  /// Whether a timeout occurred (agent took >60s to reply).
-  final ValueNotifier<bool> timeoutNotifier = ValueNotifier(false);
-
-  /// Tool calls keyed by messageId.
-  final ValueNotifier<Map<String, ToolCall>> toolCallsNotifier =
-      ValueNotifier({});
 
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
@@ -71,7 +117,8 @@ class ChatViewModel extends ChangeNotifier {
         _conversationRepo = conversationRepo,
         _messageRepo = messageRepo,
         _gatewayClient = gatewayClient,
-        _sendMessageUseCase = sendMessageUseCase;
+        _sendMessageUseCase = sendMessageUseCase,
+        super(const ChatSessionState());
 
   /// The loaded agent (null until [init] completes).
   Agent? get agent => _agent;
@@ -83,7 +130,6 @@ class ChatViewModel extends ChangeNotifier {
   Future<void> init() async {
     // 1. Look up the agent
     _agent = await _agentRepo.getById(agentId);
-    notifyListeners();
 
     // 2. Get or create conversation (idempotent)
     await _conversationRepo.getOrCreate(instanceId, agentId);
@@ -95,7 +141,7 @@ class ChatViewModel extends ChangeNotifier {
     _connectionSubscription = _gatewayClient
         .connectionStateStream(instanceId)
         .listen((state) {
-      connectionStateNotifier.value = state;
+      _updateState((s) => s.copyWith(connectionState: state));
     });
 
     // 5. Fetch message history from Gateway (best-effort)
@@ -109,8 +155,10 @@ class ChatViewModel extends ChangeNotifier {
           await _messageRepo.insert(msg);
         }
         await _loadMessages();
-      } catch (_) {
-        // History fetch failed — local messages already shown; proceed silently.
+      } catch (error, stackTrace) {
+        debugPrint(
+          'History fetch failed for $instanceId/${_agent!.remoteId}: $error\n$stackTrace',
+        );
       }
     }
 
@@ -138,9 +186,9 @@ class ChatViewModel extends ChangeNotifier {
     _toolCallSubscription = _gatewayClient
         .toolCallStream(instanceId)
         .listen((tc) {
-      final current = Map<String, ToolCall>.from(toolCallsNotifier.value);
+      final current = Map<String, ToolCall>.from(state.toolCalls);
       current[tc.messageId] = tc;
-      toolCallsNotifier.value = current;
+      _updateState((s) => s.copyWith(toolCalls: current));
     });
   }
 
@@ -165,39 +213,39 @@ class ChatViewModel extends ChangeNotifier {
 
   /// Dismiss the timeout banner and cancel waiting.
   void dismissTimeout() {
-    timeoutNotifier.value = false;
     _stopThinking();
   }
 
   /// Continue waiting — dismiss the timeout banner and restart the timer.
   void continueWaiting() {
-    timeoutNotifier.value = false;
     _startThinking();
   }
 
   void _startThinking() {
-    isThinkingNotifier.value = true;
-    timeoutNotifier.value = false;
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 60), () {
-      timeoutNotifier.value = true;
-      isThinkingNotifier.value = false;
+      _updateState((s) => s.copyWith(thinkingState: ThinkingState.timeout));
     });
+    _updateState((s) => s.copyWith(thinkingState: ThinkingState.thinking));
   }
 
   void _stopThinking() {
-    isThinkingNotifier.value = false;
     _timeoutTimer?.cancel();
+    _updateState((s) => s.copyWith(thinkingState: ThinkingState.idle));
   }
 
   /// Reload messages from the repository and push to the notifier.
   Future<void> _loadMessages() async {
     try {
       final messages = await _messageRepo.getByConversation(_conversationId);
-      messagesNotifier.value = LoadData(messages);
+      _updateState((s) => s.copyWith(messages: LoadData(messages)));
     } catch (error, stackTrace) {
-      messagesNotifier.value = LoadError(error, stackTrace);
+      _updateState((s) => s.copyWith(messages: LoadError(error, stackTrace)));
     }
+  }
+
+  void _updateState(ChatSessionState Function(ChatSessionState) transform) {
+    state = transform(state);
   }
 
   /// Release resources. Call when the chat room is permanently closed.
@@ -207,11 +255,6 @@ class ChatViewModel extends ChangeNotifier {
     _connectionSubscription?.cancel();
     _toolCallSubscription?.cancel();
     _timeoutTimer?.cancel();
-    messagesNotifier.dispose();
-    isThinkingNotifier.dispose();
-    connectionStateNotifier.dispose();
-    timeoutNotifier.dispose();
-    toolCallsNotifier.dispose();
     super.dispose();
   }
 }

@@ -311,6 +311,22 @@ class InMemoryMessageRepo implements IMessageRepo {
   }
 
   @override
+  Future<Map<String, int>> getMessageCountsByAgent(List<String> agentIds) async {
+    final counts = <String, int>{};
+    for (final id in agentIds) {
+      counts[id] = 0;
+    }
+    // Single pass through all messages — O(messages) instead of O(agents × messages)
+    for (final msg in _byClientId.values) {
+      final count = counts[msg.agentId];
+      if (count != null) {
+        counts[msg.agentId] = count + 1;
+      }
+    }
+    return counts;
+  }
+
+  @override
   Future<void> deleteByClientId(String clientId) async {
     final msg = _byClientId.remove(clientId);
     if (msg?.serverId != null) _byServerId.remove(msg!.serverId);

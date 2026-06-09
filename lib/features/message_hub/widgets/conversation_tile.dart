@@ -3,7 +3,6 @@ import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
-import 'package:claw_hub/ui_kit/theme_color_utils.dart';
 
 /// 对话列表行组件
 ///
@@ -178,7 +177,7 @@ class _ConversationAvatar extends StatelessWidget {
             child: Text(
               agent.displayName.isNotEmpty ? agent.displayName[0] : '?',
               style: TextStyle(
-                color: contrastTextColor(color),
+                color: color.contrastingTextColor(),
                 fontSize: 20,
                 fontWeight: FontWeight.w600,
               ),

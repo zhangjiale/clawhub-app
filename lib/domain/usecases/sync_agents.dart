@@ -48,8 +48,13 @@ class SyncAgentsUseCase {
       try {
         final remoteAgents = await _gatewayClient.fetchAgents(instance.id);
         await _agentRepo.syncFromGateway(instance.id, remoteAgents);
-      } catch (_) {
-        // Skip instances that fail to connect — show what we have locally
+      } catch (error, stackTrace) {
+        // Skip instances that fail to connect — show what we have locally.
+        // Use print (dart:core) to avoid introducing a Flutter dependency
+        // into the domain layer.
+        print(
+          'SyncAgents failed for instance ${instance.id}: $error\n$stackTrace',
+        );
       }
     }
 

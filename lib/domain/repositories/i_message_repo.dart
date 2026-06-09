@@ -45,8 +45,12 @@ abstract class IMessageRepo {
   /// 为指定 Agent 清理超过 1000 条的旧消息
   Future<int> cleanupOldMessages(String agentId, {int keep = 1000});
 
-  /// 获取 Agent 消息总数（用于统计）
+  /// 获取单个 Agent 消息总数（用于统计）
   Future<int> getMessageCount(String agentId);
+
+  /// 批量获取多个 Agent 的消息总数（替代 N+1 查询）
+  /// 返回 Map<agentId, count>，未出现在结果中的 agentId 表示消息数为 0
+  Future<Map<String, int>> getMessageCountsByAgent(List<String> agentIds);
 
   /// 删除消息（仅本地）
   Future<void> deleteByClientId(String clientId);

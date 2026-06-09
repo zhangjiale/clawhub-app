@@ -95,9 +95,8 @@ extension ColorExtension on Color {
         '${b.toRadixString(16).padLeft(2, '0').toUpperCase()}';
   }
 
-  /// 根据背景亮度返回对比文字颜色（黑或白）
-  Color contrastingTextColor() {
-    final luminance = computeLuminance();
-    return luminance > 0.5 ? Colors.black : Colors.white;
-  }
+  /// 根据背景亮度返回对比文字颜色（黑或白）。
+  /// 委托给 ui_kit 的 [contrastTextColor]，使用 WCAG 相对亮度算法
+  /// 和 0.55 阈值确保 AA 级对比度。
+  Color contrastingTextColor() => contrastTextColor(this);
 }

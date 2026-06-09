@@ -15,6 +15,7 @@ import 'package:claw_hub/features/chat_room/widgets/quick_command_bar.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
+import 'package:claw_hub/ui_kit/connection_banner.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -42,21 +43,11 @@ class ChatRoomPage extends ConsumerStatefulWidget {
 
 class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ScrollController? _scrollController;
-  ChatViewModel? _vm;
 
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
-    _vm = ref.read(chatViewModelProvider((
-      instanceId: widget.instanceId,
-      agentId: widget.agentId,
-    )));
-    _vm!.addListener(_onVmChanged);
-  }
-
-  void _onVmChanged() {
-    if (mounted) setState(() {});
   }
 
   /// Smart back navigation (US-011).
@@ -80,7 +71,6 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
 
   @override
   void dispose() {
-    _vm?.removeListener(_onVmChanged);
     _scrollController?.dispose();
     super.dispose();
   }
@@ -88,7 +78,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final vm = _vm!;
+    final params = (instanceId: widget.instanceId, agentId: widget.agentId);
+    // ref.watch triggers rebuild whenever ChatSessionState changes —
+    // no manual addListener / setState bridge needed.
+    final session = ref.watch(chatViewModelProvider(params));
+    // .notifier gives us the ChatViewModel for calling action methods.
+    final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;
 
     // 预计算 Agent 颜色
@@ -136,19 +131,16 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                               ),
                             ),
                             const SizedBox(width: 6),
-                            // Connection status dots
-                            ValueListenableBuilder<GatewayConnectionState>(
-                              valueListenable: vm.connectionStateNotifier,
-                              builder: (context, connState, _) {
-                                return Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: _connectionDotColor(connState),
-                                    shape: BoxShape.circle,
-                                  ),
-                                );
-                              },
+                            // Connection status dot
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: _connectionDotColor(
+                                  session.connectionState,
+                                ),
+                                shape: BoxShape.circle,
+                              ),
                             ),
                           ],
                         ),
@@ -167,42 +159,17 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                 ],
               )
             : const Text('Chat'),
-      ),
-      body: Column(
-        children: [
-          // Disconnect banner
-          ValueListenableBuilder<GatewayConnectionState>(
-            valueListenable: vm.connectionStateNotifier,
-            builder: (context, connState, _) {
-              if (connState == GatewayConnectionState.disconnected ||
-                  connState == GatewayConnectionState.authFailed) {
-                return _buildBanner(
-                  theme,
-                  '连接已断开，正在重连...',
-                  AppColors.statusOffline,
-                  Icons.wifi_off,
-                );
-              }
-              if (connState == GatewayConnectionState.connecting ||
-                  connState == GatewayConnectionState.recovering) {
-                return _buildBanner(
-                  theme,
-                  '正在连接...',
-                  AppColors.statusConnecting,
-                  Icons.sync,
-                );
-              }
-              return const SizedBox.shrink();
-            },
-          ),
+        ),
+        body: Column(
+          children: [
+            // Disconnect / connecting banner
+            ConnectionBanner(connectionState: session.connectionState),
 
-          // Timeout banner
-          ValueListenableBuilder<bool>(
-            valueListenable: vm.timeoutNotifier,
-            builder: (context, isTimedOut, _) {
-              if (!isTimedOut) return const SizedBox.shrink();
-              return MaterialBanner(
-                content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
+            // Timeout banner
+            if (session.thinkingState == ThinkingState.timeout)
+              MaterialBanner(
+                content:
+                    const Text('虾思考时间较长，可能正在处理复杂任务。'),
                 backgroundColor:
                     AppColors.statusConnecting.withAlpha(30),
                 leading: const Icon(
@@ -219,46 +186,37 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                     child: const Text('继续等待'),
                   ),
                 ],
-              );
-            },
-          ),
+              ),
 
-          // Message list
-          Expanded(
-            child: ValueListenableBuilder(
-              valueListenable: vm.messagesNotifier,
-              builder: (context, state, _) => switch (state) {
-                LoadInProgress() => const LoadingSkeleton(count: 3),
-                LoadError(:final error) =>
-                  Center(child: Text('Failed to load messages: $error')),
+            // Message list
+            Expanded(
+              child: switch (session.messages) {
+                LoadInProgress() =>
+                  const LoadingSkeleton(count: 3),
+                LoadError(:final error) => Center(
+                    child: Text('Failed to load messages: $error'),
+                  ),
                 LoadData(:final value) when value.isEmpty =>
                   _buildEmptyState(theme),
                 LoadData(:final value) =>
-                  _buildMessageList(
-                    value, vm, agent?.displayName ?? 'Agent', theme),
+                  _buildMessageList(value, session.toolCalls, agent?.displayName ?? 'Agent', theme),
               },
             ),
-          ),
 
-          // Thinking indicator (when waiting for agent reply)
-          ValueListenableBuilder<bool>(
-            valueListenable: vm.isThinkingNotifier,
-            builder: (context, isThinking, _) {
-              if (!isThinking) return const SizedBox.shrink();
-              return const ThinkingIndicator();
-            },
-          ),
+            // Thinking indicator (when waiting for agent reply)
+            if (session.thinkingState == ThinkingState.thinking)
+              const ThinkingIndicator(),
 
-          // Quick command bar
-          if (agent != null && agent.quickCommands.isNotEmpty)
-            QuickCommandBar(
-              commands: agent.quickCommands,
-              onCommandTap: (payload) => vm.send(payload),
-            ),
+            // Quick command bar
+            if (agent != null && agent.quickCommands.isNotEmpty)
+              QuickCommandBar(
+                commands: agent.quickCommands,
+                onCommandTap: (payload) => vm.send(payload),
+              ),
 
-          ChatInputBar(onSend: (text) => vm.send(text)),
-        ],
-      ),
+            ChatInputBar(onSend: (text) => vm.send(text)),
+          ],
+        ),
       ), // Scaffold
     ); // PopScope
   }
@@ -274,31 +232,6 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       GatewayConnectionState.authFailed =>
         AppColors.statusOffline,
     };
-  }
-
-  Widget _buildBanner(
-    ThemeData theme,
-    String message,
-    Color color,
-    IconData icon,
-  ) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: color.withAlpha(25),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              message,
-              style: theme.textTheme.labelMedium?.copyWith(color: color),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildEmptyState(ThemeData theme) {
@@ -325,31 +258,24 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
 
   Widget _buildMessageList(
     List<Message> messages,
-    ChatViewModel vm,
+    Map<String, ToolCall> toolCalls,
     String agentName,
     ThemeData theme,
   ) {
-    return ValueListenableBuilder<Map<String, ToolCall>>(
-      valueListenable: vm.toolCallsNotifier,
-      builder: (context, toolCalls, _) {
-        // Build interleaved list: messages + tool call cards
-        final items = <Widget>[];
-        for (final message in messages) {
-          items.add(
+    return ListView.builder(
+      controller: _scrollController,
+      reverse: true,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: messages.length,
+      itemBuilder: (context, index) {
+        final message = messages[index];
+        final tc = toolCalls[message.clientId];
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
             MessageBubble(message: message, agentName: agentName),
-          );
-          // Show tool call card if this message has one
-          final tc = toolCalls[message.clientId];
-          if (tc != null) {
-            items.add(ToolCallCard(toolCall: tc));
-          }
-        }
-
-        return ListView(
-          controller: _scrollController,
-          reverse: true,
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          children: items,
+            if (tc != null) ToolCallCard(toolCall: tc),
+          ],
         );
       },
     );
