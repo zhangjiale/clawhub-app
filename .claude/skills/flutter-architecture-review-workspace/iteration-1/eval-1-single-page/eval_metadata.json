@@ -1,0 +1,6 @@
+{
+  "eval_id": 1,
+  "eval_name": "single-page-review",
+  "prompt": "帮我 review 一下这个文件 lib/features/agent_list/agent_list_page.dart，我是项目经理不太懂 Flutter，但我想知道这个页面的代码架构质量怎么样？未来如果要加新功能会不会很难改？请用通俗的语言告诉我。项目阶段：早期 MVP，团队规模：2 人。",
+  "assertions": []
+}

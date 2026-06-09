@@ -39,9 +39,9 @@
 **Story Points**：3
 
 **Acceptance Criteria**：
-- [ ] Given 用户点击"添加实例"并选择"扫码添加", When 将摄像头对准OpenClaw配置二维码, Then 自动解析出Gateway URL和Token并填入表单
-- [ ] Given 二维码解析成功, When 用户确认实例名称并点击"连接测试", Then 10秒内完成连通性测试，成功则标记"在线"并添加到实例列表
-- [ ] Given 二维码格式不合法（非OpenClaw配置码）, When 扫描完成, Then 提示"无法识别的二维码，请确认这是OpenClaw配置二维码"
+- [x] Given 用户点击"添加实例"并选择"扫码添加", When 将摄像头对准OpenClaw配置二维码, Then 自动解析出Gateway URL和Token并填入表单
+- [x] Given 二维码解析成功, When 用户确认实例名称并点击"连接测试", Then 10秒内完成连通性测试，成功则标记"在线"并添加到实例列表
+- [x] Given 二维码格式不合法（非OpenClaw配置码）, When 扫描完成, Then 提示"无法识别的二维码，请确认这是OpenClaw配置二维码"
 
 **依赖**：无
 **技术备注**：需调用设备摄像头权限；二维码内容格式需与OpenClaw侧约定JSON Schema
@@ -226,8 +226,8 @@
 **Story Points**：1
 
 **Acceptance Criteria**：
-- [ ] Given 用户从消息页点击进入虾A对话, When 用户点击返回按钮或左滑, Then 返回消息页，底部导航高亮"消息"Tab
-- [ ] Given 用户从虾列表点击进入虾A对话, When 用户点击返回按钮或左滑, Then 返回虾列表页，底部导航高亮"虾列表"Tab
+- [x] Given 用户从消息页点击进入虾A对话, When 用户点击返回按钮或左滑, Then 返回消息页，底部导航高亮"消息"Tab
+- [x] Given 用户从虾列表点击进入虾A对话, When 用户点击返回按钮或左滑, Then 返回虾列表页，底部导航高亮"虾列表"Tab
 
 **依赖**：US-006（需导航框架）、US-007（需对话页面）
 **技术备注**：在路由参数中记录来源Tab ID，返回时根据参数决定目标页

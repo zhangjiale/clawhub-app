@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/domain/models/message.dart';
@@ -18,6 +20,10 @@ import 'package:claw_hub/ui_kit/async_state.dart';
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
 ///
 /// Thin UI layer — all orchestration lives in [ChatViewModel].
+///
+/// Smart Back (US-011): Uses [source] to ensure the back button returns to the
+/// correct origin tab. When [source] is 'claws', back returns to Claws tab;
+/// when 'messages', back returns to Messages tab.
 class ChatRoomPage extends ConsumerStatefulWidget {
   final String agentId;
   final String instanceId;
@@ -53,6 +59,25 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     if (mounted) setState(() {});
   }
 
+  /// Smart back navigation (US-011).
+  ///
+  /// Pops from the current branch navigator if possible. Falls back to
+  /// switching to the source tab using `StatefulShellRoute` branch index.
+  void _handleBack() {
+    if (mounted && context.canPop()) {
+      context.pop();
+    } else if (mounted) {
+      // Fallback: navigate to source tab root
+      final source = widget.source;
+      if (source == 'messages') {
+        context.go(AppRoutes.messages);
+      } else {
+        // Default and 'claws' both go to claws tab
+        context.go(AppRoutes.claws);
+      }
+    }
+  }
+
   @override
   void dispose() {
     _vm?.removeListener(_onVmChanged);
@@ -71,9 +96,18 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         ? ColorExtension.fromHex(agent.themeColor)
         : null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: agent != null
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleBack();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _handleBack,
+          ),
+          title: agent != null
             ? Row(
                 children: [
                   CircleAvatar(
@@ -216,16 +250,17 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
           ),
 
           // Quick command bar
-          if (agent != null && agent!.quickCommands.isNotEmpty)
+          if (agent != null && agent.quickCommands.isNotEmpty)
             QuickCommandBar(
-              commands: agent!.quickCommands,
+              commands: agent.quickCommands,
               onCommandTap: (payload) => vm.send(payload),
             ),
 
           ChatInputBar(onSend: (text) => vm.send(text)),
         ],
       ),
-    );
+      ), // Scaffold
+    ); // PopScope
   }
 
   Color _connectionDotColor(GatewayConnectionState state) {

@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/features/instance_manager/instance_list_page.dart';
 import 'package:claw_hub/features/instance_manager/add_instance_page.dart';
+import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
 import 'package:claw_hub/features/agent_list/agent_list_page.dart';
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/message_hub/message_hub_page.dart';
@@ -139,7 +140,10 @@ class AppRouter {
                   routes: [
                     GoRoute(
                       path: 'add',
-                      builder: (context, state) => const AddInstancePage(),
+                      builder: (context, state) {
+                        final scanResult = state.extra as QrScanResult?;
+                        return AddInstancePage(scanResult: scanResult);
+                      },
                     ),
                     GoRoute(
                       path: 'edit/:instanceId',

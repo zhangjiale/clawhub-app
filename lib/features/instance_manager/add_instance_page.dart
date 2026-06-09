@@ -4,12 +4,19 @@ import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/features/instance_manager/providers/instance_providers.dart';
+import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
 
 /// 添加/编辑实例页 (P0 MVP)
+///
+/// 支持三种模式:
+/// - 新建 (instanceId == null, scanResult == null): 手动输入
+/// - 扫码预填 (instanceId == null, scanResult != null): US-001 扫码后自动填充
+/// - 编辑 (instanceId != null): 修改已有实例
 class AddInstancePage extends ConsumerStatefulWidget {
-  final String? instanceId; // null = new, non-null = edit
+  final String? instanceId;
+  final QrScanResult? scanResult; // US-001: pre-filled from QR scan
 
-  const AddInstancePage({super.key, this.instanceId});
+  const AddInstancePage({super.key, this.instanceId, this.scanResult});
 
   @override
   ConsumerState<AddInstancePage> createState() => _AddInstancePageState();
@@ -30,6 +37,14 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
     _nameController = TextEditingController();
     _urlController = TextEditingController();
     _tokenController = TextEditingController();
+
+    // US-001: Pre-fill from QR scan result
+    if (widget.scanResult != null) {
+      final scan = widget.scanResult!;
+      _nameController.text = scan.name ?? '';
+      _urlController.text = scan.gatewayUrl;
+      _tokenController.text = scan.token ?? '';
+    }
 
     if (isEditing) {
       _loadExistingInstance();
@@ -108,6 +123,33 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            // US-001: QR scan pre-fill indicator
+            if (widget.scanResult != null) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.qr_code, color: Colors.green.shade700, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Info pre-filled from QR code',
+                        style: TextStyle(
+                          color: Colors.green.shade700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             TextFormField(
               controller: _nameController,
               decoration: const InputDecoration(

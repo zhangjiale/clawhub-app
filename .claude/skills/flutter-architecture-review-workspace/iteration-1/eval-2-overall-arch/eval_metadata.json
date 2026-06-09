@@ -1,0 +1,6 @@
+{
+  "eval_id": 2,
+  "eval_name": "overall-architecture-review",
+  "prompt": "我想请你审查一下我们整个 ClawHub Flutter 项目的架构。这是一个要长期维护的产品，团队目前 3 个人。你直接看项目目录结构，告诉我：这个架构靠不靠谱？哪里可能变成'屎山'？我们现在的代码组织方式，下个月加个新功能模块会不会很痛苦？",
+  "assertions": []
+}

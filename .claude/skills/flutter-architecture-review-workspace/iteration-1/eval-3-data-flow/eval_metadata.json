@@ -1,0 +1,6 @@
+{
+  "eval_id": 3,
+  "eval_name": "data-flow-review",
+  "prompt": "review 一下 sync_agents.dart 这个 usecase 以及它上下游的代码 —— agent_providers.dart（provider层）、in_memory_repos.dart（数据层）、providers.dart（DI）。我想知道数据从 Gateway 到 UI 的这条链路是否清晰，有没有违反 Clean Architecture 的分层原则？另外这种写法好测试吗？",
+  "assertions": []
+}

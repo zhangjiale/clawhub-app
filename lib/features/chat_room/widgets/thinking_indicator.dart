@@ -71,18 +71,21 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
               mainAxisSize: MainAxisSize.min,
               children: [
                 _BouncingDot(
+                  key: const ValueKey('thinking-dot-0'),
                   controller: _controller,
                   delay: 0,
                   color: theme.colorScheme.onSurface.withAlpha(150),
                 ),
                 const SizedBox(width: 4),
                 _BouncingDot(
+                  key: const ValueKey('thinking-dot-1'),
                   controller: _controller,
                   delay: 200,
                   color: theme.colorScheme.onSurface.withAlpha(150),
                 ),
                 const SizedBox(width: 4),
                 _BouncingDot(
+                  key: const ValueKey('thinking-dot-2'),
                   controller: _controller,
                   delay: 400,
                   color: theme.colorScheme.onSurface.withAlpha(150),
@@ -102,6 +105,7 @@ class _BouncingDot extends StatelessWidget {
   final Color color;
 
   const _BouncingDot({
+    super.key,
     required this.controller,
     required this.delay,
     required this.color,

@@ -103,7 +103,7 @@ All providers are defined in `lib/app/di/providers.dart`. The pattern:
 
 The app currently runs entirely against a `MockGatewayClient` (`lib/core/acl/mock_gateway_client.dart`) that reads preset data from `assets/mock/agents.json` (3 instances, 7 agents). The InMemory repositories in `lib/data/repositories/in_memory_repos.dart` serve as placeholders — the architecture doc specifies they should eventually be replaced with `drift`-backed implementations.
 
-Feature pages that are still stubs (placeholders): `AgentListPage`, `ChatRoomPage`, `MessageHubPage`, `AgentProfilePage`. The only fully functional feature is `InstanceListPage` + `AddInstancePage`.
+Feature pages that are still stubs (placeholders): `AgentProfilePage`. All MVP feature pages (`InstanceListPage`, `AgentListPage`, `ChatRoomPage`, `MessageHubPage`) are functional.
 
 ### Database Schema
 
@@ -112,3 +112,15 @@ The final schema is defined in `docs/database_v3.sql` but is **not yet wired in*
 ### Commit Convention
 
 Use Conventional Commits: `feat(scope):`, `fix(scope):`, `perf(scope):`, `docs:`, `test:`.
+
+### Next Actions (from 2026-06-09 architecture review)
+
+Priority technical debt to repay before Phase 6/7. See `.claude/skills/flutter-architecture-review/` for full report.
+
+| # | Task | Effort | Why |
+|---|------|--------|-----|
+| 1 | ~~**补新 Widget 测试** — StatsBar / ThinkingIndicator / ToolCallCard / QuickCommandBar 各 2 个最小用例~~ ✅ 已完成 (2026-06-09) | ~1h | 建立重构安全网，4 个新组件无测试覆盖 |
+| 2 | **合并 ChatViewModel 状态** — isThinking + timeout → ThinkingState enum，减少分散的 ValueNotifier | ~3h | ChatViewModel 已膨胀为 5 个 ValueNotifier，加新功能前先瘦身 |
+| 3 | **StatsProvider 批量查询** — N+1 → 单次 `getMessageCountsByAgent`，在 IMessageRepo 加批量接口 | ~2h | 切换 Drift 后的性能隐雷，50 agent = 50 次顺序 query |
+
+**AI 协作约定**: 下次接手新功能时，优先从表中挑一个偿还，再开始写新代码。
