@@ -175,6 +175,12 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     _updateState((s) => s.copyWith(saveSuccess: false, saveError: null));
   }
 
+  /// 更新状态并忽略 dispose 后的调用。
+  ///
+  /// [StateNotifier.mounted] 在 [dispose] 后变为 false。refresh()
+  /// 是异步的（含 await 调用），可能在用户导航离开、Provider 已销毁
+  /// 后才完成。此时静默丢弃更新是正确的 — no-op 远比尝试 set
+  /// disposed state 导致的崩溃安全。
   void _updateState(AgentProfileState Function(AgentProfileState) transform) {
     if (!mounted) return;
     state = transform(state);

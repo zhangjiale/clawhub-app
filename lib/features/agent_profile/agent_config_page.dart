@@ -12,6 +12,9 @@ import 'package:claw_hub/ui_kit/load_error_view.dart';
 
 /// 主题色选项，由 [AppColors.agentColors] 生成（唯一真相源），
 /// 中文标签来自 [_colorLabels]。
+///
+/// 如果 _colorLabels 条目不足（颜色数 > 标签数），超出部分用 "颜色 N" 兜底，
+/// 避免 release 模式下因 assert 被移除而导致索引越界崩溃。
 final _themeColorOptions = () {
   assert(
     _colorLabels.length >= AppColors.agentColors.length,
@@ -22,7 +25,7 @@ final _themeColorOptions = () {
     AppColors.agentColors.length,
     (i) => ColorOption(
       hex: AppColors.agentColors[i].toHex(),
-      label: _colorLabels[i],
+      label: i < _colorLabels.length ? _colorLabels[i] : '颜色 $i',
     ),
   );
 }();
@@ -84,6 +87,11 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
     final theme = Theme.of(context);
 
     // ---- Side effects via ref.listen (not in build body) ----
+    //
+    // ref.listen is intentionally called inside build() rather than initState
+    // because it needs access to `state` (the Riverpod-provided value from
+    // ref.watch on the line above). Riverpod deduplicates listeners by
+    // identity, so calling it here does not create duplicate subscriptions.
     ref.listen(agentProfileViewModelProvider(widget.agentId), (prev, next) {
       // 1) Form initialization: when detail data first arrives,
       //    and re-init after every refresh (e.g. saveProfile → refresh).
