@@ -183,9 +183,4 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   void _updateState(AgentProfileState Function(AgentProfileState) transform) {
     state = transform(state);
   }
-
-  @override
-  void dispose() {
-    super.dispose();
-  }
 }

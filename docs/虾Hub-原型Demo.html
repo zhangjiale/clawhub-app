@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>ClawHub - 多OpenClaw管理客户端</title>
+<title>虾Hub - 多OpenClaw管理客户端</title>
 <style>
 /* ===== RESET & BASE ===== */
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -210,6 +210,40 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text"
 .theme-pink{--theme-color:#fd79a8;--theme-bg:rgba(253,121,168,.12)}
 .theme-teal{--theme-color:#00cec9;--theme-bg:rgba(0,206,201,.12)}
 .theme-yellow{--theme-color:#fdcb6e;--theme-bg:rgba(253,203,110,.12)}
+/* ===== CONFIG PAGE (个性化配置) ===== */
+.config-section{margin-bottom:20px}
+.config-section-title{font-size:13px;font-weight:700;color:var(--text2);margin-bottom:10px;padding-left:2px;display:flex;align-items:center;gap:6px}
+.config-card{background:var(--surface);border-radius:var(--radius);padding:16px;overflow:hidden}
+.config-avatar-area{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+.config-avatar{width:60px;height:60px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;position:relative;border:3px solid var(--accent);cursor:pointer}
+.config-avatar .edit-badge{position:absolute;bottom:-2px;right:-2px;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;border:2px solid var(--surface)}
+.config-avatar-info{flex:1}
+.config-avatar-name{font-size:16px;font-weight:700}
+.config-avatar-hint{font-size:11px;color:var(--text3);margin-top:2px}
+.config-input-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.config-input-row:last-child{margin-bottom:0}
+.config-label{font-size:13px;color:var(--text2);width:56px;flex-shrink:0;font-weight:500}
+.config-input{flex:1;height:38px;border-radius:var(--radius-sm);border:1.5px solid var(--surface3);background:var(--surface2);color:var(--text);padding:0 12px;font-size:14px;outline:none;transition:border-color .2s}
+.config-input:focus{border-color:var(--accent)}
+.config-input::placeholder{color:var(--text3)}
+.color-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;padding:4px 0}
+.color-dot{width:36px;height:36px;border-radius:50%;cursor:pointer;transition:transform .15s,box-shadow .15s;border:3px solid transparent;display:flex;align-items:center;justify-content:center}
+.color-dot:active{transform:scale(.9)}
+.color-dot.selected{border-color:#fff;box-shadow:0 0 12px rgba(255,255,255,.25)}
+.color-dot.selected::after{content:'✓';color:#fff;font-size:14px;font-weight:800;text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.cmd-list{display:flex;flex-direction:column;gap:8px}
+.cmd-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface2);border-radius:var(--radius-sm);transition:background .15s}
+.cmd-item:active{background:var(--surface3)}
+.cmd-handle{color:var(--text3);cursor:grab;font-size:14px;user-select:none;padding:2px}
+.cmd-label-input{flex:1;background:transparent;border:none;color:var(--text);font-size:13px;font-weight:500;outline:none}
+.cmd-cmd-input{width:90px;background:var(--surface3);border:none;color:var(--accent2);font-size:12px;padding:4px 8px;border-radius:6px;outline:none;font-family:'SF Mono',monospace;text-align:right}
+.cmd-delete{width:28px;height:28px;border-radius:50%;background:transparent;border:none;color:var(--text3);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:color .15s}
+.cmd-delete:hover,.cmd-delete:active{color:var(--red)}
+.cmd-delete svg{width:16px;height:16px}
+.cmd-add-btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;background:transparent;border:1.5px dashed var(--surface3);border-radius:var(--radius-sm);color:var(--accent2);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;margin-top:4px}
+.cmd-add-btn:active{border-color:var(--accent);background:var(--accent-glow)}
+.config-save-btn{width:100%;height:48px;border-radius:var(--radius-sm);border:none;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:all .15s;margin-top:8px;box-shadow:0 4px 16px var(--accent-glow)}
+.config-save-btn:active{transform:scale(.97);filter:brightness(.9)}
 /* ===== STATS BAR ===== */
 .stats-bar{display:flex;gap:8px;padding:0 16px 12px;overflow-x:auto;scrollbar-width:none}
 .stats-bar::-webkit-scrollbar{display:none}
@@ -246,7 +280,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text"
     <!-- ===== PAGE: AGENT LIST (HOME) ===== -->
     <div class="page" id="page-home">
       <div class="header">
-        <h1>🦐 ClawHub</h1>
+        <h1>🦐 虾Hub</h1>
         <button class="header-btn" onclick="navTo('page-instances')" title="管理实例">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="3"/><line x1="2" y1="9" x2="22" y2="9"/><circle cx="7" cy="6" r="1" fill="currentColor"/><circle cx="10" cy="6" r="1" fill="currentColor"/></svg>
         </button>
@@ -409,6 +443,9 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text"
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg>
         </button>
         <h1 id="detailTitle">虾详情</h1>
+        <button class="header-btn" onclick="showPage('page-agent-config')" title="个性化配置" style="margin-left:auto">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
       </div>
       <div class="scroll-content" style="padding-top:8px">
         <div style="text-align:center;padding:0 16px 16px" id="detailProfile"></div>
@@ -416,6 +453,17 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text"
         <div style="padding:0 16px 12px"><h3 style="font-size:15px;font-weight:700">成就</h3></div>
         <div class="achievement-list" id="detailAchievements"></div>
       </div>
+    </div>
+
+    <!-- ===== PAGE: AGENT CONFIG (个性化配置) ===== -->
+    <div class="page hidden" id="page-agent-config">
+      <div class="header">
+        <button class="back-btn" onclick="showPage('page-agent-detail')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg>
+        </button>
+        <h1 id="configTitle">个性化配置</h1>
+      </div>
+      <div class="scroll-content" style="padding:8px 16px 24px" id="configContent"></div>
     </div>
 
     <!-- ===== PAGE: SETTINGS ===== -->
@@ -443,12 +491,12 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text"
           <div class="setting-row" onclick="showToast('存储：已使用 12.3 MB / 500 MB','info')">
             <span>💾 存储管理</span><span style="color:var(--text3)">12.3 MB</span>
           </div>
-          <div class="setting-row" onclick="showToast('关于：ClawHub v1.0 MVP Demo','info')">
-            <span>ℹ️ 关于ClawHub</span><span style="color:var(--text3)">v1.0</span>
+          <div class="setting-row" onclick="showToast('关于：虾Hub v1.0 MVP Demo','info')">
+            <span>ℹ️ 关于虾Hub</span><span style="color:var(--text3)">v1.0</span>
           </div>
         </div>
         <div style="text-align:center;padding:24px;color:var(--text3);font-size:12px">
-          ClawHub — 你的AI虾群移动管理中心<br>
+          虾Hub — 你的AI虾群移动管理中心<br>
           Powered by OpenClaw Gateway Protocol
         </div>
       </div>
@@ -585,7 +633,12 @@ const themeMap = {
   orange:{bg:'rgba(225,112,85,.15)',color:'#e17055'},
   pink:{bg:'rgba(253,121,168,.15)',color:'#fd79a8'},
   teal:{bg:'rgba(0,206,201,.15)',color:'#00cec9'},
-  yellow:{bg:'rgba(253,203,110,.15)',color:'#fdcb6e'}
+  yellow:{bg:'rgba(253,203,110,.15)',color:'#fdcb6e'},
+  rose:{bg:'rgba(232,67,147,.15)',color:'#e84393'},
+  slate:{bg:'rgba(99,110,114,.15)',color:'#636e72'},
+  jade:{bg:'rgba(0,184,148,.18)',color:'#00b894'},
+  indigo:{bg:'rgba(95,39,205,.15)',color:'#5f27cd'},
+  caramel:{bg:'rgba(211,84,0,.15)',color:'#d35400'}
 };
 
 let currentAgent = null;
@@ -692,7 +745,7 @@ const mainTabs = ['page-home','page-messages','page-instances'];
 
 function showPage(pageId) {
   const pages = document.querySelectorAll('.page');
-  const pageOrder = ['page-home','page-messages','page-chat','page-agent-detail','page-instances','page-add-instance','page-settings'];
+  const pageOrder = ['page-home','page-messages','page-chat','page-agent-detail','page-agent-config','page-instances','page-add-instance','page-settings'];
   const targetIdx = pageOrder.indexOf(pageId);
   const currentIdx = pageOrder.indexOf(currentPage);
   
@@ -1035,6 +1088,188 @@ function renderAgentDetail(agent) {
   `).join('');
 }
 
+// ===== AGENT CONFIG (个性化配置) =====
+const configColors = [
+  {name:'紫罗兰',theme:'purple',color:'#6c5ce7',bg:'rgba(108,92,231,.15)'},
+  {name:'海洋蓝',theme:'blue',color:'#0984e3',bg:'rgba(9,132,227,.15)'},
+  {name:'薄荷绿',theme:'green',color:'#00b894',bg:'rgba(0,184,148,.15)'},
+  {name:'活力橙',theme:'orange',color:'#e17055',bg:'rgba(225,112,85,.15)'},
+  {name:'樱花粉',theme:'pink',color:'#fd79a8',bg:'rgba(253,121,168,.15)'},
+  {name:'湖蓝',theme:'teal',color:'#00cec9',bg:'rgba(0,206,201,.15)'},
+  {name:'柠檬黄',theme:'yellow',color:'#fdcb6e',bg:'rgba(253,203,110,.15)'},
+  {name:'玫瑰红',theme:'rose',color:'#e84393',bg:'rgba(232,67,147,.15)'},
+  {name:'石墨灰',theme:'slate',color:'#636e72',bg:'rgba(99,110,114,.15)'},
+  {name:'翡翠',theme:'jade',color:'#00b894',bg:'rgba(0,184,148,.18)'},
+  {name:'靛蓝',theme:'indigo',color:'#5f27cd',bg:'rgba(95,39,205,.15)'},
+  {name:'焦糖',theme:'caramel',color:'#d35400',bg:'rgba(211,84,0,.15)'},
+];
+
+function renderAgentConfig(agent) {
+  const t = themeMap[agent.theme] || configColors[0];
+  document.getElementById('configTitle').textContent = agent.name + ' · 个性化配置';
+  
+  // Build config commands (editable clone)
+  const cmds = agent.quickCmds.map((c, i) => ({...c, _idx: i}));
+  
+  let html = `
+  <!-- 头像 & 昵称 -->
+  <div class="config-section">
+    <div class="config-section-title">🦐 基本信息</div>
+    <div class="config-card">
+      <div class="config-avatar-area">
+        <div class="config-avatar" style="background:${t.bg}" onclick="changeAvatar()">
+          ${agent.emoji}
+          <span class="edit-badge">✎</span>
+        </div>
+        <div class="config-avatar-info">
+          <div class="config-avatar-name">${agent.name}</div>
+          <div class="config-avatar-hint">点击左侧头像更换表情</div>
+        </div>
+      </div>
+      <div class="config-input-row">
+        <span class="config-label">昵称</span>
+        <input class="config-input" id="configNickname" value="${agent.name}" placeholder="给你的虾取个名字" />
+      </div>
+      <div class="config-input-row">
+        <span class="config-label">简介</span>
+        <input class="config-input" id="configDesc" value="${agent.desc}" placeholder="描述一下这只虾的专长" />
+      </div>
+    </div>
+  </div>
+
+  <!-- 主题色 -->
+  <div class="config-section">
+    <div class="config-section-title">🎨 主题色</div>
+    <div class="config-card">
+      <div class="color-grid" id="colorGrid">`;
+  
+  configColors.forEach((c, i) => {
+    const selected = (c.theme === agent.theme) ? ' selected' : '';
+    html += `<div class="color-dot${selected}" style="background:${c.color}" title="${c.name}" onclick="selectColor(this, '${c.theme}')"></div>`;
+  });
+
+  html += `
+      </div>
+    </div>
+  </div>
+
+  <!-- 快捷指令 -->
+  <div class="config-section">
+    <div class="config-section-title">⚡ 快捷指令 <span style="font-weight:400;color:var(--text3);font-size:11px">（长按拖拽排序）</span></div>
+    <div class="config-card">
+      <div class="cmd-list" id="cmdList">`;
+  
+  cmds.forEach((c, i) => {
+    html += buildCmdItem(c, i);
+  });
+
+  html += `
+      </div>
+      <div class="cmd-add-btn" onclick="addConfigCmd()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        添加指令
+      </div>
+    </div>
+  </div>
+
+  <!-- 保存 -->
+  <button class="config-save-btn" onclick="saveAgentConfig()">💾 保存配置</button>
+  `;
+
+  document.getElementById('configContent').innerHTML = html;
+}
+
+function buildCmdItem(c, idx) {
+  return `<div class="cmd-item" data-idx="${idx}">
+    <span class="cmd-handle">⋮⋮</span>
+    <input class="cmd-label-input" value="${c.label}" placeholder="指令标签" />
+    <input class="cmd-cmd-input" value="${c.cmd}" placeholder="/命令" />
+    <button class="cmd-delete" onclick="deleteConfigCmd(this)" title="删除">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>`;
+}
+
+function selectColor(el, theme) {
+  document.querySelectorAll('#colorGrid .color-dot').forEach(d => d.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('colorGrid').dataset.selectedTheme = theme;
+  // Live preview: update avatar border color
+  const avatar = document.querySelector('.config-avatar');
+  const c = configColors.find(cc => cc.theme === theme);
+  if (avatar && c) {
+    avatar.style.borderColor = c.color;
+    avatar.style.background = c.bg;
+  }
+}
+
+function addConfigCmd() {
+  const list = document.getElementById('cmdList');
+  const idx = list.children.length;
+  const div = document.createElement('div');
+  div.innerHTML = buildCmdItem({label:'', cmd:'/'}, idx);
+  list.appendChild(div.firstElementChild);
+  // Focus new label input
+  const newInput = list.lastElementChild.querySelector('.cmd-label-input');
+  if (newInput) newInput.focus();
+}
+
+function deleteConfigCmd(btn) {
+  const item = btn.closest('.cmd-item');
+  if (item) {
+    item.style.transition = 'all .2s';
+    item.style.opacity = '0';
+    item.style.transform = 'translateX(20px)';
+    setTimeout(() => item.remove(), 200);
+  }
+}
+
+function changeAvatar() {
+  const emojis = ['🦐','🎯','💻','🎨','🌍','✍️','📊','🔧','🤖','🚀','⚡','🌟','🔮','🎪','🦄','🐙','🧠','🎭','🔬','🎵'];
+  const current = document.querySelector('.config-avatar').textContent.trim();
+  const currentIdx = emojis.indexOf(current);
+  const nextIdx = (currentIdx + 1) % emojis.length;
+  document.querySelector('.config-avatar').childNodes[0].textContent = emojis[nextIdx];
+  showToast('头像已更换为 ' + emojis[nextIdx], 'success');
+}
+
+function saveAgentConfig() {
+  if (!currentAgent) return;
+  const nickname = document.getElementById('configNickname').value.trim();
+  const desc = document.getElementById('configDesc').value.trim();
+  if (nickname) currentAgent.name = nickname;
+  if (desc) currentAgent.desc = desc;
+  
+  // Update theme
+  const selectedTheme = document.getElementById('colorGrid').dataset.selectedTheme;
+  if (selectedTheme) {
+    currentAgent.theme = selectedTheme;
+  }
+  
+  // Update quick commands
+  const cmdItems = document.querySelectorAll('#cmdList .cmd-item');
+  const newCmds = [];
+  cmdItems.forEach(item => {
+    const label = item.querySelector('.cmd-label-input').value.trim();
+    const cmd = item.querySelector('.cmd-cmd-input').value.trim();
+    if (label && cmd) newCmds.push({label, cmd});
+  });
+  currentAgent.quickCmds = newCmds;
+  
+  // Update avatar emoji
+  const avatarEmoji = document.querySelector('.config-avatar').childNodes[0].textContent.trim();
+  if (avatarEmoji) currentAgent.emoji = avatarEmoji;
+  
+  showToast('✅ 配置已保存', 'success');
+  setTimeout(() => {
+    showPage('page-agent-detail');
+    // Refresh all views
+    renderStatsBar();
+    renderAgentList();
+    renderMessageList();
+  }, 600);
+}
+
 // ===== SWITCHER =====
 function toggleSwitcher() {
   const sheet = document.getElementById('switcherSheet');
@@ -1105,6 +1340,9 @@ const _showPage = showPage;
 showPage = function(pageId) {
   if (pageId === 'page-agent-detail' && currentAgent) {
     renderAgentDetail(currentAgent);
+  }
+  if (pageId === 'page-agent-config' && currentAgent) {
+    renderAgentConfig(currentAgent);
   }
   _showPage(pageId);
 };

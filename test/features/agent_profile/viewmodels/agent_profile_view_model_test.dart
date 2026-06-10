@@ -1,9 +1,7 @@
 import 'package:mocktail/mocktail.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
-import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';

@@ -1,0 +1,1 @@
+- [mobile-scanner-kotlin-workaround](mobile-scanner-kotlin-workaround.md) — mobile_scanner v7.2.0 needs a Kotlin version bump in pub cache + gradle.properties config to build with Flutter 3.44.1 Built-in Kotlin

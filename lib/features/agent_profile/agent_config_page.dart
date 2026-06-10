@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/ui_kit/color_grid.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';

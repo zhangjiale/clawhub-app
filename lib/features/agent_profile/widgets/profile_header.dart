@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
-import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
