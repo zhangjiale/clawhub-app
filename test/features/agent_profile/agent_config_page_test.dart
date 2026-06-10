@@ -100,5 +100,36 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('🎨 主题色'), findsOneWidget);
     });
+
+    testWidgets('shows error UI with retry button when agent not found',
+        (tester) async {
+      when(() => agentRepo.getById('local-1')).thenAnswer((_) async => null);
+      await tester.pumpWidget(buildPage());
+      await tester.pumpAndSettle();
+      expect(find.text('无法加载虾信息'), findsOneWidget);
+      expect(find.byIcon(Icons.error_outline), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+      expect(find.byType(TextFormField), findsNothing);
+      expect(find.byType(ColorGrid), findsNothing);
+    });
+
+    testWidgets('retry button triggers refresh and reloads data',
+        (tester) async {
+      var callCount = 0;
+      when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+        callCount++;
+        return callCount == 1 ? null : testAgent;
+      });
+      await tester.pumpWidget(buildPage());
+      await tester.pumpAndSettle();
+      expect(find.text('重试'), findsOneWidget);
+
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+
+      // 第二次调用成功，表单渲染出来
+      expect(find.byType(TextFormField), findsOneWidget);
+      expect(find.text('🦐 基本信息'), findsOneWidget);
+    });
   });
 }

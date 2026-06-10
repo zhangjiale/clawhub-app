@@ -113,7 +113,11 @@ class AppRouter {
                       path: 'agent-profile/:agentId',
                       builder: (context, state) {
                         final agentId = state.pathParameters['agentId']!;
-                        return AgentProfilePage(agentId: agentId);
+                        final source = state.uri.queryParameters['source'];
+                        return AgentProfilePage(
+                          agentId: agentId,
+                          source: source,
+                        );
                       },
                     ),
                     GoRoute(

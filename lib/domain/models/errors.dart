@@ -6,6 +6,7 @@ class AgentNotFoundError implements Exception {
 
   @override
   bool operator ==(Object other) =>
+      identical(this, other) ||
       other is AgentNotFoundError && other.agentId == agentId;
 
   @override
