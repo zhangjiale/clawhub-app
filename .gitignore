@@ -66,6 +66,9 @@ android/key.properties
 .env.*
 *.p12
 
+# Brainstorming visual companion
+.superpowers/
+
 # 代码生成（按需取消注释）
 # *.g.dart
 # *.freezed.dart
