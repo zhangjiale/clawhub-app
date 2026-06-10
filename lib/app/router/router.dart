@@ -38,6 +38,10 @@ class AppRoutes {
     return 'agent-profile/$agentId';
   }
 
+  static String agentConfigWithParams(String agentId) {
+    return 'agent-config/$agentId';
+  }
+
   static String editInstanceWithParams(String instanceId) {
     return 'edit/$instanceId';
   }
