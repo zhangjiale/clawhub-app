@@ -1,4 +1,5 @@
 export 'enums.dart';
+export 'errors.dart';
 export 'message_status.dart';
 export 'instance.dart';
 export 'agent.dart';
