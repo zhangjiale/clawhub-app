@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
@@ -47,20 +48,18 @@ class AgentProfileState {
     this.saveSuccess = false,
   });
 
-  /// Sentinel 用于区分 \"未传参\" 和 \"显式传 null\"
-  static const _sentinel = Object();
-
+  /// copyWith 使用 [CopyWithSentinel] 区分 "未传参" 和 "显式传 null"，
+  /// 避免手写 sentinel 单例导致的样板代码。
   AgentProfileState copyWith({
     LoadState<AgentDetailData>? detailLoadState,
     bool? isSaving,
-    Object? saveError = _sentinel,
+    Object? saveError = CopyWithSentinel.instance,
     bool? saveSuccess,
   }) {
     return AgentProfileState(
       detailLoadState: detailLoadState ?? this.detailLoadState,
       isSaving: isSaving ?? this.isSaving,
-      saveError:
-          identical(saveError, _sentinel) ? this.saveError : saveError as String?,
+      saveError: copyWithNullable(saveError, this.saveError),
       saveSuccess: saveSuccess ?? this.saveSuccess,
     );
   }
@@ -84,16 +83,14 @@ class AgentProfileState {
 /// 拥有 agent 详情加载、实例查询、消息统计、个性化配置保存的全部编排逻辑。
 /// AgentProfilePage 和 AgentConfigPage 共享同一个 ViewModel 实例
 ///（通过同一个 StateNotifierProvider.family 的 agentId 参数）。
+///
+/// Agent 数据通过 [AgentProfileState.detailLoadState] 暴露给 UI 层，
+/// 不再使用单独的 `agent` getter —— Config 页直接从 state 读取初始表单值。
 class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final IAgentRepo _agentRepo;
   final IInstanceRepo _instanceRepo;
   final IMessageRepo _messageRepo;
   final String agentId;
-
-  Agent? _agent;
-
-  /// 缓存已加载的 Agent，供 Config 页读取初始表单值。
-  Agent? get agent => _agent;
 
   AgentProfileViewModel({
     required IAgentRepo agentRepo,
@@ -117,8 +114,6 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     try {
       final agent = await _agentRepo.getById(agentId);
       if (agent == null) throw AgentNotFoundError(agentId);
-
-      _agent = agent;
 
       Instance? instance;
       try {
@@ -148,10 +143,10 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
 
   /// 保存个性化配置（由 AgentConfigPage 调用）。
   Future<void> saveProfile(
-    String localId,
     String? nickname,
     String themeColor,
   ) async {
+    if (state.isSaving) return;
     _updateState((s) => s.copyWith(
       isSaving: true,
       saveError: null,
@@ -159,7 +154,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     ));
     try {
       await _agentRepo.updateLocalProfile(
-        localId,
+        agentId,
         nickname: nickname,
         themeColor: themeColor,
       );
@@ -181,6 +176,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   }
 
   void _updateState(AgentProfileState Function(AgentProfileState) transform) {
+    if (!mounted) return;
     state = transform(state);
   }
 }

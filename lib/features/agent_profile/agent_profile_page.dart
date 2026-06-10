@@ -8,6 +8,7 @@ import 'package:claw_hub/features/agent_profile/widgets/stats_grid.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
+import 'package:claw_hub/ui_kit/load_error_view.dart';
 
 /// Agent 详情页 — 展示 Agent 信息、统计、成就占位
 ///
@@ -78,41 +79,10 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
         ),
         body: switch (state.detailLoadState) {
           LoadInProgress() => const LoadingSkeleton(count: 3),
-          LoadError(:final error) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.error_outline,
-                      size: 48,
-                      color: theme.colorScheme.error,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      '无法加载虾信息',
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '$error',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.outline,
-                      ),
-                      textAlign: TextAlign.center,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: () => vm.refresh(),
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('重试'),
-                    ),
-                  ],
-                ),
-              ),
+          LoadError(:final error) => LoadErrorView(
+              error: error,
+              title: '无法加载虾信息',
+              onRetry: () => vm.refresh(),
             ),
           LoadData(:final value) => ListView(
               children: [

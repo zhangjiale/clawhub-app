@@ -75,13 +75,14 @@ class StatsGrid extends StatelessWidget {
 
   String _formatNumber(int n) {
     if (n < 1000) return n.toString();
-    final chars = n.toString().split('').reversed.toList();
-    final buffer = StringBuffer();
-    for (var i = 0; i < chars.length; i++) {
-      if (i > 0 && i % 3 == 0) buffer.write(',');
-      buffer.write(chars[i]);
+    final s = n.toString();
+    final buf = StringBuffer();
+    final len = s.length;
+    for (var i = 0; i < len; i++) {
+      if (i > 0 && (len - i) % 3 == 0) buf.write(',');
+      buf.write(s[i]);
     }
-    return buffer.toString().split('').reversed.join();
+    return buf.toString();
   }
 }
 

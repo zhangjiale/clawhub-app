@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:mocktail/mocktail.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/agent.dart';
@@ -174,7 +176,7 @@ void main() {
       when(() => instanceRepo.getById('inst-1')).thenAnswer((_) async => null);
       when(() => messageRepo.getMessageCount('local-1')).thenAnswer((_) async => 0);
 
-      await vm.saveProfile('local-1', '我的产品虾', '#0984e3');
+      await vm.saveProfile('我的产品虾', '#0984e3');
 
       final state = vm.state;
       expect(state.saveSuccess, true);
@@ -195,12 +197,43 @@ void main() {
         themeColor: any(named: 'themeColor'),
       )).thenThrow(Exception('Save failed'));
 
-      await vm.saveProfile('local-1', 'nick', '#0984e3');
+      await vm.saveProfile('nick', '#0984e3');
 
       final state = vm.state;
       expect(state.saveError, isNotNull);
       expect(state.isSaving, false);
       expect(state.saveSuccess, false);
+    });
+
+    test('saveProfile ignores concurrent invocation while isSaving', () async {
+      when(() => agentRepo.getById('local-1')).thenAnswer((_) async => testAgent);
+      when(() => instanceRepo.getById('inst-1')).thenAnswer((_) async => null);
+      when(() => messageRepo.getMessageCount('local-1')).thenAnswer((_) async => 0);
+
+      final vm = createVM();
+      await vm.init();
+
+      final completer = Completer<Agent>();
+      when(() => agentRepo.updateLocalProfile(
+        'local-1',
+        nickname: any(named: 'nickname'),
+        themeColor: any(named: 'themeColor'),
+      )).thenAnswer((_) => completer.future);
+
+      // 第一次调用进入 isSaving
+      final first = vm.saveProfile('nick', '#0984e3');
+      // 第二次调用应被 guard 直接丢弃
+      final second = vm.saveProfile('nick2', '#a29bfe');
+
+      completer.complete(testAgent);
+      await first;
+      await second;
+
+      verify(() => agentRepo.updateLocalProfile(
+        'local-1',
+        nickname: any(named: 'nickname'),
+        themeColor: any(named: 'themeColor'),
+      )).called(1);
     });
 
     test('clearSaveResult resets save flags', () async {
@@ -216,7 +249,7 @@ void main() {
         nickname: any(named: 'nickname'),
         themeColor: any(named: 'themeColor'),
       )).thenThrow(Exception('Save failed'));
-      await vm.saveProfile('local-1', 'nick', '#0984e3');
+      await vm.saveProfile('nick', '#0984e3');
       expect(vm.state.saveError, isNotNull);
 
       vm.clearSaveResult();
@@ -224,7 +257,7 @@ void main() {
       expect(vm.state.saveSuccess, false);
     });
 
-    test('agent getter returns loaded agent', () async {
+    test('agent data is accessible via detailLoadState after init', () async {
       when(() => agentRepo.getById('local-1')).thenAnswer((_) async => testAgent);
       when(() => instanceRepo.getById('inst-1')).thenAnswer((_) async => null);
       when(() => messageRepo.getMessageCount('local-1')).thenAnswer((_) async => 0);
@@ -232,8 +265,10 @@ void main() {
       final vm = createVM();
       await vm.init();
 
-      expect(vm.agent, isNotNull);
-      expect(vm.agent!.name, '产品虾');
+      final state = vm.state;
+      final detail =
+          (state.detailLoadState as LoadData<AgentDetailData>).value;
+      expect(detail.agent.name, '产品虾');
     });
 
     test('dispose can be called safely', () async {

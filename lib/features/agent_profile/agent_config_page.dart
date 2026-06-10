@@ -1,30 +1,55 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
+import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
+import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/color_grid.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
+import 'package:claw_hub/ui_kit/loading_skeleton.dart';
+import 'package:claw_hub/ui_kit/load_error_view.dart';
 
-/// 12 色主题色选项（与 AppColors.agentColors 一致）
-const _themeColorOptions = [
-  ColorOption(hex: '#6C5CE7', label: '紫罗兰'),
-  ColorOption(hex: '#0984E3', label: '海洋蓝'),
-  ColorOption(hex: '#FD79A8', label: '樱花粉'),
-  ColorOption(hex: '#00B894', label: '薄荷绿'),
-  ColorOption(hex: '#E17055', label: '活力橙'),
-  ColorOption(hex: '#00CEC9', label: '湖蓝'),
-  ColorOption(hex: '#FDCB6E', label: '柠檬黄'),
-  ColorOption(hex: '#E84393', label: '玫瑰红'),
-  ColorOption(hex: '#636E72', label: '石墨灰'),
-  ColorOption(hex: '#2D3436', label: '深灰'),
-  ColorOption(hex: '#6AB04C', label: '草绿'),
-  ColorOption(hex: '#5352ED', label: '靛蓝'),
+/// 主题色选项，由 [AppColors.agentColors] 生成（唯一真相源），
+/// 中文标签来自 [_colorLabels]。
+final _themeColorOptions = () {
+  assert(
+    _colorLabels.length >= AppColors.agentColors.length,
+    '_colorLabels (${_colorLabels.length}) 条目不足，'
+    'AppColors.agentColors 有 ${AppColors.agentColors.length} 个颜色',
+  );
+  return List.generate(
+    AppColors.agentColors.length,
+    (i) => ColorOption(
+      hex: AppColors.agentColors[i].toHex(),
+      label: _colorLabels[i],
+    ),
+  );
+}();
+
+// 为每个颜色选项补充中文标签（顺序与 AppColors.agentColors 一一对应）
+const _colorLabels = [
+  '紫罗兰',
+  '海洋蓝',
+  '樱花粉',
+  '薄荷绿',
+  '活力橙',
+  '湖蓝',
+  '柠檬黄',
+  '玫瑰红',
+  '石墨灰',
+  '深灰',
+  '草绿',
+  '靛蓝',
 ];
 
 /// 个性化配置页
 ///
 /// 允许用户修改 Agent 的昵称和主题色。
 /// 与 AgentProfilePage 共享同一个 AgentProfileViewModel。
+///
+/// 表单初始化通过 [ref.listen] 在数据就绪后执行，
+/// 保存成功/失败的导航效果也通过 [ref.listen] 处理——build 方法不再包含副作用。
 class AgentConfigPage extends ConsumerStatefulWidget {
   final String agentId;
 
@@ -35,21 +60,9 @@ class AgentConfigPage extends ConsumerStatefulWidget {
 }
 
 class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
-  bool _initialized = false;
-  late String _nickname;
-  late String _themeColor;
   final _nicknameController = TextEditingController();
-
-  void _initFormState() {
-    if (_initialized) return;
-    final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
-    final agent = vm.agent;
-    if (agent == null) return;
-    _initialized = true;
-    _nickname = agent.nickname ?? '';
-    _themeColor = agent.themeColor;
-    _nicknameController.text = _nickname;
-  }
+  String _themeColor = '';
+  bool _formReady = false;
 
   @override
   void dispose() {
@@ -59,57 +72,107 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
 
   /// 转发到 ViewModel，Widget 不做决策 (Law 2)
   void _save() {
-    final nickname = _nickname.trim().isEmpty ? null : _nickname.trim();
+    final text = _nicknameController.text.trim();
+    final nickname = text.isEmpty ? null : text;
     ref.read(agentProfileViewModelProvider(widget.agentId).notifier)
-        .saveProfile(widget.agentId, nickname, _themeColor);
+        .saveProfile(nickname, _themeColor);
   }
 
   @override
   Widget build(BuildContext context) {
-    // 必须在 build 中 watch state 以注册 Riverpod 依赖，
-    // 确保 agent 异步加载完成后 Widget 自动 rebuild。
     final state = ref.watch(agentProfileViewModelProvider(widget.agentId));
-
-    _initFormState();
-    if (!_initialized) {
-      return const SizedBox.shrink();
-    }
-    final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
-    final agent = vm.agent!;
     final theme = Theme.of(context);
 
-    // 响应 saveSuccess → pop
-    if (state.saveSuccess) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          vm.clearSaveResult();
-          context.pop();
+    // ---- Side effects via ref.listen (not in build body) ----
+    ref.listen(agentProfileViewModelProvider(widget.agentId), (prev, next) {
+      // 1) Form initialization: when detail data first arrives,
+      //    and re-init after every refresh (e.g. saveProfile → refresh).
+      if (next.detailLoadState is LoadInProgress<AgentDetailData>) {
+        _formReady = false;
+      }
+      if (!_formReady) {
+        final detail = switch (next.detailLoadState) {
+          LoadData<AgentDetailData>(:final value) => value,
+          _ => null,
+        };
+        if (detail != null) {
+          setState(() {
+            _formReady = true;
+            _nicknameController.text = detail.agent.nickname ?? '';
+            _themeColor = detail.agent.themeColor;
+          });
         }
-      });
+      }
+
+      // 2) Save success → pop back
+      if (next.saveSuccess && !(prev?.saveSuccess ?? false)) {
+        ref.read(agentProfileViewModelProvider(widget.agentId).notifier)
+            .clearSaveResult();
+        if (mounted) context.pop();
+      }
+
+      // 3) Save error → SnackBar
+      if (next.saveError != null && next.saveError != prev?.saveError) {
+        final msg = next.saveError!;
+        ref.read(agentProfileViewModelProvider(widget.agentId).notifier)
+            .clearSaveResult();
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(msg)));
+        }
+      }
+    });
+
+    final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
+
+    // Extract agent from state — no force-unwrap, no vm.agent getter
+    final detail = switch (state.detailLoadState) {
+      LoadData<AgentDetailData>(:final value) => value,
+      _ => null,
+    };
+
+    final appBar = AppBar(title: const Text('个性化配置'));
+
+    // 1) 加载中：骨架屏
+    if (state.detailLoadState is LoadInProgress<AgentDetailData>) {
+      return Scaffold(
+        appBar: appBar,
+        body: const LoadingSkeleton(count: 3),
+      );
     }
 
-    // 响应 saveError → SnackBar
-    if (state.saveError != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(state.saveError!)),
-          );
-          vm.clearSaveResult();
-        }
-      });
+    // 2) 加载失败：错误 UI + 重试
+    if (state.detailLoadState case LoadError<AgentDetailData>(:final error)) {
+      return Scaffold(
+        appBar: appBar,
+        body: LoadErrorView(
+          error: error,
+          title: '无法加载虾信息',
+          onRetry: () => vm.refresh(),
+        ),
+      );
     }
+
+    // 3) 数据就绪但表单尚未初始化（首次进入时短暂窗口）
+    if (detail == null || !_formReady) {
+      return Scaffold(
+        appBar: appBar,
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final agent = detail.agent;
 
     return PopScope(
       canPop: !state.isSaving,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && mounted) context.pop();
-      },
+      // onPopInvokedWithResult intentionally omitted —
+      // ref.listen already handles save-success → pop.
+      // Adding a manual context.pop() here would defeat canPop (see #1).
       child: Scaffold(
         appBar: AppBar(
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
-            onPressed: () => context.pop(),
+            onPressed: state.isSaving ? null : () => context.pop(),
           ),
           title: Text('${agent.displayName} · 个性化配置'),
         ),
@@ -127,7 +190,8 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
               ),
             ),
             Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              margin:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: theme.colorScheme.surfaceContainerHighest,
@@ -175,7 +239,6 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
                       labelText: '昵称',
                       hintText: '给你的虾取个名字',
                     ),
-                    onChanged: (value) => _nickname = value,
                     enabled: !state.isSaving,
                   ),
                 ],
@@ -194,7 +257,8 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
               ),
             ),
             Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              margin:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: theme.colorScheme.surfaceContainerHighest,
