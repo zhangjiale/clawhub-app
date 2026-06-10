@@ -8,6 +8,7 @@ import 'package:claw_hub/features/agent_list/agent_list_page.dart';
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/message_hub/message_hub_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
+import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
 
 /// 路由路径常量
 class AppRoutes {
@@ -39,7 +40,7 @@ class AppRoutes {
   }
 
   static String agentConfigWithParams(String agentId) {
-    return 'agent-config/$agentId';
+    return 'agent-profile/config/$agentId';
   }
 
   static String editInstanceWithParams(String instanceId) {
@@ -113,6 +114,13 @@ class AppRouter {
                       builder: (context, state) {
                         final agentId = state.pathParameters['agentId']!;
                         return AgentProfilePage(agentId: agentId);
+                      },
+                    ),
+                    GoRoute(
+                      path: 'agent-profile/config/:agentId',
+                      builder: (context, state) {
+                        final agentId = state.pathParameters['agentId']!;
+                        return AgentConfigPage(agentId: agentId);
                       },
                     ),
                   ],
