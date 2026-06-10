@@ -5,5 +5,12 @@ class AgentNotFoundError implements Exception {
   const AgentNotFoundError(this.agentId);
 
   @override
+  bool operator ==(Object other) =>
+      other is AgentNotFoundError && other.agentId == agentId;
+
+  @override
+  int get hashCode => agentId.hashCode;
+
+  @override
   String toString() => 'Agent not found: $agentId';
 }
