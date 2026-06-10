@@ -78,3 +78,114 @@ class AgentProfileState {
   int get hashCode =>
       Object.hash(detailLoadState, isSaving, saveError, saveSuccess);
 }
+
+/// Agent 资料页的 ViewModel
+///
+/// 拥有 agent 详情加载、实例查询、消息统计、个性化配置保存的全部编排逻辑。
+/// AgentProfilePage 和 AgentConfigPage 共享同一个 ViewModel 实例
+///（通过同一个 StateNotifierProvider.family 的 agentId 参数）。
+class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
+  final IAgentRepo _agentRepo;
+  final IInstanceRepo _instanceRepo;
+  final IMessageRepo _messageRepo;
+  final String agentId;
+
+  Agent? _agent;
+
+  /// 缓存已加载的 Agent，供 Config 页读取初始表单值。
+  Agent? get agent => _agent;
+
+  AgentProfileViewModel({
+    required IAgentRepo agentRepo,
+    required IInstanceRepo instanceRepo,
+    required IMessageRepo messageRepo,
+    required this.agentId,
+  })  : _agentRepo = agentRepo,
+       _instanceRepo = instanceRepo,
+       _messageRepo = messageRepo,
+       super(const AgentProfileState());
+
+  /// 初始化：加载 agent 详情 + 实例信息 + 消息统计。
+  Future<void> init() async {
+    await refresh();
+  }
+
+  /// 重新加载数据（外部触发：下拉刷新、config 保存后）。
+  Future<void> refresh() async {
+    _updateState((s) => s.copyWith(detailLoadState: const LoadInProgress()));
+
+    try {
+      final agent = await _agentRepo.getById(agentId);
+      if (agent == null) throw AgentNotFoundError(agentId);
+
+      _agent = agent;
+
+      Instance? instance;
+      try {
+        instance = await _instanceRepo.getById(agent.instanceId);
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Instance lookup failed for ${agent.instanceId}: $error\n$stackTrace',
+        );
+        // instance 不存在是非致命错误
+      }
+
+      final messageCount = await _messageRepo.getMessageCount(agentId);
+
+      _updateState((s) => s.copyWith(
+        detailLoadState: LoadData(AgentDetailData(
+          agent: agent,
+          instance: instance,
+          messageCount: messageCount,
+        )),
+      ));
+    } catch (error, stackTrace) {
+      _updateState((s) => s.copyWith(
+        detailLoadState: LoadError(error, stackTrace),
+      ));
+    }
+  }
+
+  /// 保存个性化配置（由 AgentConfigPage 调用）。
+  Future<void> saveProfile(
+    String localId,
+    String? nickname,
+    String themeColor,
+  ) async {
+    _updateState((s) => s.copyWith(
+      isSaving: true,
+      saveError: null,
+      saveSuccess: false,
+    ));
+    try {
+      await _agentRepo.updateLocalProfile(
+        localId,
+        nickname: nickname,
+        themeColor: themeColor,
+      );
+      // 保存后刷新详情数据，Profile 页自动看到最新值
+      await refresh();
+      _updateState((s) => s.copyWith(isSaving: false, saveSuccess: true));
+    } catch (error, stackTrace) {
+      debugPrint('AgentConfig save failed: $error\n$stackTrace');
+      _updateState((s) => s.copyWith(
+        isSaving: false,
+        saveError: '保存失败，请重试',
+      ));
+    }
+  }
+
+  /// 消费保存结果（Config 页 pop 后或 SnackBar 展示后调用）。
+  void clearSaveResult() {
+    _updateState((s) => s.copyWith(saveSuccess: false, saveError: null));
+  }
+
+  void _updateState(AgentProfileState Function(AgentProfileState) transform) {
+    state = transform(state);
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+}
