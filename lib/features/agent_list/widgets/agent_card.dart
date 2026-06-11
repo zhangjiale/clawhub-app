@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/domain/models/agent.dart';
-import 'package:claw_hub/domain/models/enums.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
-/// Agent 卡片组件
-/// 对齐: InstanceCard 模式，显示头像圆、名称、描述、在线状态、最后活跃时间
+/// Agent card — matching ComponentSpec Section 2.4.
+///
+/// Layout: [48×48 avatar + status dot] [name + desc info] [time + chevron]
+/// Card: 16px radius, surface background, no left border strip.
 class AgentCard extends StatelessWidget {
   final Agent agent;
   final VoidCallback onTap;
   final bool isOnline;
-  final int? lastActiveAt; // 最后活跃时间戳（秒）
+  final int? lastActiveAt;
 
   const AgentCard({
     super.key,
@@ -32,148 +34,113 @@ class AgentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = ColorExtension.fromHex(agent.themeColor);
-    final firstChar = agent.displayName.characters.first;
-    final dimmed = !isOnline;
-
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      margin: const EdgeInsets.only(
+        left: XiaSpacing.s6,
+        right: XiaSpacing.s6,
+        bottom: XiaSpacing.s3,
+      ),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(14),
-        border: Border(
-          left: BorderSide(color: dimmed ? Colors.grey : color, width: 3),
-        ),
+        color: XiaColors.surface,
+        borderRadius: BorderRadius.circular(XiaRadius.lg),
       ),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Opacity(
-          opacity: dimmed ? 0.55 : 1.0,
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              children: [
-                // Avatar circle with online status dot
-                Stack(
+        borderRadius: BorderRadius.circular(XiaRadius.lg),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: XiaSpacing.s5,
+            vertical: XiaSpacing.s4,
+          ),
+          child: Row(
+            children: [
+              // Avatar with online status dot
+              Stack(
+                children: [
+                  EmojiAvatar(
+                    displayName: agent.displayName,
+                    themeColor: agent.themeColor,
+                    radius: 24, // 48×48
+                    borderRadius: XiaRadius.md,
+                    fontSize: 24,
+                  ),
+                  // Status dot (8×8, 2px border matching surface)
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: isOnline ? XiaColors.green : XiaColors.text4,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: XiaColors.surface,
+                          width: 2,
+                        ),
+                        boxShadow: isOnline ? XiaShadow.onlineGlow : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: XiaSpacing.s4),
+              // Name + description
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircleAvatar(
-                      backgroundColor: dimmed ? Colors.grey : color,
-                      foregroundColor:
-                          (dimmed ? Colors.grey : color).contrastingTextColor(),
-                      child: Text(
-                        firstChar,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                    Text(
+                      agent.displayName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.2,
+                        height: 1.3,
+                        color: XiaColors.text1,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    // Online status dot
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: isOnline
-                              ? AppColors.statusOnline
-                              : AppColors.statusOffline,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: theme.colorScheme.surface,
-                            width: 2,
-                          ),
+                    if (agent.description != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        agent.description!,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: XiaColors.text3,
+                          height: 1.4,
                         ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(width: 12),
-                // Name + description + last active
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              agent.displayName,
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: dimmed
-                                    ? theme.colorScheme.outline
-                                    : null,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (agent.isPinned) ...[
-                            const SizedBox(width: 4),
-                            Icon(
-                              Icons.push_pin,
-                              size: 16,
-                              color: theme.colorScheme.primary,
-                            ),
-                          ],
-                        ],
-                      ),
-                      if (agent.description != null) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          agent.description!,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.outline,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          // Online status dot + text
-                          Container(
-                            width: 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: isOnline
-                                  ? AppColors.statusOnline
-                                  : AppColors.statusOffline,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            isOnline ? 'Online' : 'Offline',
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: isOnline
-                                  ? AppColors.statusOnline
-                                  : AppColors.statusOffline,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          // Last active time
-                          Icon(
-                            Icons.access_time,
-                            size: 12,
-                            color: theme.colorScheme.outline,
-                          ),
-                          const SizedBox(width: 2),
-                          Text(
-                            _lastActiveText,
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.outline,
-                            ),
-                          ),
-                        ],
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
-                  ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-                Icon(Icons.chevron_right, color: theme.colorScheme.outline, size: 20),
-              ],
-            ),
+              ),
+              const SizedBox(width: XiaSpacing.s1),
+              // Time + chevron
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _lastActiveText,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: XiaColors.text4,
+                      letterSpacing: 0.2,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+              const Icon(
+                Icons.chevron_right,
+                color: XiaColors.text4,
+                size: 20,
+              ),
+            ],
           ),
         ),
       ),

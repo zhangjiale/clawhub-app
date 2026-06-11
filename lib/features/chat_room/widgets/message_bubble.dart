@@ -4,10 +4,14 @@ import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/ui_kit/status_icon.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
-/// 消息气泡组件
-/// 用户消息右对齐蓝色气泡，Agent 消息左对齐并支持 Markdown 渲染
+/// Message bubble — matching ComponentSpec Section 4.2.2.
+///
+/// User: coral bg (#C27C68), white text, right-aligned, 20px radius with
+///       8px bottom-right corner (speech tail).
+/// Agent: surface bg, text1, left-aligned, 20px radius with
+///        8px bottom-left corner, shadow-s.
 class MessageBubble extends StatelessWidget {
   final Message message;
   final String agentName;
@@ -32,43 +36,38 @@ class MessageBubble extends StatelessWidget {
     };
   }
 
-  Color _bubbleColor(ThemeData theme) {
-    if (_isUser) return AppColors.primaryBlue;
-    return theme.colorScheme.surfaceContainerHighest;
-  }
-
-  Color _textColor(ThemeData theme) {
-    if (_isUser) return Colors.white;
-    return theme.colorScheme.onSurface;
-  }
-
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.s6,
+        vertical: 4,
+      ),
       child: Row(
-        mainAxisAlignment: _isUser
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
+        mainAxisAlignment:
+            _isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (!_isUser) ...[
-            // Agent avatar
-            CircleAvatar(
-              radius: 14,
-              backgroundColor: theme.colorScheme.primary.withAlpha(40),
+            // Agent mini avatar (28×28, borderRadius 8)
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(XiaRadius.sm),
+                color: XiaColors.accentMuted,
+              ),
+              alignment: Alignment.center,
               child: Text(
                 agentName.characters.first,
-                style: TextStyle(
+                style: const TextStyle(
                   fontSize: 12,
-                  color: theme.colorScheme.primary,
+                  color: XiaColors.accent,
                   fontWeight: FontWeight.bold,
                 ),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: XiaSpacing.s2),
           ],
           Flexible(
             child: Column(
@@ -76,42 +75,57 @@ class MessageBubble extends StatelessWidget {
                   ? CrossAxisAlignment.end
                   : CrossAxisAlignment.start,
               children: [
-                if (!_isUser)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4, bottom: 2),
-                    child: Text(
-                      agentName,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.outline,
-                      ),
-                    ),
-                  ),
                 Container(
                   constraints: BoxConstraints(
                     maxWidth: MediaQuery.of(context).size.width * 0.78,
                   ),
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
+                    horizontal: XiaSpacing.s5,
+                    vertical: XiaSpacing.s3,
                   ),
                   decoration: BoxDecoration(
-                    color: _bubbleColor(theme),
+                    color: _isUser ? XiaColors.accent : XiaColors.surface,
                     borderRadius: BorderRadius.only(
-                      topLeft: const Radius.circular(16),
-                      topRight: const Radius.circular(16),
-                      bottomLeft: Radius.circular(_isUser ? 16 : 4),
-                      bottomRight: Radius.circular(_isUser ? 4 : 16),
+                      topLeft: const Radius.circular(XiaRadius.xl),
+                      topRight: const Radius.circular(XiaRadius.xl),
+                      bottomLeft: Radius.circular(
+                        _isUser ? XiaRadius.xl : XiaRadius.sm,
+                      ),
+                      bottomRight: Radius.circular(
+                        _isUser ? XiaRadius.sm : XiaRadius.xl,
+                      ),
                     ),
+                    boxShadow: _isUser ? null : XiaShadow.s,
                     border: message.status == MessageStatus.failed
-                        ? Border.all(color: AppColors.messageFailed, width: 1.5)
+                        ? Border.all(color: XiaColors.red, width: 1.5)
                         : null,
                   ),
                   child: _isUser
                       ? Text(
                           _displayContent,
-                          style: TextStyle(color: _textColor(theme)),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            height: 1.6,
+                          ),
                         )
-                      : _buildMarkdownContent(theme),
+                      : _buildMarkdownContent(),
+                ),
+                // Message time
+                Padding(
+                  padding: const EdgeInsets.only(
+                    top: XiaSpacing.s1,
+                    left: XiaSpacing.s1,
+                    right: XiaSpacing.s1,
+                  ),
+                  child: Text(
+                    _formatTime(message.timestamp),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: XiaColors.text4,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -125,73 +139,74 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildMarkdownContent(ThemeData theme) {
+  String _formatTime(int timestampMs) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestampMs);
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
+  Widget _buildMarkdownContent() {
     return MarkdownBody(
       data: _displayContent,
       selectable: true,
       styleSheet: MarkdownStyleSheet(
-        p: TextStyle(color: _textColor(theme), fontSize: 15),
-        h1: TextStyle(
-          color: _textColor(theme),
+        p: const TextStyle(
+          color: XiaColors.text1,
+          fontSize: 15,
+          height: 1.6,
+        ),
+        h1: const TextStyle(
+          color: XiaColors.text1,
           fontSize: 20,
           fontWeight: FontWeight.bold,
         ),
-        h2: TextStyle(
-          color: _textColor(theme),
+        h2: const TextStyle(
+          color: XiaColors.text1,
           fontSize: 18,
           fontWeight: FontWeight.bold,
         ),
-        h3: TextStyle(
-          color: _textColor(theme),
+        h3: const TextStyle(
+          color: XiaColors.text1,
           fontSize: 16,
           fontWeight: FontWeight.bold,
         ),
-        strong: TextStyle(
-          color: _textColor(theme),
+        strong: const TextStyle(
+          color: XiaColors.text1,
           fontWeight: FontWeight.bold,
         ),
-        em: TextStyle(
-          color: _textColor(theme),
+        em: const TextStyle(
+          color: XiaColors.text1,
           fontStyle: FontStyle.italic,
         ),
-        a: TextStyle(
-          color: AppColors.primaryBlue,
+        a: const TextStyle(
+          color: XiaColors.accent,
           decoration: TextDecoration.underline,
         ),
-        code: TextStyle(
-          backgroundColor: theme.colorScheme.surfaceContainerHighest,
-          color: AppColors.statusConnecting,
+        code: const TextStyle(
+          backgroundColor: XiaColors.codeBlockBg,
+          color: XiaColors.accent,
           fontSize: 13,
           fontFamily: 'monospace',
         ),
         codeblockDecoration: BoxDecoration(
-          color: theme.brightness == Brightness.dark
-              ? Colors.black.withAlpha(60)
-              : Colors.grey.withAlpha(20),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: theme.dividerColor.withAlpha(80),
-          ),
+          color: XiaColors.surface2,
+          borderRadius: BorderRadius.circular(XiaRadius.md),
         ),
-        codeblockPadding: const EdgeInsets.all(12),
-        blockquoteDecoration: BoxDecoration(
+        codeblockPadding: const EdgeInsets.all(XiaSpacing.s4),
+        blockquoteDecoration: const BoxDecoration(
           border: Border(
-            left: BorderSide(
-              color: AppColors.primaryBlue.withAlpha(150),
-              width: 3,
-            ),
+            left: BorderSide(color: XiaColors.accent, width: 3),
           ),
         ),
-        blockquotePadding: const EdgeInsets.only(left: 12),
-        tableBorder: TableBorder.all(
-          color: theme.dividerColor.withAlpha(100),
-        ),
-        tableHead: TextStyle(
-          color: _textColor(theme),
+        blockquotePadding: const EdgeInsets.only(left: XiaSpacing.s3),
+        tableBorder: TableBorder.all(color: XiaColors.divider),
+        tableHead: const TextStyle(
+          color: XiaColors.text1,
           fontWeight: FontWeight.bold,
         ),
-        tableBody: TextStyle(color: _textColor(theme)),
-        listBullet: TextStyle(color: _textColor(theme)),
+        tableBody: const TextStyle(color: XiaColors.text1),
+        listBullet: const TextStyle(color: XiaColors.text1),
       ),
     );
   }

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 
-/// 快捷指令栏
-/// 横向可滚动的指令标签，点击后自动发送
+/// Quick command bar — horizontally scrollable capsule pills.
+/// Matching ComponentSpec Section 4.4.
 class QuickCommandBar extends StatelessWidget {
   final List<QuickCommand> commands;
   final ValueChanged<String> onCommandTap;
@@ -18,41 +18,42 @@ class QuickCommandBar extends StatelessWidget {
   Widget build(BuildContext context) {
     if (commands.isEmpty) return const SizedBox.shrink();
 
-    final theme = Theme.of(context);
-
-    return Container(
-      height: 44,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(
-          bottom: BorderSide(
-            color: theme.dividerColor.withAlpha(30),
-          ),
-        ),
-      ),
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        itemCount: commands.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 6),
-        itemBuilder: (context, index) {
-          final cmd = commands[index];
-          return ActionChip(
-            label: Text(
-              cmd.label,
-              style: theme.textTheme.labelSmall?.copyWith(
-                fontWeight: FontWeight.w500,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: XiaSpacing.s3),
+      child: SizedBox(
+        height: 44,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s6),
+          itemCount: commands.length,
+          separatorBuilder: (_, __) => const SizedBox(width: XiaSpacing.s2),
+          itemBuilder: (context, index) {
+            final cmd = commands[index];
+            return GestureDetector(
+              onTap: () => onCommandTap(cmd.payload),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: XiaSpacing.s4,
+                  vertical: XiaSpacing.s2,
+                ),
+                decoration: BoxDecoration(
+                  color: XiaColors.surface2,
+                  borderRadius: BorderRadius.circular(XiaRadius.full),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  cmd.label,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: XiaColors.accent,
+                    letterSpacing: -0.1,
+                  ),
+                ),
               ),
-            ),
-            backgroundColor: AppColors.primaryBlue.withAlpha(20),
-            side: BorderSide(
-              color: AppColors.primaryBlue.withAlpha(60),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            visualDensity: VisualDensity.compact,
-            onPressed: () => onCommandTap(cmd.payload),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }

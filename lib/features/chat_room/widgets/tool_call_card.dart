@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 
-/// 工具调用卡片
-/// 显示在消息流中，展示 Agent 调用的工具名称、状态和结果
+/// Tool call card — matching ComponentSpec Section 4.2.3.
+///
+/// 3px accent left border, surface2 bg, 12px radius.
 class ToolCallCard extends StatelessWidget {
   final ToolCall toolCall;
 
@@ -12,70 +13,71 @@ class ToolCallCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.s6,
+        vertical: 4,
+      ),
       child: Row(
         children: [
-          const SizedBox(width: 36), // Align with agent message avatar offset
+          const SizedBox(width: 36),
           Flexible(
             child: Container(
               constraints: BoxConstraints(
                 maxWidth: MediaQuery.of(context).size.width * 0.78,
               ),
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(
+                horizontal: XiaSpacing.s4,
+                vertical: XiaSpacing.s3,
+              ),
               decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: _statusColor.withAlpha(80),
-                  width: 1,
+                color: XiaColors.surface2,
+                borderRadius: BorderRadius.circular(XiaRadius.md),
+                border: const Border(
+                  left: BorderSide(color: XiaColors.accent, width: 3),
                 ),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Status icon
                   _buildStatusIcon(),
                   const SizedBox(width: 10),
-                  // Content
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Tool name
                         Text(
                           toolCall.toolName,
-                          style: theme.textTheme.labelMedium?.copyWith(
+                          style: const TextStyle(
                             fontWeight: FontWeight.w600,
+                            color: XiaColors.accent,
+                            fontSize: 12,
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        // Status text
+                        const SizedBox(height: XiaSpacing.s1),
                         Text(
                           _statusText,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: _statusColor,
+                          style: const TextStyle(
+                            color: XiaColors.green,
+                            fontSize: 11,
                           ),
                         ),
-                        // Output summary (when completed)
                         if (toolCall.isCompleted &&
                             toolCall.outputResult != null) ...[
-                          const SizedBox(height: 8),
+                          const SizedBox(height: XiaSpacing.s2),
                           Container(
                             width: double.infinity,
-                            padding: const EdgeInsets.all(8),
+                            padding: const EdgeInsets.all(XiaSpacing.s2),
                             decoration: BoxDecoration(
-                              color: theme.colorScheme.surface,
+                              color: XiaColors.surface,
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
                               _truncateOutput(toolCall.outputResult!, 120),
-                              style: theme.textTheme.bodySmall?.copyWith(
+                              style: const TextStyle(
                                 fontFamily: 'monospace',
                                 fontSize: 12,
-                                color: theme.colorScheme.onSurface,
+                                color: XiaColors.text1,
                               ),
                               maxLines: 3,
                               overflow: TextOverflow.ellipsis,
@@ -101,27 +103,19 @@ class ToolCallCard extends StatelessWidget {
           height: 20,
           child: CircularProgressIndicator(
             strokeWidth: 2,
-            color: AppColors.statusConnecting,
+            color: XiaColors.yellow,
           ),
         ),
       ToolCallStatus.success => const Icon(
           Icons.check_circle,
           size: 20,
-          color: AppColors.statusOnline,
+          color: XiaColors.green,
         ),
       ToolCallStatus.failed => const Icon(
           Icons.error,
           size: 20,
-          color: AppColors.statusOffline,
+          color: XiaColors.red,
         ),
-    };
-  }
-
-  Color get _statusColor {
-    return switch (toolCall.status) {
-      ToolCallStatus.pending || ToolCallStatus.running => AppColors.statusConnecting,
-      ToolCallStatus.success => AppColors.statusOnline,
-      ToolCallStatus.failed => AppColors.statusOffline,
     };
   }
 
