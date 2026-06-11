@@ -1,136 +1,93 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
-/// Agent Profile 头部组件
+/// Agent Profile header — matching ComponentSpec Section 5.2.
 ///
-/// 展示大头像、名称、描述、在线状态和所属实例。
-/// 完全参数化 — 不依赖任何 Provider。
+/// 72×72 avatar (borderRadius 16), 24px name, 14px description, inline status.
 class ProfileHeader extends StatelessWidget {
   final Agent agent;
   final Instance? instance;
 
-  const ProfileHeader({
-    super.key,
-    required this.agent,
-    this.instance,
-  });
+  const ProfileHeader({super.key, required this.agent, this.instance});
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final isOnline = instance?.healthStatus.isConnectable ?? false;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.s6,
+        vertical: XiaSpacing.s6,
+      ),
       child: Column(
         children: [
-          // Avatar with theme color border
-          Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: ColorExtension.fromHex(agent.themeColor),
-                width: 4,
-              ),
-            ),
-            child: EmojiAvatar(
-              displayName: agent.displayName,
-              themeColor: agent.themeColor,
-              radius: 36,
+          // Avatar — 72×72, borderRadius 16
+          EmojiAvatar(
+            displayName: agent.displayName,
+            themeColor: agent.themeColor,
+            radius: 36,
+            borderRadius: XiaRadius.lg,
+            fontSize: 36,
+          ),
+          const SizedBox(height: XiaSpacing.s4),
+          // Name — 24px, weight 700
+          Text(
+            agent.displayName,
+            style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.5,
+              color: XiaColors.text1,
             ),
           ),
-          const SizedBox(height: 12),
-          // Name + pin badge
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Flexible(
-                child: Text(
-                  agent.displayName,
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (agent.isPinned) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary.withAlpha(30),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    '已置顶',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: theme.colorScheme.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          // Description
           if (agent.description != null && agent.description!.isNotEmpty) ...[
-            const SizedBox(height: 4),
+            const SizedBox(height: XiaSpacing.s1),
             Text(
               agent.description!,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.outline,
+              style: const TextStyle(
+                fontSize: 14,
+                color: XiaColors.text3,
+                height: 1.5,
               ),
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
           ],
-          const SizedBox(height: 10),
+          const SizedBox(height: XiaSpacing.s3),
           // Status row
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 8,
-                height: 8,
+                width: 6,
+                height: 6,
                 decoration: BoxDecoration(
-                  color: isOnline
-                      ? AppColors.statusOnline
-                      : AppColors.statusOffline,
+                  color: isOnline ? XiaColors.green : XiaColors.text4,
                   shape: BoxShape.circle,
                 ),
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: XiaSpacing.s1),
               Text(
                 isOnline ? '在线' : '离线',
                 style: TextStyle(
-                  fontSize: 12,
-                  color: isOnline
-                      ? AppColors.statusOnline
-                      : AppColors.statusOffline,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: isOnline ? XiaColors.green : XiaColors.text4,
                 ),
               ),
               const SizedBox(width: 6),
-              Text(
-                '·',
-                style:
-                    TextStyle(color: theme.colorScheme.outline, fontSize: 12),
-              ),
+              const Text('·',
+                  style: TextStyle(color: XiaColors.text3, fontSize: 12)),
               const SizedBox(width: 6),
               Flexible(
                 child: Text(
                   instance?.name ?? '未知实例',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.outline,
-                  ),
+                  style:
+                      const TextStyle(fontSize: 12, color: XiaColors.text3),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),

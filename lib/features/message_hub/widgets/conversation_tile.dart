@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
 
-/// 对话列表行组件
+/// Conversation list row — matching ComponentSpec Section 3.2.
 ///
-/// 展示一条对话预览：头像、名称、最后消息预览、时间、未读角标。
-/// 对齐: US-010 AC-2/AC-3
+/// Layout: [48×48 avatar + status dot] [name + preview] [time + unread badge]
 class ConversationTile extends StatelessWidget {
   final ConversationPreview preview;
   final VoidCallback? onTap;
@@ -28,7 +28,10 @@ class ConversationTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(
+          horizontal: XiaSpacing.s6,
+          vertical: XiaSpacing.s5 / 2,
+        ),
         child: Row(
           children: [
             // Avatar
@@ -37,8 +40,8 @@ class ConversationTile extends StatelessWidget {
               isMuted: conv.isMuted,
               healthStatus: preview.healthStatus,
             ),
-            const SizedBox(width: 12),
-            // Center: name + preview
+            const SizedBox(width: XiaSpacing.s4),
+            // Name + preview
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -59,20 +62,15 @@ class ConversationTile extends StatelessWidget {
                         ),
                       ),
                       if (conv.isMuted)
-                        Icon(
-                          Icons.volume_off,
-                          size: 14,
-                          color: theme.colorScheme.outline,
-                        ),
+                        Icon(Icons.volume_off,
+                            size: 14, color: XiaColors.text3),
                     ],
                   ),
                   const SizedBox(height: 2),
                   Text(
                     previewText.isEmpty ? '开始对话吧' : previewText,
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: hasUnread
-                          ? theme.colorScheme.onSurface
-                          : theme.colorScheme.outline,
+                      color: hasUnread ? XiaColors.text1 : XiaColors.text3,
                       fontWeight:
                           hasUnread ? FontWeight.w500 : FontWeight.normal,
                     ),
@@ -82,16 +80,18 @@ class ConversationTile extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(width: 8),
-            // Right: time + unread badge
+            const SizedBox(width: XiaSpacing.s2),
+            // Time + unread badge
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   _formatRelativeTime(conv.lastMessageTime),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.outline,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: XiaColors.text4,
+                    fontFeatures: [FontFeature.tabularFigures()],
                   ),
                 ),
                 if (hasUnread) ...[
@@ -106,18 +106,12 @@ class ConversationTile extends StatelessWidget {
     );
   }
 
-  /// 截断预览文本到 40 字符
+  /// Truncate preview to 38 characters.
   static String _truncate(String text) {
-    if (text.length <= 40) return text;
-    return '${text.substring(0, 40)}…';
+    if (text.length <= 38) return text;
+    return '${text.substring(0, 38)}…';
   }
 
-  /// 相对时间格式化
-  /// - < 1 分钟: "刚刚"
-  /// - < 60 分钟: "X分钟前"
-  /// - < 24 小时: "X小时前"
-  /// - < 7 天: "X天前"
-  /// - 其他: "MM/dd"
   static String _formatRelativeTime(int timestampMs) {
     if (timestampMs <= 0) return '';
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -137,7 +131,7 @@ class ConversationTile extends StatelessWidget {
   }
 }
 
-/// 对话头像 — 首字符 + Agent 主题色背景 + 在线状态圆点
+/// Conversation avatar — rounded rect with status dot.
 class _ConversationAvatar extends StatelessWidget {
   final Agent agent;
   final bool isMuted;
@@ -149,23 +143,10 @@ class _ConversationAvatar extends StatelessWidget {
     required this.healthStatus,
   });
 
-  Color _statusDotColor() {
-    switch (healthStatus) {
-      case HealthStatus.online:
-      case HealthStatus.connecting:
-        return Colors.green;
-      case HealthStatus.offline:
-      case HealthStatus.expectedOffline:
-      case HealthStatus.unknown:
-        return Colors.grey;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final color = isMuted
-        ? theme.colorScheme.surfaceContainerHighest
+        ? XiaColors.surface2
         : ColorExtension.fromHex(agent.themeColor);
 
     return SizedBox(
@@ -173,29 +154,39 @@ class _ConversationAvatar extends StatelessWidget {
       height: 48,
       child: Stack(
         children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: color,
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(XiaRadius.md),
+            ),
+            alignment: Alignment.center,
             child: Text(
               agent.displayName.isNotEmpty ? agent.displayName[0] : '?',
               style: TextStyle(
                 color: color.contrastingTextColor(),
-                fontSize: 20,
+                fontSize: 22,
                 fontWeight: FontWeight.w600,
               ),
             ),
           ),
-          // Online status dot
           Positioned(
             right: 0,
             bottom: 0,
             child: Container(
-              width: 14,
-              height: 14,
+              width: 8,
+              height: 8,
               decoration: BoxDecoration(
-                color: _statusDotColor(),
+                color: healthStatus == HealthStatus.online ||
+                        healthStatus == HealthStatus.connecting
+                    ? XiaColors.green
+                    : XiaColors.text4,
                 shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
+                border: Border.all(color: XiaColors.surface, width: 2),
+                boxShadow: healthStatus == HealthStatus.online
+                    ? XiaShadow.onlineGlow
+                    : null,
               ),
             ),
           ),
@@ -205,7 +196,7 @@ class _ConversationAvatar extends StatelessWidget {
   }
 }
 
-/// 未读角标 — 红色圆形数字
+/// Unread badge — capsule with accent background.
 class _UnreadBadge extends StatelessWidget {
   final int count;
 
@@ -217,15 +208,15 @@ class _UnreadBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: const BoxDecoration(
-        color: Colors.red,
-        borderRadius: BorderRadius.all(Radius.circular(10)),
+        color: XiaColors.accent,
+        borderRadius: BorderRadius.all(Radius.circular(XiaRadius.full)),
       ),
       child: Text(
         label,
         style: const TextStyle(
           color: Colors.white,
           fontSize: 11,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );

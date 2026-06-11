@@ -1,10 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
-/// 统计网格组件
-///
-/// 展示 Agent 的 6 项统计（3×2 布局）。
-/// 当前仅 messageCount 有真实数据，其余 5 项显示 "--" 占位。
+/// Stats grid — 3×2 data cards matching ComponentSpec Section 5.3.
 class StatsGrid extends StatelessWidget {
   final int messageCount;
 
@@ -12,56 +9,56 @@ class StatsGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     final items = [
-      _StatItem(label: '对话次数', value: '--', isPlaceholder: true),
-      _StatItem(
-        label: '消息总数',
-        value: _formatNumber(messageCount),
-        isPlaceholder: false,
-      ),
-      _StatItem(label: '工具调用', value: '--', isPlaceholder: true),
-      _StatItem(label: '活跃天数', value: '--', isPlaceholder: true),
-      _StatItem(label: '连续天数', value: '--', isPlaceholder: true),
-      _StatItem(label: '首次对话', value: '--', isPlaceholder: true),
+      _StatItem(label: '对话', value: '--'),
+      _StatItem(label: '消息', value: _formatNumber(messageCount)),
+      _StatItem(label: '工具', value: '--'),
+      _StatItem(label: '天数', value: '--'),
+      _StatItem(label: '连续', value: '--'),
+      _StatItem(label: '首聊', value: '--'),
     ];
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s6),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 3,
           childAspectRatio: 1.6,
-          crossAxisSpacing: 1,
-          mainAxisSpacing: 1,
+          crossAxisSpacing: XiaSpacing.s3,
+          mainAxisSpacing: XiaSpacing.s3,
         ),
         itemCount: items.length,
         itemBuilder: (context, index) {
           final item = items[index];
           return Container(
-            color: theme.colorScheme.surfaceContainerHighest,
+            decoration: BoxDecoration(
+              color: XiaColors.surface,
+              borderRadius: BorderRadius.circular(XiaRadius.md),
+            ),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     item.value,
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
-                      color: item.isPlaceholder
-                          ? theme.colorScheme.outline
-                          : AppColors.primaryBlue,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5,
+                      color: XiaColors.text1,
+                      fontFeatures: [FontFeature.tabularFigures()],
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: XiaSpacing.s1),
                   Text(
                     item.label,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.outline,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: XiaColors.text3,
+                      letterSpacing: 0.3,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ],
@@ -89,10 +86,5 @@ class StatsGrid extends StatelessWidget {
 class _StatItem {
   final String label;
   final String value;
-  final bool isPlaceholder;
-  const _StatItem({
-    required this.label,
-    required this.value,
-    required this.isPlaceholder,
-  });
+  const _StatItem({required this.label, required this.value});
 }

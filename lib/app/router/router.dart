@@ -1,6 +1,7 @@
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/instance_manager/instance_list_page.dart';
 import 'package:claw_hub/features/instance_manager/add_instance_page.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
@@ -10,7 +11,7 @@ import 'package:claw_hub/features/message_hub/message_hub_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
 
-/// 路由路径常量
+/// Route path constants.
 class AppRoutes {
   AppRoutes._();
 
@@ -22,7 +23,6 @@ class AppRoutes {
   static const String addInstance = '/instances/add';
   static const String editInstance = '/instances/edit/:instanceId';
 
-  /// 带参数生成路径（相对路径，用于 context.push 分支内导航）
   static String chatWithParams(
     String agentId,
     String instanceId, {
@@ -48,9 +48,7 @@ class AppRoutes {
   }
 }
 
-/// ClawHub 全局路由配置
-/// 对齐: 架构 vFinal 5.8 (智能返回栈)
-/// 路由器采用懒加载单例，避免 build 时重建导致路由栈丢失和 GlobalKey 冲突
+/// Global router with StatefulShellRoute (3-tab bottom nav).
 class AppRouter {
   AppRouter._();
 
@@ -66,20 +64,16 @@ class AppRouter {
   static final GlobalKey<NavigatorState> _instancesNavigatorKey =
       GlobalKey<NavigatorState>(debugLabel: 'instances');
 
-  /// 懒加载单例 GoRouter 实例
   static final GoRouter _router = _createRouter();
 
-  /// 获取全局路由器实例
   static GoRouter get router => _router;
 
-  /// Shared sub-route for chat (used in both Claws and Messages branches).
   static GoRoute _chatRoute() {
     return GoRoute(
       path: 'chat/:agentId',
       builder: (context, state) {
         final agentId = state.pathParameters['agentId']!;
-        final instanceId =
-            state.uri.queryParameters['instanceId'] ?? '';
+        final instanceId = state.uri.queryParameters['instanceId'] ?? '';
         final source = state.uri.queryParameters['source'];
         return ChatRoomPage(
           agentId: agentId,
@@ -100,7 +94,6 @@ class AppRouter {
             return _TabScaffold(navigationShell: navigationShell);
           },
           branches: [
-            // Branch 0: Claws (虾列表)
             StatefulShellBranch(
               navigatorKey: _clawsNavigatorKey,
               routes: [
@@ -131,8 +124,6 @@ class AppRouter {
                 ),
               ],
             ),
-
-            // Branch 1: Messages (消息)
             StatefulShellBranch(
               navigatorKey: _messagesNavigatorKey,
               routes: [
@@ -145,8 +136,6 @@ class AppRouter {
                 ),
               ],
             ),
-
-            // Branch 2: Instances (实例)
             StatefulShellBranch(
               navigatorKey: _instancesNavigatorKey,
               routes: [
@@ -179,43 +168,110 @@ class AppRouter {
   }
 }
 
-/// 三 Tab 导航脚手架
+/// Three-tab scaffold with glassmorphism bottom nav.
 class _TabScaffold extends StatelessWidget {
   final StatefulNavigationShell navigationShell;
 
   const _TabScaffold({required this.navigationShell});
 
-  static const _selectedColor = AppColors.primaryBlue;
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: navigationShell,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: navigationShell.currentIndex,
-        onDestinationSelected: (index) {
-          navigationShell.goBranch(
-            index,
-            initialLocation: index == navigationShell.currentIndex,
-          );
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.pets),
-            selectedIcon: Icon(Icons.pets, color: _selectedColor),
-            label: '虾列表',
+      bottomNavigationBar: ClipRect(
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(
+            sigmaX: XiaGlass.navBlur,
+            sigmaY: XiaGlass.navBlur,
           ),
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble, color: _selectedColor),
-            label: '消息',
+          child: Container(
+            height: 72,
+            decoration: const BoxDecoration(
+              color: XiaGlass.navBackground,
+              border: Border(
+                top: BorderSide(color: XiaColors.divider),
+              ),
+            ),
+            child: Row(
+              children: [
+                _NavTab(
+                  icon: Icons.pets,
+                  label: '虾列表',
+                  isActive: navigationShell.currentIndex == 0,
+                  onTap: () => navigationShell.goBranch(0),
+                ),
+                _NavTab(
+                  icon: Icons.chat_bubble_outline,
+                  activeIcon: Icons.chat_bubble,
+                  label: '消息',
+                  isActive: navigationShell.currentIndex == 1,
+                  onTap: () => navigationShell.goBranch(1),
+                ),
+                _NavTab(
+                  icon: Icons.dns_outlined,
+                  activeIcon: Icons.dns,
+                  label: '实例',
+                  isActive: navigationShell.currentIndex == 2,
+                  onTap: () => navigationShell.goBranch(2),
+                ),
+              ],
+            ),
           ),
-          NavigationDestination(
-            icon: Icon(Icons.dns_outlined),
-            selectedIcon: Icon(Icons.dns, color: _selectedColor),
-            label: '实例',
+        ),
+      ),
+    );
+  }
+}
+
+class _NavTab extends StatelessWidget {
+  final IconData icon;
+  final IconData? activeIcon;
+  final String label;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  const _NavTab({
+    required this.icon,
+    this.activeIcon,
+    required this.label,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isActive ? XiaColors.accent : XiaColors.text4;
+
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: XiaSpacing.s6,
+            vertical: XiaSpacing.s2,
           ),
-        ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isActive ? (activeIcon ?? icon) : icon,
+                size: 22,
+                color: color,
+              ),
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                  color: color,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
