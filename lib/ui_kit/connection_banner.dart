@@ -1,18 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
-import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
-/// A slim status banner that slides in below the AppBar when the Gateway
-/// connection is disrupted.
+/// A slim status banner that slides in below the AppBar.
 ///
-/// Supports three visual states:
-/// - **disconnected / authFailed** — red banner with wifi-off icon
-/// - **connecting / recovering** — orange banner with sync icon
-/// - **connected** — collapsed (zero height), no banner shown
-///
-/// Extracted from ChatRoomPage so other pages (AgentListPage, etc.) can
-/// reuse it without copying the private `_buildConnectionBanner` / `_banner`
-/// methods.
+/// Three visual states:
+/// - **disconnected / authFailed** — yellow-tinted bg, yellow text
+/// - **connecting / recovering** — accent-muted bg, accent text
+/// - **connected** — collapsed (zero height)
 class ConnectionBanner extends StatelessWidget {
   final GatewayConnectionState connectionState;
 
@@ -27,7 +22,8 @@ class ConnectionBanner extends StatelessWidget {
       return _banner(
         theme,
         '连接已断开，正在重连...',
-        AppColors.statusOffline,
+        XiaColors.yellow,
+        const Color(0x1FC4A86A), // rgba(196,168,106,0.12)
         Icons.wifi_off,
       );
     }
@@ -36,7 +32,8 @@ class ConnectionBanner extends StatelessWidget {
       return _banner(
         theme,
         '正在连接...',
-        AppColors.statusConnecting,
+        XiaColors.accent,
+        XiaColors.accentMuted,
         Icons.sync,
       );
     }
@@ -46,21 +43,25 @@ class ConnectionBanner extends StatelessWidget {
   static Widget _banner(
     ThemeData theme,
     String message,
-    Color color,
+    Color fgColor,
+    Color bgColor,
     IconData icon,
   ) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: color.withAlpha(25),
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.s6,
+        vertical: XiaSpacing.s2,
+      ),
+      color: bgColor,
       child: Row(
         children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(width: 8),
+          Icon(icon, size: 16, color: fgColor),
+          const SizedBox(width: XiaSpacing.s2),
           Expanded(
             child: Text(
               message,
-              style: theme.textTheme.labelMedium?.copyWith(color: color),
+              style: theme.textTheme.labelMedium?.copyWith(color: fgColor),
             ),
           ),
         ],

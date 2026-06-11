@@ -1,36 +1,49 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 
-/// 通用 Emoji/首字符头像组件
+/// Universal emoji/first-character avatar with configurable border radius.
 ///
-/// 显示 displayName 的首字符，背景为 themeColor，可配置半径。
-/// 在 ChatRoomPage AppBar 和 AgentProfilePage 的 ProfileHeader 中复用。
+/// Design spec: avatars use rounded rectangles (not circles):
+/// - Agent cards / message lists: radius 12 ([XiaRadius.md])
+/// - Chat header: radius 8 ([XiaRadius.sm])
+/// - Agent detail: radius 16 ([XiaRadius.lg])
 class EmojiAvatar extends StatelessWidget {
   final String displayName;
   final String themeColor;
   final double radius;
+  final double borderRadius;
+  final double fontSize;
 
   const EmojiAvatar({
     super.key,
     required this.displayName,
     required this.themeColor,
-    this.radius = 36,
+    this.radius = 24,
+    this.borderRadius = XiaRadius.md,
+    this.fontSize = 24,
   });
 
   @override
   Widget build(BuildContext context) {
     final color = ColorExtension.fromHex(themeColor);
-    final firstChar = displayName.isNotEmpty ? displayName.characters.first : '';
+    final firstChar =
+        displayName.isNotEmpty ? displayName.characters.first : '';
 
-    return CircleAvatar(
-      radius: radius,
-      backgroundColor: color,
-      foregroundColor: color.contrastingTextColor(),
+    return Container(
+      width: radius * 2,
+      height: radius * 2,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(borderRadius),
+      ),
+      alignment: Alignment.center,
       child: Text(
         firstChar,
         style: TextStyle(
-          fontSize: radius * 0.55,
+          fontSize: fontSize,
           fontWeight: FontWeight.bold,
+          color: color.contrastingTextColor(),
         ),
       ),
     );

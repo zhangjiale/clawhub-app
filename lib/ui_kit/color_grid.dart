@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 
-/// 颜色选项
+/// Color option for [ColorGrid].
 class ColorOption {
   final String hex;
   final String label;
@@ -17,10 +18,8 @@ class ColorOption {
   int get hashCode => Object.hash(hex, label);
 }
 
-/// 12 色圆形主题色选择器
-///
-/// 以网格展示颜色圆形，选中项显示白色边框 + 外环高亮。
-/// 参数化为 [colors] + [selectedColor] + [onColorSelected] 回调。
+/// 12-color grid picker (6 columns, 40×40 rounded squares).
+/// Matching ComponentSpec Section 6.5.
 class ColorGrid extends StatelessWidget {
   final List<ColorOption> colors;
   final String selectedColor;
@@ -35,48 +34,56 @@ class ColorGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 12,
-      runSpacing: 12,
-      children: colors.map((option) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 6,
+        mainAxisSpacing: XiaSpacing.s3,
+        crossAxisSpacing: XiaSpacing.s3,
+        childAspectRatio: 1,
+      ),
+      itemCount: colors.length,
+      itemBuilder: (context, index) {
+        final option = colors[index];
         final color = ColorExtension.fromHex(option.hex);
         final isSelected =
             option.hex.toUpperCase() == selectedColor.toUpperCase();
 
         return GestureDetector(
           onTap: () => onColorSelected(option.hex),
-          behavior: HitTestBehavior.opaque,
-          child: Tooltip(
-            message: option.label,
-            child: SizedBox(
-              width: 48,
-              height: 48,
-              child: Center(
-                child: Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: color,
-                    border: isSelected
-                        ? Border.all(color: Colors.white, width: 3)
-                        : null,
-                    boxShadow: isSelected
-                        ? [
-                            BoxShadow(
-                              color: color.withAlpha(150),
-                              blurRadius: 6,
-                              spreadRadius: 1,
-                            ),
-                          ]
-                        : null,
-                  ),
-                ),
-              ),
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(XiaRadius.sm),
+              border: isSelected
+                  ? Border.all(color: XiaColors.text1, width: 3)
+                  : Border.all(color: Colors.transparent, width: 3),
+              boxShadow: isSelected ? XiaShadow.selectedGlow : null,
             ),
+            child: isSelected
+                ? const Center(
+                    child: Text(
+                      '✓',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        shadows: [
+                          Shadow(
+                            color: Color(0x66000000),
+                            blurRadius: 3,
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : null,
           ),
         );
-      }).toList(),
+      },
     );
   }
 }

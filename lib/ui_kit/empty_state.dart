@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
-/// 全局空状态组件
-/// 对齐: 架构 vFinal 8.2 (ui_kit/empty_states/)
+/// Global empty state component matching design spec.
 ///
-/// 用于列表为空、无数据等场景的占位展示。
+/// Icon: 48px, text4 color, opacity 0.7.
+/// Title: 17px, weight 600, text2 color.
+/// Description: 14px, text3 color, line-height 1.6.
+/// Padding: 48 vertical / 24 horizontal (s9/s6).
 class EmptyState extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -22,34 +25,43 @@ class EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.symmetric(
+          vertical: XiaSpacing.s9,
+          horizontal: XiaSpacing.s6,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 64, color: theme.colorScheme.outline),
-            const SizedBox(height: 16),
+            Opacity(
+              opacity: 0.7,
+              child: Icon(icon, size: 48, color: XiaColors.text4),
+            ),
+            const SizedBox(height: XiaSpacing.s5),
             Text(
               title,
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurface,
+              style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: XiaColors.text2,
               ),
               textAlign: TextAlign.center,
             ),
             if (subtitle != null) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: XiaSpacing.s2),
               Text(
                 subtitle!,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.outline,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: XiaColors.text3,
+                  height: 1.6,
                 ),
                 textAlign: TextAlign.center,
               ),
             ],
             if (onAction != null && actionLabel != null) ...[
-              const SizedBox(height: 24),
+              const SizedBox(height: XiaSpacing.s6),
               ElevatedButton(
                 onPressed: onAction,
                 child: Text(actionLabel!),
