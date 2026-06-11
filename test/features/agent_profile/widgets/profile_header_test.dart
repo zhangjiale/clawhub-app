@@ -58,17 +58,6 @@ void main() {
       expect(find.text('产'), findsOneWidget);
     });
 
-    testWidgets('shows pin badge when pinned', (tester) async {
-      final pinned = testAgent.copyWith(isPinned: true);
-      await tester.pumpWidget(buildHeader(agent: pinned));
-      expect(find.text('已置顶'), findsOneWidget);
-    });
-
-    testWidgets('no pin badge when not pinned', (tester) async {
-      await tester.pumpWidget(buildHeader(agent: testAgent));
-      expect(find.text('已置顶'), findsNothing);
-    });
-
     testWidgets('shows instance name when instance provided', (tester) async {
       await tester.pumpWidget(
           buildHeader(agent: testAgent, instance: testInstance));

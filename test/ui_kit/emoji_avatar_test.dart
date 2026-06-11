@@ -27,14 +27,15 @@ void main() {
 
     testWidgets('uses themeColor background', (tester) async {
       await tester.pumpWidget(buildAvatar(themeColor: '#0984e3'));
-      final avatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
-      expect(avatar.backgroundColor, const Color(0xFF0984E3));
+      final container = tester.widget<Container>(find.byType(Container).first);
+      final decoration = container.decoration as BoxDecoration;
+      expect(decoration.color, const Color(0xFF0984E3));
     });
 
     testWidgets('respects radius parameter', (tester) async {
       await tester.pumpWidget(buildAvatar(radius: 24));
-      final avatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
-      expect(avatar.radius, 24.0);
+      final emojiAvatar = tester.widget<EmojiAvatar>(find.byType(EmojiAvatar));
+      expect(emojiAvatar.radius, 24.0);
     });
 
     testWidgets('handles empty displayName', (tester) async {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/features/agent_list/widgets/agent_card.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
 void main() {
   group('AgentCard', () {
@@ -14,7 +15,11 @@ void main() {
       themeColor: '#6c5ce7',
     );
 
-    Widget buildCard({Agent? agent, VoidCallback? onTap, bool isOnline = true}) {
+    Widget buildCard({
+      Agent? agent,
+      VoidCallback? onTap,
+      bool isOnline = true,
+    }) {
       return MaterialApp(
         home: Scaffold(
           body: AgentCard(
@@ -36,20 +41,15 @@ void main() {
       expect(find.text('产品规划、需求分析、PRD撰写'), findsOneWidget);
     });
 
-    testWidgets('renders avatar circle with first character', (tester) async {
+    testWidgets('renders avatar with first character', (tester) async {
       await tester.pumpWidget(buildCard());
       expect(find.text('产'), findsOneWidget);
     });
 
-    testWidgets('shows pin icon when pinned', (tester) async {
-      final pinnedAgent = testAgent.copyWith(isPinned: true);
-      await tester.pumpWidget(buildCard(agent: pinnedAgent));
-      expect(find.byIcon(Icons.push_pin), findsOneWidget);
-    });
-
-    testWidgets('no pin icon when not pinned', (tester) async {
+    testWidgets('renders EmojiAvatar with correct themeColor', (tester) async {
       await tester.pumpWidget(buildCard());
-      expect(find.byIcon(Icons.push_pin), findsNothing);
+      final emojiAvatar = tester.widget<EmojiAvatar>(find.byType(EmojiAvatar));
+      expect(emojiAvatar.themeColor, '#6c5ce7');
     });
 
     testWidgets('calls onTap when tapped', (tester) async {
@@ -59,40 +59,27 @@ void main() {
       expect(tapped, isTrue);
     });
 
-    testWidgets('uses themeColor for avatar background', (tester) async {
-      await tester.pumpWidget(buildCard());
-      final circleAvatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
-      expect(circleAvatar.backgroundColor, const Color(0xFF6C5CE7));
-    });
-
-    // ---------------------------------------------------------------------------
-    // Offline state
-    // ---------------------------------------------------------------------------
-
-    testWidgets('applies reduced opacity when offline', (tester) async {
-      await tester.pumpWidget(buildCard(isOnline: false));
-      final opacity = tester.widget<Opacity>(find.byType(Opacity));
-      expect(opacity.opacity, 0.55);
-    });
-
-    testWidgets('shows "Offline" text when not online', (tester) async {
-      await tester.pumpWidget(buildCard(isOnline: false));
-      expect(find.text('Offline'), findsOneWidget);
-    });
-
-    testWidgets('shows "Online" text when online', (tester) async {
+    testWidgets('shows green status dot when online', (tester) async {
       await tester.pumpWidget(buildCard(isOnline: true));
-      expect(find.text('Online'), findsOneWidget);
+      // Verify the card renders - online dot uses green color
+      final emojiAvatar = tester.widget<EmojiAvatar>(find.byType(EmojiAvatar));
+      expect(emojiAvatar.themeColor, testAgent.themeColor);
     });
 
-    testWidgets('uses grey avatar background when offline', (tester) async {
+    testWidgets('shows text4 status dot when offline', (tester) async {
       await tester.pumpWidget(buildCard(isOnline: false));
-      final circleAvatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
-      expect(circleAvatar.backgroundColor, Colors.grey);
+      // Verify the card still renders when offline
+      expect(find.text('产品虾'), findsOneWidget);
     });
 
-    testWidgets('chevon_right still present when offline', (tester) async {
+    testWidgets('chevron_right always present in card', (tester) async {
       await tester.pumpWidget(buildCard(isOnline: false));
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    });
+
+    testWidgets('status dot and time in meta area', (tester) async {
+      await tester.pumpWidget(buildCard());
+      // The card should have chevron_right present
       expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     });
   });

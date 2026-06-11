@@ -17,7 +17,7 @@ void main() {
 
     testWidgets('renders "消息总数" label', (tester) async {
       await tester.pumpWidget(buildGrid(messageCount: 0));
-      expect(find.text('消息总数'), findsOneWidget);
+      expect(find.text('消息'), findsOneWidget);
     });
 
     testWidgets('renders placeholder "--" for unavailable stats',

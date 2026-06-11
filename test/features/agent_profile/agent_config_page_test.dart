@@ -86,6 +86,9 @@ void main() {
     testWidgets('renders save button', (tester) async {
       await tester.pumpWidget(buildPage());
       await tester.pumpAndSettle();
+      // Save button is at the bottom of a lazy ListView — scroll down first
+      await tester.drag(find.byType(ListView), const Offset(0, -500));
+      await tester.pumpAndSettle();
       expect(find.text('💾 保存配置'), findsOneWidget);
     });
 

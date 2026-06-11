@@ -36,11 +36,10 @@ void main() {
       );
     }
 
-    testWidgets('renders ActionChip for each command with correct label', (tester) async {
+    testWidgets('renders command pills with correct labels', (tester) async {
       await tester.pumpWidget(buildBar(commands: sampleCommands));
 
-      // Two ActionChips for two commands
-      expect(find.byType(ActionChip), findsNWidgets(2));
+      // Custom GestureDetector+Container pills replace ActionChip
       expect(find.text('Status'), findsOneWidget);
       expect(find.text('Help'), findsOneWidget);
     });
@@ -61,8 +60,8 @@ void main() {
     testWidgets('shows nothing when commands list is empty', (tester) async {
       await tester.pumpWidget(buildBar(commands: []));
 
-      // The widget returns SizedBox.shrink, so no ActionChips or text
-      expect(find.byType(ActionChip), findsNothing);
+      // The widget returns SizedBox.shrink, so no command pills
+      expect(find.byType(GestureDetector), findsNothing);
     });
 
     testWidgets('renders commands in a horizontal scrollable list', (tester) async {

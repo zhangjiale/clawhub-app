@@ -21,20 +21,23 @@ void main() {
     testWidgets('renders three bouncing dots inside bubble', (tester) async {
       await tester.pumpWidget(buildIndicator());
 
-      expect(find.byKey(const ValueKey('thinking-dot-0')), findsOneWidget);
-      expect(find.byKey(const ValueKey('thinking-dot-1')), findsOneWidget);
-      expect(find.byKey(const ValueKey('thinking-dot-2')), findsOneWidget);
+      // Dots are now _BouncingDot widgets without keys — find by runtime type
+      final dotFinder = find.byWidgetPredicate(
+        (w) => w.runtimeType.toString() == '_BouncingDot',
+      );
+      expect(dotFinder, findsNWidgets(3));
     });
 
     testWidgets('animates dots with bouncing motion', (tester) async {
       await tester.pumpWidget(buildIndicator());
 
       // All three dots should be present
-      expect(find.byKey(const ValueKey('thinking-dot-0')), findsOneWidget);
-      expect(find.byKey(const ValueKey('thinking-dot-1')), findsOneWidget);
-      expect(find.byKey(const ValueKey('thinking-dot-2')), findsOneWidget);
+      final dotFinder = find.byWidgetPredicate(
+        (w) => w.runtimeType.toString() == '_BouncingDot',
+      );
+      expect(dotFinder, findsNWidgets(3));
 
-      // Pump forward to exercise the animation controller
+      // Pump forward to exercise the animation controller (now 800ms cycle)
       await tester.pump(const Duration(milliseconds: 300));
       // Widget should still be present after animation ticks
       expect(find.byIcon(Icons.psychology), findsOneWidget);

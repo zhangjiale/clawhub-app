@@ -56,9 +56,22 @@ void main() {
       expect(find.text('产品虾'), findsNothing);
     });
 
-    testWidgets('agent message shows agent name', (tester) async {
+    testWidgets('agent message shows first character in avatar', (tester) async {
       await tester.pumpWidget(buildBubble(agentMessage));
-      expect(find.text('产品虾'), findsOneWidget);
+      // Agent name is no longer shown above the bubble; only first char in avatar
+      expect(find.text('产品虾'), findsNothing);
+      expect(find.text('产'), findsOneWidget);
+    });
+
+    testWidgets('agent message shows timestamp below bubble', (tester) async {
+      await tester.pumpWidget(buildBubble(agentMessage));
+      // Each message now includes a formatted time like "HH:MM"
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Text && RegExp(r'^\d{2}:\d{2}$').hasMatch(w.data ?? ''),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('user message shows status icon', (tester) async {

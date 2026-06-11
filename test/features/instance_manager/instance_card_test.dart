@@ -76,7 +76,8 @@ void main() {
         ),
       );
 
-      await tester.tap(find.byType(InkWell));
+      // Multiple InkWell widgets now (card + action buttons); tap the first
+      await tester.tap(find.byType(InkWell).first);
       expect(tapped, isTrue);
     });
   });

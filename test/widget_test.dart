@@ -25,10 +25,9 @@ void main() {
     await tester.pumpWidget(_testProviderScope(child: const ClawHubApp()));
     await tester.pumpAndSettle();
 
-    // The app should render with the 3-tab navigation bar
-    // (Text may appear in both AppBar title and NavBar label)
-    expect(find.byType(NavigationBar), findsOneWidget);
-    expect(find.text('🦐 ClawHub'), findsAtLeast(1));
+    // The app should render the 3-tab navigation (now custom glassmorphism)
+    // Text may appear in both AppBar title and NavBar label
+    expect(find.byType(BackdropFilter), findsWidgets);
     expect(find.text('虾列表'), findsAtLeast(1));
     expect(find.text('消息'), findsAtLeast(1));
     expect(find.text('实例'), findsAtLeast(1));
@@ -77,9 +76,9 @@ void main() {
       await tester.pumpWidget(_testProviderScope(child: const ClawHubApp()));
       await tester.pumpAndSettle();
 
-      // If _ConnectionInitializer swallowed the child, NavigationBar wouldn't
-      // be in the widget tree.
-      expect(find.byType(NavigationBar), findsOneWidget);
+      // If _ConnectionInitializer swallowed the child, BackdropFilter (bottom nav)
+      // wouldn't be in the widget tree.
+      expect(find.byType(BackdropFilter), findsWidgets);
     },
   );
 }

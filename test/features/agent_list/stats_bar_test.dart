@@ -28,14 +28,18 @@ void main() {
       await tester.pumpWidget(buildBar(activeInstances: 2, totalInstances: 3));
 
       expect(find.text('活跃实例'), findsOneWidget);
-      expect(find.text('2/3'), findsOneWidget);
+      // Value and unit are now separate Text widgets
+      expect(find.text('2'), findsOneWidget);
+      expect(find.text('/3'), findsOneWidget);
     });
 
     testWidgets('renders online claw stat with ratio', (tester) async {
       await tester.pumpWidget(buildBar(onlineAgents: 5, totalAgents: 7));
 
       expect(find.text('在线虾'), findsOneWidget);
-      expect(find.text('5/7'), findsOneWidget);
+      // Value and unit are now separate Text widgets
+      expect(find.text('5'), findsOneWidget);
+      expect(find.text('/7'), findsOneWidget);
     });
 
     testWidgets('renders messages stat', (tester) async {
@@ -76,7 +80,7 @@ void main() {
       await tester.pumpWidget(buildBar());
 
       // New pill-chip design uses emoji text instead of Material icons
-      expect(find.text('🖥️'), findsOneWidget);
+      expect(find.text('🖥'), findsOneWidget);
       expect(find.text('🦐'), findsOneWidget);
       expect(find.text('💬'), findsOneWidget);
     });
