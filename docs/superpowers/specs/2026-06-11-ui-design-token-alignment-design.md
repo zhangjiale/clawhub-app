@@ -1,8 +1,9 @@
 # UI Design Token Alignment — Design Spec
 
 **Date**: 2026-06-11  
-**Branch**: `feat/ui-design-token-alignment`  
+**Branch**: (new branch, created at implementation time)  
 **Status**: Approved  
+**Mode**: Always dark (`ThemeMode.dark`) — design spec is dark-only  
 **Sources**:
 - `docs/DesignToken-虾Hub.md` (v1.0)
 - `docs/ComponentSpec-虾Hub.md` (v1.0)
@@ -59,7 +60,20 @@ class XiaColors {
   static const yellow = Color(0xFFC4A86A);
 
   // 12 agent theme colors (foreground + background 12% alpha)
-  static const Map<String, Color> agentThemes = { ... };
+  static const Map<String, Map<String, Color>> agentThemes = {
+    'coral':   {'color': Color(0xFFC27C68), 'bg': Color(0x1FC27C68)},
+    'blue':    {'color': Color(0xFF6C8AAF), 'bg': Color(0x1F6C8AAF)},
+    'green':   {'color': Color(0xFF6BA87A), 'bg': Color(0x1F6BA87A)},
+    'orange':  {'color': Color(0xFFB98A64), 'bg': Color(0x1FB98A64)},
+    'pink':    {'color': Color(0xFFAF788C), 'bg': Color(0x1FAF788C)},
+    'teal':    {'color': Color(0xFF5F9B96), 'bg': Color(0x1F5F9B96)},
+    'yellow':  {'color': Color(0xFFAF9B5F), 'bg': Color(0x1FAF9B5F)},
+    'rose':    {'color': Color(0xFFAA6E82), 'bg': Color(0x1FAA6E82)},
+    'slate':   {'color': Color(0xFF828282), 'bg': Color(0x1F828282)},
+    'indigo':  {'color': Color(0xFF6E64A0), 'bg': Color(0x1F6E64A0)},
+    'caramel': {'color': Color(0xFFAA7D50), 'bg': Color(0x1FAA7D50)},
+    'jade':    {'color': Color(0xFF509678), 'bg': Color(0x1F509678)},
+  };
 }
 
 class XiaSpacing {
