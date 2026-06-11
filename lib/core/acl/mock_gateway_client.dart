@@ -210,6 +210,14 @@ class MockGatewayClient implements IGatewayClient {
   }
 
   @override
+  void resetConnectionState(String instanceId) {
+    final ctrl = _connectionControllers[instanceId];
+    if (ctrl != null && !ctrl.isClosed) {
+      ctrl.add(GatewayConnectionState.disconnected);
+    }
+  }
+
+  @override
   Stream<Message> messageStream(String instanceId) {
     return _getOrCreateMessageController(instanceId).stream;
   }

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/router/router.dart';
+import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/features/instance_manager/providers/instance_providers.dart';
 import 'package:claw_hub/features/instance_manager/widgets/instance_card.dart';
 import 'package:claw_hub/features/instance_manager/qr_scanner_page.dart';
@@ -11,6 +13,48 @@ import 'package:claw_hub/ui_kit/empty_state.dart';
 /// 实例列表页 (P0 MVP)
 class InstanceListPage extends ConsumerWidget {
   const InstanceListPage({super.key});
+
+  /// 确认并删除指定实例。
+  Future<void> _onDelete(
+    BuildContext context,
+    WidgetRef ref,
+    Instance instance,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Instance'),
+        content: Text(
+          'Delete "${instance.name}"?\n'
+          'All local messages and agents will be removed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      final useCase = ref.read(deleteInstanceUseCaseProvider);
+      await useCase.execute(instance.id);
+      ref.invalidate(instanceListProvider);
+    } on Exception catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete: $e')),
+      );
+    }
+  }
 
   /// 显示添加方式选择底部弹窗 (US-001)
   Future<void> _showAddOptions(BuildContext context) async {
@@ -103,6 +147,7 @@ class InstanceListPage extends ConsumerWidget {
                 onTap: () {
                   context.push(AppRoutes.editInstanceWithParams(instance.id));
                 },
+                onDelete: () => _onDelete(context, ref, instance),
               );
             },
           );

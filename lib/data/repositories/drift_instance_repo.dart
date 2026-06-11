@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' as drift;
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
@@ -69,13 +70,28 @@ class DriftInstanceRepo implements IInstanceRepo {
   }
 
   @override
-  Future<void> batchUpdateStatusByNetwork({
+  Future<List<String>> batchUpdateStatusByNetwork({
     required bool isLocalNetwork,
     required HealthStatus status,
   }) async {
-    await _database.batchUpdateStatusByNetwork(
-      status.toInt(),
-      isLocalNetwork ? 1 : 0,
-    );
+    return _database.transaction(() async {
+      // 1. 查询匹配的实例 ID
+      final rows = await _database.customSelect(
+        'SELECT id FROM instances WHERE is_local_network = ?1',
+        variables: [drift.Variable<int>(isLocalNetwork ? 1 : 0)],
+        readsFrom: {_database.instances},
+      ).get();
+      final ids = rows.map((r) => r.read<String>('id')).toList();
+
+      // 2. 批量更新状态
+      if (ids.isNotEmpty) {
+        await _database.batchUpdateStatusByNetwork(
+          status.toInt(),
+          isLocalNetwork ? 1 : 0,
+        );
+      }
+
+      return ids;
+    });
   }
 }

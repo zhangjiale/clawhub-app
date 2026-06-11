@@ -2,6 +2,7 @@ import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../repositories/i_instance_repo.dart';
 import '../../core/acl/i_gateway_client.dart';
+import 'instance_lifecycle.dart';
 
 /// 保存实例用例（统一创建与编辑）
 /// 对齐: PRD 3.1 (实例连接管理)
@@ -11,19 +12,23 @@ import '../../core/acl/i_gateway_client.dart';
 /// 2. 检查名称唯一性（编辑时排除自身）
 /// 3. 执行连通性测试
 /// 4. 保存实例（在线/离线）
+/// 5. 通知 [IInstanceLifecycle] 触发后续编排（WebSocket 连接等）
 ///
 /// [instanceId] 为 null 时创建新实例，非 null 时编辑已有实例。
 class SaveInstanceUseCase {
   final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
+  final IInstanceLifecycle? _lifecycle;
   final Uuid _uuid;
 
   SaveInstanceUseCase({
     required IInstanceRepo instanceRepo,
     required IGatewayClient gatewayClient,
+    IInstanceLifecycle? lifecycle,
     Uuid? uuid,
   })  : _instanceRepo = instanceRepo,
         _gatewayClient = gatewayClient,
+        _lifecycle = lifecycle,
         _uuid = uuid ?? const Uuid();
 
   /// 保存实例（创建或更新）
@@ -93,6 +98,20 @@ class SaveInstanceUseCase {
             isOnline ? DateTime.now().millisecondsSinceEpoch ~/ 1000 : null,
       ),
     );
+
+    // 6. 通知生命周期层（编排 WebSocket 连接）
+    // 生命周期回调为 fire-and-forget：即使编排失败也不影响持久化结果，
+    // 避免 DB 已保存但 UI 看到错误后重试造成重复数据。
+    try {
+      await _lifecycle?.onInstanceSaved(saved);
+    } catch (error, stackTrace) {
+      // 编排失败不应阻止 save 返回成功 — 实例已持久化。
+      // 连接错误由 ConnectionOrchestrator 内部的自动重连机制自行处理。
+      print(
+        '[SaveInstanceUseCase] Lifecycle callback failed for '
+        '${saved.id}: $error\n$stackTrace',
+      );
+    }
 
     return saved;
   }

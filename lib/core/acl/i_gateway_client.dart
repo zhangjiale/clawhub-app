@@ -37,6 +37,12 @@ abstract class IGatewayClient {
   /// 获取连接状态流（响应式）
   Stream<GatewayConnectionState> connectionStateStream(String instanceId);
 
+  /// 重置连接状态流到 [GatewayConnectionState.disconnected]，
+  /// 使后续订阅者能观察到一个确定的初始事件（用于重试场景）。
+  ///
+  /// 实现不应关闭或替换底层控制器，只向现有流追加一个事件。
+  void resetConnectionState(String instanceId);
+
   /// 获取消息流（响应式，实时接收 Agent 回复和工具调用）
   Stream<Message> messageStream(String instanceId);
 

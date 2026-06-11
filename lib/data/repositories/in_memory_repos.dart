@@ -51,15 +51,18 @@ class InMemoryInstanceRepo implements IInstanceRepo {
   }
 
   @override
-  Future<void> batchUpdateStatusByNetwork({
+  Future<List<String>> batchUpdateStatusByNetwork({
     required bool isLocalNetwork,
     required HealthStatus status,
   }) async {
+    final affected = <String>[];
     for (final entry in _store.entries) {
       if (entry.value.isLocalNetwork == isLocalNetwork) {
         _store[entry.key] = entry.value.copyWith(healthStatus: status);
+        affected.add(entry.key);
       }
     }
+    return affected;
   }
 }
 

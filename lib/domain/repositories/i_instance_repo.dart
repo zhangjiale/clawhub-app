@@ -26,9 +26,9 @@ abstract class IInstanceRepo {
   /// 更新最后连接时间
   Future<void> updateLastConnectedAt(String id, int timestamp);
 
-  /// 批量更新指定网络类型的实例状态
-  /// 用于 WiFi→4G 时标记内网实例为 EXPECTED_OFFLINE
-  Future<void> batchUpdateStatusByNetwork({
+  /// 批量更新指定网络类型的实例状态，返回被更新的实例 ID 列表。
+  /// 用于 WiFi→4G 时标记内网实例为 EXPECTED_OFFLINE。
+  Future<List<String>> batchUpdateStatusByNetwork({
     required bool isLocalNetwork,
     required HealthStatus status,
   });

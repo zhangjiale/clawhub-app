@@ -5,14 +5,18 @@ import 'package:claw_hub/app/theme/theme.dart';
 
 /// 实例卡片组件
 /// 显示实例名称、Gateway URL、健康状态指示点
+///
+/// [onDelete] 为 null 时不展示删除操作。
 class InstanceCard extends StatelessWidget {
   final Instance instance;
   final VoidCallback onTap;
+  final VoidCallback? onDelete;
 
   const InstanceCard({
     super.key,
     required this.instance,
     required this.onTap,
+    this.onDelete,
   });
 
   Color _healthColor(HealthStatus status) {
@@ -69,6 +73,18 @@ class InstanceCard extends StatelessWidget {
                 ),
               ),
               const Icon(Icons.chevron_right, color: Colors.grey),
+              if (onDelete != null) ...[
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: Icon(
+                    Icons.delete_outline,
+                    color: Colors.red.shade300,
+                    size: 20,
+                  ),
+                  onPressed: onDelete,
+                  tooltip: 'Delete instance',
+                ),
+              ],
             ],
           ),
         ),
