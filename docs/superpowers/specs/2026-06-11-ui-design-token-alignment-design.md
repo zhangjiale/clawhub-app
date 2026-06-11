@@ -493,7 +493,7 @@ Layout corrections to match ComponentSpec page structures. All changes are visua
 ### Constraints
 - **Zero business logic changes**: No changes to ViewModels, UseCases, Repositories, Providers, or data models.
 - **No navigation changes**: Routes, navigation structure, and smart back stack logic unchanged.
-- **Dark mode only**: Light theme overrides use the same dark palette (brand consistency per spec).
+- **Always dark mode**: `ThemeMode.dark` — the design spec defines only a dark palette. System light/dark setting is ignored.
 - **Accessibility**: All text must meet WCAG AA contrast on their background surfaces per DesignToken-虾Hub.md Section 1.
 
 ### Risks
