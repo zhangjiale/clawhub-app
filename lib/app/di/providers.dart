@@ -1,7 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
-import 'package:claw_hub/data/repositories/in_memory_repos.dart';
+import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
+import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
+import 'package:claw_hub/data/repositories/drift_message_repo.dart';
+import 'package:claw_hub/data/repositories/drift_conversation_repo.dart';
+import 'package:claw_hub/data/local/database/database.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/domain/usecases/save_instance.dart';
@@ -26,22 +30,37 @@ final gatewayClientProvider = Provider<IGatewayClient>((ref) {
   return ref.watch(mockGatewayClientProvider);
 });
 
+// --- Database ---
+
+/// Drift/SQLite 数据库实例。
+///
+/// 默认实现会创建磁盘上的数据库，并在 provider 被 dispose 时自动 close。
+/// [main()] 通过 `overrideWith` 提前创建好实例并注入，同样会注册 dispose 钩子
+/// 以保证应用退出时数据库被正确关闭。测试侧可用内存 DB 替换。
+final databaseProvider = Provider<AppDatabase>((ref) {
+  throw UnimplementedError(
+    'databaseProvider must be overridden in main() via '
+    'databaseProvider.overrideWith(...) so the AppDatabase lifecycle '
+    '(creation + close) is owned by a single place.',
+  );
+});
+
 // --- Repositories ---
 
 final instanceRepoProvider = Provider<IInstanceRepo>((ref) {
-  return InMemoryInstanceRepo();
+  return DriftInstanceRepo(ref.watch(databaseProvider));
 });
 
 final agentRepoProvider = Provider<IAgentRepo>((ref) {
-  return InMemoryAgentRepo();
+  return DriftAgentRepo(ref.watch(databaseProvider));
 });
 
 final messageRepoProvider = Provider<IMessageRepo>((ref) {
-  return InMemoryMessageRepo();
+  return DriftMessageRepo(ref.watch(databaseProvider));
 });
 
 final conversationRepoProvider = Provider<IConversationRepo>((ref) {
-  return InMemoryConversationRepo();
+  return DriftConversationRepo(ref.watch(databaseProvider));
 });
 
 // --- Use Cases ---

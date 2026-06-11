@@ -1,0 +1,286 @@
+-- ============================================================
+-- ClawHub Database Schema (Drift SQL-first)
+-- Phase 1: Core tables for MVP repository replacement
+-- Aligned with: docs/database_v3.sql (Zero-Trigger principle)
+-- ============================================================
+
+-- ============================================================
+-- 1. Instances — Gateway connection configurations
+-- health_status: 0=Unknown, 1=Online, 2=Offline, 3=Connecting, 4=ExpectedOffline
+-- ============================================================
+CREATE TABLE instances (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    gateway_url TEXT NOT NULL,
+    token_ref TEXT NOT NULL,
+    health_status INTEGER DEFAULT 0,
+    is_local_network INTEGER DEFAULT 0,
+    last_connected_at INTEGER,
+    created_at INTEGER NOT NULL
+);
+
+-- ============================================================
+-- 2. Agents — Agent configs with dual-ID strategy
+-- Phase 1: quick_commands_json TEXT column in lieu of separate quick_commands table
+-- ============================================================
+CREATE TABLE agents (
+    local_id TEXT PRIMARY KEY,
+    remote_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    nickname TEXT,
+    avatar_url TEXT,
+    theme_color TEXT DEFAULT '#007AFF',
+    quick_commands_json TEXT,
+    description TEXT,
+    is_pinned INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    UNIQUE(instance_id, remote_id),
+    FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 3. Conversations — Conversation aggregate roots
+-- id = SHA256(instanceId + agentId), maintained by application layer
+-- last_message_role: 0=User, 1=Agent, 2=System
+-- ============================================================
+CREATE TABLE conversations (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    last_message_id TEXT,
+    last_message_preview TEXT,
+    last_message_time INTEGER DEFAULT 0,
+    last_message_role INTEGER,
+    unread_count INTEGER DEFAULT 0,
+    is_muted INTEGER DEFAULT 0,
+    FOREIGN KEY (agent_id) REFERENCES agents(local_id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 4. Messages — Message stream with dual-ID
+-- role: 0=User, 1=Agent, 2=System
+-- type: 0=Text, 1=Image, 2=File, 3=ToolCall
+-- status: 0=Draft, 1=Pending, 2=Sending, 3=Sent, 4=Delivered, 5=Failed, 6=Expired
+-- ============================================================
+CREATE TABLE messages (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT UNIQUE NOT NULL,
+    server_id TEXT UNIQUE,
+    conversation_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    role INTEGER NOT NULL,
+    content TEXT,
+    type INTEGER NOT NULL,
+    status INTEGER NOT NULL,
+    logical_clock INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+    metadata TEXT,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 5. Messages FTS — Full-text search virtual table
+-- Manually synchronized by application-layer Repository
+-- ============================================================
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    content,
+    content='messages',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+-- ============================================================
+-- 6. Tool Calls — Tool call sub-entities of messages
+-- status: 0=Pending, 1=Running, 2=Success, 3=Failed
+-- ============================================================
+CREATE TABLE tool_calls (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    input_args TEXT,
+    output_result TEXT,
+    started_at INTEGER,
+    ended_at INTEGER,
+    FOREIGN KEY (message_id) REFERENCES messages(client_id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- Indexes — Performance optimization
+-- ============================================================
+CREATE INDEX idx_instances_status ON instances(health_status);
+
+CREATE INDEX idx_agents_instance ON agents(instance_id);
+CREATE INDEX idx_agents_remote ON agents(instance_id, remote_id);
+CREATE INDEX idx_agents_pin_name ON agents(instance_id, is_pinned DESC, name ASC);
+
+CREATE INDEX idx_conv_time ON conversations(last_message_time DESC);
+CREATE INDEX idx_conv_agent ON conversations(agent_id);
+
+CREATE INDEX idx_msgs_conv_time ON messages(conversation_id, timestamp DESC);
+CREATE INDEX idx_msgs_server ON messages(server_id);
+CREATE INDEX idx_msgs_agent ON messages(agent_id);
+CREATE INDEX idx_msgs_status ON messages(status);
+CREATE INDEX idx_msgs_conv_clock ON messages(conversation_id, logical_clock DESC);
+
+CREATE INDEX idx_tool_calls_msg ON tool_calls(message_id);
+
+-- ============================================================
+-- Named Queries: Instances
+-- ============================================================
+
+getAllInstances: SELECT * FROM instances ORDER BY last_connected_at DESC;
+
+getInstanceById: SELECT * FROM instances WHERE id = :id;
+
+-- Name existence check (with optional exclude). Returns 0 or 1 row with count.
+-- :excludeId is nullable — COALESCE(NULL, '') yields '' so the OR-branch
+-- is skipped and all rows (including id = '') are considered.
+checkNameExists:
+SELECT COUNT(*) AS cnt FROM instances
+WHERE name = :name AND (COALESCE(:excludeId, '') = '' OR id != :excludeId);
+
+upsertInstance:
+INSERT OR REPLACE INTO instances
+    (id, name, gateway_url, token_ref, health_status, is_local_network, last_connected_at, created_at)
+VALUES (:id, :name, :gatewayUrl, :tokenRef, :healthStatus, :isLocalNetwork, :lastConnectedAt, :createdAt);
+
+deleteInstanceById: DELETE FROM instances WHERE id = :id;
+
+updateInstanceHealthStatus:
+UPDATE instances SET health_status = :status WHERE id = :id;
+
+updateInstanceLastConnectedAt:
+UPDATE instances SET last_connected_at = :timestamp WHERE id = :id;
+
+batchUpdateStatusByNetwork:
+UPDATE instances SET health_status = :status WHERE is_local_network = :isLocalNetwork;
+
+-- ============================================================
+-- Named Queries: Agents
+-- ============================================================
+
+getAgentsByInstance:
+SELECT * FROM agents WHERE instance_id = :instanceId ORDER BY is_pinned DESC, name ASC;
+
+getAllAgents:
+SELECT * FROM agents ORDER BY is_pinned DESC, name ASC;
+
+getAgentByLocalId: SELECT * FROM agents WHERE local_id = :localId;
+
+findAgentByCompositeKey:
+SELECT * FROM agents WHERE instance_id = :instanceId AND remote_id = :remoteId;
+
+insertAgent:
+INSERT INTO agents
+    (local_id, remote_id, instance_id, name, nickname, avatar_url, theme_color, quick_commands_json, description, is_pinned, created_at)
+VALUES (:localId, :remoteId, :instanceId, :name, :nickname, :avatarUrl, :themeColor, :quickCommandsJson, :description, :isPinned, :createdAt);
+
+updateAgentFromGateway:
+UPDATE agents SET name = :name, description = :description WHERE local_id = :localId;
+
+toggleAgentPin:
+UPDATE agents SET is_pinned = CASE WHEN is_pinned = 1 THEN 0 ELSE 1 END WHERE local_id = :localId;
+
+deleteAgentsByInstanceId: DELETE FROM agents WHERE instance_id = :instanceId;
+
+-- ============================================================
+-- Named Queries: Conversations
+-- ============================================================
+
+getConversationById: SELECT * FROM conversations WHERE id = :id;
+
+getAllConversationsWithMessages:
+SELECT * FROM conversations WHERE last_message_time > 0 ORDER BY last_message_time DESC;
+
+insertConversation:
+INSERT OR IGNORE INTO conversations
+    (id, agent_id, instance_id, last_message_id, last_message_preview, last_message_time, last_message_role, unread_count, is_muted)
+VALUES (:id, :agentId, :instanceId, :lastMessageId, :lastMessagePreview, :lastMessageTime, :lastMessageRole, :unreadCount, :isMuted);
+
+updateConversationLastMessage:
+UPDATE conversations SET
+    last_message_id = :messageId,
+    last_message_preview = :preview,
+    last_message_time = :timestamp,
+    last_message_role = :role
+WHERE id = :conversationId;
+
+incrementConversationUnread:
+UPDATE conversations SET unread_count = unread_count + :count WHERE id = :id;
+
+clearConversationUnread:
+UPDATE conversations SET unread_count = 0 WHERE id = :id;
+
+toggleConversationMute:
+UPDATE conversations SET is_muted = CASE WHEN is_muted = 1 THEN 0 ELSE 1 END WHERE id = :id;
+
+deleteConversationsByInstanceId: DELETE FROM conversations WHERE instance_id = :instanceId;
+
+-- ============================================================
+-- Named Queries: Messages
+-- ============================================================
+
+getMessageByClientId: SELECT * FROM messages WHERE client_id = :clientId;
+
+getMessageByServerId: SELECT * FROM messages WHERE server_id = :serverId;
+
+-- Returns all messages for a conversation (no cursor filter).
+-- Use when before is null (the common case for first page load).
+getMessagesByConversationFirst:
+SELECT * FROM messages
+WHERE conversation_id = :conversationId
+ORDER BY logical_clock DESC
+LIMIT :limit;
+
+-- Returns messages before a given cursor (by clientId).
+-- Only use when a cursor is provided.
+getMessagesByConversationBefore:
+SELECT * FROM messages
+WHERE conversation_id = :conversationId
+  AND logical_clock < (SELECT logical_clock FROM messages WHERE client_id = :before)
+ORDER BY logical_clock DESC
+LIMIT :limit;
+
+-- All messages for a conversation, sorted ASC (used for anchor window)
+getAllMessagesByConversationAsc:
+SELECT * FROM messages
+WHERE conversation_id = :conversationId
+ORDER BY logical_clock ASC;
+
+insertMessage:
+INSERT INTO messages
+    (client_id, server_id, conversation_id, agent_id, role, content, type, status, logical_clock, timestamp, metadata)
+VALUES (:clientId, :serverId, :conversationId, :agentId, :role, :content, :type, :status, :logicalClock, :timestamp, :metadata);
+
+updateMessageStatusById:
+UPDATE messages SET status = :status WHERE client_id = :clientId;
+
+bindMessageServerId:
+UPDATE messages SET server_id = :serverId, status = :status WHERE client_id = :clientId;
+
+getOutboxMessages:
+SELECT * FROM messages WHERE agent_id = :agentId AND status IN (1, 5);
+
+-- FTS5-based search
+searchMessages:
+SELECT m.* FROM messages m
+JOIN messages_fts fts ON m.rowid = fts.rowid
+WHERE messages_fts MATCH :query
+ORDER BY m.timestamp DESC
+LIMIT :limit OFFSET :offset;
+
+getMessageCountByAgent:
+SELECT COUNT(*) AS cnt FROM messages WHERE agent_id = :agentId;
+
+-- Delete oldest messages, keeping the most recent :keep
+deleteOldMessagesByAgent:
+DELETE FROM messages
+WHERE agent_id = :agentId
+  AND rowid NOT IN (
+    SELECT rowid FROM messages WHERE agent_id = :agentId ORDER BY timestamp DESC LIMIT :keep
+  );
+
+deleteMessageByClientId: DELETE FROM messages WHERE client_id = :clientId;
+
