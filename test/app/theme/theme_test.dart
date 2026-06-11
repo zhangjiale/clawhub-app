@@ -4,24 +4,17 @@ import 'package:claw_hub/app/theme/theme.dart';
 
 void main() {
   group('ClawHub Theme', () {
-    test('light theme is generated from seed color', () {
-      final theme = AppTheme.lightTheme;
-      // Material 3 fromSeed generates tonal palette — primary is derived from seed
-      expect(theme.colorScheme.primary, isNotNull);
-      expect(theme.useMaterial3, isTrue);
-      expect(theme.brightness, Brightness.light);
-    });
-
-    test('dark theme has correct brightness', () {
+    test('dark theme has correct brightness and is manually constructed', () {
       final theme = AppTheme.darkTheme;
       expect(theme.brightness, Brightness.dark);
       expect(theme.useMaterial3, isTrue);
+      expect(theme.scaffoldBackgroundColor, const Color(0xFF111110));
     });
 
     test('AppColors defines all required colors', () {
-      expect(AppColors.primaryBlue, const Color(0xFF6C5CE7));
+      expect(AppColors.primaryBlue, const Color(0xFFC27C68)); // coral accent
       expect(AppColors.agentColors, isNotEmpty);
-      expect(AppColors.agentColors.length, greaterThanOrEqualTo(7));
+      expect(AppColors.agentColors.length, greaterThanOrEqualTo(12));
     });
 
     test('agentColors are all valid and unique', () {

@@ -1,90 +1,201 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/app/theme/page_transition.dart';
 import 'package:claw_hub/ui_kit/theme_color_utils.dart';
 
-/// ClawHub 全局应用主题
-/// 对齐: 架构 vFinal 5.7 (动态主题), 8.2 (全局主题色)
+/// ClawHub global theme — Premium Dark Mode.
+///
+/// All visual values are sourced from [XiaColors], [XiaSpacing], [XiaRadius],
+/// [XiaShadow], and [XiaMotion] design token classes, aligning with the
+/// design spec defined in docs/DesignToken-虾Hub.md and
+/// docs/ComponentSpec-虾Hub.md.
 class AppTheme {
   AppTheme._();
 
-  // Shared sub-themes to avoid duplication between light and dark themes.
-  static const _appBarTheme = AppBarTheme(centerTitle: true, elevation: 0);
+  /// Manually constructed [ColorScheme] matching the warm dark palette.
+  static const _colorScheme = ColorScheme.dark(
+    primary: XiaColors.accent,
+    onPrimary: XiaColors.text1,
+    primaryContainer: XiaColors.accentMuted,
+    surface: XiaColors.surface,
+    onSurface: XiaColors.text1,
+    surfaceContainerHighest: XiaColors.surface2,
+    surfaceContainerHigh: XiaColors.surface2,
+    surfaceContainer: XiaColors.surface,
+    surfaceDim: XiaColors.bg,
+    outline: XiaColors.text3,
+    outlineVariant: XiaColors.text4,
+    error: XiaColors.red,
+    onError: XiaColors.text1,
+    shadow: Colors.transparent,
+  );
+
+  static final _appBarTheme = AppBarTheme(
+    elevation: 0,
+    centerTitle: false,
+    backgroundColor: XiaColors.bg,
+    titleTextStyle: const TextStyle(
+      fontSize: XiaTypography.heroTitle,
+      fontWeight: FontWeight.w700,
+      letterSpacing: -0.6,
+      height: 1.2,
+      color: XiaColors.text1,
+    ),
+    iconTheme: const IconThemeData(color: XiaColors.text2),
+  );
+
   static final _cardTheme = CardThemeData(
-    elevation: 1,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    elevation: 0,
+    color: XiaColors.surface,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(XiaRadius.lg),
+    ),
   );
+
   static final _inputDecorationTheme = InputDecorationTheme(
-    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    filled: true,
+    fillColor: XiaColors.surface,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(XiaRadius.lg),
+      borderSide: BorderSide.none,
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(XiaRadius.lg),
+      borderSide: BorderSide.none,
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(XiaRadius.lg),
+      borderSide: const BorderSide(color: XiaColors.accent, width: 1.5),
+    ),
+    contentPadding: const EdgeInsets.symmetric(
+      horizontal: XiaSpacing.s5,
+      vertical: XiaSpacing.s3,
+    ),
+    hintStyle: const TextStyle(color: XiaColors.text4),
   );
-  static const _fabTheme = FloatingActionButtonThemeData(elevation: 2);
 
-  static ThemeData _baseTheme(Brightness brightness) {
-    return ThemeData(
-      useMaterial3: true,
-      brightness: brightness,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: AppColors.primaryBlue,
-        brightness: brightness,
+  static const _iconTheme = IconThemeData(color: XiaColors.text2);
+
+  /// The single dark theme applied via [ThemeMode.dark].
+  static final ThemeData darkTheme = ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    colorScheme: _colorScheme,
+    scaffoldBackgroundColor: XiaColors.bg,
+    appBarTheme: _appBarTheme,
+    cardTheme: _cardTheme,
+    inputDecorationTheme: _inputDecorationTheme,
+    iconTheme: _iconTheme,
+    dividerColor: XiaColors.divider,
+    pageTransitionsTheme: const PageTransitionsTheme(
+      builders: {
+        TargetPlatform.android: XiaPageTransitionsBuilder(),
+        TargetPlatform.iOS: XiaPageTransitionsBuilder(),
+      },
+    ),
+    textTheme: const TextTheme(
+      // Map Material type scale keys to design spec sizes
+      displayLarge: TextStyle(
+        fontSize: 30,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.6,
+        height: 1.2,
       ),
-      appBarTheme: _appBarTheme,
-      cardTheme: _cardTheme,
-      inputDecorationTheme: _inputDecorationTheme,
-      floatingActionButtonTheme: _fabTheme,
-    );
-  }
-
-  /// 浅色主题
-  static final ThemeData lightTheme = _baseTheme(Brightness.light);
-
-  /// 深色主题
-  static final ThemeData darkTheme = _baseTheme(Brightness.dark);
+      headlineLarge: TextStyle(
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.5,
+      ),
+      headlineMedium: TextStyle(
+        fontSize: 22,
+        fontWeight: FontWeight.w700,
+      ),
+      titleLarge: TextStyle(
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        letterSpacing: -0.2,
+        height: 1.3,
+      ),
+      titleMedium: TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        letterSpacing: -0.2,
+        height: 1.3,
+      ),
+      titleSmall: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        letterSpacing: -0.1,
+      ),
+      bodyLarge: TextStyle(
+        fontSize: 15,
+        fontWeight: FontWeight.w400,
+        height: 1.55,
+      ),
+      bodyMedium: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w400,
+        height: 1.5,
+      ),
+      bodySmall: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w400,
+        height: 1.4,
+      ),
+      labelLarge: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w500,
+        height: 1.4,
+      ),
+      labelMedium: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 0.5,
+      ),
+      labelSmall: TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 0.3,
+      ),
+    ),
+  );
 }
 
-/// ClawHub 全局颜色常量
+/// ClawHub color constants (sourced from [XiaColors] tokens).
+///
+/// Kept for backward compatibility — existing code references like
+/// [AppColors.primaryBlue] and [AppColors.statusOnline] are preserved
+/// but now resolve to the design-spec values.
 class AppColors {
   AppColors._();
 
-  /// 主色调 — ClawHub Blue
-  static const Color primaryBlue = Color(0xFF6C5CE7); // ClawHub accent purple
+  /// Brand accent — #C27C68 desaturated coral (was purple #6C5CE7).
+  static const Color primaryBlue = XiaColors.accent;
 
-  /// Agent 主题色预设（12 色）
-  static const List<Color> agentColors = [
-    Color(0xFF6C5CE7), // 紫色
-    Color(0xFF0984E3), // 蓝色
-    Color(0xFFFD79A8), // 粉色
-    Color(0xFF00B894), // 绿色
-    Color(0xFFE17055), // 橙色
-    Color(0xFF00CEC9), // 青色
-    Color(0xFFFDCB6E), // 黄色
-    Color(0xFFE84393), // 玫红
-    Color(0xFF636E72), // 灰蓝
-    Color(0xFF2D3436), // 深灰
-    Color(0xFF6AB04C), // 草绿
-    Color(0xFF5352ED), // 靛蓝
-  ];
+  /// Agent theme color presets (12 colors from design spec).
+  static const List<Color> agentColors = XiaColors.agentColors;
 
-  /// 健康状态颜色
-  static const Color statusOnline = Color(0xFF34C759);
-  static const Color statusOffline = Color(0xFFFF3B30);
-  static const Color statusConnecting = Color(0xFFFF9500);
-  static const Color statusExpectedOffline = Color(0xFF8E8E93);
-  static const Color statusUnknown = Color(0xFFC8C8CD); // 浅灰，区别于预期离线
+  /// Health status colors — semantic colors from design spec.
+  static const Color statusOnline = XiaColors.green;
+  static const Color statusOffline = XiaColors.text4;
+  static const Color statusConnecting = XiaColors.yellow;
+  static const Color statusExpectedOffline = XiaColors.text4;
+  static const Color statusUnknown = XiaColors.text4;
 
-  /// 消息状态颜色
-  static const Color messageFailed = Color(0xFFFF3B30);
-  static const Color messageSending = Color(0xFF8E8E93);
+  /// Message status colors.
+  static const Color messageFailed = XiaColors.red;
+  static const Color messageSending = XiaColors.text3;
 
-  /// 未读角标
-  static const Color unreadBadge = Color(0xFFFF3B30);
+  /// Unread badge — branded accent instead of generic red.
+  static const Color unreadBadge = XiaColors.accent;
 }
 
-/// Color 扩展
+/// Color extension — hex parsing and WCAG contrast utilities.
 extension ColorExtension on Color {
-  /// 从 Hex 字符串解析颜色（委托给 ui_kit 的 parseHexColor，支持 #RGB/#RRGGBB 格式）
+  /// Parse a color from hex string (#RGB / #RRGGBB).
   static Color fromHex(String hex) => parseHexColor(hex);
 
-  /// 输出 6 位 Hex 字符串（如 #007AFF）
-  /// 使用位提取避免 Flutter 3.x 广色域下的值偏差
+  /// Output 6-digit uppercase hex string (e.g. #C27C68).
   String toHex() {
     final intValue = value;
     final r = (intValue >> 16) & 0xFF;
@@ -95,8 +206,6 @@ extension ColorExtension on Color {
         '${b.toRadixString(16).padLeft(2, '0').toUpperCase()}';
   }
 
-  /// 根据背景亮度返回对比文字颜色（黑或白）。
-  /// 委托给 ui_kit 的 [contrastTextColor]，使用 WCAG 相对亮度算法
-  /// 和 0.55 阈值确保 AA 级对比度。
+  /// Return black or white contrasting color using WCAG relative luminance.
   Color contrastingTextColor() => contrastTextColor(this);
 }

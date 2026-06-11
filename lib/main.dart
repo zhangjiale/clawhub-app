@@ -130,9 +130,9 @@ class ClawHubApp extends ConsumerWidget {
       child: MaterialApp.router(
         title: 'ClawHub',
         debugShowCheckedModeBanner: false,
-        theme: AppTheme.lightTheme,
+        theme: AppTheme.darkTheme,
         darkTheme: AppTheme.darkTheme,
-        themeMode: ThemeMode.system,
+        themeMode: ThemeMode.dark,
         routerConfig: AppRouter.router,
         scaffoldMessengerKey: _rootMessengerKey,
       ),
