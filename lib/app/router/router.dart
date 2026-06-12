@@ -44,7 +44,7 @@ class AppRoutes {
   }
 
   static String editInstanceWithParams(String instanceId) {
-    return 'edit/$instanceId';
+    return '/instances/edit/$instanceId';
   }
 }
 

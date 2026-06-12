@@ -33,18 +33,17 @@ final connectionInitStateProvider = StateProvider<AsyncValue<void>?>(
 
 // --- Gateway Client ---
 
-/// Mock Gateway 客户端（MVP 阶段使用，后期替换为真实实现）
+/// Mock Gateway 客户端（开发/调试用，生产环境默认使用 [wsGatewayClientProvider]）
 final mockGatewayClientProvider = Provider<MockGatewayClient>((ref) {
   final client = MockGatewayClient();
   ref.onDispose(() => client.dispose());
   return client;
 });
 
-/// 真实 WebSocket Gateway 客户端（生产环境使用）。
+/// 真实 WebSocket Gateway 客户端（当前生产默认实现）。
 ///
-/// 切换方式：将 [gatewayClientProvider] 的返回值从
-/// `ref.watch(mockGatewayClientProvider)` 改为 `ref.watch(wsGatewayClientProvider)`，
-/// 即可全局切换到真实 WebSocket 连接。
+/// 开发/调试时如需使用 Mock 数据，将 [gatewayClientProvider] 的返回值
+/// 改回 `ref.watch(mockGatewayClientProvider)` 即可全局切回 Mock。
 final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
   // TODO: read locale from PlatformDispatcher.instance.locale when
   // i18n is implemented.
@@ -55,10 +54,10 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
 
 /// Gateway 防腐层接口（面向接口编程，方便 Mock ↔ 真实实现互换）
 ///
-/// 当前指向 MockGatewayClient（MVP 阶段）。
-/// 生产环境：改为 `return ref.watch(wsGatewayClientProvider);`
+/// 当前指向 WsGatewayClient（生产环境）。
+/// 开发/调试：改为 `return ref.watch(mockGatewayClientProvider);`
 final gatewayClientProvider = Provider<IGatewayClient>((ref) {
-  return ref.watch(mockGatewayClientProvider);
+  return ref.watch(wsGatewayClientProvider);
 });
 
 // --- Network Monitoring ---

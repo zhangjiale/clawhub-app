@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/native.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
+import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 
 void main() {
@@ -15,13 +16,20 @@ void main() {
       expect(client, isA<MockGatewayClient>());
     });
 
-    test('gatewayClientProvider and mockGatewayClientProvider are same instance', () {
+    test('wsGatewayClientProvider returns WsGatewayClient', () {
       final container = ProviderContainer();
       addTearDown(container.dispose);
 
-      final asGateway = container.read(gatewayClientProvider);
-      final asMock = container.read(mockGatewayClientProvider);
-      expect(identical(asGateway, asMock), isTrue);
+      final client = container.read(wsGatewayClientProvider);
+      expect(client, isA<WsGatewayClient>());
+    });
+
+    test('gatewayClientProvider returns WsGatewayClient (production default)', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final client = container.read(gatewayClientProvider);
+      expect(client, isA<WsGatewayClient>());
     });
 
     test('databaseProvider throws without override', () {

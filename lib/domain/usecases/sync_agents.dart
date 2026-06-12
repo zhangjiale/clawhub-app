@@ -1,5 +1,4 @@
 import '../models/agent.dart';
-import '../models/instance.dart';
 import '../models/enums.dart';
 import '../repositories/i_agent_repo.dart';
 import '../repositories/i_instance_repo.dart';
@@ -11,10 +10,16 @@ class AgentListData {
   final Map<String, String> instanceNames; // instanceId → instanceName
   final Map<String, HealthStatus> instanceStatuses; // instanceId → healthStatus
 
+  /// Per-instance sync errors.
+  /// Non-empty when one or more Gateway fetches failed and the UI
+  /// should show a stale-data warning.
+  final Map<String, String> syncErrors; // instanceId → errorMessage
+
   const AgentListData({
     required this.agents,
     required this.instanceNames,
     required this.instanceStatuses,
+    this.syncErrors = const {},
   });
 }
 
@@ -42,6 +47,7 @@ class SyncAgentsUseCase {
 
     final instanceNames = <String, String>{};
     final instanceStatuses = <String, HealthStatus>{};
+    final syncErrors = <String, String>{};
     for (final instance in instances) {
       instanceNames[instance.id] = instance.name;
       instanceStatuses[instance.id] = instance.healthStatus;
@@ -49,9 +55,10 @@ class SyncAgentsUseCase {
         final remoteAgents = await _gatewayClient.fetchAgents(instance.id);
         await _agentRepo.syncFromGateway(instance.id, remoteAgents);
       } catch (error, stackTrace) {
-        // Skip instances that fail to connect — show what we have locally.
-        // Use print (dart:core) to avoid introducing a Flutter dependency
-        // into the domain layer.
+        // Surface the error so the UI can show a stale-data warning
+        // while still displaying cached results from the local DB.
+        syncErrors[instance.id] = error.toString();
+        // print is dart:core — no Flutter dependency introduced.
         print(
           'SyncAgents failed for instance ${instance.id}: $error\n$stackTrace',
         );
@@ -63,6 +70,7 @@ class SyncAgentsUseCase {
       agents: agents,
       instanceNames: instanceNames,
       instanceStatuses: instanceStatuses,
+      syncErrors: syncErrors,
     );
   }
 }

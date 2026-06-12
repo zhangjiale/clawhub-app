@@ -97,7 +97,7 @@
 - [x] Given 用户打开"虾列表"Tab, When 数据加载完成, Then 按实例分组展示Agent卡片，每个分组头显示实例名称和在线状态点，分组可折叠/展开
 - [x] Given 每个Agent卡片, When 渲染完成, Then 展示虾头像（自动生成）、名称、描述、在线状态指示灯、最后活跃时间
 - [x] Given 某实例处于离线状态, When 渲染该分组, Then 该分组下所有Agent显示为离线状态，卡片视觉降级（灰色调）
-- [ ] Given Agent列表拉取失败（Gateway不可达）, When 打开页面, Then 展示本地缓存的上次数据，顶部提示"无法获取最新列表"
+- [x] Given Agent列表拉取失败（Gateway不可达）, When 打开页面, Then 展示本地缓存的上次数据，顶部提示"无法获取最新列表"
 
 **依赖**：US-003（需实例配置数据）；WebSocket连接管理器基础模块
 **技术备注**：Agent数据从Gateway API拉取；本地SQLite缓存；支持虚拟滚动（>50个Agent时）

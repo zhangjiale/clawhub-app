@@ -167,10 +167,12 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
         '$error\n$stackTrace',
       );
       // 连接失败：清理可能已部分建立的 Gateway 连接，
-      // 然后解除去重锁并标记为离线。
+      // 然后标记为离线。
       await _gatewayClient.disconnect(instance.id).catchError((_) {});
-      _connecting.remove(instance.id);
       await _updateHealthStatus(instance.id, HealthStatus.offline);
+    } finally {
+      // 无论成功或失败都释放去重锁，允许后续重连。
+      _connecting.remove(instance.id);
     }
   }
 

@@ -313,6 +313,46 @@ ProviderScope(
 
 ---
 
+### Law 16: 不可见输出必须可验证
+
+**规则**：以下两类"编译器不检查、lint 不报、UI 上不易察觉"的输出，必须有测试直接断言：
+
+**A. 参数化路径/URL/字符串方法** — 接受参数并返回路径、URL 或编码字符串的方法，必须对返回值写精确断言。
+
+```dart
+// ❌ 只测了常量，没测参数化方法
+expect(AppRoutes.addInstance, '/instances/add');
+// editInstanceWithParams 返回 'edit/xxx'（少了 /instances/ 前缀）
+// — 编译器不报错，lint 不报，运行时 go_router 抛 GoException
+
+// ✅ 必须覆盖参数化方法的返回值
+expect(AppRoutes.editInstanceWithParams('abc'), '/instances/edit/abc');
+expect(AppRoutes.chatWithParams('a', 'i', source: 'claws'), startsWith('chat/a?'));
+```
+
+**B. 内部集合/状态机** — 操作内部 `Set`/`Map` 或状态机的方法，必须用 Fake 注入 + 调用计数断言其副作用。
+
+```dart
+// ❌ ConnectionOrchestrator._connect() 的去重锁 _connecting 泄漏
+// — 成功了不释放，后续重连被静默跳过，UI 上完全看不出原因
+
+// ✅ Fake 注入 → 调用两次 onInstanceSaved → 断言 gateway.connect() 被调用了两次
+final gateway = _FakeGatewayClient();
+final orch = ConnectionOrchestrator(gatewayClient: gateway, ...);
+await orch.onInstanceSaved(onlineInstance);
+await orch.onInstanceSaved(onlineInstance); // 编辑后重新保存
+expect(gateway.connectCounts['inst-1'], 2,
+    reason: '第二次保存应触发重连（_connecting 未泄漏）');
+```
+
+**为什么**：路径拼接错误和状态泄漏不会导致编译失败或崩溃，只产生"看起来正常但行为不对"的 bug。这类 bug 在手动测试中极难发现，唯一可靠的防线是自动化断言。
+
+**检查方式**：
+- Code Review 时，每个返回字符串/URL 的参数化方法 → 搜对应测试文件有无对该方法返回值的断言
+- Code Review 时，每个操作内部 Set/Map 状态的类 → 搜对应测试文件有无 Fake + 调用计数
+
+---
+
 ## 🔍 Code Review 门禁清单
 
 合并前逐条检查：
@@ -324,6 +364,7 @@ ProviderScope(
 - [ ] **Law 8**: 无空 `catch (_)` 块
 - [ ] **Law 11**: 新增列表使用 builder 构造函数
 - [ ] **Law 12**: 新增 Provider 注册在 di/providers.dart 或 feature/providers/
+- [ ] **Law 16**: 新增参数化路径方法有返回值断言；新增状态机有 Fake 注入测试
 - [ ] **测试**: 新增 Widget 至少有 2 个测试用例
 - [ ] `flutter analyze` 零 error/warning
 - [ ] `flutter test` 全通过

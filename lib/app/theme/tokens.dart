@@ -35,6 +35,7 @@ class XiaColors {
   static const Color red = Color(0xFFC26464);
   static const Color redMuted = Color(0x1FC26464);     // 12% opacity
   static const Color yellow = Color(0xFFC4A86A);
+  static const Color yellowMuted = Color(0x1FC4A86A);  // 12% opacity
 
   // Decorative
   static const Color divider = Color(0x0AF5F4F0);      // rgba(245,244,240,0.04)
