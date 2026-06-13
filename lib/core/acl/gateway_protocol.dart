@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:claw_hub/core/utils/copy_with_nullable.dart';
+
 /// OpenClaw Gateway WebSocket 协议 v4 — 消息帧定义与解析。
 ///
 /// 对齐官方协议文档：https://docs.openclaw.ai/gateway/protocol
@@ -126,60 +128,50 @@ String buildRequest({
 /// [scopes] 为请求的 operator 权限列表（§2.4）。
 Map<String, dynamic> buildConnectParams({
   required String token,
-  required String locale,
   required String deviceId,
-  String clientId = 'openclaw-ios',
-  String clientMode = 'ui',
-  String? clientDisplayName,
-  String clientVersion = '1.0.0',
-  String platform = 'flutter',
-  String? deviceFamily,
-  String? modelIdentifier,
-  String? devicePublicKey,
+  required ConnectionConfig config,
   String? signature,
   int? signedAt,
   String? nonce,
   List<String> caps = const [],
   List<String> commands = const [],
   Map<String, bool> permissions = const {},
-  String role = 'operator',
-  List<String> scopes = operatorScopes,
 }) {
   final client = <String, dynamic>{
-    'id': clientId,
-    'version': clientVersion,
-    'platform': platform,
-    'mode': clientMode,
+    'id': config.clientId,
+    'version': config.clientVersion,
+    'platform': config.platform,
+    'mode': config.clientMode,
   };
-  if (clientDisplayName != null) {
-    client['displayName'] = clientDisplayName;
+  if (config.clientDisplayName != null) {
+    client['displayName'] = config.clientDisplayName;
   }
-  if (deviceFamily != null) {
-    client['deviceFamily'] = deviceFamily;
+  if (config.deviceFamily != null) {
+    client['deviceFamily'] = config.deviceFamily;
   }
-  if (modelIdentifier != null) {
-    client['modelIdentifier'] = modelIdentifier;
+  if (config.modelIdentifier != null) {
+    client['modelIdentifier'] = config.modelIdentifier;
   }
 
   final params = <String, dynamic>{
     'minProtocol': minProtocolVersion,
     'maxProtocol': protocolVersion,
     'client': client,
-    'role': role,
-    'scopes': scopes,
+    'role': config.role,
+    'scopes': config.scopes,
     'caps': caps,
     'commands': commands,
     'permissions': permissions,
     'device': {
       'id': deviceId,
-      if (devicePublicKey != null) 'publicKey': devicePublicKey,
+      if (config.devicePublicKey != null) 'publicKey': config.devicePublicKey,
       if (signature != null) 'signature': signature,
       if (signedAt != null) 'signedAt': signedAt,
       if (nonce != null) 'nonce': nonce,
     },
     'auth': {'token': token},
-    'locale': locale,
-    'userAgent': 'xiahub/$clientVersion',
+    'locale': config.locale,
+    'userAgent': 'xiahub/${config.clientVersion}',
   };
   return params;
 }
@@ -396,4 +388,79 @@ AgentEventData parseAgentEvent(Map<String, dynamic> payload) {
     },
     data: payload['data'] as Map<String, dynamic>? ?? payload,
   );
+}
+
+// ============================================================================
+// 连接配置值对象
+// ============================================================================
+
+/// 不可变值对象，聚合 [ConnectionManager] 所需的客户端/设备/认证配置参数。
+///
+/// 将 [ConnectionManager] 构造函数从 17 个参数收敛为 6 个，
+/// 消除 [WsGatewayClient] 在 [connect] 和 [testConnection] 中的重复参数复制。
+///
+/// 字段对齐 docs/technical/api-protocol.md §2.2–2.5。
+class ConnectionConfig {
+  final String locale;
+  final String platform;
+  final String? deviceFamily;
+  final String? modelIdentifier;
+  final String? clientDisplayName;
+  final String clientVersion;
+  final String clientId;
+  final String clientMode;
+  final String role;
+  final List<String> scopes;
+  final String? devicePublicKey;
+  final Future<String> Function(String v3Payload)? signPayload;
+
+  ConnectionConfig({
+    this.locale = 'zh-CN',
+    this.platform = 'flutter',
+    this.deviceFamily,
+    this.modelIdentifier,
+    this.clientDisplayName,
+    this.clientVersion = '1.0.0',
+    String? clientId,
+    this.clientMode = 'ui',
+    this.role = 'operator',
+    List<String>? scopes,
+    this.devicePublicKey,
+    this.signPayload,
+  }) : clientId = clientId ?? ClientIds.forPlatform(platform),
+       scopes = List<String>.unmodifiable(scopes ?? operatorScopes);
+
+  /// 创建修改了部分字段的新 [ConnectionConfig]。
+  ConnectionConfig copyWith({
+    String? locale,
+    String? platform,
+    Object? deviceFamily = CopyWithSentinel.instance,
+    Object? modelIdentifier = CopyWithSentinel.instance,
+    Object? clientDisplayName = CopyWithSentinel.instance,
+    String? clientVersion,
+    String? clientId,
+    String? clientMode,
+    String? role,
+    List<String>? scopes,
+    Object? devicePublicKey = CopyWithSentinel.instance,
+    Object? signPayload = CopyWithSentinel.instance,
+  }) {
+    return ConnectionConfig(
+      locale: locale ?? this.locale,
+      platform: platform ?? this.platform,
+      deviceFamily: copyWithNullable(deviceFamily, this.deviceFamily),
+      modelIdentifier: copyWithNullable(modelIdentifier, this.modelIdentifier),
+      clientDisplayName: copyWithNullable(
+        clientDisplayName,
+        this.clientDisplayName,
+      ),
+      clientVersion: clientVersion ?? this.clientVersion,
+      clientId: clientId ?? this.clientId,
+      clientMode: clientMode ?? this.clientMode,
+      role: role ?? this.role,
+      scopes: scopes != null ? List<String>.unmodifiable(scopes) : this.scopes,
+      devicePublicKey: copyWithNullable(devicePublicKey, this.devicePublicKey),
+      signPayload: copyWithNullable(signPayload, this.signPayload),
+    );
+  }
 }

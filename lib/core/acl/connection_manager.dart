@@ -4,8 +4,16 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
 import 'package:flutter/foundation.dart';
 
+import '../utils/retry_strategy.dart';
 import 'i_gateway_client.dart';
 import 'gateway_protocol.dart';
+
+/// Injectable timer factory — defaults to [Timer.new].
+///
+/// Tests inject a fake factory to control time-dependent behavior
+/// (tick timeout, reconnect backoff, pairing retry) without real delays.
+@visibleForTesting
+typedef TimerFactory = Timer Function(Duration, void Function());
 
 /// 管理单个 OpenClaw Gateway 实例的 WebSocket 连接生命周期。
 ///
@@ -22,9 +30,8 @@ class ConnectionManager {
   final Uuid _uuid;
 
   int _reconnectAttempt = 0;
+  final RetryStrategy _retryStrategy;
 
-  static const _maxReconnectDelaySeconds = 30;
-  static const _baseReconnectDelaySeconds = 1;
   static const _tickTimeoutMultiplier = 2;
 
   /// 服务端 tick 间隔（毫秒），由 hello-ok.policy.tickIntervalMs 设置
@@ -75,19 +82,14 @@ class ConnectionManager {
   Timer? _pairingRetryTimer;
   static const _pairingRetrySeconds = 10;
 
-  final String _locale;
   final String _deviceId;
-  final String? _deviceFamily;
-  final String? _modelIdentifier;
-  final String _clientVersion;
-  final String _platform;
-  final String _clientId;
-  final String _clientMode;
-  final String _role;
-  final List<String> _scopes;
-  final String? _clientDisplayName;
-  final String? _devicePublicKey;
-  final Future<String> Function(String v3Payload)? _signPayload;
+  final ConnectionConfig _config;
+
+  /// WebSocket 创建工厂 — 可注入以在测试中替换 WebSocket。
+  final WebSocketChannel Function(Uri) _webSocketFactory;
+
+  /// Timer 创建工厂 — 可注入以在测试中控制定时器行为。
+  final TimerFactory _createTimer;
 
   /// challenge nonce，收到 connect.challenge 后设置
   String? _challengeNonce;
@@ -97,35 +99,19 @@ class ConnectionManager {
     required String gatewayUrl,
     required String token,
     required String deviceId,
-    String? deviceFamily,
-    String? modelIdentifier,
-    String clientVersion = '1.0.0',
-    String platform = 'flutter',
-    String clientId = 'openclaw-ios',
-    String clientMode = 'ui',
-    String role = 'operator',
-    List<String> scopes = operatorScopes,
-    String? clientDisplayName,
-    String? devicePublicKey,
-    Future<String> Function(String v3Payload)? signPayload,
-    String locale = 'zh-CN',
+    required ConnectionConfig config,
     Uuid? uuid,
-  }) : _instanceId = instanceId,
+    WebSocketChannel Function(Uri)? webSocketFactory,
+    @visibleForTesting TimerFactory? timerFactory,
+    RetryStrategy? retryStrategy,
+  }) : _retryStrategy = retryStrategy ?? RetryStrategy.networkReconnect,
+       _instanceId = instanceId,
        _gatewayUrl = gatewayUrl,
        _token = token,
        _deviceId = deviceId,
-       _deviceFamily = deviceFamily,
-       _modelIdentifier = modelIdentifier,
-       _clientVersion = clientVersion,
-       _platform = platform,
-       _clientId = clientId,
-       _clientMode = clientMode,
-       _role = role,
-       _scopes = scopes,
-       _clientDisplayName = clientDisplayName,
-       _devicePublicKey = devicePublicKey,
-       _signPayload = signPayload,
-       _locale = locale,
+       _config = config,
+       _webSocketFactory = webSocketFactory ?? WebSocketChannel.connect,
+       _createTimer = timerFactory ?? Timer.new,
        _uuid = uuid ?? const Uuid() {
     _connectionStateController.add(GatewayConnectionState.disconnected);
   }
@@ -214,13 +200,25 @@ class ConnectionManager {
 
     try {
       final originalUri = Uri.parse(_gatewayUrl);
+      // Validate the scheme early — web_socket_channel wraps permanent
+      // configuration errors (wrong scheme, invalid host) as
+      // WebSocketChannelException, indistinguishable from transient
+      // network errors.  Catching bad schemes here ensures they are
+      // treated as permanent (authFailed / no reconnect).
+      if (originalUri.scheme != 'ws' && originalUri.scheme != 'wss') {
+        throw FormatException(
+          'Invalid WebSocket scheme "${originalUri.scheme}". '
+          'Only ws: and wss: are supported.',
+          _gatewayUrl,
+        );
+      }
       // 对齐 docs/technical/api-protocol.md §2.1–2.2：
       // Gateway 在 WebSocket 握手阶段通过 URL query 验证 token，
       // 不在握手中携带 token 会导致连接被拒绝。
       final uri = originalUri.replace(
         queryParameters: {...originalUri.queryParameters, 'token': _token},
       );
-      final ws = WebSocketChannel.connect(uri);
+      final ws = _webSocketFactory(uri);
       await ws.ready.timeout(
         const Duration(seconds: 15),
         onTimeout: () {
@@ -239,7 +237,7 @@ class ConnectionManager {
       );
 
       // 握手总超时 15 秒
-      _connectTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      _connectTimeoutTimer = _createTimer(const Duration(seconds: 15), () {
         if (_state == GatewayConnectionState.authenticating) {
           debugPrint('[CM] Connect handshake timeout for $_instanceId');
           _handleAuthFailure('Handshake timeout');
@@ -249,6 +247,15 @@ class ConnectionManager {
       // URL 格式错误是永久性配置问题，不应重连
       debugPrint('[CM] Bad gateway URL for $_instanceId: $error\n$stackTrace');
       _handleAuthFailure('Bad gateway URL: $error');
+    } on WebSocketChannelException catch (error, stackTrace) {
+      // DNS resolution failures, connection refused, TLS handshake timeouts,
+      // and other transport-level errors are transient — treat as recoverable
+      // network failures.
+      debugPrint(
+        '[CM] WebSocket channel error for $_instanceId: $error\n$stackTrace',
+      );
+      _setState(GatewayConnectionState.disconnected);
+      _scheduleReconnect();
     } catch (error, stackTrace) {
       debugPrint('[CM] Connect failed for $_instanceId: $error\n$stackTrace');
       _setState(GatewayConnectionState.disconnected);
@@ -322,22 +329,22 @@ class ConnectionManager {
     // 签名 nonce（如果设备密钥可用）
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     String? signature;
-    if (_signPayload != null && _challengeNonce != null) {
+    if (_config.signPayload != null && _challengeNonce != null) {
       try {
         // 构造 V3 签名 payload（§2.5）
         final v3Payload = buildV3SignaturePayload(
           deviceId: _deviceId,
-          clientId: _clientId,
-          clientMode: _clientMode,
-          role: _role,
-          scopes: _scopes,
+          clientId: _config.clientId,
+          clientMode: _config.clientMode,
+          role: _config.role,
+          scopes: _config.scopes,
           signedAtMs: nowMs,
           token: _token,
           nonce: _challengeNonce!,
-          platform: _platform,
-          deviceFamily: _deviceFamily ?? 'phone',
+          platform: _config.platform,
+          deviceFamily: _config.deviceFamily ?? 'phone',
         );
-        signature = await _signPayload(v3Payload);
+        signature = await _config.signPayload!(v3Payload);
         debugPrint('[CM] Signed V3 challenge payload');
       } catch (error, stackTrace) {
         debugPrint('[CM] Failed to sign V3 payload: $error\n$stackTrace');
@@ -356,21 +363,11 @@ class ConnectionManager {
     final id = _uuid.v4();
     final params = buildConnectParams(
       token: _token,
-      locale: _locale,
       deviceId: _deviceId,
-      clientId: _clientId,
-      clientMode: _clientMode,
-      clientDisplayName: _clientDisplayName,
-      clientVersion: _clientVersion,
-      platform: _platform,
-      deviceFamily: _deviceFamily,
-      modelIdentifier: _modelIdentifier,
-      devicePublicKey: _devicePublicKey,
+      config: _config,
       signature: signature,
       signedAt: signature != null ? nowMs : null,
       nonce: _challengeNonce,
-      role: _role,
-      scopes: _scopes,
     );
     debugPrint('[CM] Sending connect request — params keys: ${params.keys}');
     final requestJson = buildRequest(
@@ -523,13 +520,22 @@ class ConnectionManager {
 
   void _resetTickTimeout() {
     _tickTimeoutTimer?.cancel();
-    _tickTimeoutTimer = Timer(
+    _tickTimeoutTimer = _createTimer(
       Duration(milliseconds: _tickIntervalMs * _tickTimeoutMultiplier),
       () {
         debugPrint('[CM] Tick timeout for $_instanceId — connection lost');
-        _closeWebSocket();
-        _setState(GatewayConnectionState.recovering);
-        _scheduleReconnect();
+        // _closeWebSocket() is async (StreamSubscription.cancel /
+        // WebSocketSink.close may take non-trivial time).  The Timer
+        // callback is void, so we MUST sequence via .then() — a bare
+        // _closeWebSocket() without await would let _scheduleReconnect()
+        // fire a new _doConnect() while the old channel is still being
+        // torn down, creating a race where the delayed cleanup nulls
+        // the newly-established _channel/_incomingSubscription.
+        _closeWebSocket().then((_) {
+          if (_intentionalDisconnect) return;
+          _setState(GatewayConnectionState.recovering);
+          _scheduleReconnect();
+        });
       },
     );
   }
@@ -540,7 +546,7 @@ class ConnectionManager {
 
   void _scheduleReconnect() {
     _scheduleDoConnect(
-      delaySeconds: _computeBackoff(),
+      delaySeconds: _retryStrategy.delayForAttempt(_reconnectAttempt).inSeconds,
       reason: 'reconnect (attempt ${_reconnectAttempt + 1})',
       timerRef: 'reconnect',
       onFire: () => _reconnectAttempt++,
@@ -568,7 +574,7 @@ class ConnectionManager {
 
     debugPrint('[CM] Scheduling $reason for $_instanceId in ${delaySeconds}s');
 
-    final timer = Timer(Duration(seconds: delaySeconds), () {
+    final timer = _createTimer(Duration(seconds: delaySeconds), () {
       onFire?.call();
       _doConnect().catchError((Object error, StackTrace stackTrace) {
         debugPrint(
@@ -583,15 +589,6 @@ class ConnectionManager {
     } else {
       _reconnectTimer = timer;
     }
-  }
-
-  int _computeBackoff() {
-    var delay = _baseReconnectDelaySeconds;
-    for (int i = 0; i < _reconnectAttempt; i++) {
-      delay *= 2;
-      if (delay >= _maxReconnectDelaySeconds) return _maxReconnectDelaySeconds;
-    }
-    return delay;
   }
 
   // ---------------------------------------------------------------------------
@@ -671,10 +668,19 @@ class ConnectionManager {
   }
 
   Future<void> _closeWebSocket() async {
-    await _incomingSubscription?.cancel();
-    _incomingSubscription = null;
-    await _channel?.sink.close();
-    _channel = null;
+    // Capture locals BEFORE the first await so a reconnect that fires
+    // while we are waiting for cancel/close won't have its fresh
+    // _incomingSubscription / _channel clobbered by this stale cleanup.
+    final incomingSub = _incomingSubscription;
+    final channel = _channel;
+    await incomingSub?.cancel();
+    if (identical(_incomingSubscription, incomingSub)) {
+      _incomingSubscription = null;
+    }
+    await channel?.sink.close();
+    if (identical(_channel, channel)) {
+      _channel = null;
+    }
   }
 
   void _failAllPending(String reason) {

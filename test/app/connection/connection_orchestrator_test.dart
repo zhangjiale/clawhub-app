@@ -422,7 +422,7 @@ void main() {
     );
 
     test(
-      'duplicate _syncingAgents guard prevents concurrent fetchAgents',
+      '_syncingAgents guard marks pending retry on concurrent connected event',
       () async {
         // Use a Completer to hold fetchAgents open, simulating slow Gateway
         final fetchStarted = Completer<void>();
@@ -465,7 +465,8 @@ void main() {
         );
 
         // While the first sync is still in-flight, pump another connected
-        // event. The _syncingAgents guard must prevent a second fetchAgents.
+        // event. The _syncingAgents guard prevents a concurrent fetchAgents,
+        // but marks _syncPendingRetry so the next sync includes fresh data.
         gateway.addConnectedEvent('inst-1');
 
         // Allow the second connected event to be processed by orchestrator
@@ -474,18 +475,203 @@ void main() {
         // Release blocker to allow first sync to complete
         fetchBlocker.complete();
         await firstSave;
+        // Wait for the pending retry to also complete
         await Future<void>.delayed(const Duration(milliseconds: 100));
 
-        // Only ONE fetchAgents call despite two connected events
+        // First call (guarded) + one retry from _syncPendingRetry
         expect(
           gateway.fetchAgentsCounts['inst-1'],
-          1,
+          2,
           reason:
-              'Concurrent syncs must be guarded by _syncingAgents; '
-              'the second connected event must not trigger a duplicate '
-              'fetchAgents while the first is still in-flight',
+              'First sync completes, then the pending retry from the second '
+              'connected event triggers a fresh sync',
         );
       },
+    );
+
+    // -----------------------------------------------------------------
+    // _syncPendingRetry: failure recovery & lock safety
+    // -----------------------------------------------------------------
+
+    test(
+      'pending retry fires after first cycle partially fails (do-while)',
+      () async {
+        // Gateway that fails on the FIRST call (attempt 0 in cycle 1),
+        // then succeeds.  Verifies the do-while loop after a
+        // partially-failed for-loop.
+        final gateway = _FailsThenSucceedsGateway(
+          failOnCalls: {1}, // fail the very first fetchAgents call
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+        addTearDown(() => orch.dispose());
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+
+        // Trigger connect → connected → _syncAgentsForInstance.
+        orch.onInstanceSaved(instance);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        // While first cycle is in its 5s retry delay, inject a
+        // pending retry from a new connected event.
+        gateway.addConnectedEvent('inst-1');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Wait for the 5s retry delay + second cycle to complete
+        await Future<void>.delayed(const Duration(milliseconds: 5200));
+
+        // Call 1 (fail) + Call 2 (cycle-1 retry success) +
+        // Call 3 (cycle-2 from pending retry, success) = 3 total
+        expect(
+          gateway.fetchAgentsCounts['inst-1'],
+          3,
+          reason:
+              'After first call fails and retry succeeds, the do-while '
+              'must pick up the pending retry from the connected event '
+              'and run a second sync cycle.',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+
+    test(
+      '_syncingAgents lock is released after all retries exhausted',
+      () async {
+        // Gateway that fails on every call.  Sync exhausts its 3
+        // attempts (5s + 10s delays).  After it finishes, the lock
+        // must be released so a fresh sync can run.
+        final gateway = _FailsThenSucceedsGateway(
+          failOnCalls: {1, 2, 3, 4, 5, 6},
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+        addTearDown(() => orch.dispose());
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+
+        // Start sync — all 3 attempts will fail
+        orch.onInstanceSaved(instance);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        // Wait for all retry delays to complete (5s + 10s)
+        await Future<void>.delayed(const Duration(milliseconds: 15200));
+
+        expect(gateway.fetchAgentsCounts['inst-1'], 3);
+
+        // Allow subsequent calls to succeed and verify lock was freed
+        gateway.failOnCalls.clear();
+        gateway.addConnectedEvent('inst-1');
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(
+          gateway.fetchAgentsCounts['inst-1'],
+          4,
+          reason:
+              'After exhausting all retries, the _syncingAgents lock '
+              'must be released so a fresh sync can acquire it. '
+              'If still 3, the lock leaked and the guard blocked the '
+              'new sync.',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+
+    test(
+      'do-while exits after maxLoops to release lock during WebSocket flap',
+      () async {
+        // Gateway that blocks each fetchAgents call on a separate
+        // Completer so the test can inject _syncPendingRetry entries
+        // between loop iterations without real retry delays.
+        final gateway = _CyclicBlockGateway(blockCount: 3);
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+        addTearDown(() => orch.dispose());
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+
+        // --- Loop 1: start sync, block, inject pending retry, release ---
+        orch.onInstanceSaved(instance);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Inject a connected event while fetchAgents is blocked;
+        // the guard marks _syncPendingRetry.
+        gateway.addConnectedEvent('inst-1');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // Release → sync succeeds → do-while sees pending retry → loops
+        gateway.releaseCall(0);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // --- Loop 2: block again, inject another pending retry ---
+        gateway.addConnectedEvent('inst-1');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        gateway.releaseCall(1);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // --- Loop 3: block again, inject another pending retry ---
+        // (loopCount reaches maxLoops=3)
+        gateway.addConnectedEvent('inst-1');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        gateway.releaseCall(2);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        // After 3 loops the do-while must exit, even though
+        // _syncPendingRetry was populated during the last loop.
+        // With maxLoops=3, exactly 3 fetchAgents calls were made.
+        expect(
+          gateway.fetchAgentsCounts['inst-1'],
+          3,
+          reason:
+              'do-while must exit after maxLoops (3) iterations, '
+              'even with pending retries still arriving',
+        );
+
+        // --- Lock released: a fresh sync can now acquire it ---
+        gateway.addConnectedEvent('inst-1');
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(
+          gateway.fetchAgentsCounts['inst-1'],
+          4,
+          reason:
+              'After the cap released the lock, a new connected event '
+              'must be able to start a fresh sync. If still 3, the '
+              '_syncingAgents lock leaked.',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 10)),
     );
 
     // -------------------------------------------------------------------
@@ -899,6 +1085,223 @@ class _BlockingFetchGateway implements IGatewayClient {
     }
   }
 
+  @override
+  Future<void> dispose() async {
+    for (final c in _stateCtrls.values) {
+      await c.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Specialized fake for testing _syncPendingRetry failure recovery
+// ---------------------------------------------------------------------------
+
+/// Gateway that throws on fetchAgents calls whose 1-based index is in
+/// [failOnCalls] and succeeds otherwise.  Emits connecting/connected
+/// events like [_FakeGatewayClient], and exposes [addConnectedEvent]
+/// so tests can inject extra connected events to create pending retries.
+class _FailsThenSucceedsGateway implements IGatewayClient {
+  /// 1-based call indices on which fetchAgents should throw.
+  Set<int> failOnCalls;
+  int _callIndex = 0;
+  final Map<String, int> fetchAgentsCounts = {};
+  final Map<String, int> connectCounts = {};
+  final Map<String, StreamController<GatewayConnectionState>> _stateCtrls = {};
+  final Map<String, StreamController<GatewayPairingInfo?>> _pairingCtrls = {};
+
+  _FailsThenSucceedsGateway({Set<int>? failOnCalls})
+    : failOnCalls = failOnCalls ?? <int>{};
+
+  @override
+  Future<void> connect(Instance instance) async {
+    connectCounts[instance.id] = (connectCounts[instance.id] ?? 0) + 1;
+    final ctrl = _stateCtrls.putIfAbsent(
+      instance.id,
+      () => StreamController<GatewayConnectionState>.broadcast(),
+    );
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connecting);
+    });
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connected);
+    });
+  }
+
+  @override
+  Future<List<Agent>> fetchAgents(String instanceId) async {
+    fetchAgentsCounts[instanceId] = (fetchAgentsCounts[instanceId] ?? 0) + 1;
+    _callIndex++;
+
+    if (failOnCalls.contains(_callIndex)) {
+      throw Exception('Simulated fetchAgents failure (call $_callIndex)');
+    }
+    return [
+      Agent(
+        localId: 'local-1',
+        remoteId: 'r-1',
+        instanceId: instanceId,
+        name: '测试虾($_callIndex)',
+      ),
+    ];
+  }
+
+  @override
+  Future<void> disconnect(String id) async {}
+  @override
+  Future<({String serverId, int timestamp})> sendMessage({
+    required String instanceId,
+    required String agentId,
+    required Message message,
+  }) => throw UnimplementedError();
+  @override
+  Future<({List<Message> messages, String? nextCursor})> fetchMessageHistory({
+    required String instanceId,
+    required String agentId,
+    String? cursor,
+    int limit = 50,
+  }) => throw UnimplementedError();
+  @override
+  Future<bool> testConnection(Instance i) async => true;
+  @override
+  Stream<GatewayConnectionState> connectionStateStream(String id) {
+    return _stateCtrls
+        .putIfAbsent(
+          id,
+          () => StreamController<GatewayConnectionState>.broadcast(),
+        )
+        .stream;
+  }
+
+  @override
+  void resetConnectionState(String id) {}
+  @override
+  Stream<Message> messageStream(String id) => throw UnimplementedError();
+  @override
+  Stream<ToolCall> toolCallStream(String id) => throw UnimplementedError();
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String id) {
+    return _pairingCtrls
+        .putIfAbsent(
+          id,
+          () => StreamController<GatewayPairingInfo?>.broadcast(),
+        )
+        .stream;
+  }
+
+  void addConnectedEvent(String instanceId) {
+    final ctrl = _stateCtrls[instanceId];
+    if (ctrl != null && !ctrl.isClosed) {
+      ctrl.add(GatewayConnectionState.connected);
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    for (final c in _stateCtrls.values) {
+      await c.close();
+    }
+    for (final c in _pairingCtrls.values) {
+      await c.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Specialized fake for testing the do-while maxLoops cap
+// ---------------------------------------------------------------------------
+
+/// Gateway that blocks each fetchAgents call on a separate [Completer],
+/// letting the test inject [_syncPendingRetry] entries between loop
+/// iterations without real retry delays.
+class _CyclicBlockGateway implements IGatewayClient {
+  final List<Completer<void>> _blockers;
+  int _callIndex = 0;
+  final Map<String, int> fetchAgentsCounts = {};
+  final Map<String, StreamController<GatewayConnectionState>> _stateCtrls = {};
+
+  _CyclicBlockGateway({required int blockCount})
+    : _blockers = List.generate(blockCount, (_) => Completer<void>());
+
+  /// Releases the n-th blocked fetchAgents call (0-based).
+  void releaseCall(int callIndex) {
+    _blockers[callIndex].complete();
+  }
+
+  @override
+  Future<void> connect(Instance instance) async {
+    final ctrl = _stateCtrls.putIfAbsent(
+      instance.id,
+      () => StreamController<GatewayConnectionState>.broadcast(),
+    );
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connecting);
+    });
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connected);
+    });
+  }
+
+  @override
+  Future<List<Agent>> fetchAgents(String instanceId) async {
+    fetchAgentsCounts[instanceId] = (fetchAgentsCounts[instanceId] ?? 0) + 1;
+    final index = _callIndex++;
+    if (index < _blockers.length) {
+      await _blockers[index].future;
+    }
+    return [
+      Agent(
+        localId: 'local-1',
+        remoteId: 'r-1',
+        instanceId: instanceId,
+        name: '测试虾($index)',
+      ),
+    ];
+  }
+
+  void addConnectedEvent(String instanceId) {
+    final ctrl = _stateCtrls[instanceId];
+    if (ctrl != null && !ctrl.isClosed) {
+      ctrl.add(GatewayConnectionState.connected);
+    }
+  }
+
+  @override
+  Future<void> disconnect(String id) async {}
+  @override
+  Future<({String serverId, int timestamp})> sendMessage({
+    required String instanceId,
+    required String agentId,
+    required Message message,
+  }) => throw UnimplementedError();
+  @override
+  Future<({List<Message> messages, String? nextCursor})> fetchMessageHistory({
+    required String instanceId,
+    required String agentId,
+    String? cursor,
+    int limit = 50,
+  }) => throw UnimplementedError();
+  @override
+  Future<bool> testConnection(Instance i) async => true;
+  @override
+  Stream<GatewayConnectionState> connectionStateStream(String id) {
+    return _stateCtrls
+        .putIfAbsent(
+          id,
+          () => StreamController<GatewayConnectionState>.broadcast(),
+        )
+        .stream;
+  }
+
+  @override
+  void resetConnectionState(String id) {}
+  @override
+  Stream<Message> messageStream(String id) => throw UnimplementedError();
+  @override
+  Stream<ToolCall> toolCallStream(String id) => throw UnimplementedError();
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String id) =>
+      Stream.value(null);
   @override
   Future<void> dispose() async {
     for (final c in _stateCtrls.values) {

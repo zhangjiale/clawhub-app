@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/acl/i_gateway_client.dart';
 import '../../core/iconnectivity.dart';
+import '../../core/utils/retry_strategy.dart';
 import '../../domain/models/enums.dart';
 import '../../domain/models/instance.dart';
 import '../../domain/repositories/i_agent_repo.dart';
@@ -50,6 +51,13 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   /// 避免同一实例的 agent 同步并发执行
   final Set<String> _syncingAgents = {};
 
+  /// 同步期间收到新 connected 事件的实例 — 当前同步完成后触发重试。
+  final Set<String> _syncPendingRetry = {};
+
+  /// 防抖：记录每个实例最近一次 [reconnect] 调用时间，
+  /// 忽略 2 秒内的重复点击。
+  final Map<String, DateTime> _lastReconnectAttempt = {};
+
   /// 网络操作代数计数器 — 每次降级/恢复递增，
   /// 操作内每次 await 后校验，旧操作若被新操作取代则提前退出，
   /// 防止 WiFi→4G→WiFi 快速切换时降级与恢复交错执行。
@@ -58,6 +66,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   /// 标记 dispose 已调用，initialize() 中的异步操作应提前退出。
   bool _isDisposed = false;
 
+  /// 可注入的时间函数，用于测试 reconnect 防抖逻辑。
+  /// 生产环境默认使用 [DateTime.now]。
+  final DateTime Function() _clock;
+
   ConnectionOrchestrator({
     required IGatewayClient gatewayClient,
     required IInstanceRepo instanceRepo,
@@ -65,12 +77,14 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     IConnectivity? connectivity,
     void Function()? onAgentsSynced,
     void Function(String instanceId, GatewayPairingInfo? info)? onPairingInfo,
+    DateTime Function()? clock,
   }) : _gatewayClient = gatewayClient,
        _instanceRepo = instanceRepo,
        _agentRepo = agentRepo,
        _onAgentsSynced = onAgentsSynced,
        _onPairingInfoCb = onPairingInfo,
-       _connectivity = connectivity ?? ConnectivityAdapter();
+       _connectivity = connectivity ?? ConnectivityAdapter(),
+       _clock = clock ?? (() => DateTime.now());
 
   // ---------------------------------------------------------------------------
   // 公开 API
@@ -153,7 +167,17 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   ///
   /// 对任意状态（offline、pairingRequired、online 等）的实例发起连接，
   /// ConnectionManager 内置的指数退避/配对重试机制会接管后续流程。
+  ///
+  /// 内置 2 秒防抖：同一实例的快速重复点击会被忽略，
+  /// 避免在 UI 快速连点时触发多次 WebSocket 连接尝试。
   Future<void> reconnect(Instance instance) async {
+    final now = _clock();
+    final lastAttempt = _lastReconnectAttempt[instance.id];
+    if (lastAttempt != null &&
+        now.difference(lastAttempt) < const Duration(seconds: 2)) {
+      return; // debounce: ignore rapid re-taps
+    }
+    _lastReconnectAttempt[instance.id] = now;
     await _connect(instance);
   }
 
@@ -244,6 +268,8 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     await _pairingInfoSubscriptions.remove(instanceId)?.cancel();
     _connecting.remove(instanceId);
     _syncingAgents.remove(instanceId);
+    _syncPendingRetry.remove(instanceId);
+    _lastReconnectAttempt.remove(instanceId);
     await _gatewayClient.disconnect(instanceId);
 
     // 清除配对信息
@@ -256,39 +282,78 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   ///
   /// 对齐 Gateway 协议流程：connect → challenge → connect req → hello-ok → agents.list。
   /// 使用 [_syncingAgents] 防重入，避免同一实例并发同步。
-  /// 失败时自动指数退避重试（最多 2 次：5s → 10s），之后等待下次重新连接触发。
+  /// 失败时自动指数退避重试（最多 2 次：5s → 10s）。
+  ///
+  /// 若同步期间再次收到 connected 事件，当前同步完成后自动重试，
+  /// 确保断连→重连场景下不会丢失新的同步机会。
+  ///
+  /// 使用 do-while 循环而非递归 fire-and-forget，确保：
+  /// - [_syncingAgents] 锁覆盖整个重试周期
+  /// - 所有错误路径都有日志可追踪
+  /// - 不会产生脱离生命周期管理的悬空 Future
+  ///
+  /// do-while 循环受 [_maxSyncLoops] 上限保护，防止 WebSocket 频繁
+  /// 抖动时 [_syncingAgents] 锁被无限期持有。达到上限后锁会被释放，
+  /// 后续 connected 事件可正常获取锁并开始新一轮同步。
   Future<void> _syncAgentsForInstance(String instanceId) async {
-    if (!_syncingAgents.add(instanceId)) return; // 已有同步进行中
+    if (!_syncingAgents.add(instanceId)) {
+      // 已有同步进行中 — 标记待重试，当前同步结束后会检查此标记
+      _syncPendingRetry.add(instanceId);
+      return;
+    }
 
     try {
-      const maxRetries = 2;
-      for (var attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-          final remoteAgents = await _gatewayClient.fetchAgents(instanceId);
-          await _agentRepo.syncFromGateway(instanceId, remoteAgents);
-          debugPrint(
-            '[ConnectionOrchestrator] Synced ${remoteAgents.length} agents '
-            'for $instanceId',
-          );
-          // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建
-          _onAgentsSynced?.call();
-          return; // 成功，退出重试循环
-        } catch (error, stackTrace) {
-          if (attempt < maxRetries) {
-            final delaySeconds = 5 * (1 << attempt); // 5s, 10s
+      // Loop to handle pending retries from new connected events that
+      // arrive while a sync is in progress.  The lock (_syncingAgents)
+      // is held for the entire loop so concurrent connected events
+      // queue up in _syncPendingRetry instead of starting a parallel
+      // sync.
+      const maxLoops = 3;
+      var loopCount = 0;
+      do {
+        loopCount++;
+        const retry = RetryStrategy.agentSync;
+        for (var attempt = 0; retry.shouldRetry(attempt); attempt++) {
+          try {
+            final remoteAgents = await _gatewayClient.fetchAgents(instanceId);
+            await _agentRepo.syncFromGateway(instanceId, remoteAgents);
             debugPrint(
-              '[ConnectionOrchestrator] Agent sync failed for $instanceId '
-              '(attempt ${attempt + 1}/${maxRetries + 1}), '
-              'retrying in ${delaySeconds}s: $error',
+              '[ConnectionOrchestrator] Synced ${remoteAgents.length} agents '
+              'for $instanceId',
             );
-            await Future.delayed(Duration(seconds: delaySeconds));
-          } else {
-            debugPrint(
-              '[ConnectionOrchestrator] Agent sync failed for $instanceId '
-              'after ${maxRetries + 1} attempts: $error\n$stackTrace',
-            );
+            // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建
+            _onAgentsSynced?.call();
+            // Success — break out of for-loop, then check
+            // _syncPendingRetry for pending retries below.
+            break;
+          } catch (error, stackTrace) {
+            if (retry.shouldRetry(attempt + 1)) {
+              final delay = retry.delayForAttempt(attempt);
+              debugPrint(
+                '[ConnectionOrchestrator] Agent sync failed for $instanceId '
+                '(attempt ${attempt + 1}/${retry.maxAttempts}), '
+                'retrying in ${delay.inSeconds}s: $error',
+              );
+              await Future.delayed(delay);
+            } else {
+              debugPrint(
+                '[ConnectionOrchestrator] Agent sync failed for $instanceId '
+                'after ${retry.maxAttempts} attempts: $error\n$stackTrace',
+              );
+            }
           }
         }
+        // Whether we succeeded or exhausted all retries, check if a
+        // new connected event arrived during this sync cycle.
+        // If so, loop once more to pick up any new agents.
+      } while (loopCount < maxLoops && _syncPendingRetry.remove(instanceId));
+
+      if (loopCount >= maxLoops && _syncPendingRetry.remove(instanceId)) {
+        debugPrint(
+          '[ConnectionOrchestrator] Agent sync loop limit ($maxLoops) reached '
+          'for $instanceId — releasing lock to unblock other instances. '
+          'Pending retry discarded; next connected event will re-trigger sync.',
+        );
       }
     } finally {
       _syncingAgents.remove(instanceId);
@@ -357,8 +422,20 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       // 连接成功后自动同步 Agent 列表（协议流程：connect → agents.list）
       // 放在 DB 状态更新之后，确保 healthStatus=online 已持久化。
       // fire-and-forget：同步失败不影响连接状态，且下一次连接/tick 会重试。
+      // catchError 是最后的安全网，防止意外的同步异常（如 Set.add 在极端
+      // 并发下的同步抛出）成为未处理的异步错误。
       if (state == GatewayConnectionState.connected) {
-        _syncAgentsForInstance(instanceId);
+        unawaited(
+          _syncAgentsForInstance(instanceId).catchError((
+            Object e,
+            StackTrace st,
+          ) {
+            debugPrint(
+              '[ConnectionOrchestrator] Unhandled sync error for '
+              '$instanceId: $e\n$st',
+            );
+          }),
+        );
       }
     } catch (error) {
       // 实例可能已被删除 — 静默处理

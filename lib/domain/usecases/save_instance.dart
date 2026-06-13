@@ -112,14 +112,10 @@ class SaveInstanceUseCase {
     //    ConnectionManager._handleDeviceIdMismatch 自动 2s 重试处理。
     try {
       await _lifecycle?.onInstanceSaved(saved);
-    } catch (error, stackTrace) {
+    } catch (_) {
       // 编排失败不应阻止 save 返回成功 — 实例已持久化。
       // 连接错误由 ConnectionOrchestrator 内部的自动重连机制自行处理。
-      // print is dart:core — no Flutter dependency (Law 8).
-      print(
-        '[SaveInstanceUseCase] Lifecycle callback failed for '
-        '${saved.id}: $error\n$stackTrace',
-      );
+      // 日志关注点属于外层（infrastructure/app），不在 domain 层。
     }
 
     return saved;

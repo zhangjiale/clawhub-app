@@ -1,16 +1,13 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
-import 'package:ed25519_edwards/ed25519_edwards.dart' as ed;
-import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../domain/models/models.dart';
 import 'connection_manager.dart';
+import 'device_identity.dart';
 import 'gateway_protocol.dart';
+import 'i_device_identity_provider.dart';
 import 'i_gateway_client.dart';
 
 /// 真实 WebSocket Gateway 客户端 — 实现 [IGatewayClient] 接口。
@@ -20,83 +17,28 @@ import 'i_gateway_client.dart';
 /// - 握手：challenge → connect → hello-ok
 /// - 请求：`agents.list`、`agent`、`chat.history`
 /// - 事件：`agent`（thinking / message / tool / lifecycle）、`tick`
-/// - 设备身份：**Ed25519** 密钥对 + V3 签名 Payload（§2.5）
+/// - 设备身份：委托给 [IDeviceIdentityProvider]（Ed25519 密钥对 + V3 签名）
 ///
 /// 领域对象映射由本类完成（_parseAgent, _parseMessage, _parseToolCall）。
 ///
 /// 每个实例的连接相关资源内聚于 [_InstanceConnection]。
 class WsGatewayClient implements IGatewayClient {
   final Uuid _uuid = const Uuid();
-  final String _locale;
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
-
-  static const _privateKeyKey = 'clawhub_device_ed25519_seed';
-  static const _publicKeyKey = 'clawhub_device_ed25519_pubkey';
-
-  // Legacy keys (ECDSA P-256) — for migration detection
-  static const _legacyPrivateKeyKey = 'clawhub_device_private_key';
-  static const _legacyPublicKeyKey = 'clawhub_device_public_key';
-
-  /// 设备唯一标识（SHA256 of Ed25519 public key, 64 hex chars）。
-  String? _deviceId;
-
-  /// Ed25519 公钥（base64url，32 字节 raw）。
-  String? _publicKeyB64;
-
-  /// Ed25519 私钥种子（32 字节）。
-  Uint8List? _seedBytes;
-  bool _identityLoaded = false;
-  Future<_DeviceIdentity>? _identityFuture;
-
-  /// 平台标识（由调用方注入，默认 flutter）。
-  final String _platform;
-
-  /// 设备系列（android / ios / phone）。
-  final String? _deviceFamily;
-
-  /// 设备型号（如 Pixel 8）。
-  final String? _modelIdentifier;
-
-  /// 设备显示名称（如「我的手机」）。
-  final String? _clientDisplayName;
-
-  /// 客户端版本。
-  final String _clientVersion;
-
-  /// 客户端标识（§2.3 枚举值，由平台决定）。
-  final String _clientId;
-
-  /// 客户端模式（§2.3，operator 客户端固定为 ui）。
-  final String _clientMode;
-
-  /// 客户端角色（operator）。
-  final String _role;
-
-  /// 请求的 operator scope 列表（§2.4）。
-  final List<String> _scopes;
+  final IDeviceIdentityProvider _identityProvider;
+  final ConnectionConfig _config;
 
   /// 创建 WebSocket Gateway 客户端。
+  ///
+  /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
+  /// 由 DI 容器注入（默认 [Ed25519IdentityProvider]）。
+  ///
+  /// [config] 提供客户端/设备/认证的静态配置参数，
+  /// 由 DI 容器预构建后注入。
   WsGatewayClient({
-    String locale = 'zh-CN',
-    String platform = 'flutter',
-    String? deviceFamily,
-    String? modelIdentifier,
-    String? clientDisplayName,
-    String clientVersion = '1.0.0',
-    String? clientId,
-    String clientMode = 'ui',
-    String role = 'operator',
-    List<String>? scopes,
-  }) : _locale = locale,
-       _platform = platform,
-       _deviceFamily = deviceFamily,
-       _modelIdentifier = modelIdentifier,
-       _clientDisplayName = clientDisplayName,
-       _clientVersion = clientVersion,
-       _clientId = clientId ?? ClientIds.forPlatform(platform),
-       _clientMode = clientMode,
-       _role = role,
-       _scopes = scopes ?? operatorScopes;
+    required IDeviceIdentityProvider identityProvider,
+    ConnectionConfig? config,
+  }) : _identityProvider = identityProvider,
+       _config = config ?? ConnectionConfig();
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -104,118 +46,16 @@ class WsGatewayClient implements IGatewayClient {
   /// 防止同一 instanceId 的重入连接。
   final Set<String> _connecting = {};
 
-  /// 加载或生成设备身份：Ed25519 密钥对。
+  // 设备身份由 [IDeviceIdentityProvider] 管理，通过构造函数注入。
+
+  /// 构建携带设备身份信息的运行时 [ConnectionConfig]。
   ///
-  /// **deviceId = SHA256(publicKeyRaw).hex()** — 对齐 docs/technical/api-protocol.md §2.5:
-  /// "生成 Ed25519 密钥对, deviceId = SHA256(publicKey)"
-  ///
-  /// 首次调用时从 [FlutterSecureStorage] 读取密钥对；
-  /// 若不存在则生成新的 Ed25519 密钥对并持久化。
-  /// 如检测到旧版 ECDSA P-256 密钥对，自动迁移到 Ed25519。
-  /// deviceId 不持久化——它总是从 publicKey 实时计算。
-  Future<_DeviceIdentity> _ensureDeviceIdentity() async {
-    if (_identityLoaded) {
-      return _DeviceIdentity(
-        deviceId: _deviceId!,
-        publicKeyB64: _publicKeyB64,
-        seedBytes: _seedBytes,
-      );
-    }
-
-    // 防止并发调用同时进入加载路径：用 _identityFuture 作为 pending gate，
-    // 让后续调用者等待同一个加载操作完成，避免重复生成密钥或 TOCTOU 崩溃。
-    if (_identityFuture != null) {
-      return _identityFuture!;
-    }
-    final completer = Completer<_DeviceIdentity>();
-    _identityFuture = completer.future;
-
-    try {
-      // 1. 尝试加载 Ed25519 密钥对
-      final storedSeedB64 = await _secureStorage.read(key: _privateKeyKey);
-      final storedPubKeyB64 = await _secureStorage.read(key: _publicKeyKey);
-
-      if (storedSeedB64 != null &&
-          storedSeedB64.isNotEmpty &&
-          storedPubKeyB64 != null &&
-          storedPubKeyB64.isNotEmpty) {
-        _seedBytes = base64Url.decode(storedSeedB64);
-        _publicKeyB64 = storedPubKeyB64;
-        debugPrint('[WsGateway] Loaded existing Ed25519 keypair');
-      } else {
-        // 2. 检查旧版 ECDSA P-256 密钥（迁移检测）
-        final legacySeed = await _secureStorage.read(key: _legacyPrivateKeyKey);
-        if (legacySeed != null && legacySeed.isNotEmpty) {
-          debugPrint(
-            '[WsGateway] Detected legacy ECDSA P-256 keypair — migrating to Ed25519',
-          );
-          await _secureStorage.delete(key: _legacyPrivateKeyKey);
-          await _secureStorage.delete(key: _legacyPublicKeyKey);
-        }
-
-        // 3. 生成新 Ed25519 密钥对
-        await _generateAndPersistEd25519Keypair();
-      }
-
-      // deviceId = SHA256(publicKeyRaw) — 协议要求 §2.5
-      final publicKeyBytes = base64Url.decode(_publicKeyB64!);
-      _deviceId = sha256.convert(publicKeyBytes).toString();
-      debugPrint('[WsGateway] deviceId (SHA256 of publicKey): $_deviceId');
-
-      // _identityLoaded 必须在 _deviceId 赋值之后才能设为 true，
-      // 否则快速路径 _DeviceIdentity(deviceId: _deviceId!) 会空指针崩溃。
-      _identityLoaded = true;
-
-      final identity = _DeviceIdentity(
-        deviceId: _deviceId!,
-        publicKeyB64: _publicKeyB64,
-        seedBytes: _seedBytes,
-      );
-      completer.complete(identity);
-      return identity;
-    } catch (error) {
-      _identityLoaded = false;
-      completer.completeError(error);
-      rethrow;
-    } finally {
-      _identityFuture = null;
-    }
-  }
-
-  /// 生成 Ed25519 密钥对并持久化到安全存储。
-  Future<void> _generateAndPersistEd25519Keypair() async {
-    // generateKey() 返回 KeyPair，内含 privateKey (64B = 32B seed + 32B pubkey)
-    // 和 publicKey (32B)。
-    final keyPair = ed.generateKey();
-
-    // 提取 32 字节种子用于持久化
-    _seedBytes = ed.seed(keyPair.privateKey);
-    // 提取 32 字节公钥
-    _publicKeyB64 = base64Url.encode(
-      Uint8List.fromList(keyPair.publicKey.bytes),
-    );
-
-    await _secureStorage.write(
-      key: _privateKeyKey,
-      value: base64Url.encode(_seedBytes!),
-    );
-    await _secureStorage.write(key: _publicKeyKey, value: _publicKeyB64);
-    debugPrint('[WsGateway] Generated new Ed25519 keypair');
-  }
-
-  /// 用设备 Ed25519 私钥对 [v3Payload] 签名，返回 base64url 编码的签名。
-  ///
-  /// [v3Payload] 由 [buildV3SignaturePayload] 构造。
-  Future<String> _signPayload(String v3Payload) async {
-    final identity = await _ensureDeviceIdentity();
-    // 从种子重建 PrivateKey（ed25519_edwards 的 PrivateKey = 64B seed+pubkey）
-    final privateKey = ed.newKeyFromSeed(identity.seedBytes!);
-    final message = Uint8List.fromList(v3Payload.codeUnits);
-
-    // sign(PrivateKey, Uint8List) → 64 字节签名
-    final sig = ed.sign(privateKey, message);
-    return base64Url.encode(sig);
-  }
+  /// 从 [IDeviceIdentityProvider] 派生 `devicePublicKey` 和 `signPayload`，
+  /// 避免 [connect] 与 [testConnection] 中的重复配置构建代码。
+  ConnectionConfig _buildConfig(DeviceIdentity identity) => _config.copyWith(
+    devicePublicKey: identity.publicKeyB64,
+    signPayload: _identityProvider.signPayload,
+  );
 
   // ---------------------------------------------------------------------------
   // IGatewayClient 实现
@@ -232,25 +72,15 @@ class WsGatewayClient implements IGatewayClient {
         await _cleanupConnection(instance.id);
       }
 
-      final identity = await _ensureDeviceIdentity();
+      final identity = await _identityProvider.ensureDeviceIdentity();
+      final config = _buildConfig(identity);
 
       final manager = ConnectionManager(
         instanceId: instance.id,
         gatewayUrl: instance.gatewayUrl,
         token: instance.tokenRef,
         deviceId: identity.deviceId,
-        devicePublicKey: identity.publicKeyB64,
-        signPayload: (v3Payload) => _signPayload(v3Payload),
-        deviceFamily: _deviceFamily,
-        modelIdentifier: _modelIdentifier,
-        clientVersion: _clientVersion,
-        platform: _platform,
-        clientId: _clientId,
-        clientMode: _clientMode,
-        role: _role,
-        scopes: _scopes,
-        clientDisplayName: _clientDisplayName,
-        locale: _locale,
+        config: config,
       );
 
       // 复用已有的流控制器（若有），否则创建新的
@@ -403,24 +233,14 @@ class WsGatewayClient implements IGatewayClient {
   @override
   Future<bool> testConnection(Instance instance) async {
     final testId = '__test_${instance.id}';
-    final identity = await _ensureDeviceIdentity();
+    final identity = await _identityProvider.ensureDeviceIdentity();
+    final config = _buildConfig(identity);
     final testManager = ConnectionManager(
       instanceId: testId,
       gatewayUrl: instance.gatewayUrl,
       token: instance.tokenRef,
       deviceId: identity.deviceId,
-      devicePublicKey: identity.publicKeyB64,
-      signPayload: (v3Payload) => _signPayload(v3Payload),
-      deviceFamily: _deviceFamily,
-      modelIdentifier: _modelIdentifier,
-      clientVersion: _clientVersion,
-      platform: _platform,
-      clientId: _clientId,
-      clientMode: _clientMode,
-      role: _role,
-      scopes: _scopes,
-      clientDisplayName: _clientDisplayName,
-      locale: _locale,
+      config: config,
     );
 
     try {
@@ -718,21 +538,6 @@ class WsGatewayClient implements IGatewayClient {
       ),
     );
   }
-}
-
-// ============================================================================
-// 内部：设备身份数据类
-// ============================================================================
-
-class _DeviceIdentity {
-  final String deviceId;
-  final String? publicKeyB64;
-  final Uint8List? seedBytes;
-  const _DeviceIdentity({
-    required this.deviceId,
-    this.publicKeyB64,
-    this.seedBytes,
-  });
 }
 
 // ============================================================================

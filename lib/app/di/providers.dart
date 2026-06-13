@@ -1,8 +1,13 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
+import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
+import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/iconnectivity.dart';
 import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
 import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
@@ -57,6 +62,14 @@ final mockGatewayClientProvider = Provider<MockGatewayClient>((ref) {
   return client;
 });
 
+/// 设备身份提供者 — Ed25519 密钥管理 + V3 签名。
+///
+/// 使用 [FlutterSecureStorage] 持久化密钥对。
+/// 可通过 override 注入 fake 以进行单元测试。
+final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
+  return Ed25519IdentityProvider(secureStorage: const FlutterSecureStorage());
+});
+
 /// 真实 WebSocket Gateway 客户端（当前生产默认实现）。
 ///
 /// 开发/调试时如需使用 Mock 数据，将 [gatewayClientProvider] 的返回值
@@ -74,12 +87,15 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
   // TODO: read modelIdentifier from device_info_plus for accurate
   // device reporting (e.g. "iPhone 15", "Pixel 8").
   final client = WsGatewayClient(
-    locale: 'zh-CN',
-    platform: os,
-    clientId: clientId,
-    deviceFamily: deviceFamily,
-    clientDisplayName: '虾Hub',
-    clientVersion: AppClientInfo.version,
+    identityProvider: ref.watch(deviceIdentityProvider),
+    config: ConnectionConfig(
+      locale: 'zh-CN',
+      platform: os,
+      clientId: clientId,
+      deviceFamily: deviceFamily,
+      clientDisplayName: '虾Hub',
+      clientVersion: AppClientInfo.version,
+    ),
   );
   ref.onDispose(() => client.dispose());
   return client;
@@ -94,6 +110,11 @@ final gatewayClientProvider = Provider<IGatewayClient>((ref) {
 });
 
 // --- Network Monitoring ---
+
+/// 日志接口 — 生产环境使用 [DebugPrintLogger]。
+///
+/// 测试可通过 override 注入 fake 以验证日志输出。
+final loggerProvider = Provider<ILogger>((ref) => const DebugPrintLogger());
 
 /// 网络连接监听器 — 面向 [IConnectivity] 接口，便于单测 mock。
 ///

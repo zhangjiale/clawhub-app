@@ -64,14 +64,11 @@ class SyncAgentsUseCase {
           // Transient: ConnectionOrchestrator will sync when ready.
           continue;
         }
-        final msg = error.toString();
-        // Surface the error so the UI can show a stale-data warning
-        // while still displaying cached results from the local DB.
-        // print is dart:core — no Flutter dependency (Law 8).
-        print(
-          'SyncAgents failed for instance ${instance.id}: $error\n$stackTrace',
-        );
-        syncErrors[instance.id] = msg;
+        // Surface the error via syncErrors so the UI can show a stale-data
+        // warning while still displaying cached results from the local DB.
+        // Logging is an infrastructure/app-layer concern — the caller
+        // decides whether and how to log errors from syncErrors.
+        syncErrors[instance.id] = error.toString();
       }
     }
 
