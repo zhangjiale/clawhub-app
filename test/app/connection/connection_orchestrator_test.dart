@@ -24,6 +24,7 @@ import 'package:claw_hub/domain/models/models.dart';
 class _FakeGatewayClient implements IGatewayClient {
   final Map<String, int> connectCounts = {};
   final Map<String, int> fetchAgentsCounts = {};
+  final Map<String, int> disconnectCounts = {};
   final Map<String, StreamController<GatewayConnectionState>> _stateCtrls = {};
   final bool _synchronousEvents;
 
@@ -123,7 +124,9 @@ class _FakeGatewayClient implements IGatewayClient {
   }
 
   @override
-  Future<void> disconnect(String instanceId) async {}
+  Future<void> disconnect(String instanceId) async {
+    disconnectCounts[instanceId] = (disconnectCounts[instanceId] ?? 0) + 1;
+  }
 
   @override
   Future<({String serverId, int timestamp})> sendMessage({
@@ -380,6 +383,60 @@ void main() {
         expect(agents.map((a) => a.name), containsAll(['产品虾', '代码虾']));
       },
     );
+
+    test('_syncingAgents lock is released after first-try success '
+        '(Law 16 — lock-release on success path)', () async {
+      // The bug: _syncingAgents.add(id) was only removed in the failure/
+      // retry-exhaustion paths, not after a first-try success.
+      // If the 'finally' block were absent, a second connected event
+      // would find _syncingAgents still containing the instance ID
+      // and be silently skipped — permanently blocking future syncs.
+      final gateway = _FakeGatewayClient(
+        synchronousEvents: true,
+        stubAgents: {
+          'inst-1': [_agent('local-1', 'inst-1', '产品虾')],
+        },
+      );
+      final orch = ConnectionOrchestrator(
+        gatewayClient: gateway,
+        instanceRepo: instanceRepo,
+        agentRepo: agentRepo,
+      );
+      addTearDown(() => orch.dispose());
+
+      final instance = Instance(
+        id: 'inst-1',
+        name: 'Test',
+        gatewayUrl: 'wss://test.com:18789',
+        tokenRef: 'token',
+        healthStatus: HealthStatus.online,
+      );
+      await instanceRepo.save(instance);
+
+      // First onInstanceSaved → connect → connected → syncAgents succeeds
+      await orch.onInstanceSaved(instance);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        gateway.fetchAgentsCounts['inst-1'],
+        1,
+        reason: 'First sync should succeed',
+      );
+
+      // Second onInstanceSaved → connect → connected → syncAgents SHOULD
+      // also succeed because the finally block in _syncAgentsForInstance
+      // released _syncingAgents for this instance.
+      await orch.onInstanceSaved(instance);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(
+        gateway.fetchAgentsCounts['inst-1'],
+        2,
+        reason:
+            'Second sync must succeed — if fetchAgentsCounts is still 1, '
+            'the _syncingAgents lock leaked (finally block missing or '
+            'exit path bypassing it)',
+      );
+    });
 
     test(
       'offline instance connects and syncs agents on successful connection',
@@ -982,6 +1039,75 @@ void main() {
           expect(gateway.connectCounts['inst-1'], greaterThanOrEqualTo(1));
         },
       );
+    });
+
+    // =====================================================================
+    // onInstanceDeleted — Law 16: side-effect coverage
+    // =====================================================================
+
+    test(
+      'onInstanceDeleted calls gateway.disconnect and clears pairing',
+      () async {
+        final pairingCleared = <String>[];
+        final gateway = _FakeGatewayClient(
+          stubAgents: {
+            'inst-1': [_agent('local-1', 'inst-1', '产品虾')],
+          },
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+          onPairingInfo: (id, info) {
+            if (info == null) pairingCleared.add(id);
+          },
+        );
+        addTearDown(() => orch.dispose());
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+
+        // Establish a connection so subscriptions/maps are populated
+        await orch.onInstanceSaved(instance);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Delete the instance — should trigger full cleanup cascade
+        await orch.onInstanceDeleted(instance.id);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(
+          gateway.disconnectCounts['inst-1'],
+          1,
+          reason: 'onInstanceDeleted must call gateway.disconnect',
+        );
+        expect(
+          pairingCleared,
+          contains('inst-1'),
+          reason:
+              'onInstanceDeleted must call onPairingInfo(id, null) '
+              'to clear pairing data from UI',
+        );
+      },
+    );
+
+    test('onInstanceDeleted for unknown instance does not throw', () async {
+      final gateway = _FakeGatewayClient();
+      final orch = ConnectionOrchestrator(
+        gatewayClient: gateway,
+        instanceRepo: instanceRepo,
+        agentRepo: agentRepo,
+      );
+      addTearDown(() => orch.dispose());
+
+      // Must not throw — _disconnect handles missing keys gracefully
+      await orch.onInstanceDeleted('non-existent-id');
+      // No exception means the test passes
     });
   });
 }

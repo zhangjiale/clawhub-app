@@ -7,6 +7,7 @@ import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
@@ -102,6 +103,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   Timer? _timeoutTimer;
   Agent? _agent;
 
+  /// Cached future for [init] so [send] can await initialization if the
+  /// user sends a message before [init] completes.
+  Future<void>? _initFuture;
+
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
 
@@ -113,90 +118,137 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     required SendMessageUseCase sendMessageUseCase,
     required this.instanceId,
     required this.agentId,
-  })  : _agentRepo = agentRepo,
-        _conversationRepo = conversationRepo,
-        _messageRepo = messageRepo,
-        _gatewayClient = gatewayClient,
-        _sendMessageUseCase = sendMessageUseCase,
-        super(const ChatSessionState());
+  }) : _agentRepo = agentRepo,
+       _conversationRepo = conversationRepo,
+       _messageRepo = messageRepo,
+       _gatewayClient = gatewayClient,
+       _sendMessageUseCase = sendMessageUseCase,
+       super(const ChatSessionState());
 
   /// The loaded agent (null until [init] completes).
   Agent? get agent => _agent;
 
-  late final String _conversationId =
-      Conversation.generateId(instanceId, agentId);
+  late final String _conversationId = Conversation.generateId(
+    instanceId,
+    agentId,
+  );
 
   /// Initialise: load agent, create conversation, fetch history, subscribe to stream.
-  Future<void> init() async {
-    // 1. Look up the agent
-    _agent = await _agentRepo.getById(agentId);
+  ///
+  /// Uses `??=` so multiple callers (provider + [send]) can safely await the
+  /// same future without re-triggering initialisation.
+  Future<void> init() => _initFuture ??= _init();
 
-    // 2. Get or create conversation (idempotent)
-    await _conversationRepo.getOrCreate(instanceId, agentId);
-
-    // 3. Load local messages immediately (fast path)
-    await _loadMessages();
-
-    // 4. Subscribe to connection state
-    _connectionSubscription = _gatewayClient
-        .connectionStateStream(instanceId)
-        .listen((state) {
-      _updateState((s) => s.copyWith(connectionState: state));
-    });
-
-    // 5. Fetch message history from Gateway (best-effort)
-    if (_agent != null) {
-      try {
-        final history = await _gatewayClient.fetchMessageHistory(
-          instanceId: instanceId,
-          agentId: _agent!.remoteId,
-        );
-        for (final msg in history.messages) {
-          await _messageRepo.insert(msg);
-        }
-        await _loadMessages();
-      } catch (error, stackTrace) {
+  Future<void> _init() async {
+    try {
+      // 1. Look up the agent
+      _agent = await _agentRepo.getById(agentId);
+      if (_agent == null) {
         debugPrint(
-          'History fetch failed for $instanceId/${_agent!.remoteId}: $error\n$stackTrace',
+          '[ChatViewModel] Agent not found: agentId=$agentId, '
+          'instanceId=$instanceId — send() will be unavailable.',
         );
       }
-    }
 
-    // 6. Subscribe to real-time messages
-    _messageSubscription = _gatewayClient
-        .messageStream(instanceId)
-        .listen(
-          (msg) async {
+      // 2. Get or create conversation (idempotent)
+      await _conversationRepo.getOrCreate(instanceId, agentId);
+
+      // 3. Load local messages immediately (fast path)
+      await _loadMessages();
+
+      // 4. Subscribe to connection state
+      _connectionSubscription = _gatewayClient
+          .connectionStateStream(instanceId)
+          .listen((state) {
+            _updateState((s) => s.copyWith(connectionState: state));
+          });
+
+      // 5. Fetch message history from Gateway (best-effort)
+      if (_agent != null) {
+        try {
+          final history = await _gatewayClient.fetchMessageHistory(
+            instanceId: instanceId,
+            agentId: _agent!.remoteId,
+          );
+          for (final msg in history.messages) {
             await _messageRepo.insert(msg);
-            await _loadMessages();
-            // Agent replied — stop thinking + cancel timeout
-            if (msg.role == MessageRole.agent) {
-              _stopThinking();
-              onStatsChanged?.call();
-            }
-          },
-          onError: (error, stackTrace) {
-            debugPrint(
-              'Message stream error for $instanceId: $error\n$stackTrace',
-            );
-          },
-        );
+          }
+          await _loadMessages();
+        } catch (error, stackTrace) {
+          debugPrint(
+            'History fetch failed for $instanceId/${_agent!.remoteId}: $error\n$stackTrace',
+          );
+        }
+      }
 
-    // 7. Subscribe to tool call events
-    _toolCallSubscription = _gatewayClient
-        .toolCallStream(instanceId)
-        .listen((tc) {
-      final current = Map<String, ToolCall>.from(state.toolCalls);
-      current[tc.messageId] = tc;
-      _updateState((s) => s.copyWith(toolCalls: current));
-    });
+      // 6. Subscribe to real-time messages
+      _messageSubscription = _gatewayClient
+          .messageStream(instanceId)
+          .listen(
+            (msg) async {
+              await _messageRepo.insert(msg);
+              await _loadMessages();
+              if (msg.role == MessageRole.agent) {
+                _stopThinking();
+                onStatsChanged?.call();
+              }
+            },
+            onError: (error, stackTrace) {
+              debugPrint(
+                'Message stream error for $instanceId: $error\n$stackTrace',
+              );
+            },
+          );
+
+      // 7. Subscribe to tool call events
+      _toolCallSubscription = _gatewayClient.toolCallStream(instanceId).listen((
+        tc,
+      ) {
+        final current = Map<String, ToolCall>.from(state.toolCalls);
+        current[tc.messageId] = tc;
+        _updateState((s) => s.copyWith(toolCalls: current));
+      });
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
+      );
+      // Tear down any subscriptions that were set up before the failure
+      // so a subsequent retry() or send() starts from a clean slate.
+      _teardownSubscriptions();
+      // Clear the cached future so the next init() / send() call will
+      // retry instead of instantly returning the failed future.
+      _initFuture = null;
+      // Signal to send() that the agent is unavailable (shows LoadError).
+      _agent = null;
+    }
   }
 
   /// Send a text message.
+  ///
+  /// If [init] hasn't completed yet, awaits it first so the user's message
+  /// is never silently dropped.  If the agent doesn't exist (or init failed),
+  /// surfaces a [LoadError] so the UI can show a meaningful message.
   Future<void> send(String text) async {
-    if (_agent == null) return;
+    await init();
 
-    await _sendMessageUseCase.execute(
+    if (_agent == null) {
+      _updateState(
+        (s) => s.copyWith(
+          messages: LoadError(
+            'Agent not found. '
+            'It may have been removed. Please go back and try again.',
+            StackTrace.current,
+          ),
+        ),
+      );
+      debugPrint(
+        '[ChatViewModel] send() blocked: agent $agentId not found '
+        'in instance $instanceId.',
+      );
+      return;
+    }
+
+    final sentMessage = await _sendMessageUseCase.execute(
       instanceId: instanceId,
       agent: _agent!,
       content: text,
@@ -205,8 +257,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
     await _loadMessages();
 
-    // Start "thinking" state
-    _startThinking();
+    // Only start "thinking" state when the message was successfully sent.
+    // - FAILED: the Gateway rejected or couldn't reach the message;
+    //   no agent reply will ever arrive, so thinking would spin forever.
+    // - PENDING: the instance is offline; the message is waiting in the
+    //   outbox and will be retried later.
+    if (sentMessage.status == MessageStatus.sent) {
+      _startThinking();
+    }
 
     onStatsChanged?.call();
   }
@@ -248,13 +306,36 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     state = transform(state);
   }
 
+  /// Retry initialization after a previous failure.
+  ///
+  /// Call this from the UI's retry button (e.g. [LoadErrorView.onRetry]).
+  /// Resets all state and re-runs agent lookup, history fetch, and stream
+  /// subscriptions from scratch.  Safe to call even if init succeeded.
+  Future<void> retry() async {
+    _teardownSubscriptions();
+    _initFuture = null;
+    _agent = null;
+    _updateState((s) => s.copyWith(messages: const LoadInProgress()));
+    await init();
+  }
+
   /// Release resources. Call when the chat room is permanently closed.
   @override
   void dispose() {
-    _messageSubscription?.cancel();
-    _connectionSubscription?.cancel();
-    _toolCallSubscription?.cancel();
-    _timeoutTimer?.cancel();
+    _teardownSubscriptions();
     super.dispose();
+  }
+
+  /// Cancel all stream subscriptions and timers without touching
+  /// [_initFuture] or [_agent] — safe for both retry and dispose paths.
+  void _teardownSubscriptions() {
+    _messageSubscription?.cancel();
+    _messageSubscription = null;
+    _connectionSubscription?.cancel();
+    _connectionSubscription = null;
+    _toolCallSubscription?.cancel();
+    _toolCallSubscription = null;
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
   }
 }

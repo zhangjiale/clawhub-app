@@ -1,10 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:claw_hub/core/acl/device_identity.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
-import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -151,9 +148,6 @@ void main() {
         when(
           () => storage.read(key: 'clawhub_device_public_key'),
         ).thenAnswer((_) async => null);
-
-        String? capturedSeed;
-        String? capturedPubKey;
 
         when(
           () => storage.write(

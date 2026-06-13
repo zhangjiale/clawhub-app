@@ -16,7 +16,6 @@ import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
-import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈

@@ -327,7 +327,7 @@ expect(AppRoutes.addInstance, '/instances/add');
 
 // ✅ 必须覆盖参数化方法的返回值
 expect(AppRoutes.editInstanceWithParams('abc'), '/instances/edit/abc');
-expect(AppRoutes.chatWithParams('a', 'i', source: 'claws'), startsWith('chat/a?'));
+expect(AppRoutes.chatWithParams('a', 'i', source: 'claws'), startsWith('/claws/chat/a?'));
 ```
 
 **B. 内部集合/状态机** — 操作内部 `Set`/`Map` 或状态机的方法，必须用 Fake 注入 + 调用计数断言其副作用。

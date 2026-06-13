@@ -211,10 +211,15 @@ String buildAgentRequest({
   required String id,
   required String agentId,
   required String message,
+  required String idempotencyKey,
   String? sessionId,
   Map<String, dynamic>? overrides,
 }) {
-  final params = <String, dynamic>{'agentId': agentId, 'message': message};
+  final params = <String, dynamic>{
+    'agentId': agentId,
+    'message': message,
+    'idempotencyKey': idempotencyKey,
+  };
   if (sessionId != null) params['sessionId'] = sessionId;
   if (overrides != null) params['overrides'] = overrides;
 

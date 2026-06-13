@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:uuid/uuid.dart';
 import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../domain/models/models.dart';
 import 'connection_manager.dart';
@@ -27,6 +28,16 @@ class WsGatewayClient implements IGatewayClient {
   final IDeviceIdentityProvider _identityProvider;
   final ConnectionConfig _config;
 
+  /// Optional: inject a custom WebSocket factory for testing.
+  /// When null (production default), [ConnectionManager] creates real
+  /// [WebSocket] channels.
+  final WebSocketChannel Function(Uri)? _webSocketFactory;
+
+  /// Optional: inject a custom timer factory for testing.
+  /// When null (production default), [ConnectionManager] uses dart:async
+  /// [Timer].
+  final TimerFactory? _timerFactory;
+
   /// 创建 WebSocket Gateway 客户端。
   ///
   /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
@@ -34,11 +45,18 @@ class WsGatewayClient implements IGatewayClient {
   ///
   /// [config] 提供客户端/设备/认证的静态配置参数，
   /// 由 DI 容器预构建后注入。
+  ///
+  /// [webSocketFactory] 和 [timerFactory] 仅供测试注入，
+  /// 生产环境留空即可（委托 [ConnectionManager] 默认行为）。
   WsGatewayClient({
     required IDeviceIdentityProvider identityProvider,
     ConnectionConfig? config,
+    WebSocketChannel Function(Uri)? webSocketFactory,
+    TimerFactory? timerFactory,
   }) : _identityProvider = identityProvider,
-       _config = config ?? ConnectionConfig();
+       _config = config ?? ConnectionConfig(),
+       _webSocketFactory = webSocketFactory,
+       _timerFactory = timerFactory;
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -81,6 +99,8 @@ class WsGatewayClient implements IGatewayClient {
         token: instance.tokenRef,
         deviceId: identity.deviceId,
         config: config,
+        webSocketFactory: _webSocketFactory,
+        timerFactory: _timerFactory,
       );
 
       // 复用已有的流控制器（若有），否则创建新的
@@ -163,6 +183,7 @@ class WsGatewayClient implements IGatewayClient {
     final res = await manager.sendRequest(Methods.agent, {
       'agentId': agentId,
       'message': message.content ?? '',
+      'idempotencyKey': message.clientId,
       if (message.metadata != null) 'metadata': message.metadata,
     });
 
@@ -241,6 +262,8 @@ class WsGatewayClient implements IGatewayClient {
       token: instance.tokenRef,
       deviceId: identity.deviceId,
       config: config,
+      webSocketFactory: _webSocketFactory,
+      timerFactory: _timerFactory,
     );
 
     try {

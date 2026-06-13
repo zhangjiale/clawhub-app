@@ -434,6 +434,7 @@ font-feature-settings: "ss01", "cv11";
 
 | 组件 | Scale 值 | 附加效果 |
 |:---|:---|:---|
+| 分组头 (`.instance-header:active`) | **不缩放** | **opacity: 0.5**（结构性元素，不用背景高亮） |
 | Header 按钮 (`.header-btn:active`) | `scale(0.95)` | background 变为 surface3 |
 | 返回按钮 (`.back-btn:active`) | `scale(0.95)` | background 变为 surface2 |
 | Agent 卡片 (`.agent-card:active`) | `scale(0.98)` | background 变为 surface2 |

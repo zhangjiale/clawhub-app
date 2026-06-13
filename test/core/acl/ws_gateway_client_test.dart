@@ -6,9 +6,10 @@ import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/domain/models/enums.dart'
-    show MessageRole, MessageType;
+    show HealthStatus, MessageRole, MessageType, ToolCallStatus;
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'test_helpers.dart';
@@ -130,7 +131,6 @@ void main() {
   group('connect()', () {
     test('completes handshake and emits connected', () async {
       final identityProvider = FakeDeviceIdentityProvider();
-      final ws = ControllableWebSocket.create();
 
       final client = WsGatewayClient(
         identityProvider: identityProvider,
@@ -426,5 +426,229 @@ void main() {
       expect(ClientIds.forPlatform('windows'), 'gateway-client');
       expect(ClientIds.forPlatform('web'), 'gateway-client');
     });
+  });
+
+  // ==========================================================================
+  // Law 16: Event routing — _handleEvent → _emitMessage / _emitToolCall
+  // ==========================================================================
+  group('Event routing', () {
+    /// Helper: create a WsGatewayClient backed by a ControllableWebSocket,
+    /// connect to a test instance, complete the handshake, and return the
+    /// client + controllable ws for event injection.
+    Future<({WsGatewayClient client, ControllableWebSocket ws})>
+    connectAndHandshake() async {
+      final ws = ControllableWebSocket.ready();
+      final identityProvider = FakeDeviceIdentityProvider();
+
+      final client = WsGatewayClient(
+        identityProvider: identityProvider,
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      final instance = Instance(
+        id: 'test-instance',
+        name: 'Test',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        tokenRef: 'test-token',
+        healthStatus: HealthStatus.online,
+        isLocalNetwork: false,
+      );
+
+      // Start connect (don't await — it blocks on manager.connect())
+      unawaited(client.connect(instance));
+      await pumpMicrotasks();
+
+      // Complete the challenge → connect → hello-ok handshake
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(helloOkJson(reqId));
+      await pumpMicrotasks();
+
+      return (client: client, ws: ws);
+    }
+
+    test('agent message event routed to messageStream', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      ws.simulateServerFrame(
+        agentEventJson(
+          streamType: 'message',
+          data:
+              '{"clientId":"c-1","serverId":"s-1",'
+              '"conversationId":"conv-1","agentId":"r-1",'
+              '"role":"agent","content":"Hello!","type":"text",'
+              '"logicalClock":1}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(
+        messages.length,
+        1,
+        reason: 'Agent message event should be routed to messageStream',
+      );
+      expect(messages.first.content, 'Hello!');
+      expect(messages.first.role, MessageRole.agent);
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('agent tool event routed to toolCallStream', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final toolCalls = <ToolCall>[];
+      final sub = client.toolCallStream('test-instance').listen(toolCalls.add);
+
+      ws.simulateServerFrame(
+        agentEventJson(
+          streamType: 'tool',
+          data:
+              '{"id":"tc-1","messageId":"msg-1","name":"search",'
+              '"status":"running","input":"{\\"query\\":\\"test\\"}"}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(
+        toolCalls.length,
+        1,
+        reason: 'Agent tool event should be routed to toolCallStream',
+      );
+      expect(toolCalls.first.toolName, 'search');
+      expect(toolCalls.first.status, ToolCallStatus.running);
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('non-agent events are silently ignored (not forwarded)', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final toolCalls = <ToolCall>[];
+      final msgSub = client.messageStream('test-instance').listen(messages.add);
+      final tcSub = client
+          .toolCallStream('test-instance')
+          .listen(toolCalls.add);
+
+      // tick event is not an agent event — should not be forwarded
+      ws.simulateServerFrame(tickJson);
+      await pumpMicrotasks();
+
+      expect(
+        messages,
+        isEmpty,
+        reason: 'Non-agent events should not appear on messageStream',
+      );
+      expect(
+        toolCalls,
+        isEmpty,
+        reason: 'Non-agent events should not appear on toolCallStream',
+      );
+
+      await msgSub.cancel();
+      await tcSub.cancel();
+      await client.dispose();
+    });
+
+    test('connection state stream reflects handshake progression', () async {
+      final ws = ControllableWebSocket.ready();
+      final identityProvider = FakeDeviceIdentityProvider();
+
+      final client = WsGatewayClient(
+        identityProvider: identityProvider,
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      final states = <GatewayConnectionState>[];
+      final sub = client
+          .connectionStateStream('test-instance')
+          .listen(states.add);
+
+      final instance = Instance(
+        id: 'test-instance',
+        name: 'Test',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        tokenRef: 'test-token',
+        healthStatus: HealthStatus.online,
+        isLocalNetwork: false,
+      );
+
+      unawaited(client.connect(instance));
+      await pumpMicrotasks();
+
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(helloOkJson(reqId));
+      await pumpMicrotasks();
+
+      expect(
+        states,
+        containsAll([
+          GatewayConnectionState.connecting,
+          GatewayConnectionState.connected,
+        ]),
+        reason:
+            'Connection state stream should reflect '
+            'handshake progression (connecting → connected)',
+      );
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test(
+      'messageStream works before connect (empty stream, no error)',
+      () async {
+        final client = WsGatewayClient(
+          identityProvider: FakeDeviceIdentityProvider(),
+        );
+
+        final messages = <Message>[];
+        final sub = client.messageStream('test-instance').listen(messages.add);
+
+        await pumpMicrotasks();
+        expect(
+          messages,
+          isEmpty,
+          reason: 'messageStream should be empty before connect',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test(
+      'toolCallStream works before connect (empty stream, no error)',
+      () async {
+        final client = WsGatewayClient(
+          identityProvider: FakeDeviceIdentityProvider(),
+        );
+
+        final toolCalls = <ToolCall>[];
+        final sub = client
+            .toolCallStream('test-instance')
+            .listen(toolCalls.add);
+
+        await pumpMicrotasks();
+        expect(
+          toolCalls,
+          isEmpty,
+          reason: 'toolCallStream should be empty before connect',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
   });
 }

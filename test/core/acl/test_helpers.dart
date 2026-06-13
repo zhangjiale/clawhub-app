@@ -86,3 +86,14 @@ String extractReqId(String sentFrame) {
   final m = RegExp(r'"id":"([^"]+)"').firstMatch(sentFrame);
   return m!.group(1)!;
 }
+
+/// Build a Gateway agent event frame.
+///
+/// [streamType] is the agent stream type (message, tool, thinking, lifecycle).
+/// [data] is the JSON payload for the specific event.
+String agentEventJson({String streamType = 'message', String data = '{}'}) =>
+    '{"type":"event","event":"agent","payload":{"stream":"$streamType","data":$data}}';
+
+const String tickJson = '{"type":"event","event":"tick","payload":{}}';
+
+const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';

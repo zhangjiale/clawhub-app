@@ -19,6 +19,9 @@ class AppDatabase extends _$AppDatabase {
   // ---------------------------------------------------------------------------
 
   /// Insert a row into the FTS5 index after inserting a message.
+  ///
+  /// FTS5 backfill for pre-existing messages is handled once at database
+  /// open in [createAppDatabase]'s setup callback — no lazy guard needed here.
   Future<void> syncFtsInsert(int rowid, String? content) {
     return customStatement(
       'INSERT INTO messages_fts(rowid, content) VALUES (?, ?)',
@@ -79,7 +82,11 @@ class AppDatabase extends _$AppDatabase {
 
   /// Update FTS5 index when message content changes.
   /// Performs delete + insert since FTS5 has no UPDATE.
-  Future<void> syncFtsUpdate(int rowid, String? oldContent, String? newContent) async {
+  Future<void> syncFtsUpdate(
+    int rowid,
+    String? oldContent,
+    String? newContent,
+  ) async {
     await syncFtsDelete(rowid, oldContent);
     await syncFtsInsert(rowid, newContent);
   }
@@ -93,7 +100,9 @@ class AppDatabase extends _$AppDatabase {
   ///
   /// Returns a map of agentId → count. Agents with zero messages
   /// are not included in the result (caller defaults them to 0).
-  Future<Map<String, int>> getMessageCountsByAgent(List<String> agentIds) async {
+  Future<Map<String, int>> getMessageCountsByAgent(
+    List<String> agentIds,
+  ) async {
     if (agentIds.isEmpty) return {};
 
     // Build parameterized IN clause
@@ -113,12 +122,20 @@ class AppDatabase extends _$AppDatabase {
 
   /// Get the rowid and content for a message by its client_id.
   /// Used before FTS5 delete operations — fetches both in a single query.
-  Future<({int rowid, String? content})?> getMessageRowidAndContent(String clientId) {
+  Future<({int rowid, String? content})?> getMessageRowidAndContent(
+    String clientId,
+  ) {
     return customSelect(
-      'SELECT rowid, content FROM messages WHERE client_id = ?',
-      variables: [Variable.withString(clientId)],
-    ).map((row) => (rowid: row.read<int>('rowid'), content: row.read<String?>('content')))
-     .getSingleOrNull();
+          'SELECT rowid, content FROM messages WHERE client_id = ?',
+          variables: [Variable.withString(clientId)],
+        )
+        .map(
+          (row) => (
+            rowid: row.read<int>('rowid'),
+            content: row.read<String?>('content'),
+          ),
+        )
+        .getSingleOrNull();
   }
 
   /// Get the rowid for a message by its client_id.
@@ -133,9 +150,9 @@ class AppDatabase extends _$AppDatabase {
   /// Get the last inserted rowid.
   /// Used after INSERT to sync FTS5.
   Future<int> getLastInsertRowid() {
-    return customSelect('SELECT last_insert_rowid() AS rowid')
-        .map((row) => row.read<int>('rowid'))
-        .getSingle();
+    return customSelect(
+      'SELECT last_insert_rowid() AS rowid',
+    ).map((row) => row.read<int>('rowid')).getSingle();
   }
 
   // ---------------------------------------------------------------------------
@@ -165,8 +182,6 @@ class AppDatabase extends _$AppDatabase {
     if (trimmed.isEmpty) return '';
 
     final terms = trimmed.split(RegExp(r'\s+'));
-    return terms
-        .map((t) => '"${t.replaceAll('"', '""')}"')
-        .join(' ');
+    return terms.map((t) => '"${t.replaceAll('"', '""')}"').join(' ');
   }
 }

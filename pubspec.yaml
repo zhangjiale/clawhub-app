@@ -47,6 +47,8 @@ dev_dependencies:
 
   # 测试
   mocktail: ^1.0.4
+  integration_test:
+    sdk: flutter
 
   # 代码生成
   build_runner: ^2.4.14

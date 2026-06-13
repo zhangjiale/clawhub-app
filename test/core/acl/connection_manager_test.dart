@@ -25,13 +25,6 @@ String authErrorJson(
 }) =>
     '{"type":"res","id":"$id","ok":false,"error":{"code":"$code","message":"$message"}}';
 
-const String tickJson = '{"type":"event","event":"tick","payload":{}}';
-
-String agentEventJson({String streamType = 'message', String data = '{}'}) =>
-    '{"type":"event","event":"agent","payload":{"stream":"$streamType","data":$data}}';
-
-const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';
-
 const String presenceJson =
     '{"type":"event","event":"presence","payload":{"status":"online"}}';
 
@@ -1046,7 +1039,6 @@ void main() {
       final result = await connectAndHandshakeWithTimers();
       final cm = result.cm;
       final timers = result.timers;
-      final ws = result.ws;
 
       final states = <GatewayConnectionState>[];
       cm.connectionState.listen(states.add);
@@ -1324,6 +1316,98 @@ void main() {
           reason: 'all timers should be cancelled on dispose',
         );
       }
+    });
+
+    // ======================================================================
+    // Law 16: _onConnectionError side-effect coverage
+    // ======================================================================
+    test('_onConnectionError from connected → recovering', () async {
+      final result = await connectAndHandshakeWithTimers();
+      final ws = result.ws;
+      final cm = result.cm;
+      final timers = result.timers;
+
+      final states = <GatewayConnectionState>[];
+      cm.connectionState.listen(states.add);
+
+      final activeBeforeError = timers.activeTimers.length;
+
+      ws.simulateError('Transport error');
+      await pumpMicrotasks();
+
+      expect(cm.state, GatewayConnectionState.recovering);
+      expect(states, contains(GatewayConnectionState.recovering));
+
+      // Per design: _onConnectionError does NOT cancel timers.
+      expect(
+        timers.activeTimers.length,
+        activeBeforeError,
+        reason:
+            '_onConnectionError should not cancel timers '
+            '(design: let the stream close naturally)',
+      );
+    });
+
+    test('_onConnectionError does not fail pending requests', () async {
+      final result = await connectAndHandshakeWithTimers();
+      final ws = result.ws;
+      final cm = result.cm;
+
+      // Fire a request so it's pending when the error arrives
+      final requestFuture = cm.sendRequest('agents.list', {});
+      await pumpMicrotasks();
+
+      ws.simulateError('Transport error');
+      await pumpMicrotasks();
+
+      // The pending request should NOT be resolved by _onConnectionError.
+      // It will complete when _onConnectionDone fires (stream close),
+      // but the error itself does not fail pending requests.
+      final done = Completer<void>();
+      requestFuture.then(
+        (_) => done.complete(),
+        onError: (_) => done.complete(),
+      );
+      await pumpMicrotasks();
+      expect(
+        done.isCompleted,
+        isFalse,
+        reason: 'pending request should not resolve on connection error alone',
+      );
+    });
+
+    test('_onConnectionError from authenticating → recovering', () async {
+      final ws = ControllableWebSocket.ready();
+      final timers = FakeTimerFactory();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(signPayload: (_) async => 'mock-sig'),
+        webSocketFactory: (_) => ws.channel,
+        timerFactory: timers.call,
+      );
+
+      cm.connect();
+      await pumpMicrotasks();
+
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      expect(cm.state, GatewayConnectionState.authenticating);
+
+      final states = <GatewayConnectionState>[];
+      cm.connectionState.listen(states.add);
+
+      ws.simulateError('Auth phase error');
+      await pumpMicrotasks();
+
+      expect(
+        cm.state,
+        GatewayConnectionState.recovering,
+        reason: 'Error during auth phase should trigger recovery',
+      );
+      expect(states, contains(GatewayConnectionState.recovering));
     });
   });
 }

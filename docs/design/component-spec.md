@@ -250,10 +250,29 @@
 | 属性 | 值 |
 |---|---|
 | display | flex, align-items: center |
-| padding | `var(--s3) var(--s6)` = 12px 24px |
+| min-height | 44px ← 满足移动端最小触控目标 (Apple HIG 44pt / MD 48dp) |
+| padding | `var(--s4) var(--s6)` = 16px 24px |
 | gap | `var(--s2)` = 8px |
 | cursor | pointer |
 | user-select | none |
+| -webkit-tap-highlight-color | transparent |
+| transition | opacity 200ms var(--ease) |
+| border-radius | `var(--r-sm)` = 8px ← 仅用于内部布局，不用于按压背景 |
+
+**Press 态**:
+- **不使用** background 变色或圆角矩形高亮（分组头是结构性元素，不是按钮/卡片）
+- 按压时整体 **opacity: 0.5**（含状态点、文字、箭头一起变淡），视觉反馈自然且不产生额外形状
+- chevron 颜色变为 `var(--text-3)`（稍微提亮，暗示可交互）
+- 松开后 200ms ease 恢复
+
+```css
+.instance-header:active {
+  opacity: 0.5;
+}
+.instance-header:active .chevron {
+  color: var(--text-3);
+}
+```
 
 **内部结构**: `[状态点] [实例名] [数量] [折叠箭头]`
 
@@ -268,10 +287,12 @@
 | `.chevron.collapsed` | transform: rotate(-90deg) |
 
 **Collapse/Expand 行为**:
-- 点击分组头 -> toggle `.agent-list` 的 display（`none` / `''`）
+- 点击分组头 -> toggle `.agent-list` 的展开/收起
 - 同时 toggle chevron 的 `.collapsed` class
-- 无动画（display 切换，非 transition）
-- **开发建议**: 可升级为 max-height + overflow hidden + transition 350ms 动画
+- **动画实现**：使用 `max-height` + `overflow: hidden` + `transition: max-height 350ms var(--ease)` 替代原来的 display 切换
+  - 展开时：`max-height` 设为足够大的值（如 `1000px`，或动态计算子项总高度）
+  - 收起时：`max-height: 0`
+  - 避免使用 display:none 切换（无法做过渡动画）
 
 ### 2.4 Agent Card（虾卡片）
 
