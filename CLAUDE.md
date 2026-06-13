@@ -32,6 +32,9 @@ dart run build_runner build --delete-conflicting-outputs
 
 # Watch mode for code generation
 dart run build_runner watch --delete-conflicting-outputs
+
+# Install Iron Laws pre-commit hook (on fresh clone)
+./scripts/pre-commit --install
 ```
 
 ## Architecture
@@ -41,7 +44,7 @@ The project follows **Clean Architecture** with strict layer separation:
 ```
 lib/
 ├── app/                  # Application entry & configuration
-│   ├── config/           # AppConfig constants
+│   ├── config/           # AppConfig + PlatformInfo (OS/version detection)
 │   ├── connection/       # ConnectionOrchestrator (auto-connect on startup)
 │   ├── di/               # Riverpod provider definitions (DI container)
 │   ├── router/           # go_router with StatefulShellRoute (3-tab bottom nav)
@@ -121,14 +124,46 @@ All five feature pages are fully implemented: InstanceManager, AgentList, ChatRo
 
 Use Conventional Commits: `feat(scope):`, `fix(scope):`, `perf(scope):`, `docs:`, `test:`.
 
+### Documentation Map
+
+Key docs for AI-assisted development (all paths relative to `docs/`):
+
+| Document | Path | Use When |
+|---|---|---|
+| Iron Laws (coding rules) | `engineering/iron-laws.md` | Before every code change — mandatory gate check |
+| PRD | `product/prd.md` | Understanding feature requirements, acceptance criteria |
+| User Stories | `product/user-stories.md` | Sprint planning, INVEST validation, dependency tracing |
+| Design Tokens | `design/design-tokens.md` | Any UI color/spacing/radius/shadow/motion change |
+| Component Spec | `design/component-spec.md` | Building/modifying any page widget or component |
+| API Protocol | `technical/api-protocol.md` | Gateway WebSocket work — handshake, RPC, events, auth |
+| Architecture | `technical/architecture.md` | Understanding project structure, data models, provider inventory |
+| Database Schema | `technical/database-schema.sql` | Schema changes, migration, FTS5 query design |
+| Design Assets | `design/assets/` | App icon, splash screen, shrimp state images |
+
 ### Iron Laws
 
-Before any code change, verify compliance with `docs/iron-laws.md` (15 unbreakable coding rules). Key constraints:
+Before any code change, verify compliance with `docs/engineering/iron-laws.md` (17 unbreakable coding rules). Key constraints:
 - **Law 1**: `lib/domain/` must have zero Flutter/Riverpod/drift imports
 - **Law 2**: Widgets render UI only — no business logic or direct API calls
 - **Law 4**: Never bridge ValueNotifier + addListener + setState; use StateNotifier/Notifier + ref.watch
 - **Law 6**: Always use batch queries (no `for...await repo.` N+1 patterns)
 - **Law 11**: Any list >20 items must use `ListView.builder`
 - **Law 14**: Every new widget needs ≥2 tests
+- **Law 17**: Layered TDD — Domain/ACL must write tests first; ViewModel should; Repository/Widget no later than same commit
 
-See `docs/iron-laws.md` for the complete list and the Code Review gate checklist.
+See `docs/engineering/iron-laws.md` for the complete list and the Code Review gate checklist.
+
+#### Automated Enforcement (Pre-commit Hook)
+
+A pre-commit hook enforces 4 mechanically-verifiable laws on staged `.dart` files:
+- **Law 1**: domain/ import purity (grep)
+- **Law 6**: N+1 query patterns (grep)
+- **Law 8**: Empty catch blocks (grep)
+- **Law 11**: ListView(children:) usage (warning)
+
+The hook also runs `dart format` on staged files and re-adds them.
+
+**Suppression**: Add `// iron-law-allow: LawN -- justification` on the violating line.
+**Escape hatch**: `git commit --no-verify` (for prototype branches, emergency hotfixes).
+
+**Periodic audit**: Every ~20 commits, run a manual full-codebase iron-law review to catch architectural drift (laws that grep cannot verify: Law 2, 3, 5, 7, 9, 10, 14-17).

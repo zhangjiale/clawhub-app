@@ -37,9 +37,9 @@ class SyncAgentsUseCase {
     required IInstanceRepo instanceRepo,
     required IAgentRepo agentRepo,
     required IGatewayClient gatewayClient,
-  })  : _instanceRepo = instanceRepo,
-        _agentRepo = agentRepo,
-        _gatewayClient = gatewayClient;
+  }) : _instanceRepo = instanceRepo,
+       _agentRepo = agentRepo,
+       _gatewayClient = gatewayClient;
 
   /// 同步所有实例的 Agent 列表并返回聚合结果
   Future<AgentListData> execute() async {
@@ -51,17 +51,27 @@ class SyncAgentsUseCase {
     for (final instance in instances) {
       instanceNames[instance.id] = instance.name;
       instanceStatuses[instance.id] = instance.healthStatus;
+
       try {
         final remoteAgents = await _gatewayClient.fetchAgents(instance.id);
         await _agentRepo.syncFromGateway(instance.id, remoteAgents);
       } catch (error, stackTrace) {
+        // Distinguish "not yet connected" from genuine failures.
+        // When the connection is still authenticating (race with
+        // ConnectionOrchestrator), the error is transient — auto-sync
+        // will populate the DB shortly.  Don't record it as a syncError.
+        if (error is NotConnectedException) {
+          // Transient: ConnectionOrchestrator will sync when ready.
+          continue;
+        }
+        final msg = error.toString();
         // Surface the error so the UI can show a stale-data warning
         // while still displaying cached results from the local DB.
-        syncErrors[instance.id] = error.toString();
-        // print is dart:core — no Flutter dependency introduced.
+        // print is dart:core — no Flutter dependency (Law 8).
         print(
           'SyncAgents failed for instance ${instance.id}: $error\n$stackTrace',
         );
+        syncErrors[instance.id] = msg;
       }
     }
 

@@ -315,7 +315,7 @@ ProviderScope(
 
 ### Law 16: 不可见输出必须可验证
 
-**规则**：以下两类"编译器不检查、lint 不报、UI 上不易察觉"的输出，必须有测试直接断言：
+**规则**：以下三类"编译器不检查、lint 不报、UI 上不易察觉"的输出，必须有测试直接断言：
 
 **A. 参数化路径/URL/字符串方法** — 接受参数并返回路径、URL 或编码字符串的方法，必须对返回值写精确断言。
 
@@ -345,11 +345,58 @@ expect(gateway.connectCounts['inst-1'], 2,
     reason: '第二次保存应触发重连（_connecting 未泄漏）');
 ```
 
-**为什么**：路径拼接错误和状态泄漏不会导致编译失败或崩溃，只产生"看起来正常但行为不对"的 bug。这类 bug 在手动测试中极难发现，唯一可靠的防线是自动化断言。
+**C. 状态机终态的副作用链路** — 每个状态机终态（如 `connected`、`authFailed`、`EXPIRED`）被触发时，其**所有下游副作用**（RPC 调用、DB 写入、Provider 刷新）都必须被断言。仅验证状态值本身是不够的。
+
+```dart
+// ❌ 只验证了状态转换，没验证状态触发的下游动作
+expect(gatewayClient.connectCounts['inst-1'], 1);
+// 但 connected 之后 fetchAgents 是否被调用？Agent 是否写入了 DB？
+// — 编译器不报，lint 不报，UI 显示空列表但看不出原因
+
+// ✅ 状态 + 副作用 双重断言
+expect(gateway.connectCounts['inst-1'], 1);
+expect(gateway.fetchAgentsCounts['inst-1'], 1,
+    reason: 'connected 状态必须触发 agents.list RPC');
+final agents = await agentRepo.getByInstanceId('inst-1');
+expect(agents, isNotEmpty,
+    reason: 'fetchAgents 的结果必须通过 syncFromGateway 持久化到 DB');
+```
+
+**为什么**：路径拼接错误、状态泄漏、副作用缺失都不会导致编译失败或崩溃，只产生"看起来正常但行为不对"的 bug。这类 bug 在手动测试中极难发现，唯一可靠的防线是自动化断言。
 
 **检查方式**：
 - Code Review 时，每个返回字符串/URL 的参数化方法 → 搜对应测试文件有无对该方法返回值的断言
 - Code Review 时，每个操作内部 Set/Map 状态的类 → 搜对应测试文件有无 Fake + 调用计数
+- Code Review 时，每个状态机终态 → 列出其所有下游副作用，确认每个副作用在测试中有对应断言。反例：2026-06-12 的 bug，`connected` 终态缺少 `fetchAgents` 调用的断言，导致新建实例后 Agent 列表为空。
+
+---
+
+### Law 17: 分层 TDD — 先写测试再写实现，按层分级执行
+
+**规则**：代码的编写顺序是「先写测试，再写实现」，但严格程度按架构分层分级：
+
+| 层 | TDD 策略 | 执行标准 |
+|---|---|---|
+| **Domain** (`lib/domain/`) | 🔴 严格 TDD | 必须先写测试。纯 Dart 零依赖，测试秒级运行，无借口跳过。 |
+| **ACL** (`lib/core/acl/`) | 🔴 严格 TDD | 必须先写测试。状态机终态副作用（Law 16）和协议编解码是本项目历史 bug 最高发区，必须以测试为契约驱动实现。 |
+| **ViewModel/Provider** | 🟡 TDD | 必须先写测试。Riverpod 的 `overrideWith` 让 mock 注入零成本，状态转换逻辑应在测试中先行定义。 |
+| **Repository (Drift)** | 🟢 实现后立即补测 | 允许先写 SQL/Drift 查询，用 in-memory SQLite 跑通后立即补测试断言 —— 不得晚于同一个 commit。 |
+| **UI Widget** | 🟢 视觉先行，测试锁定 | 允许先写 Widget 布局快速肉眼迭代，确认视觉效果后立即补测试（Law 14 的 ≥2 测试），不得晚于同一个 PR。 |
+
+**为什么**：
+
+- **分层差异化**：一刀切的 TDD 在 UI 布局和 SQL 查询上效率很低（视觉需肉眼确认，SQL 需实际执行验证）。但一刀切的不做 TDD 会导致 Domain 和 ACL 层（纯逻辑、高复杂度、历史上 bug 最多）缺乏契约保障。
+- **弥补 Law 14 的过程缺陷**：Law 14 只要求「测试存在」，不要求「测试先行」。结果是可以先写代码再补测试 —— 这在 ACL 状态机场景下已被证明会漏掉副作用断言。Law 17 补上了这道过程门禁。
+- **防止"先写代码再补测试"的博弈**：当 deadline 压力大时，开发者倾向于先写代码、承诺"稍后补测试"，然后测试永远没补。分层 TDD 在最关键的层禁止这种博弈。
+
+**检查方式**：
+- Code Review 时，Domain/ACL 层的每个新 public 方法 → 检查对应 commit 是否测试先于实现（或至少同一 commit 内测试和实现同时出现）
+- ViewModel 的状态转换 → 检查测试是否定义了转换契约（输入 → 期望状态）
+- Repository/Widget → 确认测试在同一 commit 内存在，不存在"后续补测"的 TODO
+
+**例外**：
+- 纯重构（不改变 public API，不改变行为）可沿用已有测试，不强制新增
+- Prototype/Spike 代码可豁免，但合并到 master 前必须补齐测试
 
 ---
 
@@ -365,9 +412,38 @@ expect(gateway.connectCounts['inst-1'], 2,
 - [ ] **Law 11**: 新增列表使用 builder 构造函数
 - [ ] **Law 12**: 新增 Provider 注册在 di/providers.dart 或 feature/providers/
 - [ ] **Law 16**: 新增参数化路径方法有返回值断言；新增状态机有 Fake 注入测试
+- [ ] **Law 17**: Domain/ACL 层新增 public 方法必须有先行测试；ViewModel 状态转换有测试契约；Repository/Widget 测试在同一 commit 内
 - [ ] **测试**: 新增 Widget 至少有 2 个测试用例
 - [ ] `flutter analyze` 零 error/warning
 - [ ] `flutter test` 全通过
+
+---
+
+## 🤖 自动化执行 (Pre-commit Hook)
+
+4 条可机械化验证的铁律已通过 `scripts/pre-commit` 在 `git commit` 时自动检查。
+
+**覆盖范围**：Law 1 / Law 6 / Law 8 / Law 11（仅这 4 条可用 grep 精确检查）
+
+**安装**：`./scripts/pre-commit --install`
+
+**抑制注释**（当合法代码被误报时使用）：
+```dart
+} catch (_) {} // iron-law-allow: Law8 -- hardware fallback, torch unavailable
+
+import 'package:flutter/widgets.dart'; // iron-law-allow: Law1 -- needed for XYZ
+```
+
+抑制约定：
+- 行级抑制：`// iron-law-allow: LawN -- justification`（放在违规行尾）
+- 文件级抑制：`// iron-law-allow-file: LawN -- justification`（放在文件前 20 行）
+
+**逃生舱**：`git commit --no-verify` 跳过所有 hook。适用场景：原型分支、紧急 hotfix。滥用会导致 PR 被拒绝。
+
+**剩余 13 条铁律**（Law 2/3/4/5/7/9/10/12/13/14/15/16/17）依赖：
+1. **Claude Code 自动执行**：CLAUDE.md 在每次对话中注入铁律引用，Claude 编写代码时自动遵守
+2. **人工 Code Review**：合并前逐条检查门禁清单
+3. **定期全库审计**：每 ~20 commits 手动跑一次完整铁律审查，防止架构退化
 
 ---
 

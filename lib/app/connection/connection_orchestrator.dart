@@ -7,6 +7,7 @@ import '../../core/acl/i_gateway_client.dart';
 import '../../core/iconnectivity.dart';
 import '../../domain/models/enums.dart';
 import '../../domain/models/instance.dart';
+import '../../domain/repositories/i_agent_repo.dart';
 import '../../domain/repositories/i_instance_repo.dart';
 import '../../domain/usecases/instance_lifecycle.dart';
 
@@ -26,17 +27,28 @@ import '../../domain/usecases/instance_lifecycle.dart';
 class ConnectionOrchestrator implements IInstanceLifecycle {
   final IGatewayClient _gatewayClient;
   final IInstanceRepo _instanceRepo;
+  final IAgentRepo _agentRepo;
   final IConnectivity _connectivity;
+  final void Function()? _onAgentsSynced;
+  final void Function(String instanceId, GatewayPairingInfo? info)?
+  _onPairingInfoCb;
 
   /// instanceId → GatewayConnectionState 订阅
   final Map<String, StreamSubscription<GatewayConnectionState>>
   _connectionSubscriptions = {};
+
+  /// instanceId → GatewayPairingInfo 订阅
+  final Map<String, StreamSubscription<GatewayPairingInfo?>>
+  _pairingInfoSubscriptions = {};
 
   /// 网络监听订阅
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   /// 避免在 connect() 内部触发的状态同步中重复调用 disconnect
   final Set<String> _connecting = {};
+
+  /// 避免同一实例的 agent 同步并发执行
+  final Set<String> _syncingAgents = {};
 
   /// 网络操作代数计数器 — 每次降级/恢复递增，
   /// 操作内每次 await 后校验，旧操作若被新操作取代则提前退出，
@@ -49,16 +61,31 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   ConnectionOrchestrator({
     required IGatewayClient gatewayClient,
     required IInstanceRepo instanceRepo,
+    required IAgentRepo agentRepo,
     IConnectivity? connectivity,
-  })  : _gatewayClient = gatewayClient,
-        _instanceRepo = instanceRepo,
-        _connectivity = connectivity ?? ConnectivityAdapter();
+    void Function()? onAgentsSynced,
+    void Function(String instanceId, GatewayPairingInfo? info)? onPairingInfo,
+  }) : _gatewayClient = gatewayClient,
+       _instanceRepo = instanceRepo,
+       _agentRepo = agentRepo,
+       _onAgentsSynced = onAgentsSynced,
+       _onPairingInfoCb = onPairingInfo,
+       _connectivity = connectivity ?? ConnectivityAdapter();
 
   // ---------------------------------------------------------------------------
   // 公开 API
   // ---------------------------------------------------------------------------
 
   /// 初始化：自动连接所有可连接的已保存实例，启动网络监听。
+  ///
+  /// 启动时对除 [HealthStatus.expectedOffline] 外的所有实例尝试建连：
+  /// - online / unknown：常规自动连接（通过 [HealthStatus.isConnectable]）。
+  /// - offline：可能是上次运行的 authFailed / disconnected / connect 失败，
+  ///   更关键的是 [HealthStatus.pairingRequired] 落库为 offline 的场景 —
+  ///   服务器侧审批可能在 App 关闭期间完成，重启后重试即可恢复连接。
+  /// - pairingRequired：向后兼容旧版 DB 数据（修复前落库的值=5），
+  ///   后续不再产生新数据。
+  /// - expectedOffline：因 WiFi→4G 被标记，等 WiFi 恢复事件再触发重连。
   ///
   /// 所有实例并行连接（每实例独立超时 10 秒），
   /// 避免多实例场景下串行阻塞的启动延迟。
@@ -67,7 +94,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     if (_isDisposed) return;
 
     final toConnect = instances.where(
-      (i) => i.healthStatus.isConnectable,
+      (i) => i.healthStatus.shouldAttemptReconnect,
     );
 
     // 并行连接所有候选实例
@@ -91,12 +118,11 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     if (_isDisposed) return;
 
     // 启动网络监听
-    _connectivitySubscription = _connectivity.onConnectivityChanged
-        .listen(_onConnectivityChanged);
-
-    debugPrint(
-      '[ConnectionOrchestrator] Initialized',
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
+      _onConnectivityChanged,
     );
+
+    debugPrint('[ConnectionOrchestrator] Initialized');
   }
 
   /// 实例保存后调用（新建或编辑）。
@@ -106,16 +132,29 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       await _disconnect(instance.id);
     }
 
-    // 连通性测试已在 SaveInstanceUseCase 中完成，
-    // 只有在测试通过（online）时才建立 WebSocket 连接
-    if (instance.healthStatus == HealthStatus.online) {
-      await _connect(instance);
-    }
+    // 始终尝试建连，不依赖 SaveInstanceUseCase 的连通性测试结果。
+    //
+    // 原因：SaveInstanceUseCase 的 testConnection() 可能因网络抖动、
+    // DNS 延迟、Gateway 瞬时不可达等原因返回 false。若因此直接跳过
+    // _connect()，实例将永远失去重连机会，UI 始终显示"离线"。
+    //
+    // ConnectionManager 内置指数退避自动重连（1→2→4→8→16s），对
+    // 短暂不可达的 Gateway 有良好的恢复能力。建连成功后，
+    // _onConnectionStateChanged 会自动将 DB 状态更新为 online。
+    await _connect(instance);
   }
 
   /// 实例删除后调用。
   Future<void> onInstanceDeleted(String instanceId) async {
     await _disconnect(instanceId);
+  }
+
+  /// 手动触发重连（如用户在 UI 点击刷新按钮）。
+  ///
+  /// 对任意状态（offline、pairingRequired、online 等）的实例发起连接，
+  /// ConnectionManager 内置的指数退避/配对重试机制会接管后续流程。
+  Future<void> reconnect(Instance instance) async {
+    await _connect(instance);
   }
 
   /// 释放所有资源。
@@ -125,14 +164,24 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
 
     // 断开所有活跃实例的 Gateway 连接
     final instanceIds = _connectionSubscriptions.keys.toList();
-    for (final id in instanceIds) {
-      await _gatewayClient.disconnect(id).catchError((_) {});
-    }
+    // iron-law-allow: Law8 -- fire-and-forget dispose, errors suppressed
+    await Future.wait(
+      instanceIds.map(
+        (id) => _gatewayClient.disconnect(id).catchError((_) {
+          // suppressed
+        }),
+      ),
+    );
 
     for (final sub in _connectionSubscriptions.values) {
       await sub.cancel();
     }
     _connectionSubscriptions.clear();
+
+    for (final sub in _pairingInfoSubscriptions.values) {
+      await sub.cancel();
+    }
+    _pairingInfoSubscriptions.clear();
     _connecting.clear();
   }
 
@@ -142,33 +191,43 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
 
   Future<void> _connect(Instance instance) async {
     // 防止重复连接
-    if (_connecting.contains(instance.id)) return;
+    if (_connecting.contains(instance.id)) {
+      return;
+    }
     _connecting.add(instance.id);
 
     try {
-      // 1. 通过 Gateway 建立 WebSocket 连接
-      await _gatewayClient.connect(instance);
-
-      // 2. 订阅连接状态变化 → 同步到 HealthStatus
+      // 1. 订阅连接状态变化 BEFORE connect()，确保不会错过初始 connected 事件。
+      //    connect() 内部完成 WebSocket 握手后立即发出 connected，若订阅在
+      //    await connect() 之后才注册，BroadcastStream 会丢弃该事件，
+      //    导致 _onConnectionStateChanged（包括 _syncAgentsForInstance）永不触发。
       final sub = _gatewayClient
           .connectionStateStream(instance.id)
           .listen((state) => _onConnectionStateChanged(instance.id, state));
 
-      // 替换已有订阅（编辑场景）
+      // 替换已有订阅（编辑场景：先取消旧订阅再保存新引用）
       await _connectionSubscriptions[instance.id]?.cancel();
       _connectionSubscriptions[instance.id] = sub;
 
-      debugPrint(
-        '[ConnectionOrchestrator] Connected to ${instance.id} (${instance.name})',
-      );
+      // 订阅配对信息流
+      await _pairingInfoSubscriptions[instance.id]?.cancel();
+      _pairingInfoSubscriptions[instance.id] = _gatewayClient
+          .pairingInfoStream(instance.id)
+          .listen((info) => _onPairingInfo(instance.id, info));
+
+      // 2. 通过 Gateway 建立 WebSocket 连接
+      await _gatewayClient.connect(instance);
     } catch (error, stackTrace) {
       debugPrint(
-        '[ConnectionOrchestrator] Failed to connect to ${instance.id}: '
+        '[ConnectionOrchestrator] _connect FAILED — id=${instance.id}: '
         '$error\n$stackTrace',
       );
-      // 连接失败：清理可能已部分建立的 Gateway 连接，
-      // 然后标记为离线。
-      await _gatewayClient.disconnect(instance.id).catchError((_) {});
+      // 连接失败：通过 _disconnect 执行完整的清理流程（取消订阅、
+      // 清除配对信息、释放去重锁），然后标记为离线。
+      // iron-law-allow: Law8 -- fire-and-forget cleanup on connect failure
+      await _disconnect(instance.id).catchError((_) {
+        // suppressed
+      });
       await _updateHealthStatus(instance.id, HealthStatus.offline);
     } finally {
       // 无论成功或失败都释放去重锁，允许后续重连。
@@ -176,14 +235,64 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     }
   }
 
+  void _onPairingInfo(String instanceId, GatewayPairingInfo? info) {
+    _onPairingInfoCb?.call(instanceId, info);
+  }
+
   Future<void> _disconnect(String instanceId) async {
     await _connectionSubscriptions.remove(instanceId)?.cancel();
+    await _pairingInfoSubscriptions.remove(instanceId)?.cancel();
     _connecting.remove(instanceId);
+    _syncingAgents.remove(instanceId);
     await _gatewayClient.disconnect(instanceId);
 
-    debugPrint(
-      '[ConnectionOrchestrator] Disconnected from $instanceId',
-    );
+    // 清除配对信息
+    _onPairingInfoCb?.call(instanceId, null);
+
+    debugPrint('[ConnectionOrchestrator] Disconnected from $instanceId');
+  }
+
+  /// 连接成功后自动同步 Agent 列表。
+  ///
+  /// 对齐 Gateway 协议流程：connect → challenge → connect req → hello-ok → agents.list。
+  /// 使用 [_syncingAgents] 防重入，避免同一实例并发同步。
+  /// 失败时自动指数退避重试（最多 2 次：5s → 10s），之后等待下次重新连接触发。
+  Future<void> _syncAgentsForInstance(String instanceId) async {
+    if (!_syncingAgents.add(instanceId)) return; // 已有同步进行中
+
+    try {
+      const maxRetries = 2;
+      for (var attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          final remoteAgents = await _gatewayClient.fetchAgents(instanceId);
+          await _agentRepo.syncFromGateway(instanceId, remoteAgents);
+          debugPrint(
+            '[ConnectionOrchestrator] Synced ${remoteAgents.length} agents '
+            'for $instanceId',
+          );
+          // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建
+          _onAgentsSynced?.call();
+          return; // 成功，退出重试循环
+        } catch (error, stackTrace) {
+          if (attempt < maxRetries) {
+            final delaySeconds = 5 * (1 << attempt); // 5s, 10s
+            debugPrint(
+              '[ConnectionOrchestrator] Agent sync failed for $instanceId '
+              '(attempt ${attempt + 1}/${maxRetries + 1}), '
+              'retrying in ${delaySeconds}s: $error',
+            );
+            await Future.delayed(Duration(seconds: delaySeconds));
+          } else {
+            debugPrint(
+              '[ConnectionOrchestrator] Agent sync failed for $instanceId '
+              'after ${maxRetries + 1} attempts: $error\n$stackTrace',
+            );
+          }
+        }
+      }
+    } finally {
+      _syncingAgents.remove(instanceId);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -196,11 +305,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       GatewayConnectionState.connected => HealthStatus.online,
       GatewayConnectionState.connecting ||
       GatewayConnectionState.authenticating ||
-      GatewayConnectionState.recovering =>
-        HealthStatus.connecting,
+      GatewayConnectionState.recovering => HealthStatus.connecting,
+      GatewayConnectionState.pairingRequired => HealthStatus.pairingRequired,
       GatewayConnectionState.disconnected ||
-      GatewayConnectionState.authFailed =>
-        HealthStatus.offline,
+      GatewayConnectionState.authFailed => HealthStatus.offline,
     };
   }
 
@@ -208,19 +316,49 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     String instanceId,
     GatewayConnectionState state,
   ) async {
+    // 中间状态（connecting / authenticating / recovering）不写入数据库。
+    //
+    // 原因：SaveInstanceUseCase 先写入 online，然后调用 _connect() 建连，
+    // 建连过程会触发 connecting → connected 两次状态变化，两个 async handler
+    // 可能同时读到 online 旧值，导致 connected handler 的 online==online 判
+    // 跳过更新，而 connecting handler 的写入最终覆盖 DB，healthStatus 卡在
+    // connecting，UI 显示"离线"。
+    //
+    // 只允许终态传播到 DB。
+    final isTerminal =
+        state == GatewayConnectionState.connected ||
+        state == GatewayConnectionState.disconnected ||
+        state == GatewayConnectionState.authFailed ||
+        state == GatewayConnectionState.pairingRequired;
+    if (!isTerminal) {
+      return;
+    }
+
     final health = _mapToHealthStatus(state);
+    // pairingRequired 不持久化到 DB（对齐 enums.dart 注释），
+    // 改写为 offline 落库。配对信息由 pairingInfoProvider 实时传递。
+    final persistHealth = health == HealthStatus.pairingRequired
+        ? HealthStatus.offline
+        : health;
 
     try {
       // 只更新与当前数据库不同的状态（避免不必要的写入）
       final current = await _instanceRepo.getById(instanceId);
-      if (current != null && current.healthStatus != health) {
-        await _instanceRepo.updateHealthStatus(instanceId, health);
+      if (current != null && current.healthStatus != persistHealth) {
+        await _instanceRepo.updateHealthStatus(instanceId, persistHealth);
         if (health == HealthStatus.online) {
           await _instanceRepo.updateLastConnectedAt(
             instanceId,
             DateTime.now().millisecondsSinceEpoch ~/ 1000,
           );
         }
+      }
+
+      // 连接成功后自动同步 Agent 列表（协议流程：connect → agents.list）
+      // 放在 DB 状态更新之后，确保 healthStatus=online 已持久化。
+      // fire-and-forget：同步失败不影响连接状态，且下一次连接/tick 会重试。
+      if (state == GatewayConnectionState.connected) {
+        _syncAgentsForInstance(instanceId);
       }
     } catch (error) {
       // 实例可能已被删除 — 静默处理
@@ -229,9 +367,13 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
         '$instanceId: $error',
       );
     } finally {
-      // 终态 offline（authFailed / 彻底断开）时释放 _connect 的去重锁。
+      // 终态（offline / pairingRequired）时释放 _connect 的去重锁。
+      // pairingRequired 的锁释放：尽管 _connect() 的 finally 通常先执行，
+      // 但在异步时序竞争下 _onConnectionStateChanged 可能先于 finally，
+      // 此时额外释放一次（Set.remove 是幂等的）防止永久泄漏。
       // 放在 finally 中确保即使 DB 操作抛异常也不会永久泄漏锁。
-      if (health == HealthStatus.offline) {
+      if (health == HealthStatus.offline ||
+          health == HealthStatus.pairingRequired) {
         _connecting.remove(instanceId);
       }
     }
@@ -242,7 +384,8 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   // ---------------------------------------------------------------------------
 
   void _onConnectivityChanged(List<ConnectivityResult> results) {
-    final hasNetwork = results.isNotEmpty &&
+    final hasNetwork =
+        results.isNotEmpty &&
         !results.every((r) => r == ConnectivityResult.none);
     final hasWifi = results.contains(ConnectivityResult.wifi);
 
@@ -259,8 +402,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     if (!hasWifi) {
       // 仅移动网络：取消正在执行的恢复，降级内网实例
       _networkOpGeneration++;
-      _degradeLocalNetworkInstances(_networkOpGeneration)
-          .catchError((Object error, StackTrace s) {
+      _degradeLocalNetworkInstances(_networkOpGeneration).catchError((
+        Object error,
+        StackTrace s,
+      ) {
         debugPrint(
           '[ConnectionOrchestrator] Uncaught error while degrading '
           'local instances: $error\n$s',
@@ -269,8 +414,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     } else {
       // WiFi 恢复：取消正在执行的降级操作，然后重连内网实例
       _networkOpGeneration++;
-      _recoverLocalNetworkInstances(_networkOpGeneration)
-          .catchError((Object error, StackTrace s) {
+      _recoverLocalNetworkInstances(_networkOpGeneration).catchError((
+        Object error,
+        StackTrace s,
+      ) {
         debugPrint(
           '[ConnectionOrchestrator] Uncaught error while recovering '
           'local instances: $error\n$s',
@@ -313,8 +460,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
 
       final toRecover = instances.where(
         (i) =>
-            i.isLocalNetwork &&
-            i.healthStatus == HealthStatus.expectedOffline,
+            i.isLocalNetwork && i.healthStatus == HealthStatus.expectedOffline,
       );
 
       if (toRecover.isNotEmpty) {

@@ -8,6 +8,7 @@ import 'package:claw_hub/features/instance_manager/providers/instance_providers.
 import 'package:claw_hub/features/instance_manager/widgets/instance_card.dart';
 import 'package:claw_hub/features/instance_manager/qr_scanner_page.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
+import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
 import 'package:claw_hub/ui_kit/empty_state.dart';
 
 /// 实例列表页 (P0 MVP)
@@ -47,17 +48,17 @@ class InstanceListPage extends ConsumerWidget {
     try {
       final useCase = ref.read(deleteInstanceUseCaseProvider);
       await useCase.execute(instance.id);
-      ref.invalidate(instanceListProvider);
+      _invalidateData(ref);
     } on Exception catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to delete: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
     }
   }
 
   /// 显示添加方式选择底部弹窗 (US-001)
-  Future<void> _showAddOptions(BuildContext context) async {
+  Future<void> _showAddOptions(BuildContext context, WidgetRef ref) async {
     final option = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -89,7 +90,8 @@ class InstanceListPage extends ConsumerWidget {
     if (option == 'scan') {
       await _startQrScan(context);
     } else if (option == 'manual') {
-      context.push('/instances/add');
+      await context.push('/instances/add');
+      _invalidateData(ref);
     }
   }
 
@@ -113,49 +115,69 @@ class InstanceListPage extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('实例管理')),
-      body: instancesAsync.when(
-        data: (instances) {
-          if (instances.isEmpty) {
-            return Column(
-              children: [
-                const Expanded(
-                  child: EmptyState(
-                    icon: Icons.dns_outlined,
-                    title: 'No Instances',
-                    subtitle: 'Add your first OpenClaw instance',
-                  ),
-                ),
-                _AddInstanceCard(
-                  onTap: () => _showAddOptions(context),
-                ),
-                const SizedBox(height: 16),
-              ],
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: instances.length + 1, // +1 for inline add card
-            itemBuilder: (context, index) {
-              if (index == instances.length) {
-                return _AddInstanceCard(
-                  onTap: () => _showAddOptions(context),
-                );
-              }
-              final instance = instances[index];
-              return InstanceCard(
-                instance: instance,
-                onTap: () {
-                  context.push(AppRoutes.editInstanceWithParams(instance.id));
-                },
-                onDelete: () => _onDelete(context, ref, instance),
-              );
-            },
-          );
+      body: RefreshIndicator(
+        onRefresh: () async {
+          _invalidateData(ref);
+          // 同时等待两个 provider，确保 spinner 在实例列表和
+          // agent 数据都就绪后才收起，避免用户看到过期数据。
+          await ref.read(instanceListProvider.future);
+          await ref.read(agentListProvider.future);
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (err, _) => Center(child: Text('Error: $err')),
+        child: instancesAsync.when(
+          data: (instances) {
+            if (instances.isEmpty) {
+              return ListView(
+                children: [
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.5,
+                    child: const EmptyState(
+                      icon: Icons.dns_outlined,
+                      title: 'No Instances',
+                      subtitle: 'Add your first OpenClaw instance',
+                    ),
+                  ),
+                  _AddInstanceCard(onTap: () => _showAddOptions(context, ref)),
+                  const SizedBox(height: 16),
+                ],
+              );
+            }
+            return ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: instances.length + 1, // +1 for inline add card
+              itemBuilder: (context, index) {
+                if (index == instances.length) {
+                  return _AddInstanceCard(
+                    onTap: () => _showAddOptions(context, ref),
+                  );
+                }
+                final instance = instances[index];
+                return InstanceCard(
+                  instance: instance,
+                  onTap: () async {
+                    await context.push(
+                      AppRoutes.editInstanceWithParams(instance.id),
+                    );
+                    _invalidateData(ref);
+                  },
+                  onDelete: () => _onDelete(context, ref, instance),
+                );
+              },
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (err, _) => Center(child: Text('Error: $err')),
+        ),
       ),
     );
+  }
+
+  /// 统一刷新实例列表和 Agent 列表。
+  ///
+  /// 集中管理两个 provider 的 invalidate 调用，避免在多个回调中重复
+  /// 相同代码。未来如需增加第三个 provider，只需修改此方法。
+  void _invalidateData(WidgetRef ref) {
+    ref.invalidate(instanceListProvider);
+    ref.invalidate(agentListProvider);
   }
 }
 
@@ -188,11 +210,7 @@ class _AddInstanceCard extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.add,
-                size: 20,
-                color: theme.colorScheme.primary,
-              ),
+              Icon(Icons.add, size: 20, color: theme.colorScheme.primary),
               const SizedBox(width: 8),
               Text(
                 '添加新实例',

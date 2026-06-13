@@ -49,6 +49,10 @@ abstract class IGatewayClient {
   /// 获取工具调用状态流
   Stream<ToolCall> toolCallStream(String instanceId);
 
+  /// 获取配对信息流 — 当连接因 [GatewayConnectionState.pairingRequired]
+  /// 被拒绝时，流中会发出包含 requestId 等信息的 [GatewayPairingInfo]。
+  Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId);
+
   /// 释放所有资源
   Future<void> dispose();
 }
@@ -62,4 +66,51 @@ enum GatewayConnectionState {
   connected,
   recovering,
   authFailed,
+
+  /// 设备未配对 — Gateway 返回 NOT_PAIRED / PAIRING_REQUIRED。
+  /// 与 [authFailed] 不同：配对是可恢复的（用户在服务器审批后自动重连成功）。
+  pairingRequired,
+}
+
+/// 连接尚未建立时被抛出的异常，用于调用方以类型匹配替代字符串匹配。
+///
+/// 由 [ConnectionManager.sendRequest] 和 [WsGatewayClient._requireManager]
+/// 在 WebSocket 未连接或实例未注册时抛出，代表可自动恢复的瞬态错误。
+class NotConnectedException implements Exception {
+  final String message;
+  const NotConnectedException(this.message);
+  @override
+  String toString() => 'NotConnectedException: $message';
+}
+
+/// Gateway 设备配对信息 — 当连接因 PAIRING_REQUIRED 被拒绝时由 Gateway 返回。
+class GatewayPairingInfo {
+  /// 配对请求 ID（在服务器端执行 `openclaw devices approve <requestId>`）。
+  final String requestId;
+
+  /// 设备 ID（SHA256 of Ed25519 public key）。
+  final String deviceId;
+
+  /// 请求的角色（通常为 operator）。
+  final String? requestedRole;
+
+  /// 请求的 scope 列表。
+  final List<String>? requestedScopes;
+
+  const GatewayPairingInfo({
+    required this.requestId,
+    required this.deviceId,
+    this.requestedRole,
+    this.requestedScopes,
+  });
+
+  factory GatewayPairingInfo.fromJson(Map<String, dynamic> json) {
+    return GatewayPairingInfo(
+      requestId: json['requestId'] as String? ?? '',
+      deviceId: json['deviceId'] as String? ?? '',
+      requestedRole: json['requestedRole'] as String?,
+      requestedScopes: (json['requestedScopes'] as List<dynamic>?)
+          ?.cast<String>(),
+    );
+  }
 }

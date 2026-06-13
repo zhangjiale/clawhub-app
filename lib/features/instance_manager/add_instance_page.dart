@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/domain/models/instance.dart';
-import 'package:claw_hub/features/instance_manager/providers/instance_providers.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
 
 /// 添加/编辑实例页 (P0 MVP)
@@ -96,10 +95,6 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
         token: _tokenController.text.trim(),
         instanceId: widget.instanceId,
       );
-
-      // Invalidate provider to refresh list
-      ref.invalidate(instanceListProvider);
-
       if (mounted) {
         context.pop();
       }

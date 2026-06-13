@@ -9,6 +9,7 @@ void main() {
       expect(HealthStatus.fromInt(2), HealthStatus.offline);
       expect(HealthStatus.fromInt(3), HealthStatus.connecting);
       expect(HealthStatus.fromInt(4), HealthStatus.expectedOffline);
+      expect(HealthStatus.fromInt(5), HealthStatus.pairingRequired);
     });
 
     test('toInt 正确序列化', () {
@@ -17,22 +18,21 @@ void main() {
       expect(HealthStatus.offline.toInt(), 2);
       expect(HealthStatus.connecting.toInt(), 3);
       expect(HealthStatus.expectedOffline.toInt(), 4);
+      expect(HealthStatus.pairingRequired.toInt(), 5);
     });
 
     test('无效值抛异常', () {
       expect(() => HealthStatus.fromInt(-1), throwsA(isA<ArgumentError>()));
-      expect(() => HealthStatus.fromInt(5), throwsA(isA<ArgumentError>()));
+      expect(() => HealthStatus.fromInt(99), throwsA(isA<ArgumentError>()));
     });
 
-    test('isConnectable - 在线和未知状态可连接', () {
+    test('isConnectable - 仅在线和未知状态可连接', () {
       expect(HealthStatus.online.isConnectable, isTrue);
-      expect(
-        HealthStatus.unknown.isConnectable,
-        isTrue,
-      ); // unknown 是新实例默认状态，应允许尝试连接
+      expect(HealthStatus.unknown.isConnectable, isTrue);
       expect(HealthStatus.offline.isConnectable, isFalse);
       expect(HealthStatus.connecting.isConnectable, isFalse);
       expect(HealthStatus.expectedOffline.isConnectable, isFalse);
+      expect(HealthStatus.pairingRequired.isConnectable, isFalse);
     });
   });
 

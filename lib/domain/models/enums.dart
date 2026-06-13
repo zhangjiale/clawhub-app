@@ -5,7 +5,12 @@ enum HealthStatus {
   online(1),
   offline(2),
   connecting(3),
-  expectedOffline(4);
+  expectedOffline(4),
+
+  /// 设备待审批配对 — Gateway 返回 PAIRING_REQUIRED。
+  /// 该状态不持久化到 DB（数据库中存储为 offline），
+  /// 仅通过 [pairingInfoProvider] 实时传递给 UI。
+  pairingRequired(5);
 
   const HealthStatus(this.value);
   final int value;
@@ -19,10 +24,17 @@ enum HealthStatus {
 
   int toInt() => value;
 
-  /// 该状态下是否应该尝试连接
+  /// 该状态下是否应该尝试建连/发消息
   /// unknown 是新建实例的默认状态，语义上应允许尝试连接
   bool get isConnectable =>
       this == HealthStatus.online || this == HealthStatus.unknown;
+
+  /// 该状态下是否应尝试发起连接（启动/恢复/手动重连时使用）。
+  ///
+  /// 比 [isConnectable] 范围更广：除 [expectedOffline] 外所有状态都应尝试。
+  /// offline 可能是上次运行的 authFailed / pairingRequired 被落库为 offline，
+  /// pairingRequired 可能在 App 关闭期间已被服务器审批通过。
+  bool get shouldAttemptReconnect => this != HealthStatus.expectedOffline;
 }
 
 /// 消息角色

@@ -104,73 +104,73 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             onPressed: _handleBack,
           ),
           title: agent != null
-            ? GestureDetector(
-                onTap: () {
-                  // Navigate to agent profile
-                  context.push(
-                    AppRoutes.agentProfileWithParams(
-                      agent.localId,
-                      source: widget.source,
-                    ),
-                  );
-                },
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 16,
-                      backgroundColor: agentColor,
-                      foregroundColor: agentColor!.contrastingTextColor(),
-                      child: Text(
-                        agent.displayName.characters.first,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
+              ? GestureDetector(
+                  onTap: () {
+                    // Navigate to agent profile
+                    context.push(
+                      AppRoutes.agentProfileWithParams(
+                        agent.localId,
+                        source: widget.source,
+                      ),
+                    );
+                  },
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 16,
+                        backgroundColor: agentColor,
+                        foregroundColor: agentColor!.contrastingTextColor(),
+                        child: Text(
+                          agent.displayName.characters.first,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  agent.displayName,
-                                  style: theme.textTheme.titleSmall,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              // Connection status dot
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: _connectionDotColor(
-                                    session.connectionState,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    agent.displayName,
+                                    style: theme.textTheme.titleSmall,
                                   ),
-                                  shape: BoxShape.circle,
                                 ),
-                              ),
-                            ],
-                          ),
-                          if (agent.description != null)
-                            Text(
-                              agent.description!,
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: theme.colorScheme.outline,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                                const SizedBox(width: 6),
+                                // Connection status dot
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: _connectionDotColor(
+                                      session.connectionState,
+                                    ),
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ],
                             ),
-                        ],
+                            if (agent.description != null)
+                              Text(
+                                agent.description!,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.outline,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              )
-            : const Text('Chat'),
+                    ],
+                  ),
+                )
+              : const Text('Chat'),
           actions: [
             if (agent != null)
               IconButton(
@@ -194,10 +194,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             // Timeout banner
             if (session.thinkingState == ThinkingState.timeout)
               MaterialBanner(
-                content:
-                    const Text('虾思考时间较长，可能正在处理复杂任务。'),
-                backgroundColor:
-                    AppColors.statusConnecting.withAlpha(30),
+                content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
+                backgroundColor: AppColors.statusConnecting.withAlpha(30),
                 leading: const Icon(
                   Icons.hourglass_top,
                   color: AppColors.statusConnecting,
@@ -217,15 +215,19 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             // Message list
             Expanded(
               child: switch (session.messages) {
-                LoadInProgress() =>
-                  const LoadingSkeleton(count: 3),
+                LoadInProgress() => const LoadingSkeleton(count: 3),
                 LoadError(:final error) => Center(
-                    child: Text('Failed to load messages: $error'),
-                  ),
-                LoadData(:final value) when value.isEmpty =>
-                  _buildEmptyState(theme),
-                LoadData(:final value) =>
-                  _buildMessageList(value, session.toolCalls, agent?.displayName ?? 'Agent', theme),
+                  child: Text('Failed to load messages: $error'),
+                ),
+                LoadData(:final value) when value.isEmpty => _buildEmptyState(
+                  theme,
+                ),
+                LoadData(:final value) => _buildMessageList(
+                  value,
+                  session.toolCalls,
+                  agent?.displayName ?? 'Agent',
+                  theme,
+                ),
               },
             ),
 
@@ -252,11 +254,10 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       GatewayConnectionState.connected => AppColors.statusOnline,
       GatewayConnectionState.connecting ||
       GatewayConnectionState.authenticating ||
-      GatewayConnectionState.recovering =>
-        AppColors.statusConnecting,
+      GatewayConnectionState.recovering ||
+      GatewayConnectionState.pairingRequired => AppColors.statusConnecting,
       GatewayConnectionState.disconnected ||
-      GatewayConnectionState.authFailed =>
-        AppColors.statusOffline,
+      GatewayConnectionState.authFailed => AppColors.statusOffline,
     };
   }
 

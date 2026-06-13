@@ -36,13 +36,17 @@ class MockGatewayClient implements IGatewayClient {
   @override
   Future<void> connect(Instance instance) async {
     await loadMockData();
-    _getOrCreateConnectionController(
-      instance.id,
-    ).add(GatewayConnectionState.connecting);
+    final ctrl = _getOrCreateConnectionController(instance.id);
+    // Schedule events on the event queue (Future) rather than emitting
+    // synchronously, so ConnectionOrchestrator has time to subscribe to
+    // the stream before the events arrive.
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connecting);
+    });
     await Future.delayed(const Duration(milliseconds: 500));
-    _getOrCreateConnectionController(
-      instance.id,
-    ).add(GatewayConnectionState.connected);
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connected);
+    });
   }
 
   @override
@@ -141,37 +145,68 @@ class MockGatewayClient implements IGatewayClient {
     await loadMockData();
     await Future.delayed(const Duration(milliseconds: 300));
 
-    return _mockAgents
+    final matched = _mockAgents
         .where((a) => a['instanceId'] == instanceId)
-        .map(
-          (a) {
-            // Parse quick commands from mock data
-            final qcList = <QuickCommand>[];
-            final rawCommands = a['quickCommands'] as List<dynamic>?;
-            if (rawCommands != null) {
-              for (var i = 0; i < rawCommands.length; i++) {
-                final cmd = rawCommands[i] as Map<String, dynamic>;
-                qcList.add(QuickCommand(
-                  id: _uuid.v4(),
-                  agentId: a['remoteId'] as String,
-                  label: cmd['label'] as String,
-                  payload: cmd['payload'] as String,
-                  sortOrder: i,
-                ));
-              }
-            }
-            return Agent(
-              localId: _uuid.v4(),
-              remoteId: a['remoteId'] as String,
-              instanceId: a['instanceId'] as String,
-              name: a['name'] as String,
-              themeColor: a['themeColor'] as String? ?? '#007AFF',
-              description: a['description'] as String?,
-              quickCommands: qcList,
-            );
-          },
-        )
+        .map(_parseMockAgent)
         .toList();
+
+    if (matched.isNotEmpty) return matched;
+
+    // For instances not in the mock fixture (e.g. manually created),
+    // generate sensible synthetic agents so the UI isn't empty.
+    return _generateDefaultAgents(instanceId);
+  }
+
+  /// Parse a mock agent JSON entry into a domain [Agent].
+  Agent _parseMockAgent(Map<String, dynamic> a) {
+    final qcList = <QuickCommand>[];
+    final rawCommands = a['quickCommands'] as List<dynamic>?;
+    if (rawCommands != null) {
+      for (var i = 0; i < rawCommands.length; i++) {
+        final cmd = rawCommands[i] as Map<String, dynamic>;
+        qcList.add(
+          QuickCommand(
+            id: _uuid.v4(),
+            agentId: a['remoteId'] as String,
+            label: cmd['label'] as String,
+            payload: cmd['payload'] as String,
+            sortOrder: i,
+          ),
+        );
+      }
+    }
+    return Agent(
+      localId: _uuid.v4(),
+      remoteId: a['remoteId'] as String,
+      instanceId: a['instanceId'] as String,
+      name: a['name'] as String,
+      themeColor: a['themeColor'] as String? ?? '#007AFF',
+      description: a['description'] as String?,
+      quickCommands: qcList,
+    );
+  }
+
+  /// Generate a set of default agents for an arbitrary instance ID.
+  ///
+  /// Used when the mock fixture doesn't contain a matching entry for
+  /// a manually created instance, so the UI isn't left empty.
+  List<Agent> _generateDefaultAgents(String instanceId) {
+    final defaults = [
+      (name: '默认助手', desc: '通用 AI 助手，可处理各类任务', color: '#007AFF'),
+      (name: '代码助手', desc: '编程辅助、代码审查与调试', color: '#34C759'),
+    ];
+
+    return defaults.map((d) {
+      return Agent(
+        localId: _uuid.v4(),
+        remoteId: '${instanceId}-default-${d.name}',
+        instanceId: instanceId,
+        name: d.name,
+        themeColor: d.color,
+        description: d.desc,
+        quickCommands: const [],
+      );
+    }).toList();
   }
 
   @override
@@ -225,6 +260,12 @@ class MockGatewayClient implements IGatewayClient {
   @override
   Stream<ToolCall> toolCallStream(String instanceId) {
     return _getOrCreateToolCallController(instanceId).stream;
+  }
+
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
+    // Mock 环境永不触发配对流程
+    return Stream.value(null);
   }
 
   StreamController<GatewayConnectionState> _getOrCreateConnectionController(

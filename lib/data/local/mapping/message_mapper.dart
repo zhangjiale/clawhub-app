@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/enums.dart';
@@ -38,7 +39,7 @@ class MessageMapper {
       if (decoded is Map<String, dynamic>) return decoded;
       return null;
     } catch (error, stackTrace) {
-      print('Failed to parse message metadata JSON: $error\n$stackTrace');
+      debugPrint('Failed to parse message metadata JSON: $error\n$stackTrace');
       return null;
     }
   }

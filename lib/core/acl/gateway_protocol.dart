@@ -18,11 +18,48 @@ import 'dart:convert';
 /// 协议版本（v4 = 当前最新）
 const protocolVersion = 4;
 
+/// 最小兼容协议版本（保持向前兼容）
+const minProtocolVersion = 3;
+
 /// 请求超时（毫秒）
 const requestTimeoutMs = 30000;
 
 /// 预握手 tick 间隔（毫秒）
 const preHandshakeTickIntervalMs = 30000;
+
+// ============================================================================
+// 连接参数常量（对齐 docs/technical/api-protocol.md §2.2–2.4）
+// ============================================================================
+
+/// Operator scope 列表（与官方 iOS 客户端一致）。
+const operatorScopes = <String>[
+  'operator.admin',
+  'operator.read',
+  'operator.write',
+  'operator.approvals',
+  'operator.pairing',
+];
+
+/// OpenClaw 客户端标识枚举值（§2.3）。
+class ClientIds {
+  ClientIds._();
+  static const String ios = 'openclaw-ios';
+  static const String android = 'openclaw-android';
+  static const String macos = 'openclaw-macos';
+  static const String controlUi = 'openclaw-control-ui';
+  static const String cli = 'cli';
+  static const String gatewayClient = 'gateway-client';
+
+  /// 根据平台字符串返回对应的 client.id。
+  static String forPlatform(String platform) {
+    return switch (platform) {
+      'ios' => ios,
+      'android' => android,
+      'macos' => macos,
+      _ => gatewayClient,
+    };
+  }
+}
 
 // ============================================================================
 // 帧类型
@@ -80,33 +117,96 @@ String buildRequest({
 
 /// 构造 connect 请求参数（握手第二步）。
 ///
+/// 对齐 docs/technical/api-protocol.md §2.2 完整的 connect 请求格式。
+///
 /// [locale] 为客户端地区（如 `zh-CN`、`en-US`），由调用方从设备获取。
-/// [clientId]/[clientVersion]/[platform] 来自 [AppClientInfo]，
-/// 允许测试或特殊场景覆盖。
+/// [clientId]/[clientVersion]/[platform] 来自设备信息。
+/// [clientMode] 为客户端模式（§2.3），operator 客户端应使用 `ui`。
+/// [role] 为客户端角色，operator 客户端固定为 `operator`。
+/// [scopes] 为请求的 operator 权限列表（§2.4）。
 Map<String, dynamic> buildConnectParams({
   required String token,
   required String locale,
-  String clientId = 'clawhub-mobile',
+  required String deviceId,
+  String clientId = 'openclaw-ios',
+  String clientMode = 'ui',
+  String? clientDisplayName,
   String clientVersion = '1.0.0',
   String platform = 'flutter',
+  String? deviceFamily,
+  String? modelIdentifier,
+  String? devicePublicKey,
+  String? signature,
+  int? signedAt,
+  String? nonce,
+  List<String> caps = const [],
+  List<String> commands = const [],
+  Map<String, bool> permissions = const {},
   String role = 'operator',
-  List<String> scopes = const ['operator.read', 'operator.write'],
+  List<String> scopes = operatorScopes,
 }) {
-  return {
-    'minProtocol': 3,
+  final client = <String, dynamic>{
+    'id': clientId,
+    'version': clientVersion,
+    'platform': platform,
+    'mode': clientMode,
+  };
+  if (clientDisplayName != null) {
+    client['displayName'] = clientDisplayName;
+  }
+  if (deviceFamily != null) {
+    client['deviceFamily'] = deviceFamily;
+  }
+  if (modelIdentifier != null) {
+    client['modelIdentifier'] = modelIdentifier;
+  }
+
+  final params = <String, dynamic>{
+    'minProtocol': minProtocolVersion,
     'maxProtocol': protocolVersion,
-    'client': {
-      'id': clientId,
-      'version': clientVersion,
-      'platform': platform,
-      'mode': 'operator',
-    },
+    'client': client,
     'role': role,
     'scopes': scopes,
+    'caps': caps,
+    'commands': commands,
+    'permissions': permissions,
+    'device': {
+      'id': deviceId,
+      if (devicePublicKey != null) 'publicKey': devicePublicKey,
+      if (signature != null) 'signature': signature,
+      if (signedAt != null) 'signedAt': signedAt,
+      if (nonce != null) 'nonce': nonce,
+    },
     'auth': {'token': token},
     'locale': locale,
-    'userAgent': '$clientId/$clientVersion',
+    'userAgent': 'xiahub/$clientVersion',
   };
+  return params;
+}
+
+/// 构造 Ed25519 V3 签名 Payload（§2.5）。
+///
+/// 格式：
+/// ```
+/// "v3|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}|{platform}|{deviceFamily}"
+/// ```
+///
+/// 其中 scopes 为逗号分隔字符串，platform 和 deviceFamily 必须小写。
+String buildV3SignaturePayload({
+  required String deviceId,
+  required String clientId,
+  required String clientMode,
+  required String role,
+  required List<String> scopes,
+  required int signedAtMs,
+  required String token,
+  required String nonce,
+  required String platform,
+  String deviceFamily = 'phone',
+}) {
+  final scopesStr = scopes.join(',');
+  return 'v3|$deviceId|$clientId|$clientMode|$role|$scopesStr'
+      '|$signedAtMs|$token|$nonce|${platform.toLowerCase()}|${deviceFamily.toLowerCase()}';
 }
 
 /// 构造 agents.list 请求。
@@ -122,10 +222,7 @@ String buildAgentRequest({
   String? sessionId,
   Map<String, dynamic>? overrides,
 }) {
-  final params = <String, dynamic>{
-    'agentId': agentId,
-    'message': message,
-  };
+  final params = <String, dynamic>{'agentId': agentId, 'message': message};
   if (sessionId != null) params['sessionId'] = sessionId;
   if (overrides != null) params['overrides'] = overrides;
 
@@ -140,10 +237,7 @@ String buildChatHistoryRequest({
   String? cursor,
   int limit = 50,
 }) {
-  final params = <String, dynamic>{
-    'agentId': agentId,
-    'limit': limit,
-  };
+  final params = <String, dynamic>{'agentId': agentId, 'limit': limit};
   if (sessionId != null) params['sessionId'] = sessionId;
   if (cursor != null) params['cursor'] = cursor;
 
@@ -155,9 +249,11 @@ String buildSessionsResolveRequest({
   required String id,
   required String agentId,
 }) {
-  return buildRequest(id: id, method: Methods.sessionsResolve, params: {
-    'agentId': agentId,
-  });
+  return buildRequest(
+    id: id,
+    method: Methods.sessionsResolve,
+    params: {'agentId': agentId},
+  );
 }
 
 // ============================================================================
@@ -190,11 +286,7 @@ class EventFrame extends GatewayFrame {
   final Map<String, dynamic>? payload;
   final int? seq;
 
-  const EventFrame({
-    required this.event,
-    this.payload,
-    this.seq,
-  });
+  const EventFrame({required this.event, this.payload, this.seq});
 }
 
 /// 协议错误。
@@ -203,30 +295,27 @@ class ProtocolError {
   final String message;
   final bool? retryable;
   final int? retryAfterMs;
+  final Map<String, dynamic>? details;
 
   const ProtocolError({
     required this.code,
     required this.message,
     this.retryable,
     this.retryAfterMs,
+    this.details,
   });
 
   factory ProtocolError.fromJson(Map<String, dynamic> json) => ProtocolError(
-        code: json['code'] as String? ?? 'UNKNOWN',
-        message: json['message'] as String? ?? 'Unknown error',
-        retryable: json['retryable'] as bool?,
-        retryAfterMs: json['retryAfterMs'] as int?,
-      );
+    code: json['code'] as String? ?? 'UNKNOWN',
+    message: json['message'] as String? ?? 'Unknown error',
+    retryable: json['retryable'] as bool?,
+    retryAfterMs: json['retryAfterMs'] as int?,
+    details: json['details'] as Map<String, dynamic>?,
+  );
 }
 
 /// Agent 事件中的流类型。
-enum AgentStreamType {
-  thinking,
-  message,
-  tool,
-  lifecycle,
-  unknown,
-}
+enum AgentStreamType { thinking, message, tool, lifecycle, unknown }
 
 /// 解析后的 agent 事件数据。
 class AgentEventData {
@@ -234,11 +323,7 @@ class AgentEventData {
   final AgentStreamType stream;
   final Map<String, dynamic> data;
 
-  const AgentEventData({
-    this.runId,
-    required this.stream,
-    required this.data,
-  });
+  const AgentEventData({this.runId, required this.stream, required this.data});
 }
 
 // ============================================================================
@@ -257,13 +342,13 @@ GatewayFrame parseFrame(String rawJson) {
       'res' => _parseResponse(json),
       'event' => _parseEvent(json),
       _ => ResponseFrame(
-          id: json['id'] as String? ?? '',
-          ok: false,
-          error: const ProtocolError(
-            code: 'PARSE_ERROR',
-            message: 'Unknown frame type',
-          ),
+        id: json['id'] as String? ?? '',
+        ok: false,
+        error: const ProtocolError(
+          code: 'PARSE_ERROR',
+          message: 'Unknown frame type',
         ),
+      ),
     };
   } catch (e) {
     return ResponseFrame(
@@ -283,8 +368,9 @@ ResponseFrame _parseResponse(Map<String, dynamic> json) {
     id: json['id'] as String? ?? '',
     ok: ok,
     payload: ok ? (json['payload'] as Map<String, dynamic>?) : null,
-    error:
-        !ok && json['error'] != null ? ProtocolError.fromJson(json['error']) : null,
+    error: !ok && json['error'] != null
+        ? ProtocolError.fromJson(json['error'])
+        : null,
   );
 }
 

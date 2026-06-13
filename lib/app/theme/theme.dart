@@ -7,8 +7,8 @@ import 'package:claw_hub/ui_kit/theme_color_utils.dart';
 ///
 /// All visual values are sourced from [XiaColors], [XiaSpacing], [XiaRadius],
 /// [XiaShadow], and [XiaMotion] design token classes, aligning with the
-/// design spec defined in docs/DesignToken-虾Hub.md and
-/// docs/ComponentSpec-虾Hub.md.
+/// design spec defined in docs/design/design-tokens.md and
+/// docs/design/component-spec.md.
 class AppTheme {
   AppTheme._();
 
@@ -106,10 +106,7 @@ class AppTheme {
         fontWeight: FontWeight.w700,
         letterSpacing: -0.5,
       ),
-      headlineMedium: TextStyle(
-        fontSize: 22,
-        fontWeight: FontWeight.w700,
-      ),
+      headlineMedium: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
       titleLarge: TextStyle(
         fontSize: 17,
         fontWeight: FontWeight.w600,

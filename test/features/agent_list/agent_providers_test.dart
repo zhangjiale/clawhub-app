@@ -21,8 +21,10 @@ class _FailingGateway implements IGatewayClient {
     return [];
   }
 
-  @override Future<void> connect(Instance i) => throw UnimplementedError();
-  @override Future<void> disconnect(String id) => throw UnimplementedError();
+  @override
+  Future<void> connect(Instance i) => throw UnimplementedError();
+  @override
+  Future<void> disconnect(String id) => throw UnimplementedError();
   @override
   Future<({String serverId, int timestamp})> sendMessage({
     required String instanceId,
@@ -36,14 +38,22 @@ class _FailingGateway implements IGatewayClient {
     String? cursor,
     int limit = 50,
   }) => throw UnimplementedError();
-  @override Future<bool> testConnection(Instance i) => throw UnimplementedError();
+  @override
+  Future<bool> testConnection(Instance i) => throw UnimplementedError();
   @override
   Stream<GatewayConnectionState> connectionStateStream(String id) =>
       throw UnimplementedError();
-  @override void resetConnectionState(String id) => throw UnimplementedError();
-  @override Stream<Message> messageStream(String id) => throw UnimplementedError();
-  @override Stream<ToolCall> toolCallStream(String id) => throw UnimplementedError();
-  @override Future<void> dispose() => throw UnimplementedError();
+  @override
+  void resetConnectionState(String id) => throw UnimplementedError();
+  @override
+  Stream<Message> messageStream(String id) => throw UnimplementedError();
+  @override
+  Stream<ToolCall> toolCallStream(String id) => throw UnimplementedError();
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String id) =>
+      Stream.value(null);
+  @override
+  Future<void> dispose() => throw UnimplementedError();
 }
 
 void main() {
@@ -77,59 +87,85 @@ void main() {
       expect(data.instanceNames, isEmpty);
     });
 
-    test('agentListProvider returns agents sorted (pinned first, then name)', () async {
-      final agentRepo = InMemoryAgentRepo();
-      final instanceRepo = InMemoryInstanceRepo();
+    test(
+      'agentListProvider returns agents sorted (pinned first, then name)',
+      () async {
+        final agentRepo = InMemoryAgentRepo();
+        final instanceRepo = InMemoryInstanceRepo();
 
-      // Seed an instance
-      await instanceRepo.save(Instance(
-        id: 'inst-1', name: 'My MacBook',
-        gatewayUrl: 'wss://test.com:18789', tokenRef: 'ref',
-      ));
+        // Seed an instance
+        await instanceRepo.save(
+          Instance(
+            id: 'inst-1',
+            name: 'My MacBook',
+            gatewayUrl: 'wss://test.com:18789',
+            tokenRef: 'ref',
+          ),
+        );
 
-      // Seed agents directly into repo (simulating post-sync state)
-      final agentB = Agent(
-        localId: 'local-b', remoteId: 'r-b',
-        instanceId: 'inst-1', name: 'B虾', isPinned: false,
-      );
-      final agentA = Agent(
-        localId: 'local-a', remoteId: 'r-a',
-        instanceId: 'inst-1', name: 'A虾', isPinned: false,
-      );
-      final agentPinned = Agent(
-        localId: 'local-p', remoteId: 'r-p',
-        instanceId: 'inst-1', name: 'Z虾', isPinned: true,
-      );
-      await agentRepo.syncFromGateway('inst-1', [agentB, agentA, agentPinned]);
+        // Seed agents directly into repo (simulating post-sync state)
+        final agentB = Agent(
+          localId: 'local-b',
+          remoteId: 'r-b',
+          instanceId: 'inst-1',
+          name: 'B虾',
+          isPinned: false,
+        );
+        final agentA = Agent(
+          localId: 'local-a',
+          remoteId: 'r-a',
+          instanceId: 'inst-1',
+          name: 'A虾',
+          isPinned: false,
+        );
+        final agentPinned = Agent(
+          localId: 'local-p',
+          remoteId: 'r-p',
+          instanceId: 'inst-1',
+          name: 'Z虾',
+          isPinned: true,
+        );
+        await agentRepo.syncFromGateway('inst-1', [
+          agentB,
+          agentA,
+          agentPinned,
+        ]);
 
-      // Mock gateway returns empty — agents are already seeded in repo
-      final gateway = MockGatewayClient();
+        // Mock gateway returns empty — agents are already seeded in repo
+        final gateway = MockGatewayClient();
 
-      final container = createContainer(
-        instanceRepo: instanceRepo,
-        agentRepo: agentRepo,
-        gatewayClient: gateway,
-      );
+        final container = createContainer(
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+          gatewayClient: gateway,
+        );
 
-      final data = await container.read(agentListProvider.future);
-      expect(data.agents.length, 3);
-      expect(data.agents[0].isPinned, isTrue);
-      expect(data.agents[1].name, 'A虾');
-      expect(data.agents[2].name, 'B虾');
-    });
+        final data = await container.read(agentListProvider.future);
+        expect(data.agents.length, 3);
+        expect(data.agents[0].isPinned, isTrue);
+        expect(data.agents[1].name, 'A虾');
+        expect(data.agents[2].name, 'B虾');
+      },
+    );
 
     test('agentListProvider builds instance name map', () async {
       final agentRepo = InMemoryAgentRepo();
       final instanceRepo = InMemoryInstanceRepo();
 
-      await instanceRepo.save(Instance(
-        id: 'inst-1', name: 'My MacBook',
-        gatewayUrl: 'wss://test.com:18789', tokenRef: 'ref',
-      ));
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'My MacBook',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'ref',
+        ),
+      );
       await agentRepo.syncFromGateway('inst-1', [
         Agent(
-          localId: 'local-1', remoteId: 'r-1',
-          instanceId: 'inst-1', name: '产品虾',
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
           themeColor: '#6c5ce7',
         ),
       ]);
@@ -148,15 +184,21 @@ void main() {
       final agentRepo = InMemoryAgentRepo();
       final instanceRepo = InMemoryInstanceRepo();
 
-      await instanceRepo.save(Instance(
-        id: 'inst-1', name: 'My MacBook',
-        gatewayUrl: 'wss://test.com:18789', tokenRef: 'ref',
-      ));
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'My MacBook',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'ref',
+        ),
+      );
       // Seed cached agents — these should still be returned
       await agentRepo.syncFromGateway('inst-1', [
         Agent(
-          localId: 'local-1', remoteId: 'r-1',
-          instanceId: 'inst-1', name: '产品虾',
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
           themeColor: '#6c5ce7',
         ),
       ]);
@@ -179,10 +221,14 @@ void main() {
       final agentRepo = InMemoryAgentRepo();
       final instanceRepo = InMemoryInstanceRepo();
 
-      await instanceRepo.save(Instance(
-        id: 'inst-1', name: 'My MacBook',
-        gatewayUrl: 'wss://test.com:18789', tokenRef: 'ref',
-      ));
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'My MacBook',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'ref',
+        ),
+      );
 
       final container = createContainer(
         instanceRepo: instanceRepo,

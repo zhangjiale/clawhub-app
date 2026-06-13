@@ -21,12 +21,10 @@ class _TestGatewayClient implements IGatewayClient {
   }
 
   @override
-  Future<void> connect(Instance instance) =>
-      throw UnimplementedError();
+  Future<void> connect(Instance instance) => throw UnimplementedError();
 
   @override
-  Future<void> disconnect(String instanceId) =>
-      throw UnimplementedError();
+  Future<void> disconnect(String instanceId) => throw UnimplementedError();
 
   @override
   Future<({String serverId, int timestamp})> sendMessage({
@@ -44,16 +42,14 @@ class _TestGatewayClient implements IGatewayClient {
   }) => throw UnimplementedError();
 
   @override
-  Future<bool> testConnection(Instance instance) =>
-      throw UnimplementedError();
+  Future<bool> testConnection(Instance instance) => throw UnimplementedError();
 
   @override
   Stream<GatewayConnectionState> connectionStateStream(String instanceId) =>
       throw UnimplementedError();
 
   @override
-  void resetConnectionState(String instanceId) =>
-      throw UnimplementedError();
+  void resetConnectionState(String instanceId) => throw UnimplementedError();
 
   @override
   Stream<Message> messageStream(String instanceId) =>
@@ -62,6 +58,10 @@ class _TestGatewayClient implements IGatewayClient {
   @override
   Stream<ToolCall> toolCallStream(String instanceId) =>
       throw UnimplementedError();
+
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) =>
+      Stream.value(null);
 
   @override
   Future<void> dispose() => throw UnimplementedError();
@@ -113,10 +113,7 @@ void main() {
       expect(result.agents.first.name, '产品虾');
       expect(result.syncErrors, isNotEmpty);
       expect(result.syncErrors.containsKey('inst-1'), isTrue);
-      expect(
-        result.syncErrors['inst-1'],
-        contains('Connection refused'),
-      );
+      expect(result.syncErrors['inst-1'], contains('Connection refused'));
     });
 
     test('syncErrors only contains failed instances', () async {
@@ -161,12 +158,9 @@ void main() {
 
       await instanceRepo.save(_instance('inst-1', 'Alpha'));
 
-      final gateway = _TestGatewayClient(
-        {
-          'inst-1': [_agent('g1', 'inst-1', '产品虾')],
-        },
-        {},
-      );
+      final gateway = _TestGatewayClient({
+        'inst-1': [_agent('g1', 'inst-1', '产品虾')],
+      }, {});
 
       final useCase = SyncAgentsUseCase(
         instanceRepo: instanceRepo,
@@ -188,13 +182,10 @@ void main() {
       await instanceRepo.save(_instance('inst-1', 'Alpha'));
       await instanceRepo.save(_instance('inst-2', 'Beta'));
 
-      final gateway = _TestGatewayClient(
-        {
-          'inst-1': [_agent('g1', 'inst-1', '虾A')],
-          'inst-2': [_agent('g2', 'inst-2', '虾B')],
-        },
-        {},
-      );
+      final gateway = _TestGatewayClient({
+        'inst-1': [_agent('g1', 'inst-1', '虾A')],
+        'inst-2': [_agent('g2', 'inst-2', '虾B')],
+      }, {});
 
       final useCase = SyncAgentsUseCase(
         instanceRepo: instanceRepo,
@@ -210,40 +201,42 @@ void main() {
       expect(result.syncErrors, isEmpty);
     });
 
-    test('preserves instanceNames and instanceStatuses on partial failure',
-        () async {
-      final agentRepo = InMemoryAgentRepo();
-      final instanceRepo = InMemoryInstanceRepo();
+    test(
+      'preserves instanceNames and instanceStatuses on partial failure',
+      () async {
+        final agentRepo = InMemoryAgentRepo();
+        final instanceRepo = InMemoryInstanceRepo();
 
-      await instanceRepo.save(_instance('inst-ok', 'OK Server'));
-      await instanceRepo.save(_instance('inst-fail', 'Dead Server'));
+        await instanceRepo.save(_instance('inst-ok', 'OK Server'));
+        await instanceRepo.save(_instance('inst-fail', 'Dead Server'));
 
-      // Seed cached agent for failing instance
-      await agentRepo.syncFromGateway('inst-fail', [
-        _agent('a1', 'inst-fail', '离线虾'),
-      ]);
+        // Seed cached agent for failing instance
+        await agentRepo.syncFromGateway('inst-fail', [
+          _agent('a1', 'inst-fail', '离线虾'),
+        ]);
 
-      final gateway = _TestGatewayClient(
-        {
-          'inst-ok': [_agent('g1', 'inst-ok', '在线虾')],
-        },
-        {'inst-fail'},
-      );
+        final gateway = _TestGatewayClient(
+          {
+            'inst-ok': [_agent('g1', 'inst-ok', '在线虾')],
+          },
+          {'inst-fail'},
+        );
 
-      final useCase = SyncAgentsUseCase(
-        instanceRepo: instanceRepo,
-        agentRepo: agentRepo,
-        gatewayClient: gateway,
-      );
+        final useCase = SyncAgentsUseCase(
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+          gatewayClient: gateway,
+        );
 
-      final result = await useCase.execute();
+        final result = await useCase.execute();
 
-      // Both instances appear in name/status maps even though one failed
-      expect(result.instanceNames['inst-ok'], 'OK Server');
-      expect(result.instanceNames['inst-fail'], 'Dead Server');
-      expect(result.instanceStatuses.containsKey('inst-ok'), isTrue);
-      expect(result.instanceStatuses.containsKey('inst-fail'), isTrue);
-      expect(result.syncErrors.length, 1);
-    });
+        // Both instances appear in name/status maps even though one failed
+        expect(result.instanceNames['inst-ok'], 'OK Server');
+        expect(result.instanceNames['inst-fail'], 'Dead Server');
+        expect(result.instanceStatuses.containsKey('inst-ok'), isTrue);
+        expect(result.instanceStatuses.containsKey('inst-fail'), isTrue);
+        expect(result.syncErrors.length, 1);
+      },
+    );
   });
 }

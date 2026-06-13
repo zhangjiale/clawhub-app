@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+import 'package:ed25519_edwards/ed25519_edwards.dart' as ed;
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../domain/models/models.dart';
-import 'i_gateway_client.dart';
 import 'connection_manager.dart';
 import 'gateway_protocol.dart';
+import 'i_gateway_client.dart';
 
 /// 真实 WebSocket Gateway 客户端 — 实现 [IGatewayClient] 接口。
 ///
@@ -15,6 +20,7 @@ import 'gateway_protocol.dart';
 /// - 握手：challenge → connect → hello-ok
 /// - 请求：`agents.list`、`agent`、`chat.history`
 /// - 事件：`agent`（thinking / message / tool / lifecycle）、`tick`
+/// - 设备身份：**Ed25519** 密钥对 + V3 签名 Payload（§2.5）
 ///
 /// 领域对象映射由本类完成（_parseAgent, _parseMessage, _parseToolCall）。
 ///
@@ -22,18 +28,194 @@ import 'gateway_protocol.dart';
 class WsGatewayClient implements IGatewayClient {
   final Uuid _uuid = const Uuid();
   final String _locale;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+
+  static const _privateKeyKey = 'clawhub_device_ed25519_seed';
+  static const _publicKeyKey = 'clawhub_device_ed25519_pubkey';
+
+  // Legacy keys (ECDSA P-256) — for migration detection
+  static const _legacyPrivateKeyKey = 'clawhub_device_private_key';
+  static const _legacyPublicKeyKey = 'clawhub_device_public_key';
+
+  /// 设备唯一标识（SHA256 of Ed25519 public key, 64 hex chars）。
+  String? _deviceId;
+
+  /// Ed25519 公钥（base64url，32 字节 raw）。
+  String? _publicKeyB64;
+
+  /// Ed25519 私钥种子（32 字节）。
+  Uint8List? _seedBytes;
+  bool _identityLoaded = false;
+  Future<_DeviceIdentity>? _identityFuture;
+
+  /// 平台标识（由调用方注入，默认 flutter）。
+  final String _platform;
+
+  /// 设备系列（android / ios / phone）。
+  final String? _deviceFamily;
+
+  /// 设备型号（如 Pixel 8）。
+  final String? _modelIdentifier;
+
+  /// 设备显示名称（如「我的手机」）。
+  final String? _clientDisplayName;
+
+  /// 客户端版本。
+  final String _clientVersion;
+
+  /// 客户端标识（§2.3 枚举值，由平台决定）。
+  final String _clientId;
+
+  /// 客户端模式（§2.3，operator 客户端固定为 ui）。
+  final String _clientMode;
+
+  /// 客户端角色（operator）。
+  final String _role;
+
+  /// 请求的 operator scope 列表（§2.4）。
+  final List<String> _scopes;
 
   /// 创建 WebSocket Gateway 客户端。
-  ///
-  /// [locale] 为客户端地区标识（如 `zh-CN`），
-  /// 将随 connect 握手发送给 Gateway。
-  WsGatewayClient({String locale = 'zh-CN'}) : _locale = locale;
+  WsGatewayClient({
+    String locale = 'zh-CN',
+    String platform = 'flutter',
+    String? deviceFamily,
+    String? modelIdentifier,
+    String? clientDisplayName,
+    String clientVersion = '1.0.0',
+    String? clientId,
+    String clientMode = 'ui',
+    String role = 'operator',
+    List<String>? scopes,
+  }) : _locale = locale,
+       _platform = platform,
+       _deviceFamily = deviceFamily,
+       _modelIdentifier = modelIdentifier,
+       _clientDisplayName = clientDisplayName,
+       _clientVersion = clientVersion,
+       _clientId = clientId ?? ClientIds.forPlatform(platform),
+       _clientMode = clientMode,
+       _role = role,
+       _scopes = scopes ?? operatorScopes;
 
-  /// instanceId → 实例连接（含 manager + 所有流控制器 + 事件订阅）
+  /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
 
   /// 防止同一 instanceId 的重入连接。
   final Set<String> _connecting = {};
+
+  /// 加载或生成设备身份：Ed25519 密钥对。
+  ///
+  /// **deviceId = SHA256(publicKeyRaw).hex()** — 对齐 docs/technical/api-protocol.md §2.5:
+  /// "生成 Ed25519 密钥对, deviceId = SHA256(publicKey)"
+  ///
+  /// 首次调用时从 [FlutterSecureStorage] 读取密钥对；
+  /// 若不存在则生成新的 Ed25519 密钥对并持久化。
+  /// 如检测到旧版 ECDSA P-256 密钥对，自动迁移到 Ed25519。
+  /// deviceId 不持久化——它总是从 publicKey 实时计算。
+  Future<_DeviceIdentity> _ensureDeviceIdentity() async {
+    if (_identityLoaded) {
+      return _DeviceIdentity(
+        deviceId: _deviceId!,
+        publicKeyB64: _publicKeyB64,
+        seedBytes: _seedBytes,
+      );
+    }
+
+    // 防止并发调用同时进入加载路径：用 _identityFuture 作为 pending gate，
+    // 让后续调用者等待同一个加载操作完成，避免重复生成密钥或 TOCTOU 崩溃。
+    if (_identityFuture != null) {
+      return _identityFuture!;
+    }
+    final completer = Completer<_DeviceIdentity>();
+    _identityFuture = completer.future;
+
+    try {
+      // 1. 尝试加载 Ed25519 密钥对
+      final storedSeedB64 = await _secureStorage.read(key: _privateKeyKey);
+      final storedPubKeyB64 = await _secureStorage.read(key: _publicKeyKey);
+
+      if (storedSeedB64 != null &&
+          storedSeedB64.isNotEmpty &&
+          storedPubKeyB64 != null &&
+          storedPubKeyB64.isNotEmpty) {
+        _seedBytes = base64Url.decode(storedSeedB64);
+        _publicKeyB64 = storedPubKeyB64;
+        debugPrint('[WsGateway] Loaded existing Ed25519 keypair');
+      } else {
+        // 2. 检查旧版 ECDSA P-256 密钥（迁移检测）
+        final legacySeed = await _secureStorage.read(key: _legacyPrivateKeyKey);
+        if (legacySeed != null && legacySeed.isNotEmpty) {
+          debugPrint(
+            '[WsGateway] Detected legacy ECDSA P-256 keypair — migrating to Ed25519',
+          );
+          await _secureStorage.delete(key: _legacyPrivateKeyKey);
+          await _secureStorage.delete(key: _legacyPublicKeyKey);
+        }
+
+        // 3. 生成新 Ed25519 密钥对
+        await _generateAndPersistEd25519Keypair();
+      }
+
+      // deviceId = SHA256(publicKeyRaw) — 协议要求 §2.5
+      final publicKeyBytes = base64Url.decode(_publicKeyB64!);
+      _deviceId = sha256.convert(publicKeyBytes).toString();
+      debugPrint('[WsGateway] deviceId (SHA256 of publicKey): $_deviceId');
+
+      // _identityLoaded 必须在 _deviceId 赋值之后才能设为 true，
+      // 否则快速路径 _DeviceIdentity(deviceId: _deviceId!) 会空指针崩溃。
+      _identityLoaded = true;
+
+      final identity = _DeviceIdentity(
+        deviceId: _deviceId!,
+        publicKeyB64: _publicKeyB64,
+        seedBytes: _seedBytes,
+      );
+      completer.complete(identity);
+      return identity;
+    } catch (error) {
+      _identityLoaded = false;
+      completer.completeError(error);
+      rethrow;
+    } finally {
+      _identityFuture = null;
+    }
+  }
+
+  /// 生成 Ed25519 密钥对并持久化到安全存储。
+  Future<void> _generateAndPersistEd25519Keypair() async {
+    // generateKey() 返回 KeyPair，内含 privateKey (64B = 32B seed + 32B pubkey)
+    // 和 publicKey (32B)。
+    final keyPair = ed.generateKey();
+
+    // 提取 32 字节种子用于持久化
+    _seedBytes = ed.seed(keyPair.privateKey);
+    // 提取 32 字节公钥
+    _publicKeyB64 = base64Url.encode(
+      Uint8List.fromList(keyPair.publicKey.bytes),
+    );
+
+    await _secureStorage.write(
+      key: _privateKeyKey,
+      value: base64Url.encode(_seedBytes!),
+    );
+    await _secureStorage.write(key: _publicKeyKey, value: _publicKeyB64);
+    debugPrint('[WsGateway] Generated new Ed25519 keypair');
+  }
+
+  /// 用设备 Ed25519 私钥对 [v3Payload] 签名，返回 base64url 编码的签名。
+  ///
+  /// [v3Payload] 由 [buildV3SignaturePayload] 构造。
+  Future<String> _signPayload(String v3Payload) async {
+    final identity = await _ensureDeviceIdentity();
+    // 从种子重建 PrivateKey（ed25519_edwards 的 PrivateKey = 64B seed+pubkey）
+    final privateKey = ed.newKeyFromSeed(identity.seedBytes!);
+    final message = Uint8List.fromList(v3Payload.codeUnits);
+
+    // sign(PrivateKey, Uint8List) → 64 字节签名
+    final sig = ed.sign(privateKey, message);
+    return base64Url.encode(sig);
+  }
 
   // ---------------------------------------------------------------------------
   // IGatewayClient 实现
@@ -47,13 +229,27 @@ class WsGatewayClient implements IGatewayClient {
 
     try {
       if (_connections.containsKey(instance.id)) {
-        await disconnect(instance.id);
+        await _cleanupConnection(instance.id);
       }
+
+      final identity = await _ensureDeviceIdentity();
 
       final manager = ConnectionManager(
         instanceId: instance.id,
         gatewayUrl: instance.gatewayUrl,
         token: instance.tokenRef,
+        deviceId: identity.deviceId,
+        devicePublicKey: identity.publicKeyB64,
+        signPayload: (v3Payload) => _signPayload(v3Payload),
+        deviceFamily: _deviceFamily,
+        modelIdentifier: _modelIdentifier,
+        clientVersion: _clientVersion,
+        platform: _platform,
+        clientId: _clientId,
+        clientMode: _clientMode,
+        role: _role,
+        scopes: _scopes,
+        clientDisplayName: _clientDisplayName,
         locale: _locale,
       );
 
@@ -65,6 +261,7 @@ class WsGatewayClient implements IGatewayClient {
               StreamController<GatewayConnectionState>.broadcast(),
           messageCtrl: StreamController<Message>.broadcast(),
           toolCallCtrl: StreamController<ToolCall>.broadcast(),
+          pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
         ),
       );
       conn.manager = manager;
@@ -81,6 +278,13 @@ class WsGatewayClient implements IGatewayClient {
         (event) => _handleEvent(instance.id, conn, event),
       );
 
+      // 订阅配对信息
+      conn._pairingSub = manager.pairingInfo.listen((info) {
+        if (!conn.pairingInfoCtrl.isClosed) {
+          conn.pairingInfoCtrl.add(info);
+        }
+      });
+
       await manager.connect();
     } finally {
       _connecting.remove(instance.id);
@@ -89,21 +293,31 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Future<void> disconnect(String instanceId) async {
+    await _cleanup(instanceId, emitDisconnected: true);
+  }
+
+  /// 取消订阅并释放 manager — 与 [disconnect] 相同但**不发出 disconnected 事件**。
+  Future<void> _cleanupConnection(String instanceId) async {
+    await _cleanup(instanceId);
+  }
+
+  Future<void> _cleanup(
+    String instanceId, {
+    bool emitDisconnected = false,
+  }) async {
     final conn = _connections[instanceId];
     if (conn == null) return;
 
-    // 仅清理 manager 和事件订阅，保留流控制器。
-    // 流控制器在 disconnect 后仍然存活，以便重连时复用，
-    // 仅在 WsGatewayClient.dispose() 时统一关闭。
     await conn._eventSub?.cancel();
     conn._eventSub = null;
     await conn._stateSub?.cancel();
     conn._stateSub = null;
+    await conn._pairingSub?.cancel();
+    conn._pairingSub = null;
     await conn.manager?.dispose();
     conn.manager = null;
 
-    // 通知外部订阅者连接已断开
-    if (!conn.connectionStateCtrl.isClosed) {
+    if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
       conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
     }
   }
@@ -116,7 +330,6 @@ class WsGatewayClient implements IGatewayClient {
   }) async {
     final manager = _requireManager(instanceId);
 
-    // 使用 `agent` 方法执行一次 agent turn
     final res = await manager.sendRequest(Methods.agent, {
       'agentId': agentId,
       'message': message.content ?? '',
@@ -149,7 +362,8 @@ class WsGatewayClient implements IGatewayClient {
       );
     }
 
-    final agents = (res.payload?['agents'] as List<dynamic>?)
+    final agents =
+        (res.payload?['agents'] as List<dynamic>?)
             ?.cast<Map<String, dynamic>>() ??
         [];
     return agents.map((json) => _parseAgent(json, instanceId)).toList();
@@ -164,10 +378,7 @@ class WsGatewayClient implements IGatewayClient {
   }) async {
     final manager = _requireManager(instanceId);
 
-    final params = <String, dynamic>{
-      'agentId': agentId,
-      'limit': limit,
-    };
+    final params = <String, dynamic>{'agentId': agentId, 'limit': limit};
     if (cursor != null) params['cursor'] = cursor;
 
     final res = await manager.sendRequest(Methods.chatHistory, params);
@@ -183,7 +394,7 @@ class WsGatewayClient implements IGatewayClient {
             ?.cast<Map<String, dynamic>>()
             .map((json) => _parseMessage(json))
             .toList() ??
-            [];
+        [];
     final nextCursor = res.payload?['nextCursor'] as String?;
 
     return (messages: messages, nextCursor: nextCursor);
@@ -191,18 +402,30 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Future<bool> testConnection(Instance instance) async {
+    final testId = '__test_${instance.id}';
+    final identity = await _ensureDeviceIdentity();
     final testManager = ConnectionManager(
-      instanceId: '__test_${instance.id}',
+      instanceId: testId,
       gatewayUrl: instance.gatewayUrl,
       token: instance.tokenRef,
+      deviceId: identity.deviceId,
+      devicePublicKey: identity.publicKeyB64,
+      signPayload: (v3Payload) => _signPayload(v3Payload),
+      deviceFamily: _deviceFamily,
+      modelIdentifier: _modelIdentifier,
+      clientVersion: _clientVersion,
+      platform: _platform,
+      clientId: _clientId,
+      clientMode: _clientMode,
+      role: _role,
+      scopes: _scopes,
+      clientDisplayName: _clientDisplayName,
       locale: _locale,
     );
 
     try {
       final stateFuture = testManager.connectionState.firstWhere(
-        (s) =>
-            s == GatewayConnectionState.connected ||
-            s == GatewayConnectionState.authFailed,
+        isTestTerminalState,
       );
 
       await testManager.connect().timeout(
@@ -248,14 +471,21 @@ class WsGatewayClient implements IGatewayClient {
   }
 
   @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
+    return _getOrCreateControllers(instanceId).pairingInfoCtrl.stream;
+  }
+
+  @override
   Future<void> dispose() async {
     for (final conn in _connections.values) {
       await conn._eventSub?.cancel();
       await conn._stateSub?.cancel();
+      await conn._pairingSub?.cancel();
       await conn.manager?.dispose();
       await conn.connectionStateCtrl.close();
       await conn.messageCtrl.close();
       await conn.toolCallCtrl.close();
+      await conn.pairingInfoCtrl.close();
     }
     _connections.clear();
   }
@@ -274,18 +504,10 @@ class WsGatewayClient implements IGatewayClient {
         _onAgentEvent(instanceId, conn, event.payload);
 
       default:
-        // tick, presence, health, shutdown 等已在 ConnectionManager 处理
         break;
     }
   }
 
-  /// 处理 `agent` 事件 —— Gateway 推送的 agent 执行流。
-  ///
-  /// 包含四种流类型：
-  /// - `message` — Agent 回复消息
-  /// - `tool` — 工具调用/结果
-  /// - `thinking` — 思考过程（可选展示）
-  /// - `lifecycle` — run 生命周期（start/end/error）
   void _onAgentEvent(
     String instanceId,
     _InstanceConnection conn,
@@ -303,17 +525,14 @@ class WsGatewayClient implements IGatewayClient {
         _emitToolCall(conn, eventData.data);
 
       case AgentStreamType.thinking:
-        // 思考过程 — 暂不暴露为独立流，可在 UI 通过 thinkingState 展示
         break;
 
       case AgentStreamType.lifecycle:
-        // Run 生命周期 — 可用于记录/调试
         debugPrint(
           '[WsGateway] Agent lifecycle for $instanceId: ${eventData.data['phase']}',
         );
 
       case AgentStreamType.unknown:
-        // 新流类型 — 容错
         debugPrint(
           '[WsGateway] Unknown agent stream type for $instanceId: '
           '${payload['stream']}',
@@ -328,9 +547,7 @@ class WsGatewayClient implements IGatewayClient {
       final message = _parseMessage(data);
       conn.messageCtrl.add(message);
     } catch (error, stackTrace) {
-      debugPrint(
-        '[WsGateway] Failed to parse message: $error\n$stackTrace',
-      );
+      debugPrint('[WsGateway] Failed to parse message: $error\n$stackTrace');
     }
   }
 
@@ -341,9 +558,7 @@ class WsGatewayClient implements IGatewayClient {
       final toolCall = _parseToolCall(data);
       conn.toolCallCtrl.add(toolCall);
     } catch (error, stackTrace) {
-      debugPrint(
-        '[WsGateway] Failed to parse tool call: $error\n$stackTrace',
-      );
+      debugPrint('[WsGateway] Failed to parse tool call: $error\n$stackTrace');
     }
   }
 
@@ -352,6 +567,7 @@ class WsGatewayClient implements IGatewayClient {
   // ---------------------------------------------------------------------------
 
   Agent _parseAgent(Map<String, dynamic> json, String instanceId) {
+    final remoteId = json['remoteId'] as String? ?? json['id'] as String? ?? '';
     final rawCommands = json['quickCommands'] as List<dynamic>?;
     final quickCommands = <QuickCommand>[];
     if (rawCommands != null) {
@@ -360,7 +576,7 @@ class WsGatewayClient implements IGatewayClient {
         quickCommands.add(
           QuickCommand(
             id: _uuid.v4(),
-            agentId: json['remoteId'] as String? ?? '',
+            agentId: remoteId,
             label: cmd['label'] as String? ?? '',
             payload: cmd['payload'] as String? ?? '',
             sortOrder: i,
@@ -369,15 +585,30 @@ class WsGatewayClient implements IGatewayClient {
       }
     }
 
+    // Agent name fallback chain:
+    //   json['name'] → identity.name → id
+    // Gateway 的默认 agent (如 "main") 通常没有 name 字段，
+    // 只有 id，此时以 id 作为显示名（协议文档 §A.6 实测验证）。
+    final identity = json['identity'] as Map<String, dynamic>?;
+    String? _nonEmpty(String? s) =>
+        (s != null && s.trim().isNotEmpty) ? s.trim() : null;
+    final name =
+        _nonEmpty(json['name'] as String?) ??
+        _nonEmpty(identity?['name'] as String?) ??
+        remoteId;
+
+    final description =
+        json['description'] as String? ?? identity?['description'] as String?;
+
     return Agent(
       localId: _uuid.v4(),
-      remoteId: json['remoteId'] as String? ?? json['id'] as String? ?? '',
+      remoteId: remoteId,
       instanceId: instanceId,
-      name: json['name'] as String? ?? json['displayName'] as String? ?? '',
+      name: name,
       nickname: json['nickname'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
       themeColor: json['themeColor'] as String? ?? '#007AFF',
-      description: json['description'] as String?,
+      description: description,
       isPinned: json['isPinned'] == true,
       quickCommands: quickCommands,
       createdAt: json['createdAt'] as int? ?? 0,
@@ -410,7 +641,8 @@ class WsGatewayClient implements IGatewayClient {
           json['name'] as String? ?? json['toolName'] as String? ?? 'unknown',
       status: _parseToolCallStatus(json['status'] as String?),
       inputArgs: json['input'] as String? ?? json['inputArgs'] as String?,
-      outputResult: json['output'] as String? ?? json['outputResult'] as String?,
+      outputResult:
+          json['output'] as String? ?? json['outputResult'] as String?,
       startedAt: json['startedAt'] as int?,
       endedAt: json['endedAt'] as int?,
     );
@@ -450,20 +682,30 @@ class WsGatewayClient implements IGatewayClient {
   // 内部：辅助方法
   // ---------------------------------------------------------------------------
 
+  /// Returns `true` when [state] is terminal for [testConnection].
+  ///
+  /// Terminal states are those where the connection attempt has definitively
+  /// resolved (success or failure).  [GatewayConnectionState.pairingRequired]
+  /// is included so that new devices waiting for server-side approval return
+  /// immediately rather than timing out after 30 s.
+  @visibleForTesting
+  static bool isTestTerminalState(GatewayConnectionState state) {
+    return state == GatewayConnectionState.connected ||
+        state == GatewayConnectionState.authFailed ||
+        state == GatewayConnectionState.disconnected ||
+        state == GatewayConnectionState.pairingRequired;
+  }
+
   ConnectionManager _requireManager(String instanceId) {
     final conn = _connections[instanceId];
     if (conn == null || conn.manager == null) {
-      throw StateError(
+      throw NotConnectedException(
         'No connection for instance $instanceId. Call connect() first.',
       );
     }
     return conn.manager!;
   }
 
-  /// 获取或创建流控制器（不创建 ConnectionManager）。
-  ///
-  /// 用于 [connectionStateStream]、[messageStream]、[toolCallStream] —
-  /// 这些流可能在 [connect] 之前被订阅，此时只需暴露 controller 即可。
   _InstanceConnection _getOrCreateControllers(String instanceId) {
     return _connections.putIfAbsent(
       instanceId,
@@ -472,41 +714,47 @@ class WsGatewayClient implements IGatewayClient {
             StreamController<GatewayConnectionState>.broadcast(),
         messageCtrl: StreamController<Message>.broadcast(),
         toolCallCtrl: StreamController<ToolCall>.broadcast(),
+        pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
       ),
     );
   }
 }
 
 // ============================================================================
+// 内部：设备身份数据类
+// ============================================================================
+
+class _DeviceIdentity {
+  final String deviceId;
+  final String? publicKeyB64;
+  final Uint8List? seedBytes;
+  const _DeviceIdentity({
+    required this.deviceId,
+    this.publicKeyB64,
+    this.seedBytes,
+  });
+}
+
+// ============================================================================
 // 内部：实例连接资源聚合
 // ============================================================================
 
-/// 聚合单个 Gateway 实例的所有连接相关资源。
-///
-/// 将原来分散的 5 组 Map 收敛到一个对象中：
-/// - [manager] — WebSocket 连接生命周期管理
-/// - [connectionStateCtrl] — 连接状态广播流
-/// - [messageCtrl] — 消息事件广播流
-/// - [toolCallCtrl] — 工具调用事件广播流
-/// - [_eventSub] — Gateway 事件订阅
-/// - [_stateSub] — manager → controller 状态转发订阅
-///
-/// 流控制器在 disconnect 后保留（允许重连复用），
-/// 仅在 WsGatewayClient.dispose() 时关闭。
 class _InstanceConnection {
-  /// WebSocket 连接管理器（disconnect 时置 null，connect 时重新赋值）。
   ConnectionManager? manager;
 
   final StreamController<GatewayConnectionState> connectionStateCtrl;
   final StreamController<Message> messageCtrl;
   final StreamController<ToolCall> toolCallCtrl;
+  final StreamController<GatewayPairingInfo?> pairingInfoCtrl;
 
   StreamSubscription<EventFrame>? _eventSub;
   StreamSubscription<GatewayConnectionState>? _stateSub;
+  StreamSubscription<GatewayPairingInfo?>? _pairingSub;
 
   _InstanceConnection({
     required this.connectionStateCtrl,
     required this.messageCtrl,
     required this.toolCallCtrl,
+    required this.pairingInfoCtrl,
   });
 }
