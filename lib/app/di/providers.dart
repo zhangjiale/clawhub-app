@@ -67,7 +67,10 @@ final mockGatewayClientProvider = Provider<MockGatewayClient>((ref) {
 /// 使用 [FlutterSecureStorage] 持久化密钥对。
 /// 可通过 override 注入 fake 以进行单元测试。
 final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
-  return Ed25519IdentityProvider(secureStorage: const FlutterSecureStorage());
+  return Ed25519IdentityProvider(
+    secureStorage: const FlutterSecureStorage(),
+    logger: ref.watch(loggerProvider),
+  );
 });
 
 /// 真实 WebSocket Gateway 客户端（当前生产默认实现）。
@@ -206,6 +209,7 @@ final saveInstanceUseCaseProvider = Provider<SaveInstanceUseCase>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
     lifecycle: ref.watch(connectionOrchestratorProvider),
+    logger: ref.watch(loggerProvider),
   );
 });
 
@@ -221,5 +225,6 @@ final syncAgentsUseCaseProvider = Provider<SyncAgentsUseCase>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     agentRepo: ref.watch(agentRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
+    logger: ref.watch(loggerProvider),
   );
 });

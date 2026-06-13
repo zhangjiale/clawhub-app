@@ -2,6 +2,7 @@ import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../repositories/i_instance_repo.dart';
 import '../../core/acl/i_gateway_client.dart';
+import '../../core/i_logger.dart';
 import 'instance_lifecycle.dart';
 
 /// 保存实例用例（统一创建与编辑）
@@ -19,16 +20,19 @@ class SaveInstanceUseCase {
   final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
   final IInstanceLifecycle? _lifecycle;
+  final ILogger? _logger;
   final Uuid _uuid;
 
   SaveInstanceUseCase({
     required IInstanceRepo instanceRepo,
     required IGatewayClient gatewayClient,
     IInstanceLifecycle? lifecycle,
+    ILogger? logger,
     Uuid? uuid,
   }) : _instanceRepo = instanceRepo,
        _gatewayClient = gatewayClient,
        _lifecycle = lifecycle,
+       _logger = logger,
        _uuid = uuid ?? const Uuid();
 
   /// 保存实例（创建或更新）
@@ -112,10 +116,14 @@ class SaveInstanceUseCase {
     //    ConnectionManager._handleDeviceIdMismatch 自动 2s 重试处理。
     try {
       await _lifecycle?.onInstanceSaved(saved);
-    } catch (_) {
+    } catch (error, stackTrace) {
       // 编排失败不应阻止 save 返回成功 — 实例已持久化。
       // 连接错误由 ConnectionOrchestrator 内部的自动重连机制自行处理。
-      // 日志关注点属于外层（infrastructure/app），不在 domain 层。
+      _logger?.error(
+        '[SaveInstanceUseCase] Lifecycle callback failed for '
+        '${saved.id}: $error',
+        stackTrace,
+      );
     }
 
     return saved;

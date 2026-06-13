@@ -3,6 +3,7 @@ import '../models/enums.dart';
 import '../repositories/i_agent_repo.dart';
 import '../repositories/i_instance_repo.dart';
 import '../../core/acl/i_gateway_client.dart';
+import '../../core/i_logger.dart';
 
 /// 由 SyncAgentsUseCase 返回的聚合数据
 class AgentListData {
@@ -32,14 +33,17 @@ class SyncAgentsUseCase {
   final IInstanceRepo _instanceRepo;
   final IAgentRepo _agentRepo;
   final IGatewayClient _gatewayClient;
+  final ILogger? _logger;
 
   SyncAgentsUseCase({
     required IInstanceRepo instanceRepo,
     required IAgentRepo agentRepo,
     required IGatewayClient gatewayClient,
+    ILogger? logger,
   }) : _instanceRepo = instanceRepo,
        _agentRepo = agentRepo,
-       _gatewayClient = gatewayClient;
+       _gatewayClient = gatewayClient,
+       _logger = logger;
 
   /// 同步所有实例的 Agent 列表并返回聚合结果
   Future<AgentListData> execute() async {
@@ -66,9 +70,14 @@ class SyncAgentsUseCase {
         }
         // Surface the error via syncErrors so the UI can show a stale-data
         // warning while still displaying cached results from the local DB.
-        // Logging is an infrastructure/app-layer concern — the caller
-        // decides whether and how to log errors from syncErrors.
         syncErrors[instance.id] = error.toString();
+        // Log the full error with stack trace via injected logger —
+        // the caller receives only error messages, but the logger
+        // preserves diagnostic detail for debugging.
+        _logger?.error(
+          'SyncAgents failed for instance ${instance.id}: $error',
+          stackTrace,
+        );
       }
     }
 
