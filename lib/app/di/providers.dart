@@ -106,10 +106,10 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
 
 /// Gateway 防腐层接口（面向接口编程，方便 Mock ↔ 真实实现互换）
 ///
-/// 当前指向 WsGatewayClient（生产环境）。
-/// 开发/调试：改为 `return ref.watch(mockGatewayClientProvider);`
+/// 当前指向 MockGatewayClient（MVP / 开发阶段默认，可离线开发）。
+/// 生产环境：改为 `return ref.watch(wsGatewayClientProvider);`
 final gatewayClientProvider = Provider<IGatewayClient>((ref) {
-  return ref.watch(wsGatewayClientProvider);
+  return ref.watch(mockGatewayClientProvider);
 });
 
 // --- Network Monitoring ---
