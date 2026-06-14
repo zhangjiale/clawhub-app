@@ -120,6 +120,21 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// indefinitely (every delta resets [_timeoutTimer], so without this
   /// separate timer, the user could wait forever).
   Timer? _overallTimeoutTimer;
+
+  /// Streaming text accumulator — buffers delta text and publishes
+  /// incrementally through [ChatSessionState.streamingText].
+  ///
+  /// [StringBuffer.write] is amortized O(1) per append, replacing the
+  /// O(n²) `state.streamingText + event.text` pattern (see #12).
+  final StringBuffer _streamBuffer = StringBuffer();
+
+  /// How many code-units of [_streamBuffer] have been published to state.
+  /// Reset to 0 on each new send generation.  Used for incremental
+  /// publishing — only the diff since last flush is new allocation.
+  int _lastPublishedLength = 0;
+
+  /// Debounce timer for throttled state writes.
+  Timer? _flushTimer;
   Agent? _agent;
 
   /// Monotonically increasing counter — incremented on each [send].
@@ -128,6 +143,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// into response B's accumulated text when the user sends a follow-up
   /// message before the agent finishes replying to the first.
   int _sendGeneration = 0;
+
+  /// Configurable flush delay for streaming text state updates.
+  ///
+  /// Defaults to 150ms to match [StreamingBubble]'s MarkdownBody debounce.
+  /// Set to [Duration.zero] in tests for synchronous assertions.
+  @visibleForTesting
+  final Duration flushDelay;
 
   /// Cached future for [init] so [send] can await initialization if the
   /// user sends a message before [init] completes.
@@ -144,6 +166,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     required SendMessageUseCase sendMessageUseCase,
     required this.instanceId,
     required this.agentId,
+    this.flushDelay = const Duration(milliseconds: 150),
   }) : _agentRepo = agentRepo,
        _conversationRepo = conversationRepo,
        _messageRepo = messageRepo,
@@ -246,17 +269,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               // Route to the correct agent — ignore events for other agents
               if (event is StreamingDelta && event.agentId == agentRemoteId) {
                 // Cap at 50KB to prevent unbounded growth (DoS / Gateway bug).
-                // Guard with O(1) length check to avoid O(n²) string allocations
-                // once the cap is already reached.
-                if (state.streamingText.length < 50 * 1024) {
-                  final newText = state.streamingText + event.text;
-                  _updateState(
-                    (s) => s.copyWith(
-                      streamingText: newText.length <= 50 * 1024
-                          ? newText
-                          : newText.substring(0, 50 * 1024),
-                    ),
-                  );
+                if (_streamBuffer.length < 50 * 1024) {
+                  _streamBuffer.write(event.text);
+                  _scheduleFlush();
                 }
                 // Reset thinking timer on each delta arrival
                 _timeoutTimer?.cancel();
@@ -276,12 +291,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
                 // a stale StreamingDone from response A from wiping text that
                 // belongs to response B (concurrent send interleaving guard).
                 if (myGen == _sendGeneration) {
+                  _flushImmediately();
                   _stallTimer?.cancel();
                   _updateState((s) => s.copyWith(streamingText: ''));
                 }
               }
             },
             onError: (error, stackTrace) {
+              _flushImmediately();
               _stallTimer?.cancel();
               _timeoutTimer?.cancel();
               _updateState((s) => s.copyWith(streamingText: ''));
@@ -334,6 +351,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     // response.  The streaming listener captures the generation and drops
     // deltas from previous sends.
     _sendGeneration++;
+    _flushTimer?.cancel();
+    _streamBuffer.clear();
+    _lastPublishedLength = 0;
     _stallTimer?.cancel();
     _stallTimer = null;
     _timeoutTimer?.cancel();
@@ -398,6 +418,26 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _startThinking();
   }
 
+  /// Schedule a throttled flush — cancels pending timer, sets new one.
+  void _scheduleFlush() {
+    _flushTimer?.cancel();
+    _flushTimer = Timer(flushDelay, _flushToState);
+  }
+
+  /// Publish accumulated buffer text to [ChatSessionState.streamingText].
+  void _flushToState() {
+    final full = _streamBuffer.toString();
+    if (full.length == _lastPublishedLength) return; // no new content
+    _updateState((s) => s.copyWith(streamingText: full));
+    _lastPublishedLength = full.length;
+  }
+
+  /// Flush immediately — used at stream termination.
+  void _flushImmediately() {
+    _flushTimer?.cancel();
+    _flushToState();
+  }
+
   void _startThinking() {
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 60), () {
@@ -433,6 +473,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// subscriptions from scratch.  Safe to call even if init succeeded.
   Future<void> retry() async {
     _teardownSubscriptions();
+    _flushTimer?.cancel();
+    _streamBuffer.clear();
+    _lastPublishedLength = 0;
     _initFuture = null;
     _agent = null;
     _updateState(
@@ -465,5 +508,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _stallTimer = null;
     _overallTimeoutTimer?.cancel();
     _overallTimeoutTimer = null;
+    _flushTimer?.cancel();
+    _flushTimer = null;
   }
 }
