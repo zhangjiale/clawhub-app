@@ -49,6 +49,7 @@ void main() {
         ),
         instanceId: instanceId,
         agentId: agentId,
+        flushDelay: Duration.zero, // synchronous flush for tests
       );
     }
 
@@ -239,6 +240,7 @@ void main() {
         sendMessageUseCase: failingUseCase,
         instanceId: 'inst-1',
         agentId: 'local-1',
+        flushDelay: Duration.zero, // synchronous flush for tests
       );
       await vm.init();
 
@@ -295,6 +297,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        flushDelay: Duration.zero, // synchronous flush for tests
       );
       await vm.init();
 
@@ -351,6 +354,7 @@ void main() {
         ),
         instanceId: instanceId,
         agentId: agentId,
+        flushDelay: Duration.zero, // synchronous flush for tests
       );
     }
 
