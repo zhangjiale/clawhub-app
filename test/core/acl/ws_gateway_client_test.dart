@@ -551,6 +551,75 @@ void main() {
       await client.dispose();
     });
 
+    test('streamingDeltaStream emits StreamingDelta on chat.delta', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final events = <StreamingEvent>[];
+      final sub = client
+          .streamingDeltaStream('test-instance')
+          .listen(events.add);
+
+      ws.simulateServerFrame(chatDeltaJson(deltaText: 'Hey'));
+      await pumpMicrotasks();
+
+      expect(events.length, 1);
+      expect(events.first, isA<StreamingDelta>());
+      final delta = events.first as StreamingDelta;
+      expect(delta.text, 'Hey');
+      expect(
+        delta.agentId,
+        'r-1',
+      ); // extracted from sessionKey "agent:r-1:main"
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('streamingDeltaStream emits StreamingDone on chat.final', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final events = <StreamingEvent>[];
+      final sub = client
+          .streamingDeltaStream('test-instance')
+          .listen(events.add);
+
+      ws.simulateServerFrame(chatFinalJson());
+      await pumpMicrotasks();
+
+      expect(events.length, 1);
+      expect(events.first, isA<StreamingDone>());
+      expect((events.first as StreamingDone).agentId, 'r-1');
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('multi-delta streaming produces correct sequence', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final events = <StreamingEvent>[];
+      final sub = client
+          .streamingDeltaStream('test-instance')
+          .listen(events.add);
+
+      ws.simulateServerFrame(chatDeltaJson(deltaText: 'Hello'));
+      await pumpMicrotasks();
+      ws.simulateServerFrame(chatDeltaJson(deltaText: ' World'));
+      await pumpMicrotasks();
+      ws.simulateServerFrame(chatFinalJson());
+      await pumpMicrotasks();
+
+      expect(events.length, 3);
+      expect(events[0], isA<StreamingDelta>());
+      expect((events[0] as StreamingDelta).text, 'Hello');
+      expect(events[1], isA<StreamingDelta>());
+      expect((events[1] as StreamingDelta).text, ' World');
+      expect(events[2], isA<StreamingDone>());
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
     test('connection state stream reflects handshake progression', () async {
       final ws = ControllableWebSocket.ready();
       final identityProvider = FakeDeviceIdentityProvider();

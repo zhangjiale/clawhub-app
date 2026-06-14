@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:uuid/uuid.dart';
+import 'gateway_protocol.dart';
 import 'i_gateway_client.dart';
 import '../../domain/models/models.dart';
 
@@ -18,6 +19,8 @@ class MockGatewayClient implements IGatewayClient {
   _connectionControllers = {};
   final Map<String, StreamController<Message>> _messageControllers = {};
   final Map<String, StreamController<ToolCall>> _toolCallControllers = {};
+  final Map<String, StreamController<StreamingEvent>> _streamingControllers =
+      {};
 
   List<Map<String, dynamic>> _mockAgents = [];
   List<Map<String, dynamic>> _mockInstances = [];
@@ -82,10 +85,38 @@ class MockGatewayClient implements IGatewayClient {
     final controller = _messageControllers[instanceId];
     if (controller == null || !controller.hasListener) return;
 
-    // 模拟 Agent 思考延迟（500-2000ms），接近真实 Gateway 的
-    // chat.typing → delta×N → done 时间线。
+    // 模拟 Agent 思考延迟（500-2000ms）
     final delayMs = 500 + _random.nextInt(1500);
-    Future.delayed(Duration(milliseconds: delayMs), () {
+    Future.delayed(Duration(milliseconds: delayMs), () async {
+      if (controller.isClosed) return;
+
+      final fullText = _generateMockReply(userMessage.content ?? '');
+
+      // 模拟流式 delta 推送（每次 2-8 个字符, 30-80ms 间隔）
+      final chars = fullText.runes.toList();
+      var i = 0;
+      while (i < chars.length) {
+        final chunkSize = 2 + _random.nextInt(7);
+        final end = (i + chunkSize).clamp(0, chars.length);
+        final chunk = String.fromCharCodes(chars.sublist(i, end));
+
+        // Re-resolve streaming controller on each iteration so that an
+        // instance switch (which replaces the controller) is honoured
+        // immediately — avoids pushing deltas to a dead controller.
+        final streamingCtrl = _streamingControllers[instanceId];
+        if (!(streamingCtrl?.isClosed ?? true)) {
+          streamingCtrl?.add(StreamingDelta(agentId: agentId, text: chunk));
+        }
+
+        i = end;
+        if (i < chars.length) {
+          await Future.delayed(
+            Duration(milliseconds: 30 + _random.nextInt(50)),
+          );
+        }
+      }
+
+      // 发出完整 Message
       if (controller.isClosed) return;
       final agentMsg = Message(
         clientId: _uuid.v4(),
@@ -93,12 +124,18 @@ class MockGatewayClient implements IGatewayClient {
         conversationId: userMessage.conversationId,
         agentId: agentId,
         role: MessageRole.agent,
-        content: _generateMockReply(userMessage.content ?? ''),
+        content: fullText,
         type: MessageType.text,
         status: MessageStatus.delivered,
         logicalClock: DateTime.now().millisecondsSinceEpoch,
       );
       controller.add(agentMsg);
+
+      // 通知 UI 流式结束
+      final streamingCtrl = _streamingControllers[instanceId];
+      if (!(streamingCtrl?.isClosed ?? true)) {
+        streamingCtrl?.add(StreamingDone(agentId: agentId));
+      }
 
       if (_random.nextDouble() < 0.1) {
         _simulateToolCall(instanceId, agentMsg.clientId);
@@ -265,6 +302,11 @@ class MockGatewayClient implements IGatewayClient {
   }
 
   @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) {
+    return _getOrCreateStreamingController(instanceId).stream;
+  }
+
+  @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
     // Mock 环境永不触发配对流程
     return Stream.value(null);
@@ -287,6 +329,15 @@ class MockGatewayClient implements IGatewayClient {
     );
   }
 
+  StreamController<StreamingEvent> _getOrCreateStreamingController(
+    String instanceId,
+  ) {
+    return _streamingControllers.putIfAbsent(
+      instanceId,
+      () => StreamController<StreamingEvent>.broadcast(),
+    );
+  }
+
   StreamController<ToolCall> _getOrCreateToolCallController(String instanceId) {
     return _toolCallControllers.putIfAbsent(
       instanceId,
@@ -305,5 +356,15 @@ class MockGatewayClient implements IGatewayClient {
     for (final c in _toolCallControllers.values) {
       await c.close();
     }
+    for (final c in _streamingControllers.values) {
+      await c.close();
+    }
+    // Clear maps so that subsequent _getOrCreateXxxController calls
+    // (via putIfAbsent) create fresh controllers instead of returning
+    // the closed ones.
+    _connectionControllers.clear();
+    _messageControllers.clear();
+    _toolCallControllers.clear();
+    _streamingControllers.clear();
   }
 }

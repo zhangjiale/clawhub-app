@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/models/models.dart';
 
@@ -182,6 +183,10 @@ class _FakeGatewayClient implements IGatewayClient {
         )
         .stream;
   }
+
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
 
   @override
   Future<void> dispose() async {
@@ -1203,6 +1208,10 @@ class _BlockingFetchGateway implements IGatewayClient {
   Stream<GatewayPairingInfo?> pairingInfoStream(String id) =>
       Stream.value(null);
 
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
+
   /// Helper for tests: emit an extra connected event on the instance's stream.
   void addConnectedEvent(String instanceId) {
     final ctrl = _stateCtrls[instanceId];
@@ -1314,6 +1323,10 @@ class _FailsThenSucceedsGateway implements IGatewayClient {
         )
         .stream;
   }
+
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
 
   void addConnectedEvent(String instanceId) {
     final ctrl = _stateCtrls[instanceId];
@@ -1428,6 +1441,9 @@ class _CyclicBlockGateway implements IGatewayClient {
   @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String id) =>
       Stream.value(null);
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
   @override
   Future<void> dispose() async {
     for (final c in _stateCtrls.values) {

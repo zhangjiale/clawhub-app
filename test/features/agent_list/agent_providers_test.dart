@@ -6,6 +6,7 @@ import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart';
 
 /// Minimal gateway that throws for configured instances.
 class _FailingGateway implements IGatewayClient {
@@ -52,6 +53,9 @@ class _FailingGateway implements IGatewayClient {
   @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String id) =>
       Stream.value(null);
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
   @override
   Future<void> dispose() => throw UnimplementedError();
 }

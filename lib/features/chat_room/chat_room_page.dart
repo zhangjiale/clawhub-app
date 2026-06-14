@@ -9,6 +9,7 @@ import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/chat_input_bar.dart';
+import 'package:claw_hub/features/chat_room/widgets/streaming_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/thinking_indicator.dart';
 import 'package:claw_hub/features/chat_room/widgets/tool_call_card.dart';
 import 'package:claw_hub/features/chat_room/widgets/quick_command_bar.dart';
@@ -230,8 +231,14 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
               },
             ),
 
-            // Thinking indicator (when waiting for agent reply)
-            if (session.thinkingState == ThinkingState.thinking)
+            // Streaming bubble — show live text as it arrives
+            if (session.streamingText.isNotEmpty)
+              StreamingBubble(
+                text: session.streamingText,
+                agentName: agent?.displayName ?? 'Agent',
+              )
+            // Thinking indicator — show dots while waiting for first text
+            else if (session.thinkingState == ThinkingState.thinking)
               const ThinkingIndicator(),
 
             // Quick command bar

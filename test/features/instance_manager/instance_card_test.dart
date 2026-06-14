@@ -7,6 +7,7 @@ import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/domain/models/models.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
@@ -81,6 +82,9 @@ class _NoopGatewayClient implements IGatewayClient {
   @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String id) =>
       const Stream.empty();
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
   @override
   Future<void> dispose() async {}
 }

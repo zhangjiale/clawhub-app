@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
@@ -37,12 +38,14 @@ class ChatSessionState {
   final ThinkingState thinkingState;
   final GatewayConnectionState connectionState;
   final Map<String, ToolCall> toolCalls;
+  final String streamingText;
 
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
     this.connectionState = GatewayConnectionState.disconnected,
     this.toolCalls = const {},
+    this.streamingText = '',
   });
 
   ChatSessionState copyWith({
@@ -50,12 +53,14 @@ class ChatSessionState {
     ThinkingState? thinkingState,
     GatewayConnectionState? connectionState,
     Map<String, ToolCall>? toolCalls,
+    String? streamingText,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
       thinkingState: thinkingState ?? this.thinkingState,
       connectionState: connectionState ?? this.connectionState,
       toolCalls: toolCalls ?? this.toolCalls,
+      streamingText: streamingText ?? this.streamingText,
     );
   }
 
@@ -66,11 +71,17 @@ class ChatSessionState {
           thinkingState == other.thinkingState &&
           connectionState == other.connectionState &&
           messages == other.messages &&
-          toolCalls == other.toolCalls;
+          toolCalls == other.toolCalls &&
+          streamingText == other.streamingText;
 
   @override
-  int get hashCode =>
-      Object.hash(thinkingState, connectionState, messages, toolCalls);
+  int get hashCode => Object.hash(
+    thinkingState,
+    connectionState,
+    messages,
+    toolCalls,
+    streamingText,
+  );
 }
 
 /// ChatViewModel — deep module behind a single-seam interface.
@@ -100,8 +111,23 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   StreamSubscription<Message>? _messageSubscription;
   StreamSubscription<GatewayConnectionState>? _connectionSubscription;
   StreamSubscription<ToolCall>? _toolCallSubscription;
+  StreamSubscription<StreamingEvent>? _streamingSubscription;
   Timer? _timeoutTimer;
+  Timer? _stallTimer;
+
+  /// Overall response timer — starts once on [send], never reset by deltas.
+  /// Guarantees the user sees a timeout even when the Gateway trickles data
+  /// indefinitely (every delta resets [_timeoutTimer], so without this
+  /// separate timer, the user could wait forever).
+  Timer? _overallTimeoutTimer;
   Agent? _agent;
+
+  /// Monotonically increasing counter — incremented on each [send].
+  /// The streaming listener captures its value and drops deltas from
+  /// stale generations, preventing response A's deltas from leaking
+  /// into response B's accumulated text when the user sends a follow-up
+  /// message before the agent finishes replying to the first.
+  int _sendGeneration = 0;
 
   /// Cached future for [init] so [send] can await initialization if the
   /// user sends a message before [init] completes.
@@ -146,8 +172,12 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       if (_agent == null) {
         debugPrint(
           '[ChatViewModel] Agent not found: agentId=$agentId, '
-          'instanceId=$instanceId — send() will be unavailable.',
+          'instanceId=$instanceId — chat unavailable.',
         );
+        // Early return: without an agent, streaming/message routing is
+        // impossible (requires agentId for filtering).  The UI will show
+        // LoadError via [send()] if the user attempts to send.
+        return;
       }
 
       // 2. Get or create conversation (idempotent)
@@ -163,25 +193,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
             _updateState((s) => s.copyWith(connectionState: state));
           });
 
-      // 5. Fetch message history from Gateway (best-effort)
-      if (_agent != null) {
-        try {
-          final history = await _gatewayClient.fetchMessageHistory(
-            instanceId: instanceId,
-            agentId: _agent!.remoteId,
-          );
-          for (final msg in history.messages) {
-            await _messageRepo.insert(msg);
-          }
-          await _loadMessages();
-        } catch (error, stackTrace) {
-          debugPrint(
-            'History fetch failed for $instanceId/${_agent!.remoteId}: $error\n$stackTrace',
-          );
-        }
-      }
+      // 5. Subscribe to real-time streams BEFORE history fetch — broadcast
+      //    StreamControllers have no replay, so events arriving during the
+      //    history-fetch RTT (100-2000ms) are permanently lost if we
+      //    subscribe after.  (Same pattern documented in ConnectionOrchestrator
+      //    lines 224-227.)
 
-      // 6. Subscribe to real-time messages
+      // 5a. Real-time messages
       _messageSubscription = _gatewayClient
           .messageStream(instanceId)
           .listen(
@@ -189,6 +207,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               await _messageRepo.insert(msg);
               await _loadMessages();
               if (msg.role == MessageRole.agent) {
+                // Clear streaming text when the final message lands —
+                // eliminates the race window between StreamingDone and
+                // Message arrival on independent broadcast controllers.
+                _updateState((s) => s.copyWith(streamingText: ''));
                 _stopThinking();
                 onStatsChanged?.call();
               }
@@ -200,7 +222,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
             },
           );
 
-      // 7. Subscribe to tool call events
+      // 5b. Tool call events
       _toolCallSubscription = _gatewayClient.toolCallStream(instanceId).listen((
         tc,
       ) {
@@ -208,6 +230,84 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         current[tc.messageId] = tc;
         _updateState((s) => s.copyWith(toolCalls: current));
       });
+
+      // 5c. Streaming deltas (filtered by agentId)
+      // Capture remoteId locally — _agent is guaranteed non-null at this
+      // point (early return above), but a retry() could race the closure.
+      final agentRemoteId = _agent!.remoteId;
+      _streamingSubscription = _gatewayClient
+          .streamingDeltaStream(instanceId)
+          .listen(
+            (event) {
+              // Snapshot the send generation at callback entry.  Used below to
+              // guard StreamingDone so a stale "done" from a previous send()
+              // does not clear text accumulated by a newer send().
+              final myGen = _sendGeneration;
+              // Route to the correct agent — ignore events for other agents
+              if (event is StreamingDelta && event.agentId == agentRemoteId) {
+                // Cap at 50KB to prevent unbounded growth (DoS / Gateway bug).
+                // Guard with O(1) length check to avoid O(n²) string allocations
+                // once the cap is already reached.
+                if (state.streamingText.length < 50 * 1024) {
+                  final newText = state.streamingText + event.text;
+                  _updateState(
+                    (s) => s.copyWith(
+                      streamingText: newText.length <= 50 * 1024
+                          ? newText
+                          : newText.substring(0, 50 * 1024),
+                    ),
+                  );
+                }
+                // Reset thinking timer on each delta arrival
+                _timeoutTimer?.cancel();
+                _timeoutTimer = Timer(const Duration(seconds: 60), () {
+                  _updateState(
+                    (s) => s.copyWith(thinkingState: ThinkingState.timeout),
+                  );
+                });
+                // Reset stall timeout on each delta
+                _stallTimer?.cancel();
+                _stallTimer = Timer(const Duration(seconds: 30), () {
+                  _updateState((s) => s.copyWith(streamingText: ''));
+                });
+              } else if (event is StreamingDone &&
+                  event.agentId == agentRemoteId) {
+                // Only clear text if the generation hasn't changed — prevents
+                // a stale StreamingDone from response A from wiping text that
+                // belongs to response B (concurrent send interleaving guard).
+                if (myGen == _sendGeneration) {
+                  _stallTimer?.cancel();
+                  _updateState((s) => s.copyWith(streamingText: ''));
+                }
+              }
+            },
+            onError: (error, stackTrace) {
+              _stallTimer?.cancel();
+              _timeoutTimer?.cancel();
+              _updateState((s) => s.copyWith(streamingText: ''));
+              debugPrint(
+                'Streaming stream error for $instanceId: $error\n$stackTrace',
+              );
+            },
+          );
+      // 6. Fetch message history from Gateway (best-effort).
+      //    Placed AFTER real-time subscriptions so that events arriving
+      //    during the fetch RTT are captured, not lost.
+      final remoteId = _agent!.remoteId;
+      try {
+        final history = await _gatewayClient.fetchMessageHistory(
+          instanceId: instanceId,
+          agentId: remoteId,
+        );
+        for (final msg in history.messages) {
+          await _messageRepo.insert(msg);
+        }
+        await _loadMessages();
+      } catch (error, stackTrace) {
+        debugPrint(
+          'History fetch failed for $instanceId/$remoteId: $error\n$stackTrace',
+        );
+      }
     } catch (error, stackTrace) {
       debugPrint(
         '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
@@ -229,6 +329,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// is never silently dropped.  If the agent doesn't exist (or init failed),
   /// surfaces a [LoadError] so the UI can show a meaningful message.
   Future<void> send(String text) async {
+    // Reset streaming state and bump generation — prevents stale partial
+    // text from a disconnected or concurrent stream contaminating the new
+    // response.  The streaming listener captures the generation and drops
+    // deltas from previous sends.
+    _sendGeneration++;
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+    _updateState((s) => s.copyWith(streamingText: ''));
+
     await init();
 
     if (_agent == null) {
@@ -264,6 +375,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     //   outbox and will be retried later.
     if (sentMessage.status == MessageStatus.sent) {
       _startThinking();
+      // Overall timeout — fires regardless of delta activity, preventing
+      // a Gateway that trickles one char every 59s from keeping the user
+      // waiting indefinitely.  Longer than the per-delta 60s timer because
+      // it never resets: it covers the entire request lifecycle.
+      _overallTimeoutTimer?.cancel();
+      _overallTimeoutTimer = Timer(const Duration(seconds: 120), () {
+        _updateState((s) => s.copyWith(thinkingState: ThinkingState.timeout));
+      });
     }
 
     onStatsChanged?.call();
@@ -289,6 +408,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
   void _stopThinking() {
     _timeoutTimer?.cancel();
+    _overallTimeoutTimer?.cancel();
     _updateState((s) => s.copyWith(thinkingState: ThinkingState.idle));
   }
 
@@ -315,7 +435,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _teardownSubscriptions();
     _initFuture = null;
     _agent = null;
-    _updateState((s) => s.copyWith(messages: const LoadInProgress()));
+    _updateState(
+      (s) => s.copyWith(messages: const LoadInProgress(), streamingText: ''),
+    );
     await init();
   }
 
@@ -335,7 +457,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _connectionSubscription = null;
     _toolCallSubscription?.cancel();
     _toolCallSubscription = null;
+    _streamingSubscription?.cancel();
+    _streamingSubscription = null;
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _overallTimeoutTimer?.cancel();
+    _overallTimeoutTimer = null;
   }
 }

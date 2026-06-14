@@ -116,6 +116,7 @@ class WsGatewayClient implements IGatewayClient {
           messageCtrl: StreamController<Message>.broadcast(),
           toolCallCtrl: StreamController<ToolCall>.broadcast(),
           pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
+          streamingCtrl: StreamController<StreamingEvent>.broadcast(),
         ),
       );
       conn.manager = manager;
@@ -176,8 +177,9 @@ class WsGatewayClient implements IGatewayClient {
     }
 
     // 断开连接时清理该实例相关的 streaming buffer，防止残留
+    // Keys are scoped as '$instanceId:$sessionKey' since commit XXXXXX.
     if (emitDisconnected) {
-      _streamingBuffers.clear();
+      _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
     }
   }
 
@@ -327,6 +329,11 @@ class WsGatewayClient implements IGatewayClient {
   }
 
   @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) {
+    return _getOrCreateControllers(instanceId).streamingCtrl.stream;
+  }
+
+  @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
     return _getOrCreateControllers(instanceId).pairingInfoCtrl.stream;
   }
@@ -342,6 +349,7 @@ class WsGatewayClient implements IGatewayClient {
       await conn.messageCtrl.close();
       await conn.toolCallCtrl.close();
       await conn.pairingInfoCtrl.close();
+      await conn.streamingCtrl.close();
     }
     _connections.clear();
     _streamingBuffers.clear();
@@ -361,10 +369,10 @@ class WsGatewayClient implements IGatewayClient {
 
     switch (event.event) {
       case Events.chat:
-        _onChatEvent(conn, payload);
+        _onChatEvent(instanceId, conn, payload);
 
       case Events.agent:
-        _onAgentEvent(conn, payload);
+        _onAgentEvent(instanceId, conn, payload);
 
       default:
         break;
@@ -375,16 +383,32 @@ class WsGatewayClient implements IGatewayClient {
   ///
   /// - `state: "delta"` → 增量文本（含 deltaText）
   /// - `state: "final"` → 响应完成，携带完整 message 对象
-  void _onChatEvent(_InstanceConnection conn, Map<String, dynamic> payload) {
+  void _onChatEvent(
+    String instanceId,
+    _InstanceConnection conn,
+    Map<String, dynamic> payload,
+  ) {
     final event = parseChatEvent(payload);
+    // Scope streaming buffers by instanceId to prevent per-instance
+    // disconnect from dropping other instances' in-progress aggregation.
+    final bufferKey = '$instanceId:${event.sessionKey}';
 
     switch (event.state) {
       case ChatState.delta:
-        // 增量文本到达 — 不在此阶段发消息，仅做 streaming 缓冲
-        if (event.deltaText != null) {
+        if (event.deltaText != null && event.deltaText!.isNotEmpty) {
+          // Extract agentId from sessionKey: "agent:{agentId}:{scope}"
+          final agentId = _extractAgentId(event.sessionKey);
+
+          // Push typed streaming event to UI
+          if (!conn.streamingCtrl.isClosed) {
+            conn.streamingCtrl.add(
+              StreamingDelta(agentId: agentId, text: event.deltaText!),
+            );
+          }
+          // Also maintain aggregation buffer (fallback)
           _streamingBuffers
               .putIfAbsent(
-                event.sessionKey,
+                bufferKey,
                 () => StreamingBuffer(sessionKey: event.sessionKey),
               )
               .append(event.deltaText!);
@@ -394,20 +418,33 @@ class WsGatewayClient implements IGatewayClient {
         // 响应完成 — 优先用 message 对象，回退到聚合文本
         if (conn.messageCtrl.isClosed) return;
 
+        String? agentId;
+
         try {
           final msgJson = event.message;
+          agentId =
+              msgJson?['agentId'] as String? ??
+              _extractAgentId(event.sessionKey);
+
           if (msgJson != null) {
             // chat final event 自带完整 message，直接解析
             final message = _parseMessage(msgJson);
             conn.messageCtrl.add(message);
           } else {
             // 没有 message 对象时，用聚合文本构建
-            final buffer = _streamingBuffers.remove(event.sessionKey);
+            final buffer = _streamingBuffers.remove(bufferKey);
             if (buffer != null && buffer.text.isNotEmpty) {
+              // Use agentId for conversationId lookup alignment with
+              // ChatViewModel._conversationId = Conversation.generateId(...)
+              // agentId is guaranteed non-null here (_extractAgentId
+              // returns a non-null String as fallback).
+              final conversationId = agentId.isNotEmpty
+                  ? 'agent:$agentId'
+                  : event.sessionKey;
               final message = Message(
                 clientId: _uuid.v4(),
-                conversationId: event.sessionKey,
-                agentId: '',
+                conversationId: conversationId,
+                agentId: agentId,
                 role: MessageRole.agent,
                 content: buffer.text,
                 type: MessageType.text,
@@ -422,7 +459,12 @@ class WsGatewayClient implements IGatewayClient {
             '[WsGateway] Failed to handle chat final: $error\n$stackTrace',
           );
         }
-        _streamingBuffers.remove(event.sessionKey);
+        _streamingBuffers.remove(bufferKey);
+
+        // Notify UI that streaming is complete (with agentId for routing)
+        if (!conn.streamingCtrl.isClosed) {
+          conn.streamingCtrl.add(StreamingDone(agentId: agentId ?? ''));
+        }
 
       case ChatState.unknown:
         break;
@@ -435,8 +477,13 @@ class WsGatewayClient implements IGatewayClient {
   /// - `stream: "assistant"` → 助手文本生成
   /// - `stream: "lifecycle"` → 生命周期 (phase: "start"/"end")
   /// - `stream: "item"` → 工具调用项
-  void _onAgentEvent(_InstanceConnection conn, Map<String, dynamic> payload) {
+  void _onAgentEvent(
+    String instanceId,
+    _InstanceConnection conn,
+    Map<String, dynamic> payload,
+  ) {
     final event = parseAgentEvent(payload);
+    final bufferKey = '$instanceId:${event.sessionKey}';
 
     switch (event.stream) {
       case AgentStreamType.tool:
@@ -486,7 +533,7 @@ class WsGatewayClient implements IGatewayClient {
         if (delta != null && delta.isNotEmpty) {
           _streamingBuffers
               .putIfAbsent(
-                event.sessionKey,
+                bufferKey,
                 () => StreamingBuffer(sessionKey: event.sessionKey),
               )
               .append(delta);
@@ -494,7 +541,12 @@ class WsGatewayClient implements IGatewayClient {
 
       case AgentStreamType.lifecycle:
       case AgentStreamType.item:
+        break;
       case AgentStreamType.unknown:
+        debugPrint(
+          '[WsGateway] Unknown agent stream type for $instanceId: '
+          '${event.data['stream']}',
+        );
         break;
     }
   }
@@ -625,6 +677,28 @@ class WsGatewayClient implements IGatewayClient {
   /// resolved (success or failure).  [GatewayConnectionState.pairingRequired]
   /// is included so that new devices waiting for server-side approval return
   /// immediately rather than timing out after 30 s.
+  /// Extract agentId from sessionKey format: "agent:{agentId}:{scope}".
+  ///
+  /// Internal helper — tested indirectly via [streamingDeltaStream] integration
+  /// tests.  Kept library-private because the colon-split heuristic is an
+  /// implementation detail of the "agent:{id}:{scope}" convention; exposing it
+  /// would invite misuse on unvalidated session keys.
+  static String _extractAgentId(String sessionKey) {
+    // Format: "agent:{agentId}:{scope}"
+    final parts = sessionKey.split(':');
+    if (parts.length >= 2 && parts[0] == 'agent') {
+      return parts[1];
+    }
+    // Unexpected format — the fallback value is unlikely to match any
+    // agent's remoteId, so streaming events will be silently dropped
+    // by the ViewModel filter.  Log at least so the issue is traceable.
+    debugPrint(
+      '[WsGateway] Unexpected sessionKey format (expected '
+      '"agent:{id}:{scope}"): $sessionKey',
+    );
+    return sessionKey;
+  }
+
   @visibleForTesting
   static bool isTestTerminalState(GatewayConnectionState state) {
     return state == GatewayConnectionState.connected ||
@@ -652,6 +726,7 @@ class WsGatewayClient implements IGatewayClient {
         messageCtrl: StreamController<Message>.broadcast(),
         toolCallCtrl: StreamController<ToolCall>.broadcast(),
         pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
+        streamingCtrl: StreamController<StreamingEvent>.broadcast(),
       ),
     );
   }
@@ -668,6 +743,7 @@ class _InstanceConnection {
   final StreamController<Message> messageCtrl;
   final StreamController<ToolCall> toolCallCtrl;
   final StreamController<GatewayPairingInfo?> pairingInfoCtrl;
+  final StreamController<StreamingEvent> streamingCtrl;
 
   StreamSubscription<EventFrame>? _eventSub;
   StreamSubscription<GatewayConnectionState>? _stateSub;
@@ -678,5 +754,6 @@ class _InstanceConnection {
     required this.messageCtrl,
     required this.toolCallCtrl,
     required this.pairingInfoCtrl,
+    required this.streamingCtrl,
   });
 }

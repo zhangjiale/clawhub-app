@@ -462,6 +462,27 @@ AgentEventData parseAgentEvent(Map<String, dynamic> payload) {
 }
 
 // ============================================================================
+// 流式事件（公开类，跨 agent 路由）
+// ============================================================================
+
+/// 流式事件基类 — 携带 agentId 用于多 Agent 场景下的精确路由。
+sealed class StreamingEvent {
+  final String agentId;
+  const StreamingEvent({required this.agentId});
+}
+
+/// 增量文本片段。
+class StreamingDelta extends StreamingEvent {
+  final String text;
+  const StreamingDelta({required super.agentId, required this.text});
+}
+
+/// 流式结束信号。
+class StreamingDone extends StreamingEvent {
+  const StreamingDone({required super.agentId});
+}
+
+// ============================================================================
 // Delta 聚合缓冲（公开类，可独立单元测试）
 // ============================================================================
 

@@ -1,4 +1,5 @@
 import '../../domain/models/models.dart';
+import 'gateway_protocol.dart';
 
 /// Gateway 防腐层接口契约
 /// 对齐: 架构 vFinal 5.1 (网关防腐层与连接状态机)
@@ -48,6 +49,16 @@ abstract class IGatewayClient {
 
   /// 获取工具调用状态流
   Stream<ToolCall> toolCallStream(String instanceId);
+
+  /// 获取流式增量文本流 — chat.delta 到达时发出 [StreamingDelta]，
+  /// chat.final 到达时发出 [StreamingDone]。
+  ///
+  /// [StreamingEvent.agentId] 用于多 Agent 场景下的精确路由，
+  /// ViewModel 应只处理匹配当前 agentId 的事件。
+  ///
+  /// 默认实现返回空流。
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
 
   /// 获取配对信息流 — 当连接因 [GatewayConnectionState.pairingRequired]
   /// 被拒绝时，流中会发出包含 requestId 等信息的 [GatewayPairingInfo]。

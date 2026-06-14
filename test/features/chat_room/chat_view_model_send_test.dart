@@ -10,6 +10,8 @@ import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart'
+    show GatewayConnectionState, StreamingDelta, StreamingDone, StreamingEvent;
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
@@ -516,6 +518,128 @@ void main() {
         expect(vm.state.toolCalls['msg-2']!.outputResult, 'File contents');
       },
     );
+
+    // ========================================================================
+    // Streaming delta tests (Issue #4: previously uncovered)
+    // ========================================================================
+    group('streaming delta stream', () {
+      test(
+        'StreamingDelta with matching agentId accumulates in streamingText',
+        () async {
+          final vm = await setupAgentAndInit();
+
+          expect(
+            vm.state.streamingText,
+            isEmpty,
+            reason: 'streamingText should start empty',
+          );
+
+          gateway.emitStreamingEvent(
+            'inst-1',
+            StreamingDelta(agentId: 'r-1', text: '你好'),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(
+            vm.state.streamingText,
+            '你好',
+            reason: 'Delta with matching agentId should be accumulated',
+          );
+
+          gateway.emitStreamingEvent(
+            'inst-1',
+            StreamingDelta(agentId: 'r-1', text: '世界'),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(
+            vm.state.streamingText,
+            '你好世界',
+            reason: 'Second delta should be appended',
+          );
+        },
+      );
+
+      test(
+        'StreamingDone with matching agentId clears streamingText',
+        () async {
+          final vm = await setupAgentAndInit();
+
+          // First, accumulate some text
+          gateway.emitStreamingEvent(
+            'inst-1',
+            StreamingDelta(agentId: 'r-1', text: '流式内容'),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(vm.state.streamingText, '流式内容');
+
+          // StreamingDone should clear the buffer
+          gateway.emitStreamingEvent('inst-1', StreamingDone(agentId: 'r-1'));
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(
+            vm.state.streamingText,
+            isEmpty,
+            reason: 'StreamingDone should clear the streaming buffer',
+          );
+        },
+      );
+
+      test('StreamingDelta with different agentId is ignored', () async {
+        final vm = await setupAgentAndInit();
+
+        // Delta for a different agent (r-2, not r-1)
+        gateway.emitStreamingEvent(
+          'inst-1',
+          StreamingDelta(agentId: 'r-2', text: '其他 Agent 的回复'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(
+          vm.state.streamingText,
+          isEmpty,
+          reason: 'Delta for a different agent should be ignored',
+        );
+
+        // Verify our agent's deltas still work
+        gateway.emitStreamingEvent(
+          'inst-1',
+          StreamingDelta(agentId: 'r-1', text: '正确内容'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(
+          vm.state.streamingText,
+          '正确内容',
+          reason: 'Correct agent delta should accumulate after filtering',
+        );
+      });
+
+      test(
+        'StreamingDone for different agentId does NOT clear our buffer',
+        () async {
+          final vm = await setupAgentAndInit();
+
+          // Accumulate text for our agent
+          gateway.emitStreamingEvent(
+            'inst-1',
+            StreamingDelta(agentId: 'r-1', text: '我们的内容'),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(vm.state.streamingText, '我们的内容');
+
+          // Done event for a different agent
+          gateway.emitStreamingEvent('inst-1', StreamingDone(agentId: 'r-2'));
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(
+            vm.state.streamingText,
+            '我们的内容',
+            reason:
+                'StreamingDone for a different agent should NOT clear our buffer',
+          );
+
+          // Done event for our agent should still clear
+          gateway.emitStreamingEvent('inst-1', StreamingDone(agentId: 'r-1'));
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          expect(vm.state.streamingText, isEmpty);
+        },
+      );
+    });
   });
 }
 
@@ -537,6 +661,7 @@ class _ControllableStreamsGateway extends MockGatewayClient {
   final Map<String, StreamController<Message>> messageCtrls = {};
   final Map<String, StreamController<GatewayConnectionState>> stateCtrls = {};
   final Map<String, StreamController<ToolCall>> toolCallCtrls = {};
+  final Map<String, StreamController<StreamingEvent>> streamingCtrls = {};
 
   @override
   Stream<Message> messageStream(String instanceId) {
@@ -562,6 +687,16 @@ class _ControllableStreamsGateway extends MockGatewayClient {
         .stream;
   }
 
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) {
+    return streamingCtrls
+        .putIfAbsent(
+          instanceId,
+          () => StreamController<StreamingEvent>.broadcast(),
+        )
+        .stream;
+  }
+
   void emitMessage(String instanceId, Message msg) {
     messageCtrls[instanceId]?.add(msg);
   }
@@ -574,6 +709,10 @@ class _ControllableStreamsGateway extends MockGatewayClient {
     toolCallCtrls[instanceId]?.add(tc);
   }
 
+  void emitStreamingEvent(String instanceId, StreamingEvent event) {
+    streamingCtrls[instanceId]?.add(event);
+  }
+
   @override
   Future<void> dispose() async {
     for (final c in messageCtrls.values) {
@@ -583,6 +722,9 @@ class _ControllableStreamsGateway extends MockGatewayClient {
       await c.close();
     }
     for (final c in toolCallCtrls.values) {
+      await c.close();
+    }
+    for (final c in streamingCtrls.values) {
       await c.close();
     }
     await super.dispose();

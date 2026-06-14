@@ -3,6 +3,7 @@ import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/models/models.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart';
 
 /// Minimal IGatewayClient that returns the given agent lists per instance
 /// or throws when configured.
@@ -62,6 +63,10 @@ class _TestGatewayClient implements IGatewayClient {
   @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) =>
       Stream.value(null);
+
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
+      const Stream<StreamingEvent>.empty();
 
   @override
   Future<void> dispose() => throw UnimplementedError();
