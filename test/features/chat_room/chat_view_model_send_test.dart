@@ -643,6 +643,54 @@ void main() {
           expect(vm.state.streamingText, isEmpty);
         },
       );
+
+      test(
+        'StringBuffer accumulates correctly across many small deltas',
+        () async {
+          final vm = await setupAgentAndInit();
+
+          // Emit 20 small deltas (simulating a long streaming response)
+          for (var i = 0; i < 20; i++) {
+            gateway.emitStreamingEvent(
+              'inst-1',
+              StreamingDelta(agentId: 'r-1', text: 'ab'),
+            );
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+
+          expect(
+            vm.state.streamingText.length,
+            40,
+            reason: '20 deltas × 2 chars = 40 chars total',
+          );
+          expect(
+            vm.state.streamingText,
+            'ab' * 20,
+            reason: 'All deltas should be concatenated in order',
+          );
+        },
+      );
+
+      test('send after streaming clears buffer and resets state', () async {
+        final vm = await setupAgentAndInit();
+
+        // Accumulate some streaming text
+        gateway.emitStreamingEvent(
+          'inst-1',
+          StreamingDelta(agentId: 'r-1', text: 'streaming content'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(vm.state.streamingText, 'streaming content');
+
+        // Send a new message — should clear streaming text
+        await vm.send('new message');
+
+        expect(
+          vm.state.streamingText,
+          isEmpty,
+          reason: 'New send should clear streaming text buffer',
+        );
+      });
     });
   });
 }
