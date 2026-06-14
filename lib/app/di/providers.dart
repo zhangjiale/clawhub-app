@@ -1,7 +1,13 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
+import 'package:claw_hub/core/acl/gateway_protocol.dart';
+import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
+import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/iconnectivity.dart';
 import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
 import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
@@ -14,11 +20,27 @@ import 'package:claw_hub/domain/usecases/save_instance.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/usecases/delete_instance.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
+import 'package:claw_hub/app/config/app_config.dart';
+import 'package:claw_hub/app/config/platform_info.dart';
 
 /// ============================================================
 /// ClawHub 依赖注入容器 (Riverpod)
 /// 对齐: 架构 vFinal 3.0 (系统逻辑架构), 8.2 (app/di/)
 /// ============================================================
+
+// --- Shared invalidation tokens (no circular deps) ---
+
+/// Agent 同步完成信号 — [ConnectionOrchestrator] 在 _syncAgentsForInstance
+/// 成功后递增，[agentListProvider] 通过 watch 此值自动 refresh UI。
+final agentSyncTickerProvider = StateProvider<int>((ref) => 0);
+
+/// 配对信息 — instanceId → GatewayPairingInfo。
+///
+/// [ConnectionOrchestrator] 在收到 PAIRING_REQUIRED 时写入，
+/// UI 层 watch 此 provider 以在实例卡片上展示审批指引。
+final pairingInfoProvider = StateProvider<Map<String, GatewayPairingInfo>>(
+  (ref) => {},
+);
 
 // --- Connection Initialization State ---
 
@@ -33,35 +55,69 @@ final connectionInitStateProvider = StateProvider<AsyncValue<void>?>(
 
 // --- Gateway Client ---
 
-/// Mock Gateway 客户端（MVP 阶段使用，后期替换为真实实现）
+/// Mock Gateway 客户端（开发/调试用，生产环境默认使用 [wsGatewayClientProvider]）
 final mockGatewayClientProvider = Provider<MockGatewayClient>((ref) {
   final client = MockGatewayClient();
   ref.onDispose(() => client.dispose());
   return client;
 });
 
-/// 真实 WebSocket Gateway 客户端（生产环境使用）。
+/// 设备身份提供者 — Ed25519 密钥管理 + V3 签名。
 ///
-/// 切换方式：将 [gatewayClientProvider] 的返回值从
-/// `ref.watch(mockGatewayClientProvider)` 改为 `ref.watch(wsGatewayClientProvider)`，
-/// 即可全局切换到真实 WebSocket 连接。
+/// 使用 [FlutterSecureStorage] 持久化密钥对。
+/// 可通过 override 注入 fake 以进行单元测试。
+final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
+  return Ed25519IdentityProvider(
+    secureStorage: const FlutterSecureStorage(),
+    logger: ref.watch(loggerProvider),
+  );
+});
+
+/// 真实 WebSocket Gateway 客户端（当前生产默认实现）。
+///
+/// 开发/调试时如需使用 Mock 数据，将 [gatewayClientProvider] 的返回值
+/// 改回 `ref.watch(mockGatewayClientProvider)` 即可全局切回 Mock。
+///
+/// 自动检测运行平台（iOS / Android），选择对应的 [ClientIds] 枚举值，
+/// 确保 Gateway 将虾Hub 识别为官方客户端。
 final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
+  final os = platformOS(); // 'ios', 'android', 'macos', 'web', ...
+  final clientId = ClientIds.forPlatform(os);
+  final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
+
   // TODO: read locale from PlatformDispatcher.instance.locale when
   // i18n is implemented.
-  final client = WsGatewayClient(locale: 'zh-CN');
+  // TODO: read modelIdentifier from device_info_plus for accurate
+  // device reporting (e.g. "iPhone 15", "Pixel 8").
+  final client = WsGatewayClient(
+    identityProvider: ref.watch(deviceIdentityProvider),
+    config: ConnectionConfig(
+      locale: 'zh-CN',
+      platform: os,
+      clientId: clientId,
+      deviceFamily: deviceFamily,
+      clientDisplayName: '虾Hub',
+      clientVersion: AppClientInfo.version,
+    ),
+  );
   ref.onDispose(() => client.dispose());
   return client;
 });
 
 /// Gateway 防腐层接口（面向接口编程，方便 Mock ↔ 真实实现互换）
 ///
-/// 当前指向 MockGatewayClient（MVP 阶段）。
+/// 当前指向 MockGatewayClient（MVP / 开发阶段默认，可离线开发）。
 /// 生产环境：改为 `return ref.watch(wsGatewayClientProvider);`
 final gatewayClientProvider = Provider<IGatewayClient>((ref) {
   return ref.watch(mockGatewayClientProvider);
 });
 
 // --- Network Monitoring ---
+
+/// 日志接口 — 生产环境使用 [DebugPrintLogger]。
+///
+/// 测试可通过 override 注入 fake 以验证日志输出。
+final loggerProvider = Provider<ILogger>((ref) => const DebugPrintLogger());
 
 /// 网络连接监听器 — 面向 [IConnectivity] 接口，便于单测 mock。
 ///
@@ -86,7 +142,19 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
   final orchestrator = ConnectionOrchestrator(
     gatewayClient: ref.watch(gatewayClientProvider),
     instanceRepo: ref.watch(instanceRepoProvider),
+    agentRepo: ref.watch(agentRepoProvider),
     connectivity: ref.watch(connectivityProvider),
+    onAgentsSynced: () => ref.read(agentSyncTickerProvider.notifier).state++,
+    onPairingInfo: (instanceId, info) {
+      final notifier = ref.read(pairingInfoProvider.notifier);
+      final newMap = Map<String, GatewayPairingInfo>.from(notifier.state);
+      if (info == null) {
+        newMap.remove(instanceId);
+      } else {
+        newMap[instanceId] = info;
+      }
+      notifier.state = newMap;
+    },
   );
   ref.onDispose(() => orchestrator.dispose());
   return orchestrator;
@@ -141,6 +209,7 @@ final saveInstanceUseCaseProvider = Provider<SaveInstanceUseCase>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
     lifecycle: ref.watch(connectionOrchestratorProvider),
+    logger: ref.watch(loggerProvider),
   );
 });
 
@@ -156,5 +225,6 @@ final syncAgentsUseCaseProvider = Provider<SyncAgentsUseCase>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     agentRepo: ref.watch(agentRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
+    logger: ref.watch(loggerProvider),
   );
 });

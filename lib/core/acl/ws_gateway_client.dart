@@ -1,12 +1,15 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
+import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../domain/models/models.dart';
-import 'i_gateway_client.dart';
 import 'connection_manager.dart';
+import 'device_identity.dart';
 import 'gateway_protocol.dart';
+import 'i_device_identity_provider.dart';
+import 'i_gateway_client.dart';
 
 /// 真实 WebSocket Gateway 客户端 — 实现 [IGatewayClient] 接口。
 ///
@@ -15,25 +18,66 @@ import 'gateway_protocol.dart';
 /// - 握手：challenge → connect → hello-ok
 /// - 请求：`agents.list`、`agent`、`chat.history`
 /// - 事件：`agent`（thinking / message / tool / lifecycle）、`tick`
+/// - 设备身份：委托给 [IDeviceIdentityProvider]（Ed25519 密钥对 + V3 签名）
 ///
 /// 领域对象映射由本类完成（_parseAgent, _parseMessage, _parseToolCall）。
 ///
 /// 每个实例的连接相关资源内聚于 [_InstanceConnection]。
 class WsGatewayClient implements IGatewayClient {
   final Uuid _uuid = const Uuid();
-  final String _locale;
+  final IDeviceIdentityProvider _identityProvider;
+  final ConnectionConfig _config;
+
+  /// Optional: inject a custom WebSocket factory for testing.
+  /// When null (production default), [ConnectionManager] creates real
+  /// [WebSocket] channels.
+  final WebSocketChannel Function(Uri)? _webSocketFactory;
+
+  /// Optional: inject a custom timer factory for testing.
+  /// When null (production default), [ConnectionManager] uses dart:async
+  /// [Timer].
+  final TimerFactory? _timerFactory;
 
   /// 创建 WebSocket Gateway 客户端。
   ///
-  /// [locale] 为客户端地区标识（如 `zh-CN`），
-  /// 将随 connect 握手发送给 Gateway。
-  WsGatewayClient({String locale = 'zh-CN'}) : _locale = locale;
+  /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
+  /// 由 DI 容器注入（默认 [Ed25519IdentityProvider]）。
+  ///
+  /// [config] 提供客户端/设备/认证的静态配置参数，
+  /// 由 DI 容器预构建后注入。
+  ///
+  /// [webSocketFactory] 和 [timerFactory] 仅供测试注入，
+  /// 生产环境留空即可（委托 [ConnectionManager] 默认行为）。
+  WsGatewayClient({
+    required IDeviceIdentityProvider identityProvider,
+    ConnectionConfig? config,
+    WebSocketChannel Function(Uri)? webSocketFactory,
+    TimerFactory? timerFactory,
+  }) : _identityProvider = identityProvider,
+       _config = config ?? ConnectionConfig(),
+       _webSocketFactory = webSocketFactory,
+       _timerFactory = timerFactory;
 
-  /// instanceId → 实例连接（含 manager + 所有流控制器 + 事件订阅）
+  /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
 
   /// 防止同一 instanceId 的重入连接。
   final Set<String> _connecting = {};
+
+  /// Delta 聚合缓冲区: sessionKey → StreamingBuffer。
+  /// agent assistant 事件追加 delta，chat final 事件消费后移除。
+  final Map<String, StreamingBuffer> _streamingBuffers = {};
+
+  // 设备身份由 [IDeviceIdentityProvider] 管理，通过构造函数注入。
+
+  /// 构建携带设备身份信息的运行时 [ConnectionConfig]。
+  ///
+  /// 从 [IDeviceIdentityProvider] 派生 `devicePublicKey` 和 `signPayload`，
+  /// 避免 [connect] 与 [testConnection] 中的重复配置构建代码。
+  ConnectionConfig _buildConfig(DeviceIdentity identity) => _config.copyWith(
+    devicePublicKey: identity.publicKeyB64,
+    signPayload: _identityProvider.signPayload,
+  );
 
   // ---------------------------------------------------------------------------
   // IGatewayClient 实现
@@ -47,14 +91,20 @@ class WsGatewayClient implements IGatewayClient {
 
     try {
       if (_connections.containsKey(instance.id)) {
-        await disconnect(instance.id);
+        await _cleanupConnection(instance.id);
       }
+
+      final identity = await _identityProvider.ensureDeviceIdentity();
+      final config = _buildConfig(identity);
 
       final manager = ConnectionManager(
         instanceId: instance.id,
         gatewayUrl: instance.gatewayUrl,
         token: instance.tokenRef,
-        locale: _locale,
+        deviceId: identity.deviceId,
+        config: config,
+        webSocketFactory: _webSocketFactory,
+        timerFactory: _timerFactory,
       );
 
       // 复用已有的流控制器（若有），否则创建新的
@@ -65,6 +115,8 @@ class WsGatewayClient implements IGatewayClient {
               StreamController<GatewayConnectionState>.broadcast(),
           messageCtrl: StreamController<Message>.broadcast(),
           toolCallCtrl: StreamController<ToolCall>.broadcast(),
+          pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
+          streamingCtrl: StreamController<StreamingEvent>.broadcast(),
         ),
       );
       conn.manager = manager;
@@ -81,6 +133,13 @@ class WsGatewayClient implements IGatewayClient {
         (event) => _handleEvent(instance.id, conn, event),
       );
 
+      // 订阅配对信息
+      conn._pairingSub = manager.pairingInfo.listen((info) {
+        if (!conn.pairingInfoCtrl.isClosed) {
+          conn.pairingInfoCtrl.add(info);
+        }
+      });
+
       await manager.connect();
     } finally {
       _connecting.remove(instance.id);
@@ -89,22 +148,38 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Future<void> disconnect(String instanceId) async {
+    await _cleanup(instanceId, emitDisconnected: true);
+  }
+
+  /// 取消订阅并释放 manager — 与 [disconnect] 相同但**不发出 disconnected 事件**。
+  Future<void> _cleanupConnection(String instanceId) async {
+    await _cleanup(instanceId);
+  }
+
+  Future<void> _cleanup(
+    String instanceId, {
+    bool emitDisconnected = false,
+  }) async {
     final conn = _connections[instanceId];
     if (conn == null) return;
 
-    // 仅清理 manager 和事件订阅，保留流控制器。
-    // 流控制器在 disconnect 后仍然存活，以便重连时复用，
-    // 仅在 WsGatewayClient.dispose() 时统一关闭。
     await conn._eventSub?.cancel();
     conn._eventSub = null;
     await conn._stateSub?.cancel();
     conn._stateSub = null;
+    await conn._pairingSub?.cancel();
+    conn._pairingSub = null;
     await conn.manager?.dispose();
     conn.manager = null;
 
-    // 通知外部订阅者连接已断开
-    if (!conn.connectionStateCtrl.isClosed) {
+    if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
       conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
+    }
+
+    // 断开连接时清理该实例相关的 streaming buffer，防止残留
+    // Keys are scoped as '$instanceId:$sessionKey' since commit XXXXXX.
+    if (emitDisconnected) {
+      _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
     }
   }
 
@@ -116,10 +191,13 @@ class WsGatewayClient implements IGatewayClient {
   }) async {
     final manager = _requireManager(instanceId);
 
-    // 使用 `agent` 方法执行一次 agent turn
-    final res = await manager.sendRequest(Methods.agent, {
-      'agentId': agentId,
+    // sessionKey format: agent:{agentId}:main (ref doc §7.2)
+    final sessionKey = 'agent:$agentId:main';
+
+    final res = await manager.sendRequest(Methods.chatSend, {
+      'sessionKey': sessionKey,
       'message': message.content ?? '',
+      'idempotencyKey': message.clientId,
       if (message.metadata != null) 'metadata': message.metadata,
     });
 
@@ -129,8 +207,9 @@ class WsGatewayClient implements IGatewayClient {
       );
     }
 
+    // chat.send 响应中没有 serverId，用 runId 作为追踪标识
     final payload = res.payload ?? {};
-    final serverId = payload['serverId'] as String? ?? _uuid.v4();
+    final serverId = payload['runId'] as String? ?? _uuid.v4();
     final timestamp =
         payload['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
 
@@ -149,7 +228,8 @@ class WsGatewayClient implements IGatewayClient {
       );
     }
 
-    final agents = (res.payload?['agents'] as List<dynamic>?)
+    final agents =
+        (res.payload?['agents'] as List<dynamic>?)
             ?.cast<Map<String, dynamic>>() ??
         [];
     return agents.map((json) => _parseAgent(json, instanceId)).toList();
@@ -164,10 +244,7 @@ class WsGatewayClient implements IGatewayClient {
   }) async {
     final manager = _requireManager(instanceId);
 
-    final params = <String, dynamic>{
-      'agentId': agentId,
-      'limit': limit,
-    };
+    final params = <String, dynamic>{'agentId': agentId, 'limit': limit};
     if (cursor != null) params['cursor'] = cursor;
 
     final res = await manager.sendRequest(Methods.chatHistory, params);
@@ -183,7 +260,7 @@ class WsGatewayClient implements IGatewayClient {
             ?.cast<Map<String, dynamic>>()
             .map((json) => _parseMessage(json))
             .toList() ??
-            [];
+        [];
     final nextCursor = res.payload?['nextCursor'] as String?;
 
     return (messages: messages, nextCursor: nextCursor);
@@ -191,18 +268,22 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Future<bool> testConnection(Instance instance) async {
+    final testId = '__test_${instance.id}';
+    final identity = await _identityProvider.ensureDeviceIdentity();
+    final config = _buildConfig(identity);
     final testManager = ConnectionManager(
-      instanceId: '__test_${instance.id}',
+      instanceId: testId,
       gatewayUrl: instance.gatewayUrl,
       token: instance.tokenRef,
-      locale: _locale,
+      deviceId: identity.deviceId,
+      config: config,
+      webSocketFactory: _webSocketFactory,
+      timerFactory: _timerFactory,
     );
 
     try {
       final stateFuture = testManager.connectionState.firstWhere(
-        (s) =>
-            s == GatewayConnectionState.connected ||
-            s == GatewayConnectionState.authFailed,
+        isTestTerminalState,
       );
 
       await testManager.connect().timeout(
@@ -248,16 +329,30 @@ class WsGatewayClient implements IGatewayClient {
   }
 
   @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) {
+    return _getOrCreateControllers(instanceId).streamingCtrl.stream;
+  }
+
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
+    return _getOrCreateControllers(instanceId).pairingInfoCtrl.stream;
+  }
+
+  @override
   Future<void> dispose() async {
     for (final conn in _connections.values) {
       await conn._eventSub?.cancel();
       await conn._stateSub?.cancel();
+      await conn._pairingSub?.cancel();
       await conn.manager?.dispose();
       await conn.connectionStateCtrl.close();
       await conn.messageCtrl.close();
       await conn.toolCallCtrl.close();
+      await conn.pairingInfoCtrl.close();
+      await conn.streamingCtrl.close();
     }
     _connections.clear();
+    _streamingBuffers.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -269,81 +364,190 @@ class WsGatewayClient implements IGatewayClient {
     _InstanceConnection conn,
     EventFrame event,
   ) {
+    final payload = event.payload;
+    if (payload == null) return;
+
     switch (event.event) {
+      case Events.chat:
+        _onChatEvent(instanceId, conn, payload);
+
       case Events.agent:
-        _onAgentEvent(instanceId, conn, event.payload);
+        _onAgentEvent(instanceId, conn, payload);
 
       default:
-        // tick, presence, health, shutdown 等已在 ConnectionManager 处理
         break;
     }
   }
 
-  /// 处理 `agent` 事件 —— Gateway 推送的 agent 执行流。
+  /// `chat` 事件 — Gateway v2026.6.6 UI 面向前端事件。
   ///
-  /// 包含四种流类型：
-  /// - `message` — Agent 回复消息
-  /// - `tool` — 工具调用/结果
-  /// - `thinking` — 思考过程（可选展示）
-  /// - `lifecycle` — run 生命周期（start/end/error）
+  /// - `state: "delta"` → 增量文本（含 deltaText）
+  /// - `state: "final"` → 响应完成，携带完整 message 对象
+  void _onChatEvent(
+    String instanceId,
+    _InstanceConnection conn,
+    Map<String, dynamic> payload,
+  ) {
+    final event = parseChatEvent(payload);
+    // Scope streaming buffers by instanceId to prevent per-instance
+    // disconnect from dropping other instances' in-progress aggregation.
+    final bufferKey = '$instanceId:${event.sessionKey}';
+
+    switch (event.state) {
+      case ChatState.delta:
+        if (event.deltaText != null && event.deltaText!.isNotEmpty) {
+          // Extract agentId from sessionKey: "agent:{agentId}:{scope}"
+          final agentId = _extractAgentId(event.sessionKey);
+
+          // Push typed streaming event to UI
+          if (!conn.streamingCtrl.isClosed) {
+            conn.streamingCtrl.add(
+              StreamingDelta(agentId: agentId, text: event.deltaText!),
+            );
+          }
+          // Also maintain aggregation buffer (fallback)
+          _streamingBuffers
+              .putIfAbsent(
+                bufferKey,
+                () => StreamingBuffer(sessionKey: event.sessionKey),
+              )
+              .append(event.deltaText!);
+        }
+
+      case ChatState.final_:
+        // 响应完成 — 优先用 message 对象，回退到聚合文本
+        if (conn.messageCtrl.isClosed) return;
+
+        String? agentId;
+
+        try {
+          final msgJson = event.message;
+          agentId =
+              msgJson?['agentId'] as String? ??
+              _extractAgentId(event.sessionKey);
+
+          if (msgJson != null) {
+            // chat final event 自带完整 message，直接解析
+            final message = _parseMessage(msgJson);
+            conn.messageCtrl.add(message);
+          } else {
+            // 没有 message 对象时，用聚合文本构建
+            final buffer = _streamingBuffers.remove(bufferKey);
+            if (buffer != null && buffer.text.isNotEmpty) {
+              // Use agentId for conversationId lookup alignment with
+              // ChatViewModel._conversationId = Conversation.generateId(...)
+              // agentId is guaranteed non-null here (_extractAgentId
+              // returns a non-null String as fallback).
+              final conversationId = agentId.isNotEmpty
+                  ? 'agent:$agentId'
+                  : event.sessionKey;
+              final message = Message(
+                clientId: _uuid.v4(),
+                conversationId: conversationId,
+                agentId: agentId,
+                role: MessageRole.agent,
+                content: buffer.text,
+                type: MessageType.text,
+                status: MessageStatus.delivered,
+                logicalClock: DateTime.now().millisecondsSinceEpoch,
+              );
+              conn.messageCtrl.add(message);
+            }
+          }
+        } catch (error, stackTrace) {
+          debugPrint(
+            '[WsGateway] Failed to handle chat final: $error\n$stackTrace',
+          );
+        }
+        _streamingBuffers.remove(bufferKey);
+
+        // Notify UI that streaming is complete (with agentId for routing)
+        if (!conn.streamingCtrl.isClosed) {
+          conn.streamingCtrl.add(StreamingDone(agentId: agentId ?? ''));
+        }
+
+      case ChatState.unknown:
+        break;
+    }
+  }
+
+  /// `agent` 事件 — Gateway v2026.6.6 后端事件。
+  ///
+  /// - `stream: "tool"` → 工具调用 (phase: "start" = 开始, "result" = 结束)
+  /// - `stream: "assistant"` → 助手文本生成
+  /// - `stream: "lifecycle"` → 生命周期 (phase: "start"/"end")
+  /// - `stream: "item"` → 工具调用项
   void _onAgentEvent(
     String instanceId,
     _InstanceConnection conn,
-    Map<String, dynamic>? payload,
+    Map<String, dynamic> payload,
   ) {
-    if (payload == null) return;
+    final event = parseAgentEvent(payload);
+    final bufferKey = '$instanceId:${event.sessionKey}';
 
-    final eventData = parseAgentEvent(payload);
-
-    switch (eventData.stream) {
-      case AgentStreamType.message:
-        _emitMessage(conn, eventData.data);
-
+    switch (event.stream) {
       case AgentStreamType.tool:
-        _emitToolCall(conn, eventData.data);
+        if (event.data['phase'] == 'result') {
+          // tool 结束 — 发出带结果的 ToolCall
+          if (!conn.toolCallCtrl.isClosed) {
+            try {
+              final tc = ToolCall(
+                id: event.data['toolCallId'] as String? ?? _uuid.v4(),
+                messageId: event.sessionKey,
+                toolName: event.data['name'] as String? ?? 'unknown',
+                status: ToolCallStatus.success,
+                outputResult: event.data.toString(),
+                endedAt: DateTime.now().millisecondsSinceEpoch,
+              );
+              conn.toolCallCtrl.add(tc);
+            } catch (error, stackTrace) {
+              debugPrint(
+                '[WsGateway] Failed to parse tool result: $error\n$stackTrace',
+              );
+            }
+          }
+        } else {
+          // tool 开始 — 发出 running 状态的 ToolCall
+          if (!conn.toolCallCtrl.isClosed) {
+            try {
+              final tc = ToolCall(
+                id: event.data['toolCallId'] as String? ?? _uuid.v4(),
+                messageId: event.sessionKey,
+                toolName: event.data['name'] as String? ?? 'unknown',
+                status: ToolCallStatus.running,
+                startedAt: DateTime.now().millisecondsSinceEpoch,
+              );
+              conn.toolCallCtrl.add(tc);
+            } catch (error, stackTrace) {
+              debugPrint(
+                '[WsGateway] Failed to parse tool call: $error\n$stackTrace',
+              );
+            }
+          }
+        }
 
-      case AgentStreamType.thinking:
-        // 思考过程 — 暂不暴露为独立流，可在 UI 通过 thinkingState 展示
-        break;
+      case AgentStreamType.assistant:
+        // 助手文本 delta — 仅用于 streaming 缓冲
+        // chat 事件已经在推 deltaText，这里做补充
+        final delta = event.data['delta'] as String?;
+        if (delta != null && delta.isNotEmpty) {
+          _streamingBuffers
+              .putIfAbsent(
+                bufferKey,
+                () => StreamingBuffer(sessionKey: event.sessionKey),
+              )
+              .append(delta);
+        }
 
       case AgentStreamType.lifecycle:
-        // Run 生命周期 — 可用于记录/调试
-        debugPrint(
-          '[WsGateway] Agent lifecycle for $instanceId: ${eventData.data['phase']}',
-        );
-
+      case AgentStreamType.item:
+        break;
       case AgentStreamType.unknown:
-        // 新流类型 — 容错
         debugPrint(
           '[WsGateway] Unknown agent stream type for $instanceId: '
-          '${payload['stream']}',
+          '${event.data['stream']}',
         );
-    }
-  }
-
-  void _emitMessage(_InstanceConnection conn, Map<String, dynamic> data) {
-    if (conn.messageCtrl.isClosed) return;
-
-    try {
-      final message = _parseMessage(data);
-      conn.messageCtrl.add(message);
-    } catch (error, stackTrace) {
-      debugPrint(
-        '[WsGateway] Failed to parse message: $error\n$stackTrace',
-      );
-    }
-  }
-
-  void _emitToolCall(_InstanceConnection conn, Map<String, dynamic> data) {
-    if (conn.toolCallCtrl.isClosed) return;
-
-    try {
-      final toolCall = _parseToolCall(data);
-      conn.toolCallCtrl.add(toolCall);
-    } catch (error, stackTrace) {
-      debugPrint(
-        '[WsGateway] Failed to parse tool call: $error\n$stackTrace',
-      );
+        break;
     }
   }
 
@@ -352,6 +556,7 @@ class WsGatewayClient implements IGatewayClient {
   // ---------------------------------------------------------------------------
 
   Agent _parseAgent(Map<String, dynamic> json, String instanceId) {
+    final remoteId = json['remoteId'] as String? ?? json['id'] as String? ?? '';
     final rawCommands = json['quickCommands'] as List<dynamic>?;
     final quickCommands = <QuickCommand>[];
     if (rawCommands != null) {
@@ -360,7 +565,7 @@ class WsGatewayClient implements IGatewayClient {
         quickCommands.add(
           QuickCommand(
             id: _uuid.v4(),
-            agentId: json['remoteId'] as String? ?? '',
+            agentId: remoteId,
             label: cmd['label'] as String? ?? '',
             payload: cmd['payload'] as String? ?? '',
             sortOrder: i,
@@ -369,15 +574,30 @@ class WsGatewayClient implements IGatewayClient {
       }
     }
 
+    // Agent name fallback chain:
+    //   json['name'] → identity.name → id
+    // Gateway 的默认 agent (如 "main") 通常没有 name 字段，
+    // 只有 id，此时以 id 作为显示名（协议文档 §A.6 实测验证）。
+    final identity = json['identity'] as Map<String, dynamic>?;
+    String? _nonEmpty(String? s) =>
+        (s != null && s.trim().isNotEmpty) ? s.trim() : null;
+    final name =
+        _nonEmpty(json['name'] as String?) ??
+        _nonEmpty(identity?['name'] as String?) ??
+        remoteId;
+
+    final description =
+        json['description'] as String? ?? identity?['description'] as String?;
+
     return Agent(
       localId: _uuid.v4(),
-      remoteId: json['remoteId'] as String? ?? json['id'] as String? ?? '',
+      remoteId: remoteId,
       instanceId: instanceId,
-      name: json['name'] as String? ?? json['displayName'] as String? ?? '',
+      name: name,
       nickname: json['nickname'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
       themeColor: json['themeColor'] as String? ?? '#007AFF',
-      description: json['description'] as String?,
+      description: description,
       isPinned: json['isPinned'] == true,
       quickCommands: quickCommands,
       createdAt: json['createdAt'] as int? ?? 0,
@@ -410,7 +630,8 @@ class WsGatewayClient implements IGatewayClient {
           json['name'] as String? ?? json['toolName'] as String? ?? 'unknown',
       status: _parseToolCallStatus(json['status'] as String?),
       inputArgs: json['input'] as String? ?? json['inputArgs'] as String?,
-      outputResult: json['output'] as String? ?? json['outputResult'] as String?,
+      outputResult:
+          json['output'] as String? ?? json['outputResult'] as String?,
       startedAt: json['startedAt'] as int?,
       endedAt: json['endedAt'] as int?,
     );
@@ -450,20 +671,52 @@ class WsGatewayClient implements IGatewayClient {
   // 内部：辅助方法
   // ---------------------------------------------------------------------------
 
+  /// Returns `true` when [state] is terminal for [testConnection].
+  ///
+  /// Terminal states are those where the connection attempt has definitively
+  /// resolved (success or failure).  [GatewayConnectionState.pairingRequired]
+  /// is included so that new devices waiting for server-side approval return
+  /// immediately rather than timing out after 30 s.
+  /// Extract agentId from sessionKey format: "agent:{agentId}:{scope}".
+  ///
+  /// Internal helper — tested indirectly via [streamingDeltaStream] integration
+  /// tests.  Kept library-private because the colon-split heuristic is an
+  /// implementation detail of the "agent:{id}:{scope}" convention; exposing it
+  /// would invite misuse on unvalidated session keys.
+  static String _extractAgentId(String sessionKey) {
+    // Format: "agent:{agentId}:{scope}"
+    final parts = sessionKey.split(':');
+    if (parts.length >= 2 && parts[0] == 'agent') {
+      return parts[1];
+    }
+    // Unexpected format — the fallback value is unlikely to match any
+    // agent's remoteId, so streaming events will be silently dropped
+    // by the ViewModel filter.  Log at least so the issue is traceable.
+    debugPrint(
+      '[WsGateway] Unexpected sessionKey format (expected '
+      '"agent:{id}:{scope}"): $sessionKey',
+    );
+    return sessionKey;
+  }
+
+  @visibleForTesting
+  static bool isTestTerminalState(GatewayConnectionState state) {
+    return state == GatewayConnectionState.connected ||
+        state == GatewayConnectionState.authFailed ||
+        state == GatewayConnectionState.disconnected ||
+        state == GatewayConnectionState.pairingRequired;
+  }
+
   ConnectionManager _requireManager(String instanceId) {
     final conn = _connections[instanceId];
     if (conn == null || conn.manager == null) {
-      throw StateError(
+      throw NotConnectedException(
         'No connection for instance $instanceId. Call connect() first.',
       );
     }
     return conn.manager!;
   }
 
-  /// 获取或创建流控制器（不创建 ConnectionManager）。
-  ///
-  /// 用于 [connectionStateStream]、[messageStream]、[toolCallStream] —
-  /// 这些流可能在 [connect] 之前被订阅，此时只需暴露 controller 即可。
   _InstanceConnection _getOrCreateControllers(String instanceId) {
     return _connections.putIfAbsent(
       instanceId,
@@ -472,6 +725,8 @@ class WsGatewayClient implements IGatewayClient {
             StreamController<GatewayConnectionState>.broadcast(),
         messageCtrl: StreamController<Message>.broadcast(),
         toolCallCtrl: StreamController<ToolCall>.broadcast(),
+        pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
+        streamingCtrl: StreamController<StreamingEvent>.broadcast(),
       ),
     );
   }
@@ -481,32 +736,24 @@ class WsGatewayClient implements IGatewayClient {
 // 内部：实例连接资源聚合
 // ============================================================================
 
-/// 聚合单个 Gateway 实例的所有连接相关资源。
-///
-/// 将原来分散的 5 组 Map 收敛到一个对象中：
-/// - [manager] — WebSocket 连接生命周期管理
-/// - [connectionStateCtrl] — 连接状态广播流
-/// - [messageCtrl] — 消息事件广播流
-/// - [toolCallCtrl] — 工具调用事件广播流
-/// - [_eventSub] — Gateway 事件订阅
-/// - [_stateSub] — manager → controller 状态转发订阅
-///
-/// 流控制器在 disconnect 后保留（允许重连复用），
-/// 仅在 WsGatewayClient.dispose() 时关闭。
 class _InstanceConnection {
-  /// WebSocket 连接管理器（disconnect 时置 null，connect 时重新赋值）。
   ConnectionManager? manager;
 
   final StreamController<GatewayConnectionState> connectionStateCtrl;
   final StreamController<Message> messageCtrl;
   final StreamController<ToolCall> toolCallCtrl;
+  final StreamController<GatewayPairingInfo?> pairingInfoCtrl;
+  final StreamController<StreamingEvent> streamingCtrl;
 
   StreamSubscription<EventFrame>? _eventSub;
   StreamSubscription<GatewayConnectionState>? _stateSub;
+  StreamSubscription<GatewayPairingInfo?>? _pairingSub;
 
   _InstanceConnection({
     required this.connectionStateCtrl,
     required this.messageCtrl,
     required this.toolCallCtrl,
+    required this.pairingInfoCtrl,
+    required this.streamingCtrl,
   });
 }

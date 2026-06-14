@@ -6,7 +6,7 @@ import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/ui_kit/error_boundary.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Set global error widget fallback once — avoids the multi-instance
@@ -81,8 +81,10 @@ class _ConnectionInitializerState
           const AsyncValue.data(null);
     } catch (error, stackTrace) {
       if (_disposed || !mounted) return;
-      ref.read(connectionInitStateProvider.notifier).state =
-          AsyncValue.error(error, stackTrace);
+      ref.read(connectionInitStateProvider.notifier).state = AsyncValue.error(
+        error,
+        stackTrace,
+      );
       debugPrint(
         'ConnectionOrchestrator initialization failed: $error\n$stackTrace',
       );

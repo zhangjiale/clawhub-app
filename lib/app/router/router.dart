@@ -10,6 +10,7 @@ import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/message_hub/message_hub_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
+import 'package:claw_hub/ui_kit/load_error_view.dart';
 
 /// Route path constants.
 class AppRoutes {
@@ -31,20 +32,30 @@ class AppRoutes {
     final params = <String, String>{'instanceId': instanceId};
     if (source != null) params['source'] = source;
     final query = params.entries.map((e) => '${e.key}=${e.value}').join('&');
-    return 'chat/$agentId?$query';
+    // Use absolute path — the chat route exists under both /claws and /messages
+    // branches, so we use source to pick the correct branch prefix.
+    final branch = source == 'messages' ? '/messages' : '/claws';
+    return '$branch/chat/$agentId?$query';
   }
 
+  // Agent profile and config routes only exist under /claws (not /messages).
+  // This is intentional: agent identity and configuration are owned by the
+  // "虾列表" (Claws) tab.  Navigating from a messages-branch chat to the
+  // agent profile will switch the bottom-nav tab to Claws.
+  //
+  // Unlike chatWithParams, these helpers ignore the source parameter
+  // because there is no /messages-branch route to redirect to.
   static String agentProfileWithParams(String agentId, {String? source}) {
-    if (source != null) return 'agent-profile/$agentId?source=$source';
-    return 'agent-profile/$agentId';
+    if (source != null) return '/claws/agent-profile/$agentId?source=$source';
+    return '/claws/agent-profile/$agentId';
   }
 
   static String agentConfigWithParams(String agentId) {
-    return 'agent-profile/config/$agentId';
+    return '/claws/agent-profile/config/$agentId';
   }
 
   static String editInstanceWithParams(String instanceId) {
-    return 'edit/$instanceId';
+    return '/instances/edit/$instanceId';
   }
 }
 
@@ -84,10 +95,25 @@ class AppRouter {
     );
   }
 
+  /// Simple error page shown when no route matches.
+  /// Reuses [LoadErrorView] to keep the error layout consistent across the app.
+  static Widget _errorPageBuilder(BuildContext context, GoRouterState state) {
+    final location = state.uri.toString();
+    debugPrint('❌ GoRouter: no routes for location: $location');
+    return Scaffold(
+      appBar: AppBar(title: const Text('Navigation Error')),
+      body: LoadErrorView(
+        title: 'Page Not Found',
+        error: 'No route matched:\n$location',
+      ),
+    );
+  }
+
   static GoRouter _createRouter() {
     return GoRouter(
       navigatorKey: _rootNavigatorKey,
       initialLocation: AppRoutes.claws,
+      errorBuilder: _errorPageBuilder,
       routes: [
         StatefulShellRoute.indexedStack(
           builder: (context, state, navigationShell) {
@@ -130,9 +156,7 @@ class AppRouter {
                 GoRoute(
                   path: AppRoutes.messages,
                   builder: (context, state) => const MessageHubPage(),
-                  routes: [
-                    _chatRoute(),
-                  ],
+                  routes: [_chatRoute()],
                 ),
               ],
             ),
@@ -188,9 +212,7 @@ class _TabScaffold extends StatelessWidget {
             height: 72,
             decoration: const BoxDecoration(
               color: XiaGlass.navBackground,
-              border: Border(
-                top: BorderSide(color: XiaColors.divider),
-              ),
+              border: Border(top: BorderSide(color: XiaColors.divider)),
             ),
             child: Row(
               children: [

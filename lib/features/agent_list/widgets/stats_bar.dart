@@ -91,52 +91,59 @@ class _StatChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(XiaRadius.lg),
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
           Text(emoji, style: const TextStyle(fontSize: 18)),
           const SizedBox(width: XiaSpacing.s3),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Text(
-                    value,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: XiaColors.text1,
-                      letterSpacing: -0.5,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                      height: 1,
-                    ),
-                  ),
-                  if (unit.isNotEmpty)
-                    Text(
-                      unit,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
-                        color: XiaColors.text3,
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        value,
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w700,
+                          color: XiaColors.text1,
+                          letterSpacing: -0.5,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                          height: 1,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                ],
-              ),
-              const SizedBox(height: 2),
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: XiaColors.text3,
-                  letterSpacing: 0.3,
-                  fontWeight: FontWeight.w500,
+                    if (unit.isNotEmpty)
+                      Flexible(
+                        child: Text(
+                          unit,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w400,
+                            color: XiaColors.text3,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: XiaColors.text3,
+                    letterSpacing: 0.3,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
           ),
         ],
       ),

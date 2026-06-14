@@ -2,6 +2,7 @@ import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../repositories/i_instance_repo.dart';
 import '../../core/acl/i_gateway_client.dart';
+import '../../core/i_logger.dart';
 import 'instance_lifecycle.dart';
 
 /// 保存实例用例（统一创建与编辑）
@@ -19,17 +20,20 @@ class SaveInstanceUseCase {
   final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
   final IInstanceLifecycle? _lifecycle;
+  final ILogger? _logger;
   final Uuid _uuid;
 
   SaveInstanceUseCase({
     required IInstanceRepo instanceRepo,
     required IGatewayClient gatewayClient,
     IInstanceLifecycle? lifecycle,
+    ILogger? logger,
     Uuid? uuid,
-  })  : _instanceRepo = instanceRepo,
-        _gatewayClient = gatewayClient,
-        _lifecycle = lifecycle,
-        _uuid = uuid ?? const Uuid();
+  }) : _instanceRepo = instanceRepo,
+       _gatewayClient = gatewayClient,
+       _lifecycle = lifecycle,
+       _logger = logger,
+       _uuid = uuid ?? const Uuid();
 
   /// 保存实例（创建或更新）
   Future<Instance> execute({
@@ -94,22 +98,31 @@ class SaveInstanceUseCase {
     final saved = await _instanceRepo.save(
       instance.copyWith(
         healthStatus: isOnline ? HealthStatus.online : HealthStatus.offline,
-        lastConnectedAt:
-            isOnline ? DateTime.now().millisecondsSinceEpoch ~/ 1000 : null,
+        lastConnectedAt: isOnline
+            ? DateTime.now().millisecondsSinceEpoch ~/ 1000
+            : null,
       ),
     );
-
-    // 6. 通知生命周期层（编排 WebSocket 连接）
-    // 生命周期回调为 fire-and-forget：即使编排失败也不影响持久化结果，
-    // 避免 DB 已保存但 UI 看到错误后重试造成重复数据。
+    // 6. 通知生命周期层（编排 WebSocket 连接），始终调用。
+    //
+    //    isOnline 仅用于决定初始 healthStatus（online/offline），连接策略
+    //    （是否建连、何时建连）属于 ConnectionOrchestrator 的职责。
+    //    testConnection 可能因网络抖动、DNS 延迟等原因返回 false，但
+    //    Gateway 实际可达 —— 跳过 onInstanceSaved 会让实例永远失去重连机会。
+    //
+    //    ConnectionManager 内置指数退避自动重连（1→2→4→8→16s），对
+    //    短暂不可达的 Gateway 有良好的恢复能力。testConnection 与
+    //    onInstanceSaved 共用设备凭据的瞬时竞态由
+    //    ConnectionManager._handleDeviceIdMismatch 自动 2s 重试处理。
     try {
       await _lifecycle?.onInstanceSaved(saved);
     } catch (error, stackTrace) {
       // 编排失败不应阻止 save 返回成功 — 实例已持久化。
       // 连接错误由 ConnectionOrchestrator 内部的自动重连机制自行处理。
-      print(
+      _logger?.error(
         '[SaveInstanceUseCase] Lifecycle callback failed for '
-        '${saved.id}: $error\n$stackTrace',
+        '${saved.id}: $error',
+        stackTrace,
       );
     }
 

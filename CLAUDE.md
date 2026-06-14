@@ -27,11 +27,14 @@ flutter test --plain-name "should generate text preview"
 # Static analysis / lint
 flutter analyze
 
-# Code generation (after modifying models or providers)
+# Code generation (after modifying models, database schema, or providers)
 dart run build_runner build --delete-conflicting-outputs
 
 # Watch mode for code generation
 dart run build_runner watch --delete-conflicting-outputs
+
+# Install Iron Laws pre-commit hook (on fresh clone)
+./scripts/pre-commit --install
 ```
 
 ## Architecture
@@ -40,38 +43,48 @@ The project follows **Clean Architecture** with strict layer separation:
 
 ```
 lib/
-├── app/           # Application entry & configuration
-│   ├── router/    # go_router with StatefulShellRoute (3-tab bottom nav)
-│   ├── theme/     # Global theme, 12 agent colors, WCAG utilities
-│   └── di/        # Riverpod provider definitions (DI container)
+├── app/                  # Application entry & configuration
+│   ├── config/           # AppConfig + PlatformInfo (OS/version detection)
+│   ├── connection/       # ConnectionOrchestrator (auto-connect on startup)
+│   ├── di/               # Riverpod provider definitions (DI container)
+│   ├── router/           # go_router with StatefulShellRoute (3-tab bottom nav)
+│   └── theme/            # Global theme, 12 agent colors, WCAG utilities
 ├── core/
-│   └── acl/       # Anti-Corruption Layer — Gateway protocol adapter
-├── domain/        # Pure Dart, zero Flutter/database imports
-│   ├── models/    # Entities: Instance, Agent, Message, Conversation, etc.
-│   ├── repositories/  # Abstract repository interfaces
-│   └── usecases/  # Business logic (SendMessage, AddInstance, GeneratePreview)
+│   └── acl/              # Anti-Corruption Layer — all Gateway protocol code
+│       ├── i_gateway_client.dart      # Abstract interface
+│       ├── gateway_protocol.dart      # OpenClaw v4 protocol messages & parsing
+│       ├── connection_manager.dart    # WebSocket lifecycle (connect/reconnect/FSM)
+│       ├── mock_gateway_client.dart   # In-memory mock for development/testing
+│       └── ws_gateway_client.dart     # Real WebSocket client (production)
+├── domain/               # Pure Dart, zero Flutter/database imports
+│   ├── models/           # Entities (freezed): Instance, Agent, Message, Conversation, etc.
+│   ├── repositories/     # Abstract repository interfaces
+│   └── usecases/         # Business logic (SendMessage, SaveInstance, SyncAgents, etc.)
 ├── data/
-│   └── repositories/  # Repository implementations (currently InMemory for MVP)
-├── features/      # Feature-based UI pages (one folder per screen)
-│   ├── instance_manager/  # Instance CRUD + connection management
-│   ├── agent_list/        # Agent list (stub)
-│   ├── chat_room/         # Chat room (stub)
-│   ├── message_hub/       # Conversation aggregation (stub)
-│   └── agent_profile/     # Agent profile (stub)
-└── ui_kit/        # Reusable UI components
+│   ├── local/database/   # Drift/SQLite schema (schema.drift → database.dart)
+│   ├── local/mapping/    # Drift ↔ Domain model mappers
+│   └── repositories/     # Drift-backed implementations + legacy InMemory repos
+├── features/             # Feature-based UI pages
+│   ├── instance_manager/ # Instance CRUD (list, add, QR scan)
+│   ├── agent_list/       # Agent list with stats
+│   ├── chat_room/        # Chat with message bubbles, thinking indicator, tool calls
+│   ├── message_hub/      # Cross-instance conversation aggregation
+│   ├── agent_profile/    # Agent profile & config
+│   └── shrimp_profile/   # Placeholder (empty)
+└── ui_kit/               # Reusable UI components (no domain/business coupling)
 ```
 
 ### Layer Dependency Rules (Enforced in Code Review)
 
-1. **UI layer** (features/) must never import `drift`, `web_socket_channel`, or any data source directly — go through ViewModels and UseCases
-2. **Domain layer** has no external dependencies — pure Dart only
-3. **Data layer** implements domain repository interfaces
+1. **UI layer** (`features/`) must never import `drift`, `web_socket_channel`, or any data source directly — go through ViewModels and UseCases
+2. **Domain layer** (`domain/`) has no external dependencies — pure Dart only
+3. **Data layer** (`data/`) implements domain repository interfaces
 4. **ACL (Anti-Corruption Layer)** is the only code that touches Gateway protocols — business logic depends on `IGatewayClient`, never on raw WebSocket or JSON
 
 ### Key Design Decisions
 
 - **SSOT (Single Source of Truth)**: All UI state is driven by Domain-layer streams/providers. UI must never poll connection state or maintain ephemeral boolean flags.
-- **Zero-Trigger Database**: All business logic (message limit enforcement, FTS5 index sync, conversation aggregation) lives in application-layer Repository methods using explicit transactions — never in SQLite triggers.
+- **Zero-Trigger Database**: All business logic (message limit enforcement, FTS5 index sync, conversation aggregation) lives in repository methods using explicit transactions — never in SQLite triggers.
 - **Dual-ID Messages**: Every message has `clientId` (local UUID for dedup) and `serverId` (Gateway-assigned, for global dedup).
 - **Logical Clock**: Messages use a `logicalClock` integer to order messages with identical timestamps.
 - **Message Lifecycle (7-state)**: `DRAFT → PENDING → SENDING → SENT → DELIVERED`, with `FAILED` and `EXPIRED` as retry/terminal branches.
@@ -93,34 +106,64 @@ lib/
 
 ### Provider Pattern
 
-All providers are defined in `lib/app/di/providers.dart`. The pattern:
+All infrastructure/domain providers are defined in `lib/app/di/providers.dart`. The pattern:
 - Interface providers expose the abstraction (`gatewayClientProvider` → `IGatewayClient`)
-- Implementation providers wire the concrete type (`mockGatewayClientProvider` → `MockGatewayClient`)
+- Implementation providers wire the concrete type (`mockGatewayClientProvider` → `MockGatewayClient`, `wsGatewayClientProvider` → `WsGatewayClient`)
 - UseCase providers receive their dependencies via Riverpod `ref.watch()`
-- Feature providers (e.g., `instanceListProvider`) are defined in the feature's own `providers/` folder
+- Feature-specific providers (e.g., `instanceListProvider`) are defined in the feature's own `providers/` folder
 
-### Current State: MVP with Mock Backend
+### Current State
 
-The app currently runs entirely against a `MockGatewayClient` (`lib/core/acl/mock_gateway_client.dart`) that reads preset data from `assets/mock/agents.json` (3 instances, 7 agents). The InMemory repositories in `lib/data/repositories/in_memory_repos.dart` serve as placeholders — the architecture doc specifies they should eventually be replaced with `drift`-backed implementations.
+The app uses **Drift/SQLite** for persistence (all 4 repositories: Instance, Agent, Message, Conversation). The legacy InMemory implementations in `lib/data/repositories/in_memory_repos.dart` are kept for reference but are no longer the active path.
 
-Feature pages that are still stubs (placeholders): `AgentProfilePage`. All MVP feature pages (`InstanceListPage`, `AgentListPage`, `ChatRoomPage`, `MessageHubPage`) are functional.
+The `gatewayClientProvider` currently points to `MockGatewayClient` (3 instances, 7 agents from `assets/mock/agents.json`). A production-ready `WsGatewayClient` (OpenClaw v4 protocol) is implemented and wired — switch by changing one line in `gatewayClientProvider` from `mockGatewayClientProvider` to `wsGatewayClientProvider`.
 
-### Database Schema
-
-The final schema is defined in `docs/database_v3.sql` but is **not yet wired in**. Key tables: `instances`, `agents`, `conversations`, `messages`, `tool_calls`, `quick_commands`, `agent_stats`, `notification_queue`, `sync_cursors`, `messages_fts` (FTS5).
+All five feature pages are fully implemented: InstanceManager, AgentList, ChatRoom, MessageHub, and AgentProfile. Only `shrimp_profile/` is an empty placeholder.
 
 ### Commit Convention
 
 Use Conventional Commits: `feat(scope):`, `fix(scope):`, `perf(scope):`, `docs:`, `test:`.
 
-### Next Actions (from 2026-06-09 architecture review)
+### Documentation Map
 
-All priority technical debt has been repaid. See `docs/iron-laws.md` for the living document of unbreakable coding rules derived from this work.
+Key docs for AI-assisted development (all paths relative to `docs/`):
 
-| # | Task | Status |
-|---|------|--------|
-| 1 | 补新 Widget 测试 — StatsBar / ThinkingIndicator / ToolCallCard / QuickCommandBar | ✅ 已完成 (2026-06-09) |
-| 2 | 合并 ChatViewModel 状态 — isThinking + timeout → ThinkingState enum + StateNotifier | ✅ 已完成 (2026-06-09) |
-| 3 | StatsProvider 批量查询 — N+1 → 单次 `getMessageCountsByAgent` | ✅ 已完成 (2026-06-09) |
+| Document | Path | Use When |
+|---|---|---|
+| Iron Laws (coding rules) | `engineering/iron-laws.md` | Before every code change — mandatory gate check |
+| PRD | `product/prd.md` | Understanding feature requirements, acceptance criteria |
+| User Stories | `product/user-stories.md` | Sprint planning, INVEST validation, dependency tracing |
+| Design Tokens | `design/design-tokens.md` | Any UI color/spacing/radius/shadow/motion change |
+| Component Spec | `design/component-spec.md` | Building/modifying any page widget or component |
+| API Protocol | `technical/api-protocol.md` | Gateway WebSocket work — handshake, RPC, events, auth |
+| Architecture | `technical/architecture.md` | Understanding project structure, data models, provider inventory |
+| Database Schema | `technical/database-schema.sql` | Schema changes, migration, FTS5 query design |
+| Design Assets | `design/assets/` | App icon, splash screen, shrimp state images |
 
-**AI 协作约定**: 开始任何代码改动前，确认不违反 `docs/iron-laws.md` 的 15 条铁律。每违反一条需在 commit message 中说明理由。
+### Iron Laws
+
+Before any code change, verify compliance with `docs/engineering/iron-laws.md` (17 unbreakable coding rules). Key constraints:
+- **Law 1**: `lib/domain/` must have zero Flutter/Riverpod/drift imports
+- **Law 2**: Widgets render UI only — no business logic or direct API calls
+- **Law 4**: Never bridge ValueNotifier + addListener + setState; use StateNotifier/Notifier + ref.watch
+- **Law 6**: Always use batch queries (no `for...await repo.` N+1 patterns)
+- **Law 11**: Any list >20 items must use `ListView.builder`
+- **Law 14**: Every new widget needs ≥2 tests
+- **Law 17**: Layered TDD — Domain/ACL must write tests first; ViewModel should; Repository/Widget no later than same commit
+
+See `docs/engineering/iron-laws.md` for the complete list and the Code Review gate checklist.
+
+#### Automated Enforcement (Pre-commit Hook)
+
+A pre-commit hook enforces 4 mechanically-verifiable laws on staged `.dart` files:
+- **Law 1**: domain/ import purity (grep)
+- **Law 6**: N+1 query patterns (grep)
+- **Law 8**: Empty catch blocks (grep)
+- **Law 11**: ListView(children:) usage (warning)
+
+The hook also runs `dart format` on staged files and re-adds them.
+
+**Suppression**: Add `// iron-law-allow: LawN -- justification` on the violating line.
+**Escape hatch**: `git commit --no-verify` (for prototype branches, emergency hotfixes).
+
+**Periodic audit**: Every ~20 commits, run a manual full-codebase iron-law review to catch architectural drift (laws that grep cannot verify: Law 2, 3, 5, 7, 9, 10, 14-17).

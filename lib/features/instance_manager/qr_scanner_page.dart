@@ -129,17 +129,22 @@ class _QrScannerPageState extends State<QrScannerPage> {
               onDetect: _onBarcode,
               errorBuilder: (context, error) {
                 String message;
-                if (error.errorCode == MobileScannerErrorCode.permissionDenied) {
+                if (error.errorCode ==
+                    MobileScannerErrorCode.permissionDenied) {
                   message = '相机权限被拒绝，请在系统设置中开启相机权限';
                 } else {
-                  message = 'Camera error: ${error.errorDetails?.message ?? "unknown"}';
+                  message =
+                      'Camera error: ${error.errorDetails?.message ?? "unknown"}';
                 }
                 return Center(
                   child: Padding(
                     padding: const EdgeInsets.all(32),
                     child: Text(
                       message,
-                      style: const TextStyle(color: Colors.white70, fontSize: 16),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                      ),
                       textAlign: TextAlign.center,
                     ),
                   ),
@@ -154,7 +159,10 @@ class _QrScannerPageState extends State<QrScannerPage> {
               width: 260,
               height: 260,
               decoration: BoxDecoration(
-                border: Border.all(color: Colors.white.withAlpha(100), width: 2),
+                border: Border.all(
+                  color: Colors.white.withAlpha(100),
+                  width: 2,
+                ),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Stack(
@@ -193,12 +201,7 @@ class _QrScannerPageState extends State<QrScannerPage> {
               '将 OpenClaw Gateway 配置二维码置于框内',
               style: theme.textTheme.bodyLarge?.copyWith(
                 color: Colors.white,
-                shadows: [
-                  const Shadow(
-                    color: Colors.black54,
-                    blurRadius: 8,
-                  ),
-                ],
+                shadows: [const Shadow(color: Colors.black54, blurRadius: 8)],
               ),
               textAlign: TextAlign.center,
             ),
@@ -218,7 +221,11 @@ class _QrScannerPageState extends State<QrScannerPage> {
                   padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
-                      const Icon(Icons.error_outline, color: Colors.white, size: 20),
+                      const Icon(
+                        Icons.error_outline,
+                        color: Colors.white,
+                        size: 20,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -241,7 +248,7 @@ enum Corner { topLeft, topRight, bottomLeft, bottomRight }
 
 class _CornerAccent extends StatelessWidget {
   final Corner corner;
-  const _CornerAccent({super.key, required this.corner});
+  const _CornerAccent({required this.corner});
 
   @override
   Widget build(BuildContext context) {
@@ -254,10 +261,7 @@ class _CornerAccent extends StatelessWidget {
 
     return RotatedBox(
       quarterTurns: rotations,
-      child: CustomPaint(
-        size: const Size(24, 24),
-        painter: _CornerPainter(),
-      ),
+      child: CustomPaint(size: const Size(24, 24), painter: _CornerPainter()),
     );
   }
 }
@@ -271,16 +275,8 @@ class _CornerPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
 
-    canvas.drawLine(
-      Offset(0, size.height),
-      const Offset(0, 8),
-      paint,
-    );
-    canvas.drawLine(
-      const Offset(8, 0),
-      Offset(size.width, 0),
-      paint,
-    );
+    canvas.drawLine(Offset(0, size.height), const Offset(0, 8), paint);
+    canvas.drawLine(const Offset(8, 0), Offset(size.width, 0), paint);
   }
 
   @override

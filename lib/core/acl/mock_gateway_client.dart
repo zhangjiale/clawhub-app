@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:uuid/uuid.dart';
+import 'gateway_protocol.dart';
 import 'i_gateway_client.dart';
 import '../../domain/models/models.dart';
 
@@ -18,6 +19,8 @@ class MockGatewayClient implements IGatewayClient {
   _connectionControllers = {};
   final Map<String, StreamController<Message>> _messageControllers = {};
   final Map<String, StreamController<ToolCall>> _toolCallControllers = {};
+  final Map<String, StreamController<StreamingEvent>> _streamingControllers =
+      {};
 
   List<Map<String, dynamic>> _mockAgents = [];
   List<Map<String, dynamic>> _mockInstances = [];
@@ -36,13 +39,17 @@ class MockGatewayClient implements IGatewayClient {
   @override
   Future<void> connect(Instance instance) async {
     await loadMockData();
-    _getOrCreateConnectionController(
-      instance.id,
-    ).add(GatewayConnectionState.connecting);
+    final ctrl = _getOrCreateConnectionController(instance.id);
+    // Schedule events on the event queue (Future) rather than emitting
+    // synchronously, so ConnectionOrchestrator has time to subscribe to
+    // the stream before the events arrive.
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connecting);
+    });
     await Future.delayed(const Duration(milliseconds: 500));
-    _getOrCreateConnectionController(
-      instance.id,
-    ).add(GatewayConnectionState.connected);
+    Future(() {
+      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connected);
+    });
   }
 
   @override
@@ -78,22 +85,58 @@ class MockGatewayClient implements IGatewayClient {
     final controller = _messageControllers[instanceId];
     if (controller == null || !controller.hasListener) return;
 
-    Future.delayed(Duration(milliseconds: 800 + _random.nextInt(1200)), () {
-      if (controller.isClosed) return; // 防止 dispose 后执行
+    // 模拟 Agent 思考延迟（500-2000ms）
+    final delayMs = 500 + _random.nextInt(1500);
+    Future.delayed(Duration(milliseconds: delayMs), () async {
+      if (controller.isClosed) return;
+
+      final fullText = _generateMockReply(userMessage.content ?? '');
+
+      // 模拟流式 delta 推送（每次 2-8 个字符, 30-80ms 间隔）
+      final chars = fullText.runes.toList();
+      var i = 0;
+      while (i < chars.length) {
+        final chunkSize = 2 + _random.nextInt(7);
+        final end = (i + chunkSize).clamp(0, chars.length);
+        final chunk = String.fromCharCodes(chars.sublist(i, end));
+
+        // Re-resolve streaming controller on each iteration so that an
+        // instance switch (which replaces the controller) is honoured
+        // immediately — avoids pushing deltas to a dead controller.
+        final streamingCtrl = _streamingControllers[instanceId];
+        if (!(streamingCtrl?.isClosed ?? true)) {
+          streamingCtrl?.add(StreamingDelta(agentId: agentId, text: chunk));
+        }
+
+        i = end;
+        if (i < chars.length) {
+          await Future.delayed(
+            Duration(milliseconds: 30 + _random.nextInt(50)),
+          );
+        }
+      }
+
+      // 发出完整 Message
+      if (controller.isClosed) return;
       final agentMsg = Message(
         clientId: _uuid.v4(),
         serverId: _uuid.v4(),
         conversationId: userMessage.conversationId,
         agentId: agentId,
         role: MessageRole.agent,
-        content: _generateMockReply(userMessage.content ?? ''),
+        content: fullText,
         type: MessageType.text,
         status: MessageStatus.delivered,
         logicalClock: DateTime.now().millisecondsSinceEpoch,
       );
       controller.add(agentMsg);
 
-      // 10% 概率模拟工具调用
+      // 通知 UI 流式结束
+      final streamingCtrl = _streamingControllers[instanceId];
+      if (!(streamingCtrl?.isClosed ?? true)) {
+        streamingCtrl?.add(StreamingDone(agentId: agentId));
+      }
+
       if (_random.nextDouble() < 0.1) {
         _simulateToolCall(instanceId, agentMsg.clientId);
       }
@@ -141,37 +184,68 @@ class MockGatewayClient implements IGatewayClient {
     await loadMockData();
     await Future.delayed(const Duration(milliseconds: 300));
 
-    return _mockAgents
+    final matched = _mockAgents
         .where((a) => a['instanceId'] == instanceId)
-        .map(
-          (a) {
-            // Parse quick commands from mock data
-            final qcList = <QuickCommand>[];
-            final rawCommands = a['quickCommands'] as List<dynamic>?;
-            if (rawCommands != null) {
-              for (var i = 0; i < rawCommands.length; i++) {
-                final cmd = rawCommands[i] as Map<String, dynamic>;
-                qcList.add(QuickCommand(
-                  id: _uuid.v4(),
-                  agentId: a['remoteId'] as String,
-                  label: cmd['label'] as String,
-                  payload: cmd['payload'] as String,
-                  sortOrder: i,
-                ));
-              }
-            }
-            return Agent(
-              localId: _uuid.v4(),
-              remoteId: a['remoteId'] as String,
-              instanceId: a['instanceId'] as String,
-              name: a['name'] as String,
-              themeColor: a['themeColor'] as String? ?? '#007AFF',
-              description: a['description'] as String?,
-              quickCommands: qcList,
-            );
-          },
-        )
+        .map(_parseMockAgent)
         .toList();
+
+    if (matched.isNotEmpty) return matched;
+
+    // For instances not in the mock fixture (e.g. manually created),
+    // generate sensible synthetic agents so the UI isn't empty.
+    return _generateDefaultAgents(instanceId);
+  }
+
+  /// Parse a mock agent JSON entry into a domain [Agent].
+  Agent _parseMockAgent(Map<String, dynamic> a) {
+    final qcList = <QuickCommand>[];
+    final rawCommands = a['quickCommands'] as List<dynamic>?;
+    if (rawCommands != null) {
+      for (var i = 0; i < rawCommands.length; i++) {
+        final cmd = rawCommands[i] as Map<String, dynamic>;
+        qcList.add(
+          QuickCommand(
+            id: _uuid.v4(),
+            agentId: a['remoteId'] as String,
+            label: cmd['label'] as String,
+            payload: cmd['payload'] as String,
+            sortOrder: i,
+          ),
+        );
+      }
+    }
+    return Agent(
+      localId: _uuid.v4(),
+      remoteId: a['remoteId'] as String,
+      instanceId: a['instanceId'] as String,
+      name: a['name'] as String,
+      themeColor: a['themeColor'] as String? ?? '#007AFF',
+      description: a['description'] as String?,
+      quickCommands: qcList,
+    );
+  }
+
+  /// Generate a set of default agents for an arbitrary instance ID.
+  ///
+  /// Used when the mock fixture doesn't contain a matching entry for
+  /// a manually created instance, so the UI isn't left empty.
+  List<Agent> _generateDefaultAgents(String instanceId) {
+    final defaults = [
+      (name: '默认助手', desc: '通用 AI 助手，可处理各类任务', color: '#007AFF'),
+      (name: '代码助手', desc: '编程辅助、代码审查与调试', color: '#34C759'),
+    ];
+
+    return defaults.map((d) {
+      return Agent(
+        localId: _uuid.v4(),
+        remoteId: '${instanceId}-default-${d.name}',
+        instanceId: instanceId,
+        name: d.name,
+        themeColor: d.color,
+        description: d.desc,
+        quickCommands: const [],
+      );
+    }).toList();
   }
 
   @override
@@ -227,6 +301,17 @@ class MockGatewayClient implements IGatewayClient {
     return _getOrCreateToolCallController(instanceId).stream;
   }
 
+  @override
+  Stream<StreamingEvent> streamingDeltaStream(String instanceId) {
+    return _getOrCreateStreamingController(instanceId).stream;
+  }
+
+  @override
+  Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
+    // Mock 环境永不触发配对流程
+    return Stream.value(null);
+  }
+
   StreamController<GatewayConnectionState> _getOrCreateConnectionController(
     String instanceId,
   ) {
@@ -241,6 +326,15 @@ class MockGatewayClient implements IGatewayClient {
     return _messageControllers.putIfAbsent(
       instanceId,
       () => StreamController<Message>.broadcast(),
+    );
+  }
+
+  StreamController<StreamingEvent> _getOrCreateStreamingController(
+    String instanceId,
+  ) {
+    return _streamingControllers.putIfAbsent(
+      instanceId,
+      () => StreamController<StreamingEvent>.broadcast(),
     );
   }
 
@@ -262,5 +356,15 @@ class MockGatewayClient implements IGatewayClient {
     for (final c in _toolCallControllers.values) {
       await c.close();
     }
+    for (final c in _streamingControllers.values) {
+      await c.close();
+    }
+    // Clear maps so that subsequent _getOrCreateXxxController calls
+    // (via putIfAbsent) create fresh controllers instead of returning
+    // the closed ones.
+    _connectionControllers.clear();
+    _messageControllers.clear();
+    _toolCallControllers.clear();
+    _streamingControllers.clear();
   }
 }

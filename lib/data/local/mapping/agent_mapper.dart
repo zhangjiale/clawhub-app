@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
@@ -37,18 +38,19 @@ class AgentMapper {
     try {
       final list = jsonDecode(json) as List<dynamic>;
       return list
-          .map((e) => QuickCommand(
-                id: e['id'] as String? ?? '',
-                agentId: e['agentId'] as String? ?? '',
-                label: e['label'] as String? ?? '',
-                payload: e['payload'] as String? ?? '',
-                sortOrder: e['sortOrder'] as int? ?? 0,
-              ))
+          .map(
+            (e) => QuickCommand(
+              id: e['id'] as String? ?? '',
+              agentId: e['agentId'] as String? ?? '',
+              label: e['label'] as String? ?? '',
+              payload: e['payload'] as String? ?? '',
+              sortOrder: e['sortOrder'] as int? ?? 0,
+            ),
+          )
           .toList();
     } catch (error, stackTrace) {
-      print('Failed to parse quick_commands JSON: $error\n$stackTrace');
+      debugPrint('Failed to parse quick_commands JSON: $error\n$stackTrace');
       return [];
     }
   }
-
 }

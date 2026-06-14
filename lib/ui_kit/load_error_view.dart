@@ -1,23 +1,23 @@
 import 'package:flutter/material.dart';
 
-/// Generic error state with retry button.
+/// Generic error state with optional retry button.
 ///
 /// Intended for async load failures — shows an error icon, a
-/// title, the exception text, and a retry FilledButton.
-/// Used by AgentProfilePage, AgentConfigPage, and future
-/// data-loading panels.
+/// title, the exception text, and optionally a retry FilledButton.
+/// Used by AgentProfilePage, AgentConfigPage, GoRouter 404 page,
+/// and future data-loading panels.
 class LoadErrorView extends StatelessWidget {
   final Object error;
   final String title;
   final String retryLabel;
-  final VoidCallback onRetry;
+  final VoidCallback? onRetry;
 
   const LoadErrorView({
     super.key,
     required this.error,
     this.title = '无法加载数据',
     this.retryLabel = '重试',
-    required this.onRetry,
+    this.onRetry,
   });
 
   @override
@@ -30,11 +30,7 @@ class LoadErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
-              size: 48,
-              color: theme.colorScheme.error,
-            ),
+            Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
             const SizedBox(height: 12),
             Text(title, style: theme.textTheme.bodyLarge),
             const SizedBox(height: 8),
@@ -48,11 +44,12 @@ class LoadErrorView extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: Text(retryLabel),
-            ),
+            if (onRetry != null)
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: Text(retryLabel),
+              ),
           ],
         ),
       ),

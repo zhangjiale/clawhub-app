@@ -1,0 +1,199 @@
+#!/bin/bash
+# =============================================================================
+# ClawHub Iron Laws — Pre-commit Hook v0.1
+# =============================================================================
+# Enforces 4 mechanically-verifiable Iron Laws on staged .dart files.
+#
+# Laws checked:
+#   Law 1  — domain/ must have zero Flutter/Riverpod/Drift/WebSocket imports
+#   Law 6  — No N+1 queries (for + await repo. patterns)
+#   Law 8  — No empty catch blocks
+#   Law 11 — ListView.builder required for dynamic/long lists
+#
+# Suppression:
+#   Per-line:  // iron-law-allow: LawN -- justification
+#   Per-file:  // iron-law-allow-file: LawN -- justification
+#
+# Escape hatch: git commit --no-verify (documented in CLAUDE.md)
+#
+# Docs: docs/engineering/iron-laws.md
+# =============================================================================
+set -euo pipefail
+
+# --- Self-install ---
+if [ "${1:-}" = "--install" ]; then
+  HOOKS_DIR="$(git rev-parse --git-dir 2>/dev/null || echo "")/hooks"
+  if [ -z "$HOOKS_DIR" ] || [ "$HOOKS_DIR" = "/hooks" ]; then
+    echo "Error: not in a git repository"
+    exit 1
+  fi
+  BOOTSTRAP="$HOOKS_DIR/pre-commit"
+  cat > "$BOOTSTRAP" << 'BOOTSTRAP_EOF'
+#!/bin/bash
+# ClawHub Iron Laws — Pre-commit Hook Bootstrap
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+HOOK_SCRIPT="$REPO_ROOT/scripts/pre-commit"
+if [ -f "$HOOK_SCRIPT" ]; then
+  exec bash "$HOOK_SCRIPT" "$@"
+else
+  echo "⚠ scripts/pre-commit not found — skipping Iron Laws check"
+  exit 0
+fi
+BOOTSTRAP_EOF
+  chmod +x "$BOOTSTRAP"
+  echo "✓ Iron Laws pre-commit hook installed to $BOOTSTRAP"
+  exit 0
+fi
+
+# --- Colors (empty if not a terminal) ---
+if [ -t 2 ]; then
+  RED='\033[0;31m'
+  YELLOW='\033[1;33m'
+  CYAN='\033[0;36m'
+  BOLD='\033[1m'
+  NC='\033[0m' # No Color
+else
+  RED='' YELLOW='' CYAN='' BOLD='' NC=''
+fi
+
+# --- Collect staged .dart files ---
+STAGED_DART=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.dart$' || true)
+
+if [ -z "$STAGED_DART" ]; then
+  exit 0
+fi
+
+STAGED_COUNT=$(echo "$STAGED_DART" | wc -l)
+echo -e "${CYAN}═══ ClawHub Iron Laws Check — $STAGED_COUNT staged Dart file(s) ═══${NC}"
+
+VIOLATIONS=0
+WARNINGS=0
+
+# --- Helper: check a pattern in staged files for a given law ---
+# Usage: check_law <law_id> <law_title> <grep_pattern> <files_subset>
+#   files_subset: "all" or "domain" (only domain/ files)
+check_law() {
+  local law="$1"
+  local title="$2"
+  local pattern="$3"
+  local scope="$4"
+
+  local files="$STAGED_DART"
+  if [ "$scope" = "domain" ]; then
+    files=$(echo "$STAGED_DART" | grep '^lib/domain/' || true)
+  fi
+
+  if [ -z "$files" ]; then
+    return 0
+  fi
+
+  local law_hits=0
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    # Get matching lines, exclude those with same-line or file-level suppression
+    local matches
+    matches=$(grep -n "$pattern" "$file" 2>/dev/null \
+      | grep -v "iron-law-allow: *$law" \
+      | grep -v "iron-law-allow-file: *$law" || true)
+    if [ -n "$matches" ]; then
+      # Check for file-level suppression
+      if head -20 "$file" | grep -q "iron-law-allow-file: *$law"; then
+        continue
+      fi
+      while IFS= read -r match; do
+        [ -z "$match" ] && continue
+        echo -e "  ${RED}✗${NC} $file:${YELLOW}$(echo "$match" | cut -d: -f1)${NC} — $title"
+        echo "      $(echo "$match" | cut -d: -f2-)"
+        law_hits=$((law_hits + 1))
+      done <<< "$matches"
+    fi
+  done <<< "$files"
+
+  if [ "$law_hits" -gt 0 ]; then
+    echo -e "  ${RED}→ $law_hits violation(s) of $law${NC}\n"
+    VIOLATIONS=$((VIOLATIONS + law_hits))
+  fi
+}
+
+# --- Auto-format: dart format (fix + re-add, zero false positives) ---
+echo -e "${BOLD}dart format${NC}"
+FORMAT_OUT=$(dart format $STAGED_DART 2>&1) || {
+  echo -e "  ${RED}✗${NC} dart format failed. Is dart installed?"
+  echo ""
+  VIOLATIONS=$((VIOLATIONS + 1))
+}
+# Re-add any files that were reformatted (only lines containing actual file paths)
+echo "$FORMAT_OUT" | { grep "^Formatted .*\.dart" || true; } | while IFS= read -r line; do
+  formatted=$(echo "$line" | sed 's/^Formatted //')
+  echo -e "  ${YELLOW}↻${NC} Reformatted: $formatted (re-staged)"
+  git add "$formatted"
+done
+
+# --- Law 1: domain/ zero external dependencies ---
+echo -e "${BOLD}Law 1${NC} — domain/ zero external dependencies"
+check_law "Law1" "domain import violation" \
+  "package:flutter/\|package:riverpod/\|package:drift/\|package:web_socket/" \
+  "domain"
+
+# --- Law 6: No N+1 queries ---
+echo -e "${BOLD}Law 6${NC} — No N+1 query patterns"
+check_law "Law6" "N+1 query pattern" \
+  "for\b.*\bawait\b.*\brepo\." \
+  "all"
+
+# --- Law 8: No empty catch blocks ---
+echo -e "${BOLD}Law 8${NC} — No empty catch blocks"
+# Matches single-line empty catches: catch (e) {}, catch (_, s) { }, etc.
+# Pattern: "catch" followed by any chars, then literal {} with only spaces inside.
+# Does NOT catch multi-line empty blocks (needs AST for that).
+check_law "Law8" "empty catch block" \
+  "catch.*{ *}" \
+  "all"
+
+# --- Law 11: ListView.builder ---
+echo -e "${BOLD}Law 11${NC} — ListView.builder for dynamic/long lists"
+# This is a WARNING (not a hard block) because small fixed lists are legitimate.
+# Only flagging files with ListView(children: for human review.
+WARN_FILES=$(echo "$STAGED_DART" | grep -E '^lib/features/|^lib/ui_kit/' || true)
+if [ -n "$WARN_FILES" ]; then
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    LV_MATCHES=$(grep -n "ListView(children:" "$file" 2>/dev/null \
+      | grep -v "iron-law-allow: *Law11" \
+      | grep -v "iron-law-allow-file: *Law11" || true)
+    if [ -n "$LV_MATCHES" ]; then
+      if head -20 "$file" | grep -q "iron-law-allow-file: *Law11"; then
+        continue
+      fi
+      while IFS= read -r match; do
+        [ -z "$match" ] && continue
+        echo -e "  ${YELLOW}⚠${NC}  $file:${YELLOW}$(echo "$match" | cut -d: -f1)${NC} — ListView(children:) — verify count <20"
+        WARNINGS=$((WARNINGS + 1))
+      done <<< "$LV_MATCHES"
+    fi
+  done <<< "$WARN_FILES"
+fi
+
+# --- Result ---
+echo ""
+echo -e "${CYAN}══════════════════════════════════════════════${NC}"
+
+if [ "$VIOLATIONS" -gt 0 ]; then
+  echo -e "${RED}${BOLD}✗ BLOCKED: $VIOLATIONS Iron Law violation(s)${NC}"
+  echo ""
+  echo "  Suppress (if this is a legitimate exception):"
+  echo "    // iron-law-allow: LawN -- reason"
+  echo "  Escape hatch (documented, use sparingly):"
+  echo "    git commit --no-verify"
+  echo ""
+  echo "  See: docs/engineering/iron-laws.md"
+  exit 1
+fi
+
+if [ "$WARNINGS" -gt 0 ]; then
+  echo -e "${YELLOW}${BOLD}⚠ PASSED with $WARNINGS warning(s) — review above${NC}"
+else
+  echo -e "${CYAN}${BOLD}✓ All Iron Laws passed${NC}"
+fi
+
+exit 0

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
@@ -38,9 +39,16 @@ class DriftMessageRepo implements IMessageRepo {
         message.metadata != null ? jsonEncode(message.metadata) : null,
       );
 
-      // Sync FTS5 index
-      final rowid = await _database.getLastInsertRowid();
-      await _database.syncFtsInsert(rowid, message.content);
+      // Sync FTS5 index (best-effort — message persistence is primary).
+      // FTS sync failure must not prevent the message from being saved.
+      try {
+        final rowid = await _database.getLastInsertRowid();
+        await _database.syncFtsInsert(rowid, message.content);
+      } catch (error, stackTrace) {
+        debugPrint(
+          'FTS sync failed for message ${message.clientId}: $error\n$stackTrace',
+        );
+      }
     });
 
     return message;
@@ -67,15 +75,17 @@ class DriftMessageRepo implements IMessageRepo {
 
   @override
   Future<Message?> getByClientId(String clientId) async {
-    final row =
-        await _database.getMessageByClientId(clientId).getSingleOrNull();
+    final row = await _database
+        .getMessageByClientId(clientId)
+        .getSingleOrNull();
     return row != null ? MessageMapper.toDomain(row) : null;
   }
 
   @override
   Future<Message?> getByServerId(String serverId) async {
-    final row =
-        await _database.getMessageByServerId(serverId).getSingleOrNull();
+    final row = await _database
+        .getMessageByServerId(serverId)
+        .getSingleOrNull();
     return row != null ? MessageMapper.toDomain(row) : null;
   }
 
@@ -87,11 +97,11 @@ class DriftMessageRepo implements IMessageRepo {
   }) async {
     final rows = before != null
         ? await _database
-            .getMessagesByConversationBefore(conversationId, before, limit)
-            .get()
+              .getMessagesByConversationBefore(conversationId, before, limit)
+              .get()
         : await _database
-            .getMessagesByConversationFirst(conversationId, limit)
-            .get();
+              .getMessagesByConversationFirst(conversationId, limit)
+              .get();
     return rows.map(MessageMapper.toDomain).toList();
   }
 
@@ -233,5 +243,4 @@ class DriftMessageRepo implements IMessageRepo {
     }
     return result;
   }
-
 }
