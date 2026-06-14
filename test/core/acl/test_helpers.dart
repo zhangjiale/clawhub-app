@@ -130,6 +130,15 @@ String agentAssistantJson({
     '{"sessionKey":"$sessionKey","stream":"assistant",'
     '"data":{"delta":"$delta"}}}';
 
+/// Build an `agent` event frame with `stream: "message"` (v3 Gateway compat).
+String agentMessageJson({
+  String sessionKey = 'agent:r-1:main',
+  String delta = 'Hello from v3',
+}) =>
+    '{"type":"event","event":"agent","payload":'
+    '{"sessionKey":"$sessionKey","stream":"message",'
+    '"data":{"delta":"$delta"}}}';
+
 const String tickJson = '{"type":"event","event":"tick","payload":{}}';
 
 const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';

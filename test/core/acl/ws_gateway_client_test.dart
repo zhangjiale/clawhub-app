@@ -126,6 +126,33 @@ void main() {
   });
 
   // ==========================================================================
+  // resolveAgentId
+  // ==========================================================================
+  group('WsGatewayClient.resolveAgentId', () {
+    test('returns agentId from explicit mapping (primary path)', () {
+      const mapping = <String, String>{'agent:abc:main': 'abc'};
+      final result = WsGatewayClient.resolveAgentId('agent:abc:main', mapping);
+      expect(result, 'abc');
+    });
+
+    test('returns agentId from string parsing fallback (backward compat)', () {
+      final result = WsGatewayClient.resolveAgentId(
+        'agent:xyz:read',
+        <String, String>{}, // empty mapping — fallback path
+      );
+      expect(result, 'xyz');
+    });
+
+    test('returns null when unresolvable', () {
+      final result = WsGatewayClient.resolveAgentId(
+        'weird-format-no-colons',
+        <String, String>{},
+      );
+      expect(result, isNull);
+    });
+  });
+
+  // ==========================================================================
   // connect()
   // ==========================================================================
   group('connect()', () {
@@ -615,6 +642,27 @@ void main() {
       expect(events[1], isA<StreamingDelta>());
       expect((events[1] as StreamingDelta).text, ' World');
       expect(events[2], isA<StreamingDone>());
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('agent message event routes delta to streamingDeltaStream', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final events = <StreamingEvent>[];
+      final sub = client
+          .streamingDeltaStream('test-instance')
+          .listen(events.add);
+
+      ws.simulateServerFrame(agentMessageJson(delta: 'v3 message delta'));
+      await pumpMicrotasks();
+
+      expect(events.length, 1);
+      expect(events.first, isA<StreamingDelta>());
+      final delta = events.first as StreamingDelta;
+      expect(delta.text, 'v3 message delta');
+      expect(delta.agentId, 'r-1');
 
       await sub.cancel();
       await client.dispose();
