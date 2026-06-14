@@ -539,6 +539,27 @@ class WsGatewayClient implements IGatewayClient {
         }
 
       case AgentStreamType.message:
+        // v3 protocol "message" type — semantically equivalent to v4 "assistant".
+        // Both carry delta text in data.delta for streaming display.
+        {
+          final delta = event.data['delta'] as String?;
+          if (delta != null && delta.isNotEmpty) {
+            final agentId = resolveAgentId(event.sessionKey, _sessionToAgentId);
+            if (agentId == null) break;
+            if (!conn.streamingCtrl.isClosed) {
+              conn.streamingCtrl.add(
+                StreamingDelta(agentId: agentId, text: delta),
+              );
+            }
+            _streamingBuffers
+                .putIfAbsent(
+                  bufferKey,
+                  () => StreamingBuffer(sessionKey: event.sessionKey),
+                )
+                .append(delta);
+          }
+        }
+
       case AgentStreamType.assistant:
         // 助手文本 delta / message event — 仅用于 streaming 缓冲
         // chat 事件已经在推 deltaText，这里做补充
