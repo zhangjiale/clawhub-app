@@ -137,13 +137,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   Timer? _flushTimer;
   Agent? _agent;
 
-  /// Monotonically increasing counter — incremented on each [send].
-  /// The streaming listener captures its value and drops deltas from
-  /// stale generations, preventing response A's deltas from leaking
-  /// into response B's accumulated text when the user sends a follow-up
-  /// message before the agent finishes replying to the first.
-  int _sendGeneration = 0;
-
   /// Configurable flush delay for streaming text state updates.
   ///
   /// Defaults to 150ms to match [StreamingBubble]'s MarkdownBody debounce.
@@ -246,67 +239,25 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           );
 
       // 5b. Tool call events
-      _toolCallSubscription = _gatewayClient.toolCallStream(instanceId).listen((
-        tc,
-      ) {
-        final current = Map<String, ToolCall>.from(state.toolCalls);
-        current[tc.messageId] = tc;
-        _updateState((s) => s.copyWith(toolCalls: current));
-      });
-
-      // 5c. Streaming deltas (filtered by agentId)
-      // Capture remoteId locally — _agent is guaranteed non-null at this
-      // point (early return above), but a retry() could race the closure.
-      final agentRemoteId = _agent!.remoteId;
-      _streamingSubscription = _gatewayClient
-          .streamingDeltaStream(instanceId)
+      _toolCallSubscription = _gatewayClient
+          .toolCallStream(instanceId)
           .listen(
-            (event) {
-              // Snapshot the send generation at callback entry.  Used below to
-              // guard StreamingDone so a stale "done" from a previous send()
-              // does not clear text accumulated by a newer send().
-              final myGen = _sendGeneration;
-              // Route to the correct agent — ignore events for other agents
-              if (event is StreamingDelta && event.agentId == agentRemoteId) {
-                // Cap at 50KB to prevent unbounded growth (DoS / Gateway bug).
-                if (_streamBuffer.length < 50 * 1024) {
-                  _streamBuffer.write(event.text);
-                  _scheduleFlush();
-                }
-                // Reset thinking timer on each delta arrival
-                _timeoutTimer?.cancel();
-                _timeoutTimer = Timer(const Duration(seconds: 60), () {
-                  _updateState(
-                    (s) => s.copyWith(thinkingState: ThinkingState.timeout),
-                  );
-                });
-                // Reset stall timeout on each delta
-                _stallTimer?.cancel();
-                _stallTimer = Timer(const Duration(seconds: 30), () {
-                  _updateState((s) => s.copyWith(streamingText: ''));
-                });
-              } else if (event is StreamingDone &&
-                  event.agentId == agentRemoteId) {
-                // Only clear text if the generation hasn't changed — prevents
-                // a stale StreamingDone from response A from wiping text that
-                // belongs to response B (concurrent send interleaving guard).
-                if (myGen == _sendGeneration) {
-                  _flushImmediately();
-                  _stallTimer?.cancel();
-                  _updateState((s) => s.copyWith(streamingText: ''));
-                }
-              }
+            (tc) {
+              final current = Map<String, ToolCall>.from(state.toolCalls);
+              current[tc.messageId] = tc;
+              _updateState((s) => s.copyWith(toolCalls: current));
             },
             onError: (error, stackTrace) {
-              _flushImmediately();
-              _stallTimer?.cancel();
-              _timeoutTimer?.cancel();
-              _updateState((s) => s.copyWith(streamingText: ''));
               debugPrint(
-                'Streaming stream error for $instanceId: $error\n$stackTrace',
+                'Tool call stream error for $instanceId: $error\n$stackTrace',
               );
             },
           );
+
+      // 5c. Streaming deltas — subscription is recreated on each send()
+      //     so stale events from a previous response never contaminate
+      //     the current buffer (no generation-guard needed).
+      _startStreaming();
       // 6. Fetch message history from Gateway (best-effort).
       //    Placed AFTER real-time subscriptions so that events arriving
       //    during the fetch RTT are captured, not lost.
@@ -346,11 +297,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// is never silently dropped.  If the agent doesn't exist (or init failed),
   /// surfaces a [LoadError] so the UI can show a meaningful message.
   Future<void> send(String text) async {
-    // Reset streaming state and bump generation — prevents stale partial
-    // text from a disconnected or concurrent stream contaminating the new
-    // response.  The streaming listener captures the generation and drops
-    // deltas from previous sends.
-    _sendGeneration++;
+    // Tear down the old streaming subscription so stale deltas/done
+    // events from a previous response never contaminate the new buffer.
+    // A fresh subscription is created below after init() succeeds.
+    _streamingSubscription?.cancel();
+    _streamingSubscription = null;
     _flushTimer?.cancel();
     _streamBuffer.clear();
     _lastPublishedLength = 0;
@@ -378,6 +329,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       );
       return;
     }
+
+    // Start a fresh streaming subscription for this send — any stale
+    // events from the previous subscription were already cancelled above.
+    _startStreaming();
 
     final sentMessage = await _sendMessageUseCase.execute(
       instanceId: instanceId,
@@ -416,6 +371,54 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// Continue waiting — dismiss the timeout banner and restart the timer.
   void continueWaiting() {
     _startThinking();
+  }
+
+  /// Create a fresh streaming subscription for the current [send].
+  ///
+  /// Must be called AFTER [_agent] is guaranteed non-null.  Each call
+  /// cancels any previous [_streamingSubscription] so that stale
+  /// [StreamingDelta]/[StreamingDone] events from a prior response
+  /// never contaminate the current buffer.
+  void _startStreaming() {
+    _streamingSubscription?.cancel();
+
+    final agentRemoteId = _agent!.remoteId;
+    _streamingSubscription = _gatewayClient
+        .streamingDeltaStream(instanceId)
+        .listen(
+          (event) {
+            if (event is StreamingDelta && event.agentId == agentRemoteId) {
+              if (_streamBuffer.length < 50 * 1024) {
+                _streamBuffer.write(event.text);
+                _scheduleFlush();
+              }
+              _timeoutTimer?.cancel();
+              _timeoutTimer = Timer(const Duration(seconds: 60), () {
+                _updateState(
+                  (s) => s.copyWith(thinkingState: ThinkingState.timeout),
+                );
+              });
+              _stallTimer?.cancel();
+              _stallTimer = Timer(const Duration(seconds: 30), () {
+                _updateState((s) => s.copyWith(streamingText: ''));
+              });
+            } else if (event is StreamingDone &&
+                event.agentId == agentRemoteId) {
+              _flushImmediately();
+              _stallTimer?.cancel();
+              _updateState((s) => s.copyWith(streamingText: ''));
+            }
+          },
+          onError: (error, stackTrace) {
+            _flushImmediately();
+            _stallTimer?.cancel();
+            _timeoutTimer?.cancel();
+            _updateState((s) => s.copyWith(streamingText: ''));
+            debugPrint(
+              'Streaming stream error for $instanceId: $error\n$stackTrace',
+            );
+          },
+        );
   }
 
   /// Schedule a throttled flush — cancels pending timer, sets new one.

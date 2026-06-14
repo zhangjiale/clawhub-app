@@ -128,15 +128,15 @@ void main() {
   // ==========================================================================
   // resolveAgentId
   // ==========================================================================
-  group('WsGatewayClient.resolveAgentId', () {
+  group('resolveAgentId', () {
     test('returns agentId from explicit mapping (primary path)', () {
       const mapping = <String, String>{'agent:abc:main': 'abc'};
-      final result = WsGatewayClient.resolveAgentId('agent:abc:main', mapping);
+      final result = resolveAgentId('agent:abc:main', mapping);
       expect(result, 'abc');
     });
 
     test('returns agentId from string parsing fallback (backward compat)', () {
-      final result = WsGatewayClient.resolveAgentId(
+      final result = resolveAgentId(
         'agent:xyz:read',
         <String, String>{}, // empty mapping — fallback path
       );
@@ -144,7 +144,7 @@ void main() {
     });
 
     test('returns null when unresolvable', () {
-      final result = WsGatewayClient.resolveAgentId(
+      final result = resolveAgentId(
         'weird-format-no-colons',
         <String, String>{},
       );

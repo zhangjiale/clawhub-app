@@ -147,17 +147,21 @@ class _StreamingBubbleState extends State<StreamingBubble>
                       // Column instead of Stack+Positioned so the cursor
                       // always sits at the text frontier, not at the
                       // bottom-right corner of a multi-line MarkdownBody.
+                      //
+                      // The cursor is drawn via CustomPaint (not a Unicode
+                      // glyph) to guarantee identical rendering across all
+                      // platforms regardless of system font availability.
                       const SizedBox(height: 2),
                       AnimatedBuilder(
                         animation: _cursorController,
                         builder: (context, child) {
                           return Opacity(
                             opacity: _cursorController.value,
-                            child: const Text(
-                              '▊',
-                              style: TextStyle(
-                                color: XiaColors.accent,
-                                fontSize: 15,
+                            child: const SizedBox(
+                              width: _CursorPainter.cursorWidth,
+                              height: _CursorPainter.cursorHeight,
+                              child: const CustomPaint(
+                                painter: const _CursorPainter(),
                               ),
                             ),
                           );
@@ -184,4 +188,37 @@ class _StreamingBubbleState extends State<StreamingBubble>
     ),
     strong: const TextStyle(fontWeight: FontWeight.bold),
   );
+}
+
+/// Paints the blinking text cursor as a filled rounded rectangle.
+///
+/// Replaces a Unicode block character (U+258A ▊) whose rendering varies
+/// across platform fonts.  [CustomPaint] guarantees identical appearance
+/// on iOS, Android, and desktop.
+class _CursorPainter extends CustomPainter {
+  const _CursorPainter();
+
+  /// Cursor width in logical pixels.
+  static const double cursorWidth = 2.5;
+
+  /// Cursor height in logical pixels — matches the 15px body text size.
+  static const double cursorHeight = 15;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = XiaColors.accent
+      ..style = PaintingStyle.fill;
+
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, cursorWidth, cursorHeight),
+        const Radius.circular(1),
+      ),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

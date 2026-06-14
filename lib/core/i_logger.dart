@@ -4,7 +4,7 @@
 /// 但 use case 需要输出错误信息。此接口提供一个抽象层。
 ///
 /// 生产环境使用 [DebugPrintLogger]，测试环境可注入 fake。
-abstract class ILogger {
+abstract interface class ILogger {
   /// 输出信息级别日志。
   void info(String message);
 

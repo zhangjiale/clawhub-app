@@ -17,6 +17,7 @@ import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
+import 'package:claw_hub/ui_kit/load_error_view.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -216,8 +217,10 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             Expanded(
               child: switch (session.messages) {
                 LoadInProgress() => const LoadingSkeleton(count: 3),
-                LoadError(:final error) => Center(
-                  child: Text('Failed to load messages: $error'),
+                LoadError(:final error) => LoadErrorView(
+                  error: error,
+                  title: 'Failed to load messages',
+                  onRetry: () => vm.retry(),
                 ),
                 LoadData(:final value) when value.isEmpty => _buildEmptyState(
                   theme,

@@ -70,6 +70,12 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   /// 生产环境默认使用 [DateTime.now]。
   final DateTime Function() _clock;
 
+  /// do-while 同步循环迭代间的最小冷却时间。
+  ///
+  /// 防止 connected 事件在同步完成时恰好触发导致的即时重试风暴。
+  /// 测试可注入 [Duration.zero] 以避免测试中的真实延迟。
+  final Duration _syncLoopCooldown;
+
   ConnectionOrchestrator({
     required IGatewayClient gatewayClient,
     required IInstanceRepo instanceRepo,
@@ -78,13 +84,15 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     void Function()? onAgentsSynced,
     void Function(String instanceId, GatewayPairingInfo? info)? onPairingInfo,
     DateTime Function()? clock,
+    Duration syncLoopCooldown = const Duration(seconds: 1),
   }) : _gatewayClient = gatewayClient,
        _instanceRepo = instanceRepo,
        _agentRepo = agentRepo,
        _onAgentsSynced = onAgentsSynced,
        _onPairingInfoCb = onPairingInfo,
        _connectivity = connectivity ?? ConnectivityAdapter(),
-       _clock = clock ?? (() => DateTime.now());
+       _clock = clock ?? (() => DateTime.now()),
+       _syncLoopCooldown = syncLoopCooldown;
 
   // ---------------------------------------------------------------------------
   // 公开 API
@@ -311,7 +319,6 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       const maxLoops = 3;
       var loopCount = 0;
       do {
-        loopCount++;
         const retry = RetryStrategy.agentSync;
         for (var attempt = 0; retry.shouldRetry(attempt); attempt++) {
           try {
@@ -346,7 +353,14 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
         // Whether we succeeded or exhausted all retries, check if a
         // new connected event arrived during this sync cycle.
         // If so, loop once more to pick up any new agents.
-      } while (loopCount < maxLoops && _syncPendingRetry.remove(instanceId));
+        loopCount++;
+        final hasPendingRetry = _syncPendingRetry.remove(instanceId);
+        if (!hasPendingRetry || loopCount >= maxLoops) break;
+
+        // Brief cooldown before re-entering the sync loop to avoid
+        // hammering the Gateway when a connected event fires mid-sync.
+        await Future<void>.delayed(_syncLoopCooldown);
+      } while (true);
 
       if (loopCount >= maxLoops && _syncPendingRetry.remove(instanceId)) {
         debugPrint(

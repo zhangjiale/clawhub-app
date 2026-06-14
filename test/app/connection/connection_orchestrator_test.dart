@@ -497,6 +497,7 @@ void main() {
           gatewayClient: gateway,
           instanceRepo: instanceRepo,
           agentRepo: agentRepo,
+          syncLoopCooldown: Duration.zero,
         );
         addTearDown(() => orch.dispose());
 
@@ -568,6 +569,7 @@ void main() {
           gatewayClient: gateway,
           instanceRepo: instanceRepo,
           agentRepo: agentRepo,
+          syncLoopCooldown: Duration.zero,
         );
         addTearDown(() => orch.dispose());
 
@@ -669,6 +671,7 @@ void main() {
           gatewayClient: gateway,
           instanceRepo: instanceRepo,
           agentRepo: agentRepo,
+          syncLoopCooldown: Duration.zero,
         );
         addTearDown(() => orch.dispose());
 

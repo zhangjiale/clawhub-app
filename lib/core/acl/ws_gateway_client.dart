@@ -64,6 +64,9 @@ class WsGatewayClient implements IGatewayClient {
   /// 防止同一 instanceId 的重入连接。
   final Set<String> _connecting = {};
 
+  /// Prevent use-after-dispose — [connect] returns early when true.
+  bool _isDisposed = false;
+
   /// Delta 聚合缓冲区: sessionKey → StreamingBuffer。
   /// agent assistant 事件追加 delta，chat final 事件消费后移除。
   final Map<String, StreamingBuffer> _streamingBuffers = {};
@@ -93,6 +96,7 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Future<void> connect(Instance instance) async {
+    if (_isDisposed) return;
     // 防止同一实例重入连接
     if (_connecting.contains(instance.id)) return;
     _connecting.add(instance.id);
@@ -100,9 +104,11 @@ class WsGatewayClient implements IGatewayClient {
     try {
       if (_connections.containsKey(instance.id)) {
         await _cleanupConnection(instance.id);
+        if (_isDisposed) return;
       }
 
       final identity = await _identityProvider.ensureDeviceIdentity();
+      if (_isDisposed) return;
       final config = _buildConfig(identity);
 
       final manager = ConnectionManager(
@@ -171,23 +177,27 @@ class WsGatewayClient implements IGatewayClient {
     final conn = _connections[instanceId];
     if (conn == null) return;
 
+    // Capture-and-null serves as a re-entrancy guard: if another call
+    // arrives during an await below, conn.manager will already be null
+    // and the call returns immediately.
+    final manager = conn.manager;
+    if (manager == null) return; // already being cleaned up
+    conn.manager = null;
+
     await conn._eventSub?.cancel();
     conn._eventSub = null;
     await conn._stateSub?.cancel();
     conn._stateSub = null;
     await conn._pairingSub?.cancel();
     conn._pairingSub = null;
-    await conn.manager?.dispose();
-    conn.manager = null;
+    await manager.dispose();
+
+    // 清理该实例相关的 streaming buffer，防止重连时旧 session 的
+    // 聚合文本污染新 session。Keys are scoped as '$instanceId:$sessionKey'.
+    _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
 
     if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
       conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
-    }
-
-    // 断开连接时清理该实例相关的 streaming buffer，防止残留
-    // Keys are scoped as '$instanceId:$sessionKey' since commit XXXXXX.
-    if (emitDisconnected) {
-      _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
     }
   }
 
@@ -350,16 +360,34 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Future<void> dispose() async {
+    _isDisposed = true;
+    _connecting.clear();
+
     for (final conn in _connections.values) {
-      await conn._eventSub?.cancel();
-      await conn._stateSub?.cancel();
-      await conn._pairingSub?.cancel();
-      await conn.manager?.dispose();
-      await conn.connectionStateCtrl.close();
-      await conn.messageCtrl.close();
-      await conn.toolCallCtrl.close();
-      await conn.pairingInfoCtrl.close();
-      await conn.streamingCtrl.close();
+      // Capture-and-null guard — same pattern as _cleanup().
+      final manager = conn.manager;
+      if (manager != null) {
+        conn.manager = null;
+        await conn._eventSub?.cancel();
+        await conn._stateSub?.cancel();
+        await conn._pairingSub?.cancel();
+        await manager.dispose();
+      }
+      if (!conn.connectionStateCtrl.isClosed) {
+        await conn.connectionStateCtrl.close();
+      }
+      if (!conn.messageCtrl.isClosed) {
+        await conn.messageCtrl.close();
+      }
+      if (!conn.toolCallCtrl.isClosed) {
+        await conn.toolCallCtrl.close();
+      }
+      if (!conn.pairingInfoCtrl.isClosed) {
+        await conn.pairingInfoCtrl.close();
+      }
+      if (!conn.streamingCtrl.isClosed) {
+        await conn.streamingCtrl.close();
+      }
     }
     _connections.clear();
     _streamingBuffers.clear();
@@ -408,7 +436,7 @@ class WsGatewayClient implements IGatewayClient {
       case ChatState.delta:
         if (event.deltaText != null && event.deltaText!.isNotEmpty) {
           // Resolve agentId from sessionKey (explicit mapping → string parse)
-          final agentId = resolveAgentId(event.sessionKey, _sessionToAgentId);
+          final agentId = _resolveAgentId(event.sessionKey, _sessionToAgentId);
           if (agentId == null) return; // unresolvable, drop event
 
           // Push typed streaming event to UI
@@ -436,7 +464,7 @@ class WsGatewayClient implements IGatewayClient {
           final msgJson = event.message;
           agentId =
               msgJson?['agentId'] as String? ??
-              resolveAgentId(event.sessionKey, _sessionToAgentId);
+              _resolveAgentId(event.sessionKey, _sessionToAgentId);
 
           if (msgJson != null) {
             // chat final event 自带完整 message，直接解析
@@ -544,7 +572,10 @@ class WsGatewayClient implements IGatewayClient {
         {
           final delta = event.data['delta'] as String?;
           if (delta != null && delta.isNotEmpty) {
-            final agentId = resolveAgentId(event.sessionKey, _sessionToAgentId);
+            final agentId = _resolveAgentId(
+              event.sessionKey,
+              _sessionToAgentId,
+            );
             if (agentId == null) break;
             if (!conn.streamingCtrl.isClosed) {
               conn.streamingCtrl.add(
@@ -705,44 +736,28 @@ class WsGatewayClient implements IGatewayClient {
   // 内部：辅助方法
   // ---------------------------------------------------------------------------
 
-  /// Resolve a [sessionKey] to its remote agent ID.
-  ///
-  /// 1. Explicit mapping (primary path — populated by chat.send)
-  /// 2. String parsing fallback (backward compat — parses "agent:{id}:{scope}")
-  /// 3. Returns `null` when unresolvable; callers MUST handle null by dropping
-  ///    the event (logging is done here already).
-  ///
-  /// Internal helper — tested indirectly via [streamingDeltaStream] integration
-  /// tests, with direct unit coverage via `@visibleForTesting`.
-  @visibleForTesting
-  static String? resolveAgentId(
-    String sessionKey,
-    Map<String, String> mapping,
-  ) {
-    // 1. Explicit mapping (primary path)
-    final mapped = mapping[sessionKey];
-    if (mapped != null) return mapped;
-
-    // 2. String parsing fallback (backward compat with Gateway < v2026.6.6)
-    final parts = sessionKey.split(':');
-    if (parts.length >= 2 && parts[0] == 'agent' && parts[1].isNotEmpty) {
-      return parts[1];
-    }
-
-    // 3. Unresolvable — log and return null
-    debugPrint(
-      '[WsGateway] Cannot resolve agentId from sessionKey: '
-      '"$sessionKey" — mapping contains ${mapping.length} entries',
-    );
-    return null;
-  }
-
   @visibleForTesting
   static bool isTestTerminalState(GatewayConnectionState state) {
     return state == GatewayConnectionState.connected ||
         state == GatewayConnectionState.authFailed ||
         state == GatewayConnectionState.disconnected ||
         state == GatewayConnectionState.pairingRequired;
+  }
+
+  /// Resolve a [sessionKey] to its remote agent ID, logging on failure.
+  ///
+  /// Delegates to the pure protocol-level [resolveAgentId] function, then
+  /// logs via [debugPrint] when resolution fails — keeping the protocol
+  /// function free of Flutter/side-effect dependencies.
+  String? _resolveAgentId(String sessionKey, Map<String, String> mapping) {
+    final result = resolveAgentId(sessionKey, mapping);
+    if (result == null) {
+      debugPrint(
+        '[WsGateway] Cannot resolve agentId from sessionKey: '
+        '"$sessionKey" — mapping contains ${mapping.length} entries',
+      );
+    }
+    return result;
   }
 
   ConnectionManager _requireManager(String instanceId) {
@@ -775,6 +790,9 @@ class WsGatewayClient implements IGatewayClient {
 // ============================================================================
 
 class _InstanceConnection {
+  /// Connection manager.  Set to null by [_cleanup] / [dispose] as a
+  /// re-entrancy guard — callers check `manager == null` to skip
+  /// already-cleaned-up connections.
   ConnectionManager? manager;
 
   final StreamController<GatewayConnectionState> connectionStateCtrl;

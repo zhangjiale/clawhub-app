@@ -490,27 +490,60 @@ class StreamingDone extends StreamingEvent {
 /// Accumulates incremental text deltas from streaming events.
 ///
 /// Used for either `chat` deltaText or `agent` assistant data.delta.
+///
+/// Uses [StringBuffer] for amortized O(1) append — consistent with
+/// [ChatViewModel._streamBuffer] (see perf fix #12).
 class StreamingBuffer {
   final String sessionKey;
-  String _text = '';
+  final StringBuffer _buffer = StringBuffer();
 
   StreamingBuffer({required this.sessionKey});
 
   /// Append a delta fragment.
   void append(String delta) {
-    _text += delta;
+    _buffer.write(delta);
   }
 
   /// The full accumulated text so far.
-  String get text => _text;
+  String get text => _buffer.toString();
 
   /// Reset to empty.
   void reset() {
-    _text = '';
+    _buffer.clear();
   }
 
   /// Whether no delta has been received yet.
-  bool get isEmpty => _text.isEmpty;
+  bool get isEmpty => _buffer.isEmpty;
+}
+
+// ============================================================================
+// Session key → agent ID resolution
+// ============================================================================
+
+/// Resolve a [sessionKey] to its remote agent ID.
+///
+/// Resolution order:
+/// 1. Explicit mapping (primary path — populated by chat.send)
+/// 2. String parsing fallback (backward compat — parses "agent:{id}:{scope}")
+/// 3. Returns `null` when unresolvable; callers MUST handle null by dropping
+///    the event and logging.
+///
+/// This is a pure protocol-level function — no dependency on any client
+/// implementation, so it lives here rather than on [WsGatewayClient].
+/// Callers are responsible for logging unresolvable session keys.
+String? resolveAgentId(String sessionKey, Map<String, String> mapping) {
+  // 1. Explicit mapping (primary path)
+  final mapped = mapping[sessionKey];
+  if (mapped != null) return mapped;
+
+  // 2. String parsing fallback (backward compat with Gateway < v2026.6.6)
+  final parts = sessionKey.split(':');
+  if (parts.length >= 2 && parts[0] == 'agent' && parts[1].isNotEmpty) {
+    return parts[1];
+  }
+
+  // 3. Unresolvable — caller should log and drop
+  return null;
 }
 
 // ============================================================================

@@ -109,7 +109,7 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
 /// 当前指向 MockGatewayClient（MVP / 开发阶段默认，可离线开发）。
 /// 生产环境：改为 `return ref.watch(wsGatewayClientProvider);`
 final gatewayClientProvider = Provider<IGatewayClient>((ref) {
-  return ref.watch(mockGatewayClientProvider);
+  return ref.watch(wsGatewayClientProvider);
 });
 
 // --- Network Monitoring ---

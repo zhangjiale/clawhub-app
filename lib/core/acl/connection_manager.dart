@@ -308,8 +308,19 @@ class ConnectionManager {
         debugPrint('[CM] Gateway shutdown for $_instanceId');
         _setState(GatewayConnectionState.disconnected);
 
+      case Events.chat:
+      case Events.agent:
+      case Events.presence:
+      case Events.health:
+        // Route application-level events to the upper layer (WsGatewayClient).
+        // ConnectionManager handles only protocol lifecycle events
+        // (challenge, tick, shutdown); business events are forwarded as-is.
+        _eventController.add(EventFrame(event: event, payload: payload));
+
       default:
-        // presence, health 等事件路由到外部
+        // Forward-compatibility: unrecognized event types (future Gateway
+        // protocol extensions) are forwarded upstream so WsGatewayClient
+        // can handle them or log them.
         _eventController.add(EventFrame(event: event, payload: payload));
     }
   }
@@ -526,11 +537,21 @@ class ConnectionManager {
         // fire a new _doConnect() while the old channel is still being
         // torn down, creating a race where the delayed cleanup nulls
         // the newly-established _channel/_incomingSubscription.
-        _closeWebSocket().then((_) {
-          if (_intentionalDisconnect) return;
-          _setState(GatewayConnectionState.recovering);
-          _scheduleReconnect();
-        });
+        _closeWebSocket()
+            .then((_) {
+              if (_intentionalDisconnect) return;
+              _setState(GatewayConnectionState.recovering);
+              _scheduleReconnect();
+            })
+            .catchError((error, stackTrace) {
+              debugPrint(
+                '[CM] Tick timeout close failed for $_instanceId: '
+                '$error\n$stackTrace',
+              );
+              if (_intentionalDisconnect) return;
+              _setState(GatewayConnectionState.recovering);
+              _scheduleReconnect();
+            });
       },
     );
   }
@@ -601,7 +622,16 @@ class ConnectionManager {
       debugPrint('[CM] Auth error details: $errorDetails');
     _failAllPending('Authentication failed: $reason');
     _cancelTimers();
-    _closeWebSocket();
+    // Fire-and-forget with error logging — _closeWebSocket() is async but
+    // _setState(authFailed) must happen synchronously so callers see the
+    // terminal state immediately.  The .catchError prevents the unhandled
+    // Future rejection that a bare _closeWebSocket() would cause.
+    _closeWebSocket().catchError((error, stackTrace) {
+      debugPrint(
+        '[CM] Error closing WebSocket during auth failure: '
+        '$error\n$stackTrace',
+      );
+    });
     _setState(GatewayConnectionState.authFailed);
   }
 

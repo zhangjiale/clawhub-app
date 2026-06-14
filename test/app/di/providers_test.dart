@@ -25,13 +25,13 @@ void main() {
     });
 
     test(
-      'gatewayClientProvider returns MockGatewayClient (development default)',
+      'gatewayClientProvider returns WsGatewayClient (production default)',
       () {
         final container = ProviderContainer();
         addTearDown(container.dispose);
 
         final client = container.read(gatewayClientProvider);
-        expect(client, isA<MockGatewayClient>());
+        expect(client, isA<WsGatewayClient>());
       },
     );
 

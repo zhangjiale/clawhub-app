@@ -14,6 +14,53 @@ class AppDatabase extends _$AppDatabase {
   @override
   int get schemaVersion => 1;
 
+  @override
+  MigrationStrategy get migration {
+    return MigrationStrategy(
+      onCreate: (migrator) async {
+        await migrator.createAll();
+      },
+      beforeOpen: (details) async {
+        // FTS5 virtual table MUST be created AFTER Drift manages its tables,
+        // because content='messages' requires the messages table to exist.
+        //
+        // NativeDatabase.setup fires BEFORE Drift creates tables — too early.
+        // MigrationStrategy.beforeOpen fires AFTER schema validation/creation,
+        // which is the correct lifecycle hook for FTS5 setup.
+        await customStatement('''
+          CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            content='messages',
+            content_rowid='rowid',
+            tokenize='unicode61'
+          )
+        ''');
+
+        // Backfill FTS5 index for pre-existing messages (e.g. databases
+        // created before FTS5 was introduced, or databases where the old
+        // setup()-based creation silently failed because messages didn't
+        // exist yet at that point).
+        //
+        // Guard avoids full messages table scan on every open: once the
+        // initial backfill completes, per-message FTS sync in
+        // DriftMessageRepo keeps the index current.
+        await customStatement('''
+          INSERT INTO messages_fts(rowid, content)
+          SELECT m.rowid, m.content FROM messages m
+          WHERE (SELECT COUNT(*) FROM messages_fts) = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid
+            )
+        ''');
+      },
+      onUpgrade: (migrator, from, to) async {
+        // Schema v1: no prior versions to migrate from.
+        // When schemaVersion is bumped, add migration steps here for each
+        // version increment (e.g. if (from < 2) { ... }).
+      },
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // FTS5 helpers — manual sync (Zero-Trigger principle)
   // ---------------------------------------------------------------------------

@@ -81,8 +81,23 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
           storedPubKeyB64.isNotEmpty) {
         _seedBytes = base64Url.decode(storedSeedB64);
         _publicKeyB64 = storedPubKeyB64;
-        _logger.info('[Ed25519Identity] Loaded existing Ed25519 keypair');
-      } else {
+
+        if (!_validateKeypair()) {
+          _logger.error(
+            '[Ed25519Identity] Loaded keypair failed validation — '
+            'clearing and regenerating',
+          );
+          await _secureStorage.delete(key: _privateKeyKey);
+          await _secureStorage.delete(key: _publicKeyKey);
+          _seedBytes = null;
+          _publicKeyB64 = null;
+          // Fall through to generation path below
+        } else {
+          _logger.info('[Ed25519Identity] Loaded existing Ed25519 keypair');
+        }
+      }
+
+      if (_seedBytes == null || _publicKeyB64 == null) {
         // 2. 检查旧版 ECDSA P-256 密钥（迁移检测）
         final legacySeed = await _secureStorage.read(key: _legacyPrivateKeyKey);
         if (legacySeed != null && legacySeed.isNotEmpty) {
@@ -127,8 +142,14 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
   @override
   Future<String> signPayload(String v3Payload) async {
     final identity = await ensureDeviceIdentity();
+    final seedBytes = identity.seedBytes;
+    if (seedBytes == null) {
+      throw StateError(
+        'Device identity has no seed bytes — key generation may have failed.',
+      );
+    }
     // 从种子重建 PrivateKey（ed25519_edwards 的 PrivateKey = 64B seed+pubkey）
-    final privateKey = ed.newKeyFromSeed(identity.seedBytes!);
+    final privateKey = ed.newKeyFromSeed(seedBytes);
     final message = Uint8List.fromList(v3Payload.codeUnits);
 
     // sign(PrivateKey, Uint8List) → 64 字节签名
@@ -140,7 +161,59 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
   // Internal
   // ---------------------------------------------------------------------------
 
+  /// 验证当前内存中的密钥对是否一致且可用。
+  ///
+  /// 从种子重建私钥，提取内嵌公钥并与持久化公钥比对。
+  /// 若种子损坏（例如安全存储写入部分失败），重建的公钥将不匹配，
+  /// 此时返回 `false`，调用方应清除并重新生成。
+  ///
+  /// ed25519_edwards 的 PrivateKey 为 64 字节（32B seed + 32B pubkey），
+  /// 因此可从 bytes[32..63] 直接提取公钥，无需额外构造 PublicKey 对象。
+  bool _validateKeypair() {
+    try {
+      final privateKey = ed.newKeyFromSeed(_seedBytes!);
+
+      // PrivateKey = 64 bytes: [32B seed] [32B publicKey]
+      // ed25519_edwards 的 PrivateKey 未暴露独立的 .publicKey getter，
+      // 因此从 bytes 中直接提取后 32 字节作为公钥。
+      _validateKeypairBytesMatch(privateKey);
+
+      // sign 调用成功即证明密钥可用（内部会验证数学一致性）
+      const testMessage = 'clawhub-ed25519-validation';
+      ed.sign(privateKey, Uint8List.fromList(testMessage.codeUnits));
+
+      return true;
+    } catch (error, stackTrace) {
+      _logger.error(
+        '[Ed25519Identity] Key validation failed: $error',
+        stackTrace,
+      );
+      return false;
+    }
+  }
+
+  /// 从重建的 [privateKey] 中提取内嵌公钥，与持久化的 [_publicKeyB64] 比对。
+  ///
+  /// 若两者不匹配，说明安全存储中的种子或公钥已损坏，抛出 [StateError]。
+  void _validateKeypairBytesMatch(dynamic privateKey) {
+    // PrivateKey.bytes → 64 字节（32B seed + 32B pubkey）
+    final rawBytes = privateKey.bytes as List<int>;
+    final embeddedPubKey = Uint8List.fromList(
+      rawBytes.sublist(32, 64),
+    ); // 后 32 字节
+    final embeddedPubKeyB64 = base64Url.encode(embeddedPubKey);
+
+    if (embeddedPubKeyB64 != _publicKeyB64) {
+      throw StateError(
+        'Public key mismatch: embedded=$embeddedPubKeyB64 '
+        '!= stored=$_publicKeyB64',
+      );
+    }
+  }
+
   /// 生成 Ed25519 密钥对并持久化到安全存储。
+  ///
+  /// 生成后执行 [validateKeypair] 往返检查，确保安全存储未损坏数据。
   Future<void> _generateAndPersistEd25519Keypair() async {
     // generateKey() 返回 KeyPair，内含 privateKey (64B = 32B seed + 32B pubkey)
     // 和 publicKey (32B)。
@@ -158,6 +231,19 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
       value: base64Url.encode(_seedBytes!),
     );
     await _secureStorage.write(key: _publicKeyKey, value: _publicKeyB64);
+
+    if (!_validateKeypair()) {
+      _logger.error(
+        '[Ed25519Identity] Generated keypair failed validation — '
+        'clearing and will retry on next ensureDeviceIdentity()',
+      );
+      await _secureStorage.delete(key: _privateKeyKey);
+      await _secureStorage.delete(key: _publicKeyKey);
+      _seedBytes = null;
+      _publicKeyB64 = null;
+      throw StateError('Ed25519 keypair validation failed after generation');
+    }
+
     _logger.info('[Ed25519Identity] Generated new Ed25519 keypair');
   }
 }
