@@ -684,12 +684,6 @@ class WsGatewayClient implements IGatewayClient {
   // 内部：辅助方法
   // ---------------------------------------------------------------------------
 
-  /// Returns `true` when [state] is terminal for [testConnection].
-  ///
-  /// Terminal states are those where the connection attempt has definitively
-  /// resolved (success or failure).  [GatewayConnectionState.pairingRequired]
-  /// is included so that new devices waiting for server-side approval return
-  /// immediately rather than timing out after 30 s.
   /// Resolve a [sessionKey] to its remote agent ID.
   ///
   /// 1. Explicit mapping (primary path — populated by chat.send)
@@ -710,7 +704,7 @@ class WsGatewayClient implements IGatewayClient {
 
     // 2. String parsing fallback (backward compat with Gateway < v2026.6.6)
     final parts = sessionKey.split(':');
-    if (parts.length >= 2 && parts[0] == 'agent') {
+    if (parts.length >= 2 && parts[0] == 'agent' && parts[1].isNotEmpty) {
       return parts[1];
     }
 
