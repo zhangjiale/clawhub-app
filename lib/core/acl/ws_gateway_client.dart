@@ -68,6 +68,14 @@ class WsGatewayClient implements IGatewayClient {
   /// agent assistant 事件追加 delta，chat final 事件消费后移除。
   final Map<String, StreamingBuffer> _streamingBuffers = {};
 
+  /// Explicit mapping from sessionKey → remoteAgentId.
+  ///
+  /// Populated by [sendMessage] (chat.send) response handler.
+  /// Events dispatch look up agentId via this table instead
+  /// of parsing the colon-separated sessionKey string — that heuristic is
+  /// unreliable when Gateway uses alternative sessionKey formats.
+  final Map<String, String> _sessionToAgentId = {};
+
   // 设备身份由 [IDeviceIdentityProvider] 管理，通过构造函数注入。
 
   /// 构建携带设备身份信息的运行时 [ConnectionConfig]。
@@ -193,6 +201,8 @@ class WsGatewayClient implements IGatewayClient {
 
     // sessionKey format: agent:{agentId}:main (ref doc §7.2)
     final sessionKey = 'agent:$agentId:main';
+    // Populate mapping so event dispatch can resolve agentId without string parsing
+    _sessionToAgentId[sessionKey] = agentId;
 
     final res = await manager.sendRequest(Methods.chatSend, {
       'sessionKey': sessionKey,
@@ -353,6 +363,7 @@ class WsGatewayClient implements IGatewayClient {
     }
     _connections.clear();
     _streamingBuffers.clear();
+    _sessionToAgentId.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -396,8 +407,9 @@ class WsGatewayClient implements IGatewayClient {
     switch (event.state) {
       case ChatState.delta:
         if (event.deltaText != null && event.deltaText!.isNotEmpty) {
-          // Extract agentId from sessionKey: "agent:{agentId}:{scope}"
-          final agentId = _extractAgentId(event.sessionKey);
+          // Resolve agentId from sessionKey (explicit mapping → string parse)
+          final agentId = resolveAgentId(event.sessionKey, _sessionToAgentId);
+          if (agentId == null) return; // unresolvable, drop event
 
           // Push typed streaming event to UI
           if (!conn.streamingCtrl.isClosed) {
@@ -424,7 +436,7 @@ class WsGatewayClient implements IGatewayClient {
           final msgJson = event.message;
           agentId =
               msgJson?['agentId'] as String? ??
-              _extractAgentId(event.sessionKey);
+              resolveAgentId(event.sessionKey, _sessionToAgentId);
 
           if (msgJson != null) {
             // chat final event 自带完整 message，直接解析
@@ -436,15 +448,15 @@ class WsGatewayClient implements IGatewayClient {
             if (buffer != null && buffer.text.isNotEmpty) {
               // Use agentId for conversationId lookup alignment with
               // ChatViewModel._conversationId = Conversation.generateId(...)
-              // agentId is guaranteed non-null here (_extractAgentId
-              // returns a non-null String as fallback).
-              final conversationId = agentId.isNotEmpty
+              // agentId may be null if unresolvable; downstream uses
+              // `?? ''` or `?? event.sessionKey` as fallback.
+              final conversationId = (agentId ?? '').isNotEmpty
                   ? 'agent:$agentId'
                   : event.sessionKey;
               final message = Message(
                 clientId: _uuid.v4(),
                 conversationId: conversationId,
-                agentId: agentId,
+                agentId: agentId ?? '',
                 role: MessageRole.agent,
                 content: buffer.text,
                 type: MessageType.text,
@@ -678,26 +690,36 @@ class WsGatewayClient implements IGatewayClient {
   /// resolved (success or failure).  [GatewayConnectionState.pairingRequired]
   /// is included so that new devices waiting for server-side approval return
   /// immediately rather than timing out after 30 s.
-  /// Extract agentId from sessionKey format: "agent:{agentId}:{scope}".
+  /// Resolve a [sessionKey] to its remote agent ID.
+  ///
+  /// 1. Explicit mapping (primary path — populated by chat.send)
+  /// 2. String parsing fallback (backward compat — parses "agent:{id}:{scope}")
+  /// 3. Returns `null` when unresolvable; callers MUST handle null by dropping
+  ///    the event (logging is done here already).
   ///
   /// Internal helper — tested indirectly via [streamingDeltaStream] integration
-  /// tests.  Kept library-private because the colon-split heuristic is an
-  /// implementation detail of the "agent:{id}:{scope}" convention; exposing it
-  /// would invite misuse on unvalidated session keys.
-  static String _extractAgentId(String sessionKey) {
-    // Format: "agent:{agentId}:{scope}"
+  /// tests, with direct unit coverage via `@visibleForTesting`.
+  @visibleForTesting
+  static String? resolveAgentId(
+    String sessionKey,
+    Map<String, String> mapping,
+  ) {
+    // 1. Explicit mapping (primary path)
+    final mapped = mapping[sessionKey];
+    if (mapped != null) return mapped;
+
+    // 2. String parsing fallback (backward compat with Gateway < v2026.6.6)
     final parts = sessionKey.split(':');
     if (parts.length >= 2 && parts[0] == 'agent') {
       return parts[1];
     }
-    // Unexpected format — the fallback value is unlikely to match any
-    // agent's remoteId, so streaming events will be silently dropped
-    // by the ViewModel filter.  Log at least so the issue is traceable.
+
+    // 3. Unresolvable — log and return null
     debugPrint(
-      '[WsGateway] Unexpected sessionKey format (expected '
-      '"agent:{id}:{scope}"): $sessionKey',
+      '[WsGateway] Cannot resolve agentId from sessionKey: '
+      '"$sessionKey" — mapping contains ${mapping.length} entries',
     );
-    return sessionKey;
+    return null;
   }
 
   @visibleForTesting
