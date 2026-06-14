@@ -139,6 +139,15 @@ String agentMessageJson({
     '{"sessionKey":"$sessionKey","stream":"message",'
     '"data":{"delta":"$delta"}}}';
 
+/// Build an `agent` event frame with `stream: "lifecycle"` (Gateway v2026.6.6).
+String agentLifecycleJson({
+  String sessionKey = 'agent:r-1:main',
+  String phase = 'end',
+}) =>
+    '{"type":"event","event":"agent","payload":'
+    '{"sessionKey":"$sessionKey","stream":"lifecycle",'
+    '"data":{"phase":"$phase"}}}';
+
 const String tickJson = '{"type":"event","event":"tick","payload":{}}';
 
 const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';

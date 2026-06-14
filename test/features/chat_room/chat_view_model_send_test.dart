@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
@@ -431,13 +432,19 @@ void main() {
       gateway.emitMessage('inst-1', reply);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final messages = await messageRepo.getByConversation(
-        'conv-inst-1++local-1',
-      );
+      // After the ChatViewModel fix, the message is inserted with the
+      // canonical conversation ID (SHA-256 hash) rather than the raw
+      // conversationId from the Gateway event.  This prevents FK
+      // constraint violations when the Gateway sends an ID that doesn't
+      // match any row in the conversations table.
+      final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+      final messages = await messageRepo.getByConversation(canonicalConvId);
       expect(
         messages.any((m) => m.clientId == 'reply-2'),
         isTrue,
-        reason: 'Agent reply from stream should be persisted to repo',
+        reason:
+            'Agent reply from stream should be persisted to repo '
+            '(with conversationId normalised to SHA-256 hash)',
       );
     });
 

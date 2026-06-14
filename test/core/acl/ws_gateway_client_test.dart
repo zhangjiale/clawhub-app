@@ -153,6 +153,43 @@ void main() {
   });
 
   // ==========================================================================
+  // extractTextContent
+  // ==========================================================================
+  group('extractTextContent', () {
+    test('returns null for null input', () {
+      expect(WsGatewayClient.extractTextContent(null), isNull);
+    });
+
+    test('returns string unchanged for String input', () {
+      expect(WsGatewayClient.extractTextContent('hello'), 'hello');
+    });
+
+    test('joins structured content blocks (real Gateway format)', () {
+      final blocks = [
+        {'type': 'text', 'text': '第一部分'},
+        {'type': 'text', 'text': '第二部分'},
+      ];
+      expect(WsGatewayClient.extractTextContent(blocks), '第一部分第二部分');
+    });
+
+    test('skips non-text blocks in structured content', () {
+      final blocks = [
+        {'type': 'image_url', 'url': 'https://example.com/img.png'},
+        {'type': 'text', 'text': '图片描述'},
+      ];
+      expect(WsGatewayClient.extractTextContent(blocks), '图片描述');
+    });
+
+    test('joins list of plain strings', () {
+      expect(WsGatewayClient.extractTextContent(['a', 'b', 'c']), 'abc');
+    });
+
+    test('falls back to toString for unrecognized non-list types', () {
+      expect(WsGatewayClient.extractTextContent(42), '42');
+    });
+  });
+
+  // ==========================================================================
   // connect()
   // ==========================================================================
   group('connect()', () {
@@ -525,6 +562,44 @@ void main() {
       await client.dispose();
     });
 
+    test('chat final parses List-format content (real Gateway format)', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      // Real Gateway sends content as structured content blocks — a List of
+      // {"type":"text","text":"..."} maps, not a plain String.  This was the
+      // format that caused the type-cast crash in _parseMessage before the
+      // extractTextContent fix.
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          // JSON-escape the inner array: content is a List<Map>, not a String
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":[{"type":"text","text":"你好"},{"type":"text","text":"世界"}],'
+              '"role":"agent","type":"text"}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(
+        messages.length,
+        1,
+        reason: 'Should parse chat.final with List-format content',
+      );
+      expect(
+        messages.first.content,
+        '你好世界',
+        reason: 'Text blocks should be joined',
+      );
+      expect(messages.first.role, MessageRole.agent);
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
     test('agent tool event routed to toolCallStream', () async {
       final (:client, :ws) = await connectAndHandshake();
 
@@ -666,6 +741,206 @@ void main() {
 
       await sub.cancel();
       await client.dispose();
+    });
+
+    // ====================================================================
+    // lifecycle.end 事件测试 — Phase 3: 假设验证
+    // ====================================================================
+    group('agent.lifecycle.end', () {
+      // H3: lifecycle.end without prior deltas → MUST NOT emit empty Message
+      test(
+        'lifecycle.end without deltas does NOT emit empty Message',
+        () async {
+          final (:client, :ws) = await connectAndHandshake();
+
+          final messages = <Message>[];
+          final sub = client
+              .messageStream('test-instance')
+              .listen(messages.add);
+
+          // lifecycle.end without any prior assistant deltas
+          ws.simulateServerFrame(agentLifecycleJson(phase: 'end'));
+          await pumpMicrotasks();
+
+          expect(
+            messages.where((m) => (m.content ?? '').isNotEmpty).length,
+            0,
+            reason:
+                'lifecycle.end without accumulated deltas '
+                'should not emit a message',
+          );
+          expect(
+            messages.length,
+            0,
+            reason:
+                'No message at all should be emitted when buffer was never '
+                'populated',
+          );
+
+          await sub.cancel();
+          await client.dispose();
+        },
+      );
+
+      // H3 variant: lifecycle.end with prior deltas → should emit ONE message
+      test(
+        'lifecycle.end with deltas emits ONE message and StreamingDone',
+        () async {
+          final (:client, :ws) = await connectAndHandshake();
+
+          final messages = <Message>[];
+          final streamingEvents = <StreamingEvent>[];
+          final msgSub = client
+              .messageStream('test-instance')
+              .listen(messages.add);
+          final streamSub = client
+              .streamingDeltaStream('test-instance')
+              .listen(streamingEvents.add);
+
+          // Simulate: assistant delta → lifecycle.end (v3-only Gateway path)
+          ws.simulateServerFrame(agentAssistantJson(delta: 'Hello'));
+          await pumpMicrotasks();
+          ws.simulateServerFrame(agentAssistantJson(delta: ' World'));
+          await pumpMicrotasks();
+          ws.simulateServerFrame(agentLifecycleJson(phase: 'end'));
+          await pumpMicrotasks();
+
+          expect(
+            messages.length,
+            1,
+            reason: 'lifecycle.end should emit exactly one final message',
+          );
+          expect(
+            messages.first.content,
+            'Hello World',
+            reason: 'Message content should equal all accumulated deltas',
+          );
+          expect(messages.first.role, MessageRole.agent);
+
+          expect(
+            streamingEvents.whereType<StreamingDone>().length,
+            1,
+            reason: 'lifecycle.end should emit exactly one StreamingDone',
+          );
+
+          await msgSub.cancel();
+          await streamSub.cancel();
+          await client.dispose();
+        },
+      );
+
+      // H1: lifecycle.end BEFORE chat.final with msgJson → MUST NOT duplicate
+      test('lifecycle.end before chat.final does NOT duplicate', () async {
+        final (:client, :ws) = await connectAndHandshake();
+
+        final messages = <Message>[];
+        final streamingEvents = <StreamingEvent>[];
+        final msgSub = client
+            .messageStream('test-instance')
+            .listen(messages.add);
+        final streamSub = client
+            .streamingDeltaStream('test-instance')
+            .listen(streamingEvents.add);
+
+        // Populate buffer with deltas
+        ws.simulateServerFrame(agentAssistantJson(delta: 'Streaming'));
+        await pumpMicrotasks();
+
+        // lifecycle.end arrives FIRST (consumes buffer)
+        ws.simulateServerFrame(agentLifecycleJson(phase: 'end'));
+        await pumpMicrotasks();
+
+        // chat.final with msgJson arrives SECOND
+        ws.simulateServerFrame(
+          chatFinalJson(
+            sessionKey: 'agent:r-1:main',
+            messageContent:
+                '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+                '"content":"Streaming","role":"agent","type":"text"}',
+          ),
+        );
+        await pumpMicrotasks();
+
+        expect(
+          messages.length,
+          1,
+          reason:
+              'lifecycle.end + chat.final for the same session '
+              'should NOT produce duplicate messages — only ONE message '
+              'should be emitted',
+        );
+        expect(
+          streamingEvents.whereType<StreamingDone>().length,
+          1,
+          reason:
+              'StreamingDone should NOT be emitted twice for the '
+              'same session',
+        );
+
+        await msgSub.cancel();
+        await streamSub.cancel();
+        await client.dispose();
+      });
+
+      // H2: chat.final BEFORE lifecycle.end → MUST NOT emit empty message
+      test(
+        'chat.final before lifecycle.end does NOT emit empty Message',
+        () async {
+          final (:client, :ws) = await connectAndHandshake();
+
+          final messages = <Message>[];
+          final streamingEvents = <StreamingEvent>[];
+          final msgSub = client
+              .messageStream('test-instance')
+              .listen(messages.add);
+          final streamSub = client
+              .streamingDeltaStream('test-instance')
+              .listen(streamingEvents.add);
+
+          // Populate buffer with deltas
+          ws.simulateServerFrame(agentAssistantJson(delta: 'Content'));
+          await pumpMicrotasks();
+
+          // chat.final arrives FIRST (consumes from msgJson, cleans buffer)
+          ws.simulateServerFrame(
+            chatFinalJson(
+              sessionKey: 'agent:r-1:main',
+              messageContent:
+                  '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+                  '"content":"Content","role":"agent","type":"text"}',
+            ),
+          );
+          await pumpMicrotasks();
+
+          // lifecycle.end arrives SECOND (buffer already cleaned)
+          ws.simulateServerFrame(agentLifecycleJson(phase: 'end'));
+          await pumpMicrotasks();
+
+          expect(
+            messages.length,
+            1,
+            reason:
+                'Only chat.final message should be emitted, '
+                'lifecycle.end should NOT emit an empty message',
+          );
+          expect(
+            messages.first.content,
+            'Content',
+            reason: 'The sole message should be from chat.final',
+          );
+          expect((messages.first.content ?? '').isNotEmpty, isTrue);
+
+          expect(
+            streamingEvents.whereType<StreamingDone>().length,
+            1,
+            reason: 'StreamingDone should NOT be emitted twice',
+          );
+
+          await msgSub.cancel();
+          await streamSub.cancel();
+          await client.dispose();
+        },
+      );
     });
 
     test('connection state stream reflects handshake progression', () async {

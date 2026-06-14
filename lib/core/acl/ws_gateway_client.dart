@@ -71,6 +71,15 @@ class WsGatewayClient implements IGatewayClient {
   /// agent assistant 事件追加 delta，chat final 事件消费后移除。
   final Map<String, StreamingBuffer> _streamingBuffers = {};
 
+  /// Tracks sessions that have already been finalized (Message pushed +
+  /// StreamingDone emitted) to prevent duplicate messages when both
+  /// chat.final and agent.lifecycle.end arrive for the same session.
+  ///
+  /// Key format: `$instanceId:$sessionKey` (same as [_streamingBuffers]).
+  /// The first handler to `add()` this key processes the session; the
+  /// second handler sees the key already present and skips.
+  final Set<String> _finalizedSessions = {};
+
   /// Explicit mapping from sessionKey → remoteAgentId.
   ///
   /// Populated by [sendMessage] (chat.send) response handler.
@@ -195,6 +204,7 @@ class WsGatewayClient implements IGatewayClient {
     // 清理该实例相关的 streaming buffer，防止重连时旧 session 的
     // 聚合文本污染新 session。Keys are scoped as '$instanceId:$sessionKey'.
     _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
+    _finalizedSessions.removeWhere((key) => key.startsWith('$instanceId:'));
 
     if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
       conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
@@ -392,6 +402,7 @@ class WsGatewayClient implements IGatewayClient {
     _connections.clear();
     _streamingBuffers.clear();
     _sessionToAgentId.clear();
+    _finalizedSessions.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -458,6 +469,14 @@ class WsGatewayClient implements IGatewayClient {
         // 响应完成 — 优先用 message 对象，回退到聚合文本
         if (conn.messageCtrl.isClosed) return;
 
+        // Coordinate with agent.lifecycle.end — only one handler per
+        // session may finalize (push Message + StreamingDone) to prevent
+        // duplicate messages when a v3 Gateway sends both event types.
+        if (!_finalizedSessions.add(bufferKey)) {
+          _streamingBuffers.remove(bufferKey);
+          return;
+        }
+
         String? agentId;
 
         try {
@@ -474,24 +493,9 @@ class WsGatewayClient implements IGatewayClient {
             // 没有 message 对象时，用聚合文本构建
             final buffer = _streamingBuffers.remove(bufferKey);
             if (buffer != null && buffer.text.isNotEmpty) {
-              // Use agentId for conversationId lookup alignment with
-              // ChatViewModel._conversationId = Conversation.generateId(...)
-              // agentId may be null if unresolvable; downstream uses
-              // `?? ''` or `?? event.sessionKey` as fallback.
-              final conversationId = (agentId ?? '').isNotEmpty
-                  ? 'agent:$agentId'
-                  : event.sessionKey;
-              final message = Message(
-                clientId: _uuid.v4(),
-                conversationId: conversationId,
-                agentId: agentId ?? '',
-                role: MessageRole.agent,
-                content: buffer.text,
-                type: MessageType.text,
-                status: MessageStatus.delivered,
-                logicalClock: DateTime.now().millisecondsSinceEpoch,
+              conn.messageCtrl.add(
+                _buildAgentFallbackMessage(agentId ?? '', buffer.text),
               );
-              conn.messageCtrl.add(message);
             }
           }
         } catch (error, stackTrace) {
@@ -501,9 +505,12 @@ class WsGatewayClient implements IGatewayClient {
         }
         _streamingBuffers.remove(bufferKey);
 
-        // Notify UI that streaming is complete (with agentId for routing)
-        if (!conn.streamingCtrl.isClosed) {
-          conn.streamingCtrl.add(StreamingDone(agentId: agentId ?? ''));
+        // Notify UI that streaming is complete — only when we have
+        // a resolvable agentId; otherwise ChatViewModel silently drops
+        // StreamingDone('') and a pending _flushTimer republishes the
+        // stale buffer as a ghost bubble.
+        if (agentId != null && !conn.streamingCtrl.isClosed) {
+          conn.streamingCtrl.add(StreamingDone(agentId: agentId));
         }
 
       case ChatState.unknown:
@@ -567,8 +574,11 @@ class WsGatewayClient implements IGatewayClient {
         }
 
       case AgentStreamType.message:
-        // v3 protocol "message" type — semantically equivalent to v4 "assistant".
-        // Both carry delta text in data.delta for streaming display.
+      case AgentStreamType.assistant:
+        // v3 "message" / v4 "assistant" — semantically equivalent delta
+        // streaming.  Both carry delta text in data.delta.  Push to UI
+        // AND accumulate in buffer for fallback message construction
+        // (v3 Gateway may send only agent events, no chat events).
         {
           final delta = event.data['delta'] as String?;
           if (delta != null && delta.isNotEmpty) {
@@ -591,20 +601,57 @@ class WsGatewayClient implements IGatewayClient {
           }
         }
 
-      case AgentStreamType.assistant:
-        // 助手文本 delta / message event — 仅用于 streaming 缓冲
-        // chat 事件已经在推 deltaText，这里做补充
-        final delta = event.data['delta'] as String?;
-        if (delta != null && delta.isNotEmpty) {
-          _streamingBuffers
-              .putIfAbsent(
-                bufferKey,
-                () => StreamingBuffer(sessionKey: event.sessionKey),
-              )
-              .append(delta);
+      case AgentStreamType.lifecycle:
+        // Gateway v3 protocol: lifecycle events signal agent run boundaries.
+        {
+          final phase = event.data['phase'] as String?;
+          if (phase == 'start') {
+            // A new agent run has begun — clear the previous turn's
+            // dedup token so _finalizedSessions does not permanently
+            // block subsequent messages to the same agent (the key is
+            // `$instanceId:$sessionKey` which is identical across turns).
+            // This also allows the next lifecycle.end or chat.final for
+            // this session to process normally.
+            _finalizedSessions.remove(bufferKey);
+            _streamingBuffers.remove(bufferKey);
+          } else if (phase == 'end') {
+            // Coordinate with chat.final — only one handler per session
+            // may finalize, preventing duplicate messages when a v3
+            // Gateway sends both chat.final and agent.lifecycle.end.
+            //
+            // IMPORTANT: _finalizedSessions.add() must come AFTER the
+            // buffer emptiness guard, not before.  If lifecycle.end
+            // arrives without prior deltas (empty buffer), marking the
+            // session as finalized here would cause chat.final — which
+            // carries the complete msgJson — to see the key already
+            // present and silently discard the full agent reply.
+            final agentId = _resolveAgentId(
+              event.sessionKey,
+              _sessionToAgentId,
+            );
+            // Build final message from accumulated buffer.
+            // Guard against empty buffer — matches _onChatEvent fallback
+            // (line 476) to prevent empty agent bubbles when no deltas
+            // were accumulated or chat.final already consumed the buffer.
+            final buffer = _streamingBuffers.remove(bufferKey);
+            if (buffer == null || buffer.text.isEmpty) break;
+            if (!_finalizedSessions.add(bufferKey)) break;
+
+            if (!conn.messageCtrl.isClosed) {
+              conn.messageCtrl.add(
+                _buildAgentFallbackMessage(agentId ?? '', buffer.text),
+              );
+            }
+            // Notify UI that streaming is complete — only when we have
+            // a resolvable agentId; otherwise ChatViewModel silently
+            // drops StreamingDone('') and a pending _flushTimer
+            // republishes the stale buffer as a ghost bubble.
+            if (agentId != null && !conn.streamingCtrl.isClosed) {
+              conn.streamingCtrl.add(StreamingDone(agentId: agentId));
+            }
+          }
         }
 
-      case AgentStreamType.lifecycle:
       case AgentStreamType.item:
         break;
       case AgentStreamType.unknown:
@@ -676,7 +723,9 @@ class WsGatewayClient implements IGatewayClient {
       conversationId: json['conversationId'] as String? ?? '',
       agentId: json['agentId'] as String? ?? '',
       role: _parseMessageRole(json['role'] as String?),
-      content: json['content'] as String? ?? json['text'] as String?,
+      content:
+          _extractTextContent(json['content']) ??
+          _extractTextContent(json['text']),
       type: _parseMessageType(json['type'] as String?),
       status: MessageStatus.delivered,
       logicalClock: json['logicalClock'] as int? ?? 0,
@@ -734,6 +783,60 @@ class WsGatewayClient implements IGatewayClient {
 
   // ---------------------------------------------------------------------------
   // 内部：辅助方法
+  // ---------------------------------------------------------------------------
+
+  /// Build a final [Message] from accumulated streaming buffer text.
+  ///
+  /// Shared by [chat.final] fallback and [agent.lifecycle.end] to avoid
+  /// duplicating the 8-field Message literal. Both callers have already
+  /// verified [agentId] is resolved (may be empty string if unresolvable)
+  /// and [content] is non-empty.
+  ///
+  /// [conversationId] is intentionally left empty — the ChatViewModel
+  /// normalises every message to the canonical SHA-256 hash via
+  /// `msg.copyWith(conversationId: _conversationId)`.
+  Message _buildAgentFallbackMessage(String agentId, String content) => Message(
+    clientId: _uuid.v4(),
+    conversationId: '', // normalised by ChatViewModel
+    agentId: agentId,
+    role: MessageRole.agent,
+    content: content,
+    type: MessageType.text,
+    status: MessageStatus.delivered,
+    logicalClock: DateTime.now().millisecondsSinceEpoch,
+  );
+
+  /// Extract plain-text content from a Gateway message field.
+  ///
+  /// The Gateway may send `content` as a plain [String] or as structured
+  /// content blocks (`List<Map>` with `type`/`text` keys, OpenAI-style).
+  /// This method normalises both formats to a single [String] (or `null`).
+  @visibleForTesting
+  static String? extractTextContent(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is String) return raw;
+    if (raw is List) {
+      if (raw.isEmpty) return null; // [] → null, avoid '[]' literal in content
+      // Structured content blocks: [{"type": "text", "text": "..."}, ...]
+      // Join all text-type blocks with empty separator.
+      if (raw.first is Map) {
+        return (raw)
+            .whereType<Map<String, dynamic>>()
+            .where((b) => b['type'] == 'text')
+            .map((b) => (b['text'] as String?) ?? '')
+            .join();
+      }
+      // Simple string list: ["a", "b"]
+      // Note: null entries are filtered by whereType<String>();
+      // empty strings silently contribute nothing to join('').
+      return (raw).whereType<String>().join();
+    }
+    return raw.toString();
+  }
+
+  /// Convenience wrapper around [extractTextContent] for instance usage.
+  String? _extractTextContent(dynamic raw) => extractTextContent(raw);
+
   // ---------------------------------------------------------------------------
 
   @visibleForTesting

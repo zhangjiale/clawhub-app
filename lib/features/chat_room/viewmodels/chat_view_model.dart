@@ -148,6 +148,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// user sends a message before [init] completes.
   Future<void>? _initFuture;
 
+  /// Guards against a race in [send]: when the message stream listener
+  /// delivers the agent reply and calls [_stopThinking] during
+  /// `await _loadMessages()`, [send] would unconditionally re-enter
+  /// thinking state.  This flag is set before the await and cleared
+  /// by the listener, so [send] can skip [_startThinking] when the
+  /// reply already arrived.
+  bool _awaitingReply = false;
+
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
 
@@ -220,12 +228,38 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           .messageStream(instanceId)
           .listen(
             (msg) async {
-              await _messageRepo.insert(msg);
+              // Normalise conversationId to the canonical SHA-256 hash.
+              //
+              // The ACL may construct messages with a raw conversationId
+              // (e.g. 'agent:remoteId') when the Gateway uses v3 protocol
+              // (agent.lifecycle fallback) or when chat.final arrives
+              // without a message object.  Those raw IDs violate the
+              // FOREIGN KEY constraint on messages.conversation_id
+              // (references conversations.id) and cause a silent insert
+              // failure.  See schema.drift:79.
+              //
+              // Overriding with _conversationId guarantees the FK
+              // constraint is satisfied and the message routes to the
+              // correct conversation for _loadMessages() below.
+              //
+              // WARNING: This unconditional copyWith assumes the
+              // message stream for this instanceId is already
+              // effectively single-conversation — i.e. every message
+              // belongs to (_instanceId, _agentId).  If the ACL
+              // ever replays history, emits system messages, or
+              // multiplexes multiple agents onto the same instance
+              // stream, this broad overwrite will misroute those
+              // messages.  A future hardening could make this
+              // conditional: only override when msg.conversationId
+              // does not already match a known conversation.
+              final fixedMsg = msg.copyWith(conversationId: _conversationId);
+              await _messageRepo.insert(fixedMsg);
               await _loadMessages();
-              if (msg.role == MessageRole.agent) {
+              if (fixedMsg.role == MessageRole.agent) {
                 // Clear streaming text when the final message lands —
                 // eliminates the race window between StreamingDone and
                 // Message arrival on independent broadcast controllers.
+                _awaitingReply = false;
                 _updateState((s) => s.copyWith(streamingText: ''));
                 _stopThinking();
                 onStatsChanged?.call();
@@ -268,7 +302,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           agentId: remoteId,
         );
         for (final msg in history.messages) {
-          await _messageRepo.insert(msg);
+          // Normalise to canonical SHA-256 conversationId, matching
+          // the live stream listener at line ~247.  _parseMessage
+          // defaults to '' when the Gateway omits the field, which
+          // violates the FK constraint on messages.conversation_id.
+          await _messageRepo.insert(
+            msg.copyWith(conversationId: _conversationId),
+          );
         }
         await _loadMessages();
       } catch (error, stackTrace) {
@@ -334,6 +374,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     // events from the previous subscription were already cancelled above.
     _startStreaming();
 
+    _awaitingReply = true;
+
     final sentMessage = await _sendMessageUseCase.execute(
       instanceId: instanceId,
       agent: _agent!,
@@ -343,12 +385,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
     await _loadMessages();
 
-    // Only start "thinking" state when the message was successfully sent.
+    // Only start "thinking" state when the message was successfully sent
+    // AND the agent reply hasn't already arrived during _loadMessages().
     // - FAILED: the Gateway rejected or couldn't reach the message;
     //   no agent reply will ever arrive, so thinking would spin forever.
     // - PENDING: the instance is offline; the message is waiting in the
     //   outbox and will be retried later.
-    if (sentMessage.status == MessageStatus.sent) {
+    if (sentMessage.status == MessageStatus.sent && _awaitingReply) {
       _startThinking();
       // Overall timeout — fires regardless of delta activity, preventing
       // a Gateway that trickles one char every 59s from keeping the user
