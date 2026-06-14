@@ -469,20 +469,19 @@ void main() {
       return (client: client, ws: ws);
     }
 
-    test('agent message event routed to messageStream', () async {
+    test('chat final event emits complete Message via messageStream', () async {
       final (:client, :ws) = await connectAndHandshake();
 
       final messages = <Message>[];
       final sub = client.messageStream('test-instance').listen(messages.add);
 
+      // Simulate chat final event (Gateway v2026.6.6)
       ws.simulateServerFrame(
-        agentEventJson(
-          streamType: 'message',
-          data:
-              '{"clientId":"c-1","serverId":"s-1",'
-              '"conversationId":"conv-1","agentId":"r-1",'
-              '"role":"agent","content":"Hello!","type":"text",'
-              '"logicalClock":1}',
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"Hello World","role":"agent","type":"text"}',
         ),
       );
       await pumpMicrotasks();
@@ -490,9 +489,9 @@ void main() {
       expect(
         messages.length,
         1,
-        reason: 'Agent message event should be routed to messageStream',
+        reason: 'Complete message should be emitted on chat final',
       );
-      expect(messages.first.content, 'Hello!');
+      expect(messages.first.content, 'Hello World');
       expect(messages.first.role, MessageRole.agent);
 
       await sub.cancel();
@@ -506,19 +505,14 @@ void main() {
       final sub = client.toolCallStream('test-instance').listen(toolCalls.add);
 
       ws.simulateServerFrame(
-        agentEventJson(
-          streamType: 'tool',
-          data:
-              '{"id":"tc-1","messageId":"msg-1","name":"search",'
-              '"status":"running","input":"{\\"query\\":\\"test\\"}"}',
-        ),
+        agentToolJson(toolName: 'search', toolCallId: 'tc-1'),
       );
       await pumpMicrotasks();
 
       expect(
         toolCalls.length,
         1,
-        reason: 'Agent tool event should be routed to toolCallStream',
+        reason: 'agent tool event should be routed to toolCallStream',
       );
       expect(toolCalls.first.toolName, 'search');
       expect(toolCalls.first.status, ToolCallStatus.running);
@@ -527,7 +521,7 @@ void main() {
       await client.dispose();
     });
 
-    test('non-agent events are silently ignored (not forwarded)', () async {
+    test('non-chat events are silently ignored (not forwarded)', () async {
       final (:client, :ws) = await connectAndHandshake();
 
       final messages = <Message>[];
@@ -537,19 +531,19 @@ void main() {
           .toolCallStream('test-instance')
           .listen(toolCalls.add);
 
-      // tick event is not an agent event — should not be forwarded
+      // tick event is not a chat event — should not be forwarded
       ws.simulateServerFrame(tickJson);
       await pumpMicrotasks();
 
       expect(
         messages,
         isEmpty,
-        reason: 'Non-agent events should not appear on messageStream',
+        reason: 'Non-chat events should not appear on messageStream',
       );
       expect(
         toolCalls,
         isEmpty,
-        reason: 'Non-agent events should not appear on toolCallStream',
+        reason: 'Non-chat events should not appear on toolCallStream',
       );
 
       await msgSub.cancel();

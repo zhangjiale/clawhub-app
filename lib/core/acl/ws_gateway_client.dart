@@ -64,6 +64,10 @@ class WsGatewayClient implements IGatewayClient {
   /// 防止同一 instanceId 的重入连接。
   final Set<String> _connecting = {};
 
+  /// Delta 聚合缓冲区: sessionKey → StreamingBuffer。
+  /// agent assistant 事件追加 delta，chat final 事件消费后移除。
+  final Map<String, StreamingBuffer> _streamingBuffers = {};
+
   // 设备身份由 [IDeviceIdentityProvider] 管理，通过构造函数注入。
 
   /// 构建携带设备身份信息的运行时 [ConnectionConfig]。
@@ -170,6 +174,11 @@ class WsGatewayClient implements IGatewayClient {
     if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
       conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
     }
+
+    // 断开连接时清理该实例相关的 streaming buffer，防止残留
+    if (emitDisconnected) {
+      _streamingBuffers.clear();
+    }
   }
 
   @override
@@ -180,8 +189,11 @@ class WsGatewayClient implements IGatewayClient {
   }) async {
     final manager = _requireManager(instanceId);
 
-    final res = await manager.sendRequest(Methods.agent, {
-      'agentId': agentId,
+    // sessionKey format: agent:{agentId}:main (ref doc §7.2)
+    final sessionKey = 'agent:$agentId:main';
+
+    final res = await manager.sendRequest(Methods.chatSend, {
+      'sessionKey': sessionKey,
       'message': message.content ?? '',
       'idempotencyKey': message.clientId,
       if (message.metadata != null) 'metadata': message.metadata,
@@ -193,8 +205,9 @@ class WsGatewayClient implements IGatewayClient {
       );
     }
 
+    // chat.send 响应中没有 serverId，用 runId 作为追踪标识
     final payload = res.payload ?? {};
-    final serverId = payload['serverId'] as String? ?? _uuid.v4();
+    final serverId = payload['runId'] as String? ?? _uuid.v4();
     final timestamp =
         payload['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
 
@@ -331,6 +344,7 @@ class WsGatewayClient implements IGatewayClient {
       await conn.pairingInfoCtrl.close();
     }
     _connections.clear();
+    _streamingBuffers.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -342,66 +356,146 @@ class WsGatewayClient implements IGatewayClient {
     _InstanceConnection conn,
     EventFrame event,
   ) {
+    final payload = event.payload;
+    if (payload == null) return;
+
     switch (event.event) {
+      case Events.chat:
+        _onChatEvent(conn, payload);
+
       case Events.agent:
-        _onAgentEvent(instanceId, conn, event.payload);
+        _onAgentEvent(conn, payload);
 
       default:
         break;
     }
   }
 
-  void _onAgentEvent(
-    String instanceId,
-    _InstanceConnection conn,
-    Map<String, dynamic>? payload,
-  ) {
-    if (payload == null) return;
+  /// `chat` 事件 — Gateway v2026.6.6 UI 面向前端事件。
+  ///
+  /// - `state: "delta"` → 增量文本（含 deltaText）
+  /// - `state: "final"` → 响应完成，携带完整 message 对象
+  void _onChatEvent(_InstanceConnection conn, Map<String, dynamic> payload) {
+    final event = parseChatEvent(payload);
 
-    final eventData = parseAgentEvent(payload);
+    switch (event.state) {
+      case ChatState.delta:
+        // 增量文本到达 — 不在此阶段发消息，仅做 streaming 缓冲
+        if (event.deltaText != null) {
+          _streamingBuffers
+              .putIfAbsent(
+                event.sessionKey,
+                () => StreamingBuffer(sessionKey: event.sessionKey),
+              )
+              .append(event.deltaText!);
+        }
 
-    switch (eventData.stream) {
-      case AgentStreamType.message:
-        _emitMessage(conn, eventData.data);
+      case ChatState.final_:
+        // 响应完成 — 优先用 message 对象，回退到聚合文本
+        if (conn.messageCtrl.isClosed) return;
 
-      case AgentStreamType.tool:
-        _emitToolCall(conn, eventData.data);
+        try {
+          final msgJson = event.message;
+          if (msgJson != null) {
+            // chat final event 自带完整 message，直接解析
+            final message = _parseMessage(msgJson);
+            conn.messageCtrl.add(message);
+          } else {
+            // 没有 message 对象时，用聚合文本构建
+            final buffer = _streamingBuffers.remove(event.sessionKey);
+            if (buffer != null && buffer.text.isNotEmpty) {
+              final message = Message(
+                clientId: _uuid.v4(),
+                conversationId: event.sessionKey,
+                agentId: '',
+                role: MessageRole.agent,
+                content: buffer.text,
+                type: MessageType.text,
+                status: MessageStatus.delivered,
+                logicalClock: DateTime.now().millisecondsSinceEpoch,
+              );
+              conn.messageCtrl.add(message);
+            }
+          }
+        } catch (error, stackTrace) {
+          debugPrint(
+            '[WsGateway] Failed to handle chat final: $error\n$stackTrace',
+          );
+        }
+        _streamingBuffers.remove(event.sessionKey);
 
-      case AgentStreamType.thinking:
+      case ChatState.unknown:
         break;
+    }
+  }
+
+  /// `agent` 事件 — Gateway v2026.6.6 后端事件。
+  ///
+  /// - `stream: "tool"` → 工具调用 (phase: "start" = 开始, "result" = 结束)
+  /// - `stream: "assistant"` → 助手文本生成
+  /// - `stream: "lifecycle"` → 生命周期 (phase: "start"/"end")
+  /// - `stream: "item"` → 工具调用项
+  void _onAgentEvent(_InstanceConnection conn, Map<String, dynamic> payload) {
+    final event = parseAgentEvent(payload);
+
+    switch (event.stream) {
+      case AgentStreamType.tool:
+        if (event.data['phase'] == 'result') {
+          // tool 结束 — 发出带结果的 ToolCall
+          if (!conn.toolCallCtrl.isClosed) {
+            try {
+              final tc = ToolCall(
+                id: event.data['toolCallId'] as String? ?? _uuid.v4(),
+                messageId: event.sessionKey,
+                toolName: event.data['name'] as String? ?? 'unknown',
+                status: ToolCallStatus.success,
+                outputResult: event.data.toString(),
+                endedAt: DateTime.now().millisecondsSinceEpoch,
+              );
+              conn.toolCallCtrl.add(tc);
+            } catch (error, stackTrace) {
+              debugPrint(
+                '[WsGateway] Failed to parse tool result: $error\n$stackTrace',
+              );
+            }
+          }
+        } else {
+          // tool 开始 — 发出 running 状态的 ToolCall
+          if (!conn.toolCallCtrl.isClosed) {
+            try {
+              final tc = ToolCall(
+                id: event.data['toolCallId'] as String? ?? _uuid.v4(),
+                messageId: event.sessionKey,
+                toolName: event.data['name'] as String? ?? 'unknown',
+                status: ToolCallStatus.running,
+                startedAt: DateTime.now().millisecondsSinceEpoch,
+              );
+              conn.toolCallCtrl.add(tc);
+            } catch (error, stackTrace) {
+              debugPrint(
+                '[WsGateway] Failed to parse tool call: $error\n$stackTrace',
+              );
+            }
+          }
+        }
+
+      case AgentStreamType.assistant:
+        // 助手文本 delta — 仅用于 streaming 缓冲
+        // chat 事件已经在推 deltaText，这里做补充
+        final delta = event.data['delta'] as String?;
+        if (delta != null && delta.isNotEmpty) {
+          _streamingBuffers
+              .putIfAbsent(
+                event.sessionKey,
+                () => StreamingBuffer(sessionKey: event.sessionKey),
+              )
+              .append(delta);
+        }
 
       case AgentStreamType.lifecycle:
-        debugPrint(
-          '[WsGateway] Agent lifecycle for $instanceId: ${eventData.data['phase']}',
-        );
-
+      case AgentStreamType.item:
       case AgentStreamType.unknown:
-        debugPrint(
-          '[WsGateway] Unknown agent stream type for $instanceId: '
-          '${payload['stream']}',
-        );
-    }
-  }
-
-  void _emitMessage(_InstanceConnection conn, Map<String, dynamic> data) {
-    if (conn.messageCtrl.isClosed) return;
-
-    try {
-      final message = _parseMessage(data);
-      conn.messageCtrl.add(message);
-    } catch (error, stackTrace) {
-      debugPrint('[WsGateway] Failed to parse message: $error\n$stackTrace');
-    }
-  }
-
-  void _emitToolCall(_InstanceConnection conn, Map<String, dynamic> data) {
-    if (conn.toolCallCtrl.isClosed) return;
-
-    try {
-      final toolCall = _parseToolCall(data);
-      conn.toolCallCtrl.add(toolCall);
-    } catch (error, stackTrace) {
-      debugPrint('[WsGateway] Failed to parse tool call: $error\n$stackTrace');
+        break;
     }
   }
 

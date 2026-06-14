@@ -87,12 +87,48 @@ String extractReqId(String sentFrame) {
   return m!.group(1)!;
 }
 
-/// Build a Gateway agent event frame.
-///
-/// [streamType] is the agent stream type (message, tool, thinking, lifecycle).
-/// [data] is the JSON payload for the specific event.
-String agentEventJson({String streamType = 'message', String data = '{}'}) =>
-    '{"type":"event","event":"agent","payload":{"stream":"$streamType","data":$data}}';
+/// Build a `chat` event frame with `state: "delta"` (Gateway v2026.6.6).
+String chatDeltaJson({
+  String sessionKey = 'agent:r-1:main',
+  String deltaText = 'Hello!',
+  int seq = 1,
+}) =>
+    '{"type":"event","event":"chat","payload":'
+    '{"sessionKey":"$sessionKey","state":"delta",'
+    '"deltaText":"$deltaText","seq":$seq}}';
+
+/// Build a `chat` event frame with `state: "final"` (Gateway v2026.6.6).
+/// [messageContent] is the complete message JSON embedded in the payload.
+String chatFinalJson({
+  String sessionKey = 'agent:r-1:main',
+  String messageContent =
+      '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+      '"content":"Hello World","role":"agent","type":"text"}',
+  int seq = 10,
+}) =>
+    '{"type":"event","event":"chat","payload":'
+    '{"sessionKey":"$sessionKey","state":"final",'
+    '"message":$messageContent,"seq":$seq}}';
+
+/// Build an `agent` event frame with `stream: "tool"` (Gateway v2026.6.6).
+String agentToolJson({
+  String sessionKey = 'agent:r-1:main',
+  String phase = 'start',
+  String toolName = 'search',
+  String toolCallId = 'tc-1',
+}) =>
+    '{"type":"event","event":"agent","payload":'
+    '{"sessionKey":"$sessionKey","stream":"tool",'
+    '"data":{"phase":"$phase","name":"$toolName","toolCallId":"$toolCallId"}}}';
+
+/// Build an `agent` event frame with `stream: "assistant"` (Gateway v2026.6.6).
+String agentAssistantJson({
+  String sessionKey = 'agent:r-1:main',
+  String delta = 'Hello',
+}) =>
+    '{"type":"event","event":"agent","payload":'
+    '{"sessionKey":"$sessionKey","stream":"assistant",'
+    '"data":{"delta":"$delta"}}}';
 
 const String tickJson = '{"type":"event","event":"tick","payload":{}}';
 

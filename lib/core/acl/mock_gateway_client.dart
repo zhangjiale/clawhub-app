@@ -82,8 +82,11 @@ class MockGatewayClient implements IGatewayClient {
     final controller = _messageControllers[instanceId];
     if (controller == null || !controller.hasListener) return;
 
-    Future.delayed(Duration(milliseconds: 800 + _random.nextInt(1200)), () {
-      if (controller.isClosed) return; // 防止 dispose 后执行
+    // 模拟 Agent 思考延迟（500-2000ms），接近真实 Gateway 的
+    // chat.typing → delta×N → done 时间线。
+    final delayMs = 500 + _random.nextInt(1500);
+    Future.delayed(Duration(milliseconds: delayMs), () {
+      if (controller.isClosed) return;
       final agentMsg = Message(
         clientId: _uuid.v4(),
         serverId: _uuid.v4(),
@@ -97,7 +100,6 @@ class MockGatewayClient implements IGatewayClient {
       );
       controller.add(agentMsg);
 
-      // 10% 概率模拟工具调用
       if (_random.nextDouble() < 0.1) {
         _simulateToolCall(instanceId, agentMsg.clientId);
       }

@@ -656,19 +656,17 @@ void main() {
       return (ws: ws, cm: cm);
     }
 
-    test('agent event forwarded to events stream', () async {
+    test('chat event forwarded to events stream', () async {
       final (:ws, :cm) = await connectAndHandshake();
 
       final events = <EventFrame>[];
       cm.events.listen(events.add);
 
-      ws.simulateServerFrame(
-        agentEventJson(streamType: 'message', data: '{"content":"hello"}'),
-      );
+      ws.simulateServerFrame(chatDeltaJson(deltaText: 'hello'));
       await pumpMicrotasks();
 
       expect(events.length, 1);
-      expect(events.first.event, 'agent');
+      expect(events.first.event, 'chat');
 
       await cm.dispose();
     });

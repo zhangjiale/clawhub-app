@@ -304,11 +304,6 @@ class ConnectionManager {
       case Events.tick:
         _resetTickTimeout();
 
-      case Events.agent:
-        if (payload != null) {
-          _eventController.add(EventFrame(event: event, payload: payload));
-        }
-
       case Events.shutdown:
         debugPrint('[CM] Gateway shutdown for $_instanceId');
         _setState(GatewayConnectionState.disconnected);

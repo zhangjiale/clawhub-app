@@ -73,14 +73,15 @@ enum FrameType { req, res, event }
 // 方法名常量
 // ============================================================================
 
-/// 协议定义的方法名。
+/// 协议定义的方法名（对齐 docs/technical/api-protocol.md §4）。
 class Methods {
   Methods._();
   static const String connect = 'connect';
   static const String agentsList = 'agents.list';
-  static const String agent = 'agent';
-  static const String agentWait = 'agent.wait';
+  static const String chatSend = 'chat.send';
   static const String chatHistory = 'chat.history';
+  static const String chatAbort = 'chat.abort';
+  static const String agentWait = 'agent.wait';
   static const String sessionsList = 'sessions.list';
   static const String sessionsResolve = 'sessions.resolve';
   static const String sessionsCreate = 'sessions.create';
@@ -88,10 +89,15 @@ class Methods {
   static const String health = 'health';
 }
 
-/// 协议定义的事件名。
+/// 协议定义的事件名（对齐 OpenClaw Gateway v2026.6.6 实测）。
+///
+/// 真实 Gateway 推送两类核心事件：
+/// - **chat**：UI 面向前端的事件，`state: "delta"|"final"`，final 时携带完整 message
+/// - **agent**：详细的后端事件，`stream: "assistant"|"tool"|"lifecycle"|"item"`
 class Events {
   Events._();
   static const String connectChallenge = 'connect.challenge';
+  static const String chat = 'chat';
   static const String agent = 'agent';
   static const String tick = 'tick';
   static const String presence = 'presence';
@@ -206,24 +212,27 @@ String buildAgentsListRequest(String id) {
   return buildRequest(id: id, method: Methods.agentsList, params: {});
 }
 
-/// 构造 agent 请求（执行一次 agent turn，发送消息并等待回复）。
-String buildAgentRequest({
+/// 构造 chat.send 请求（发送消息并接收流式响应）。
+///
+/// 对齐 OpenClaw Gateway v2026.6.6 实测：
+/// - 方法：`chat.send`
+/// - 必填：`sessionKey`（格式 `agent:{agentId}:{scope}`）+ `message`
+/// - 幂等键：`idempotencyKey`（防重复执行，§3.6）
+String buildChatSendRequest({
   required String id,
-  required String agentId,
+  required String sessionKey,
   required String message,
   required String idempotencyKey,
-  String? sessionId,
   Map<String, dynamic>? overrides,
 }) {
   final params = <String, dynamic>{
-    'agentId': agentId,
+    'sessionKey': sessionKey,
     'message': message,
     'idempotencyKey': idempotencyKey,
   };
-  if (sessionId != null) params['sessionId'] = sessionId;
   if (overrides != null) params['overrides'] = overrides;
 
-  return buildRequest(id: id, method: Methods.agent, params: params);
+  return buildRequest(id: id, method: Methods.chatSend, params: params);
 }
 
 /// 构造 chat.history 请求。
@@ -311,18 +320,6 @@ class ProtocolError {
   );
 }
 
-/// Agent 事件中的流类型。
-enum AgentStreamType { thinking, message, tool, lifecycle, unknown }
-
-/// 解析后的 agent 事件数据。
-class AgentEventData {
-  final String? runId;
-  final AgentStreamType stream;
-  final Map<String, dynamic> data;
-
-  const AgentEventData({this.runId, required this.stream, required this.data});
-}
-
 // ============================================================================
 // 帧解析器
 // ============================================================================
@@ -379,20 +376,119 @@ EventFrame _parseEvent(Map<String, dynamic> json) {
   );
 }
 
-/// 从 agent 事件的 payload 中提取 [AgentEventData]。
+// ============================================================================
+// Chat 事件解析（对齐 OpenClaw Gateway v2026.6.6 实测）
+// ============================================================================
+
+/// `chat` 事件的状态（实测 Gateway v2026.6.6）。
+enum ChatState { delta, final_, unknown }
+
+/// 解析后的 `chat` 事件数据。
+class ChatEventData {
+  final String? runId;
+  final String sessionKey;
+  final ChatState state;
+
+  /// `state: "delta"` 时的增量文本。
+  final String? deltaText;
+
+  /// `state: "final"` 时的完整消息 payload（含 agentId, content, role 等）。
+  final Map<String, dynamic>? message;
+
+  final int? seq;
+
+  const ChatEventData({
+    this.runId,
+    required this.sessionKey,
+    required this.state,
+    this.deltaText,
+    this.message,
+    this.seq,
+  });
+}
+
+/// `agent` 事件的子流类型（实测 Gateway v2026.6.6）。
+enum AgentStreamType { assistant, tool, lifecycle, item, unknown }
+
+/// 解析后的 `agent` 事件数据。
+class AgentEventData {
+  final String? runId;
+  final String sessionKey;
+  final AgentStreamType stream;
+  final Map<String, dynamic> data;
+
+  const AgentEventData({
+    this.runId,
+    required this.sessionKey,
+    required this.stream,
+    required this.data,
+  });
+}
+
+// ---------- 解析函数 ----------
+
+/// 从 `chat` 事件的 payload 中解析 [ChatEventData]。
+ChatEventData parseChatEvent(Map<String, dynamic> payload) {
+  final stateStr = payload['state'] as String? ?? 'unknown';
+  return ChatEventData(
+    runId: payload['runId'] as String?,
+    sessionKey: payload['sessionKey'] as String? ?? '',
+    state: switch (stateStr) {
+      'delta' => ChatState.delta,
+      'final' => ChatState.final_,
+      _ => ChatState.unknown,
+    },
+    deltaText: payload['deltaText'] as String?,
+    message: payload['message'] as Map<String, dynamic>?,
+    seq: payload['seq'] as int?,
+  );
+}
+
+/// 从 `agent` 事件的 payload 中解析 [AgentEventData]。
 AgentEventData parseAgentEvent(Map<String, dynamic> payload) {
   final streamStr = payload['stream'] as String? ?? 'unknown';
   return AgentEventData(
     runId: payload['runId'] as String?,
+    sessionKey: payload['sessionKey'] as String? ?? '',
     stream: switch (streamStr) {
-      'thinking' => AgentStreamType.thinking,
-      'message' => AgentStreamType.message,
+      'assistant' => AgentStreamType.assistant,
       'tool' => AgentStreamType.tool,
       'lifecycle' => AgentStreamType.lifecycle,
+      'item' => AgentStreamType.item,
       _ => AgentStreamType.unknown,
     },
     data: payload['data'] as Map<String, dynamic>? ?? payload,
   );
+}
+
+// ============================================================================
+// Delta 聚合缓冲（公开类，可独立单元测试）
+// ============================================================================
+
+/// Accumulates incremental text deltas from streaming events.
+///
+/// Used for either `chat` deltaText or `agent` assistant data.delta.
+class StreamingBuffer {
+  final String sessionKey;
+  String _text = '';
+
+  StreamingBuffer({required this.sessionKey});
+
+  /// Append a delta fragment.
+  void append(String delta) {
+    _text += delta;
+  }
+
+  /// The full accumulated text so far.
+  String get text => _text;
+
+  /// Reset to empty.
+  void reset() {
+    _text = '';
+  }
+
+  /// Whether no delta has been received yet.
+  bool get isEmpty => _text.isEmpty;
 }
 
 // ============================================================================
