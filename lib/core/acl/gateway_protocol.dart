@@ -408,7 +408,7 @@ class ChatEventData {
 }
 
 /// `agent` 事件的子流类型（实测 Gateway v2026.6.6）。
-enum AgentStreamType { assistant, tool, lifecycle, item, unknown }
+enum AgentStreamType { assistant, tool, lifecycle, item, message, unknown }
 
 /// 解析后的 `agent` 事件数据。
 class AgentEventData {
@@ -455,6 +455,7 @@ AgentEventData parseAgentEvent(Map<String, dynamic> payload) {
       'tool' => AgentStreamType.tool,
       'lifecycle' => AgentStreamType.lifecycle,
       'item' => AgentStreamType.item,
+      'message' => AgentStreamType.message,
       _ => AgentStreamType.unknown,
     },
     data: payload['data'] as Map<String, dynamic>? ?? payload,

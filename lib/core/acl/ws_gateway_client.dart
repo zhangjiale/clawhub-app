@@ -526,8 +526,9 @@ class WsGatewayClient implements IGatewayClient {
           }
         }
 
+      case AgentStreamType.message:
       case AgentStreamType.assistant:
-        // 助手文本 delta — 仅用于 streaming 缓冲
+        // 助手文本 delta / message event — 仅用于 streaming 缓冲
         // chat 事件已经在推 deltaText，这里做补充
         final delta = event.data['delta'] as String?;
         if (delta != null && delta.isNotEmpty) {
