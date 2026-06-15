@@ -45,27 +45,6 @@ class MessageBubble extends StatelessWidget {
               : MainAxisAlignment.start,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            if (!_isUser) ...[
-              // Agent mini avatar (28×28, borderRadius 8)
-              Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(XiaRadius.sm),
-                  color: XiaColors.accentMuted,
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  agentName.characters.first,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: XiaColors.accent,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              const SizedBox(width: XiaSpacing.s2),
-            ],
             Flexible(
               child: Column(
                 crossAxisAlignment: _isUser

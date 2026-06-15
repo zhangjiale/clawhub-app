@@ -103,21 +103,32 @@ class DriftAgentRepo implements IAgentRepo {
     // receive the update without manual refresh.
     //
     // Value.absent() means "skip this column" — equivalent to COALESCE(?, col).
-    await (_database.update(_database.agents)
-          ..where((tbl) => tbl.localId.equals(localId)))
-        .write(db.AgentsCompanion(
-          nickname: nickname != null
-              ? Value<String?>(nickname)
-              : const Value<String?>.absent(),
-          avatarUrl: avatarUrl != null
-              ? Value<String?>(avatarUrl)
-              : const Value<String?>.absent(),
-          themeColor: themeColor != null
-              ? Value<String?>(themeColor)
-              : const Value<String?>.absent(),
-        ));
+    await (_database.update(
+      _database.agents,
+    )..where((tbl) => tbl.localId.equals(localId))).write(
+      db.AgentsCompanion(
+        nickname: nickname != null
+            ? Value<String?>(nickname)
+            : const Value<String?>.absent(),
+        avatarUrl: avatarUrl != null
+            ? Value<String?>(avatarUrl)
+            : const Value<String?>.absent(),
+        themeColor: themeColor != null
+            ? Value<String?>(themeColor)
+            : const Value<String?>.absent(),
+      ),
+    );
 
     return (await getById(localId))!;
+  }
+
+  @override
+  Future<void> clearAvatar(String localId) async {
+    // 使用 Value(null) 而非 Value.absent()：显式将列设为 NULL。
+    // Value.absent() 意为"跳过此列"，无法清除已有值。
+    await (_database.update(_database.agents)
+          ..where((tbl) => tbl.localId.equals(localId)))
+        .write(const db.AgentsCompanion(avatarUrl: Value<String?>(null)));
   }
 
   @override

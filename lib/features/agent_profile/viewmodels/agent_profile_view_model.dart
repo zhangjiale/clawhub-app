@@ -1,6 +1,11 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/utils/copy_with_nullable.dart';
+import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
@@ -90,16 +95,19 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final IAgentRepo _agentRepo;
   final IInstanceRepo _instanceRepo;
   final IMessageRepo _messageRepo;
+  final IAvatarStorageService _avatarStorageService;
   final String agentId;
 
   AgentProfileViewModel({
     required IAgentRepo agentRepo,
     required IInstanceRepo instanceRepo,
     required IMessageRepo messageRepo,
+    required IAvatarStorageService avatarStorageService,
     required this.agentId,
-  })  : _agentRepo = agentRepo,
+  }) : _agentRepo = agentRepo,
        _instanceRepo = instanceRepo,
        _messageRepo = messageRepo,
+       _avatarStorageService = avatarStorageService,
        super(const AgentProfileState());
 
   /// 初始化：加载 agent 详情 + 实例信息 + 消息统计。
@@ -127,46 +135,135 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
 
       final messageCount = await _messageRepo.getMessageCount(agentId);
 
-      _updateState((s) => s.copyWith(
-        detailLoadState: LoadData(AgentDetailData(
-          agent: agent,
-          instance: instance,
-          messageCount: messageCount,
-        )),
-      ));
+      _updateState(
+        (s) => s.copyWith(
+          detailLoadState: LoadData(
+            AgentDetailData(
+              agent: agent,
+              instance: instance,
+              messageCount: messageCount,
+            ),
+          ),
+        ),
+      );
     } catch (error, stackTrace) {
-      _updateState((s) => s.copyWith(
-        detailLoadState: LoadError(error, stackTrace),
-      ));
+      _updateState(
+        (s) => s.copyWith(detailLoadState: LoadError(error, stackTrace)),
+      );
     }
   }
 
   /// 保存个性化配置（由 AgentConfigPage 调用）。
-  Future<void> saveProfile(
+  Future<void> saveProfile({
     String? nickname,
-    String themeColor,
-  ) async {
+    String? themeColor,
+    String? avatarUrl,
+  }) async {
     if (state.isSaving) return;
-    _updateState((s) => s.copyWith(
-      isSaving: true,
-      saveError: null,
-      saveSuccess: false,
-    ));
+    _updateState(
+      (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
+    );
     try {
       await _agentRepo.updateLocalProfile(
         agentId,
         nickname: nickname,
         themeColor: themeColor,
+        avatarUrl: avatarUrl,
       );
       // 保存后刷新详情数据，Profile 页自动看到最新值
       await refresh();
       _updateState((s) => s.copyWith(isSaving: false, saveSuccess: true));
     } catch (error, stackTrace) {
       debugPrint('AgentConfig save failed: $error\n$stackTrace');
-      _updateState((s) => s.copyWith(
-        isSaving: false,
-        saveError: '保存失败，请重试',
-      ));
+      _updateState((s) => s.copyWith(isSaving: false, saveError: '保存失败，请重试'));
+    }
+  }
+
+  /// 更新头像 — 保存图片文件 + 持久化路径 + 清除图片缓存。
+  ///
+  /// [imageBytes] 应为已压缩的 JPEG 字节（由 [ImagePicker] 的
+  /// maxWidth/maxHeight/imageQuality 参数在选取时完成压缩）。
+  Future<void> updateAvatar(Uint8List imageBytes) async {
+    if (state.isSaving) return;
+    _updateState(
+      (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
+    );
+    try {
+      // 1) Save image to disk
+      final savedPath = await _avatarStorageService.saveAvatar(
+        agentId,
+        imageBytes,
+      );
+
+      // 2) Persist path in database
+      await _agentRepo.updateLocalProfile(agentId, avatarUrl: savedPath);
+
+      // 3) Evict stale Flutter image cache (same path → new content).
+      // Best-effort: non-fatal if the image cache is unavailable
+      // (e.g. in unit tests without Flutter bindings).
+      try {
+        imageCache.evict(FileImage(File(savedPath)));
+      } catch (_) {
+        /* iron-law-allow: Law8 — best-effort cache eviction */
+      }
+
+      // 4) Reload agent data so UI picks up new avatarUrl
+      await refresh();
+      // 注意：不设置 saveSuccess=true，避免触发 AgentConfigPage 的 pop 监听器。
+      // 头像变更是即时操作，不需要退出配置页。
+      _updateState((s) => s.copyWith(isSaving: false));
+    } catch (error, stackTrace) {
+      debugPrint('Avatar save failed: $error\n$stackTrace');
+      // 回滚：删除已写入的孤儿文件（best-effort，不覆盖原始错误）。
+      try {
+        await _avatarStorageService.deleteAvatar(agentId);
+      } catch (_) {
+        /* iron-law-allow: Law8 — best-effort cleanup */
+      }
+      _updateState((s) => s.copyWith(isSaving: false, saveError: '头像保存失败，请重试'));
+    }
+  }
+
+  /// 移除头像 — 删除文件 + 清空 DB 中的 avatarUrl + 清除缓存。
+  Future<void> removeAvatar() async {
+    if (state.isSaving) return;
+    _updateState(
+      (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
+    );
+    try {
+      // Capture current avatarUrl from loaded agent data for cache eviction.
+      // Using the known path avoids relying on getAvatarPath's implicit
+      // dependency on _appDocDirPath being initialized by a prior async call.
+      final currentAvatarUrl = switch (state.detailLoadState) {
+        LoadData<AgentDetailData>(:final value) => value.agent.avatarUrl,
+        _ => null,
+      };
+
+      // 1) Delete file from disk (no-op if already deleted)
+      await _avatarStorageService.deleteAvatar(agentId);
+
+      // 2) Clear avatarUrl in database — 使用 clearAvatar() 而非
+      //    updateLocalProfile(avatarUrl: null)，因为后者在 Drift 仓库中
+      //    使用 Value.absent() 语义（跳过该列），无法真正清除已有值。
+      await _agentRepo.clearAvatar(agentId);
+
+      // 3) Evict stale cache — best-effort, non-fatal if unavailable.
+      // Uses the known avatarUrl rather than recomputing via getAvatarPath.
+      if (currentAvatarUrl != null) {
+        try {
+          imageCache.evict(FileImage(File(currentAvatarUrl)));
+        } catch (_) {
+          /* iron-law-allow: Law8 — best-effort cache eviction */
+        }
+      }
+
+      // 4) Reload
+      await refresh();
+      // 注意：不设置 saveSuccess=true，避免触发 AgentConfigPage 的 pop 监听器。
+      _updateState((s) => s.copyWith(isSaving: false));
+    } catch (error, stackTrace) {
+      debugPrint('Avatar remove failed: $error\n$stackTrace');
+      _updateState((s) => s.copyWith(isSaving: false, saveError: '头像移除失败，请重试'));
     }
   }
 

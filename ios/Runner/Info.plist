@@ -6,6 +6,8 @@
 		<true/>
 		<key>NSCameraUsageDescription</key>
 		<string>ClawHub needs camera access to scan OpenClaw Gateway configuration QR codes</string>
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>虾Hub needs photo library access to set your agent's custom avatar</string>
 		<key>NSAppTransportSecurity</key>
 		<dict>
 			<key>NSAllowsArbitraryLoads</key>

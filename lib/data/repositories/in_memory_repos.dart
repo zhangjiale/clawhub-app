@@ -159,6 +159,27 @@ class InMemoryAgentRepo implements IAgentRepo {
   }
 
   @override
+  Future<void> clearAvatar(String localId) async {
+    final agent = _store[localId];
+    if (agent == null) throw StateError('Agent 不存在: $localId');
+    // 绕过 copyWith 的 ?? 语义 — 直接构造 Agent 将 avatarUrl 置为 null。
+    final updated = Agent(
+      localId: agent.localId,
+      remoteId: agent.remoteId,
+      instanceId: agent.instanceId,
+      name: agent.name,
+      nickname: agent.nickname,
+      avatarUrl: null, // 显式清除
+      themeColor: agent.themeColor,
+      description: agent.description,
+      isPinned: agent.isPinned,
+      quickCommands: agent.quickCommands,
+      createdAt: agent.createdAt,
+    );
+    _putAgent(updated);
+  }
+
+  @override
   Future<Agent> togglePin(String localId) async {
     final agent = _store[localId];
     if (agent == null) throw StateError('Agent 不存在: $localId');
@@ -314,7 +335,9 @@ class InMemoryMessageRepo implements IMessageRepo {
   }
 
   @override
-  Future<Map<String, int>> getMessageCountsByAgent(List<String> agentIds) async {
+  Future<Map<String, int>> getMessageCountsByAgent(
+    List<String> agentIds,
+  ) async {
     final counts = <String, int>{};
     for (final id in agentIds) {
       counts[id] = 0;

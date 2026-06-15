@@ -6,7 +6,9 @@ import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
+import 'package:claw_hub/core/avatar_storage_service.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/iconnectivity.dart';
 import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
@@ -126,6 +128,16 @@ final loggerProvider = Provider<ILogger>((ref) => const DebugPrintLogger());
 final connectivityProvider = Provider<IConnectivity>(
   (ref) => ConnectivityAdapter(),
 );
+
+// --- Avatar Storage ---
+
+/// 头像文件存储服务 — 面向 [IAvatarStorageService] 接口，便于单测 mock。
+///
+/// 头像文件存储在 `{appDocDir}/avatars/{agentLocalId}.jpg`。
+/// [AgentProfileViewModel] 通过此接口保存/删除/检查头像文件。
+final avatarStorageServiceProvider = Provider<IAvatarStorageService>((ref) {
+  return AvatarStorageService();
+});
 
 // --- Connection Orchestrator ---
 

@@ -96,25 +96,6 @@ class _StreamingBubbleState extends State<StreamingBubble>
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            // Agent mini avatar (matches MessageBubble)
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(XiaRadius.sm),
-                color: XiaColors.accentMuted,
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                widget.agentName.characters.first,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: XiaColors.accent,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const SizedBox(width: XiaSpacing.s2),
             Flexible(
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: maxBubbleHeight),

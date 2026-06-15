@@ -5,6 +5,7 @@ import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
+import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
 /// Conversation list row — matching ComponentSpec Section 3.2.
 ///
@@ -38,10 +39,38 @@ class ConversationTile extends StatelessWidget {
         child: Row(
           children: [
             // Avatar
-            _ConversationAvatar(
-              agent: agent,
-              isMuted: conv.isMuted,
-              healthStatus: preview.healthStatus,
+            Stack(
+              children: [
+                EmojiAvatar(
+                  displayName: agent.displayName,
+                  themeColor: agent.themeColor,
+                  avatarUrl: agent.avatarUrl,
+                  backgroundColor: conv.isMuted ? XiaColors.surface2 : null,
+                  radius: 24,
+                  borderRadius: XiaRadius.md,
+                  fontSize: 22,
+                ),
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color:
+                          preview.healthStatus == HealthStatus.online ||
+                              preview.healthStatus == HealthStatus.connecting
+                          ? XiaColors.green
+                          : XiaColors.text4,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: XiaColors.surface, width: 2),
+                      boxShadow: preview.healthStatus == HealthStatus.online
+                          ? XiaShadow.onlineGlow
+                          : null,
+                    ),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(width: XiaSpacing.s4),
             // Name + preview
@@ -135,72 +164,6 @@ class ConversationTile extends StatelessWidget {
 
     final date = DateTime.fromMillisecondsSinceEpoch(timestampMs);
     return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}';
-  }
-}
-
-/// Conversation avatar — rounded rect with status dot.
-class _ConversationAvatar extends StatelessWidget {
-  final Agent agent;
-  final bool isMuted;
-  final HealthStatus healthStatus;
-
-  const _ConversationAvatar({
-    required this.agent,
-    required this.isMuted,
-    required this.healthStatus,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = isMuted
-        ? XiaColors.surface2
-        : ColorExtension.fromHex(agent.themeColor);
-
-    return SizedBox(
-      width: 48,
-      height: 48,
-      child: Stack(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: BorderRadius.circular(XiaRadius.md),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              agent.displayName.isNotEmpty ? agent.displayName[0] : '?',
-              style: TextStyle(
-                color: color.contrastingTextColor(),
-                fontSize: 22,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color:
-                    healthStatus == HealthStatus.online ||
-                        healthStatus == HealthStatus.connecting
-                    ? XiaColors.green
-                    : XiaColors.text4,
-                shape: BoxShape.circle,
-                border: Border.all(color: XiaColors.surface, width: 2),
-                boxShadow: healthStatus == HealthStatus.online
-                    ? XiaShadow.onlineGlow
-                    : null,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }
 

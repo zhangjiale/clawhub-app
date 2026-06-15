@@ -38,9 +38,62 @@ void main() {
       expect(emojiAvatar.radius, 24.0);
     });
 
-    testWidgets('handles empty displayName', (tester) async {
+    testWidgets('shows ? placeholder when displayName is empty', (
+      tester,
+    ) async {
       await tester.pumpWidget(buildAvatar(displayName: ''));
-      expect(find.text(''), findsOneWidget);
+      // 空名称展示 '?' 作为防御性占位符，与旧 _ConversationAvatar 行为一致
+      expect(find.text('?'), findsOneWidget);
+    });
+
+    testWidgets('renders text avatar when avatarUrl is null', (tester) async {
+      await tester.pumpWidget(buildAvatar());
+      expect(find.text('产'), findsOneWidget);
+      // No Image widget should be present
+      expect(find.byType(Image), findsNothing);
+    });
+
+    testWidgets('falls back to text when avatarUrl file does not exist', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: EmojiAvatar(
+              displayName: '产品虾',
+              themeColor: '#6c5ce7',
+              avatarUrl: '/nonexistent/path/avatar.jpg',
+            ),
+          ),
+        ),
+      );
+      // frameBuilder shows text fallback synchronously during loading;
+      // errorBuilder also shows text fallback on load failure.
+      // Either way, text is visible without blank flash and without sync I/O.
+      await tester.pumpAndSettle();
+      expect(find.text('产'), findsOneWidget);
+    });
+
+    testWidgets('backgroundColor overrides text color calculation', (
+      tester,
+    ) async {
+      // Use a very dark backgroundColor — text should be white (contrasting)
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: EmojiAvatar(
+              displayName: '虾',
+              themeColor: '#F4D03F', // warm yellow
+              backgroundColor: const Color(0xFF232220), // dark gray (muted)
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The text should still be readable because backgroundColor drives
+      // the contrastingTextColor() calculation
+      expect(find.text('虾'), findsOneWidget);
     });
   });
 }

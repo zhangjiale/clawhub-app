@@ -8,6 +8,7 @@ import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
+import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
@@ -17,6 +18,8 @@ class MockAgentRepo extends Mock implements IAgentRepo {}
 class MockInstanceRepo extends Mock implements IInstanceRepo {}
 
 class MockMessageRepo extends Mock implements IMessageRepo {}
+
+class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
 void main() {
   group('AgentProfilePage', () {
@@ -40,18 +43,23 @@ void main() {
     late MockAgentRepo agentRepo;
     late MockInstanceRepo instanceRepo;
     late MockMessageRepo messageRepo;
+    late MockAvatarStorageService avatarStorageService;
 
     setUp(() {
       agentRepo = MockAgentRepo();
       instanceRepo = MockInstanceRepo();
       messageRepo = MockMessageRepo();
+      avatarStorageService = MockAvatarStorageService();
 
-      when(() => agentRepo.getById('local-1'))
-          .thenAnswer((_) async => testAgent);
-      when(() => instanceRepo.getById('inst-1'))
-          .thenAnswer((_) async => testInstance);
-      when(() => messageRepo.getMessageCount('local-1'))
-          .thenAnswer((_) async => 1024);
+      when(
+        () => agentRepo.getById('local-1'),
+      ).thenAnswer((_) async => testAgent);
+      when(
+        () => instanceRepo.getById('inst-1'),
+      ).thenAnswer((_) async => testInstance);
+      when(
+        () => messageRepo.getMessageCount('local-1'),
+      ).thenAnswer((_) async => 1024);
     });
 
     Widget buildPage() {
@@ -62,13 +70,12 @@ void main() {
               agentRepo: agentRepo,
               instanceRepo: instanceRepo,
               messageRepo: messageRepo,
+              avatarStorageService: avatarStorageService,
               agentId: 'local-1',
             )..init(),
           ),
         ],
-        child: const MaterialApp(
-          home: AgentProfilePage(agentId: 'local-1'),
-        ),
+        child: const MaterialApp(home: AgentProfilePage(agentId: 'local-1')),
       );
     }
 

@@ -28,6 +28,7 @@ class ProfileHeader extends StatelessWidget {
           EmojiAvatar(
             displayName: agent.displayName,
             themeColor: agent.themeColor,
+            avatarUrl: agent.avatarUrl,
             radius: 36,
             borderRadius: XiaRadius.lg,
             fontSize: 36,
@@ -80,14 +81,15 @@ class ProfileHeader extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              const Text('·',
-                  style: TextStyle(color: XiaColors.text3, fontSize: 12)),
+              const Text(
+                '·',
+                style: TextStyle(color: XiaColors.text3, fontSize: 12),
+              ),
               const SizedBox(width: 6),
               Flexible(
                 child: Text(
                   instance?.name ?? '未知实例',
-                  style:
-                      const TextStyle(fontSize: 12, color: XiaColors.text3),
+                  style: const TextStyle(fontSize: 12, color: XiaColors.text3),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),

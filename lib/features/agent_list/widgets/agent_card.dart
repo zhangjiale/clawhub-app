@@ -56,6 +56,7 @@ class AgentCard extends StatelessWidget {
                   EmojiAvatar(
                     displayName: agent.displayName,
                     themeColor: agent.themeColor,
+                    avatarUrl: agent.avatarUrl,
                     radius: 24, // 48×48
                     borderRadius: XiaRadius.md,
                     fontSize: 24,

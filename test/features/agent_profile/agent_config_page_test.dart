@@ -8,14 +8,19 @@ import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
+import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/color_grid.dart';
 
 class MockAgentRepo extends Mock implements IAgentRepo {}
+
 class MockInstanceRepo extends Mock implements IInstanceRepo {}
+
 class MockMessageRepo extends Mock implements IMessageRepo {}
+
+class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
 void main() {
   group('AgentConfigPage', () {
@@ -39,18 +44,23 @@ void main() {
     late MockAgentRepo agentRepo;
     late MockInstanceRepo instanceRepo;
     late MockMessageRepo messageRepo;
+    late MockAvatarStorageService avatarStorageService;
 
     setUp(() {
       agentRepo = MockAgentRepo();
       instanceRepo = MockInstanceRepo();
       messageRepo = MockMessageRepo();
+      avatarStorageService = MockAvatarStorageService();
 
-      when(() => agentRepo.getById('local-1'))
-          .thenAnswer((_) async => testAgent);
-      when(() => instanceRepo.getById('inst-1'))
-          .thenAnswer((_) async => testInstance);
-      when(() => messageRepo.getMessageCount('local-1'))
-          .thenAnswer((_) async => 42);
+      when(
+        () => agentRepo.getById('local-1'),
+      ).thenAnswer((_) async => testAgent);
+      when(
+        () => instanceRepo.getById('inst-1'),
+      ).thenAnswer((_) async => testInstance);
+      when(
+        () => messageRepo.getMessageCount('local-1'),
+      ).thenAnswer((_) async => 42);
     });
 
     Widget buildPage() {
@@ -61,13 +71,12 @@ void main() {
               agentRepo: agentRepo,
               instanceRepo: instanceRepo,
               messageRepo: messageRepo,
+              avatarStorageService: avatarStorageService,
               agentId: 'local-1',
             )..init(),
           ),
         ],
-        child: const MaterialApp(
-          home: AgentConfigPage(agentId: 'local-1'),
-        ),
+        child: const MaterialApp(home: AgentConfigPage(agentId: 'local-1')),
       );
     }
 
@@ -104,8 +113,9 @@ void main() {
       expect(find.text('🎨 主题色'), findsOneWidget);
     });
 
-    testWidgets('shows error UI with retry button when agent not found',
-        (tester) async {
+    testWidgets('shows error UI with retry button when agent not found', (
+      tester,
+    ) async {
       when(() => agentRepo.getById('local-1')).thenAnswer((_) async => null);
       await tester.pumpWidget(buildPage());
       await tester.pumpAndSettle();
@@ -116,8 +126,9 @@ void main() {
       expect(find.byType(ColorGrid), findsNothing);
     });
 
-    testWidgets('retry button triggers refresh and reloads data',
-        (tester) async {
+    testWidgets('retry button triggers refresh and reloads data', (
+      tester,
+    ) async {
       var callCount = 0;
       when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
         callCount++;
@@ -133,6 +144,42 @@ void main() {
       // 第二次调用成功，表单渲染出来
       expect(find.byType(TextFormField), findsOneWidget);
       expect(find.text('🦐 基本信息'), findsOneWidget);
+    });
+
+    group('avatar', () {
+      testWidgets('shows set avatar hint when no avatar', (tester) async {
+        await tester.pumpWidget(buildPage());
+        await tester.pumpAndSettle();
+        expect(find.text('点击设置头像'), findsOneWidget);
+      });
+
+      testWidgets('shows change avatar hint when avatar is set', (
+        tester,
+      ) async {
+        final agentWithAvatar = testAgent.copyWith(
+          avatarUrl: '/path/to/avatar.jpg',
+        );
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => agentWithAvatar);
+
+        await tester.pumpWidget(buildPage());
+        await tester.pumpAndSettle();
+        expect(find.text('点击更换头像'), findsOneWidget);
+      });
+
+      testWidgets('does not show "头像暂不支持更换" text', (tester) async {
+        await tester.pumpWidget(buildPage());
+        await tester.pumpAndSettle();
+        expect(find.text('头像暂不支持更换'), findsNothing);
+      });
+
+      testWidgets('renders EmojiAvatar', (tester) async {
+        await tester.pumpWidget(buildPage());
+        await tester.pumpAndSettle();
+        // The EmojiAvatar should render the first character
+        expect(find.text('产'), findsOneWidget);
+      });
     });
   });
 }

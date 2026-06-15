@@ -137,6 +137,8 @@ class _NoopAgentRepo implements IAgentRepo {
   @override
   Future<Agent> togglePin(String localId) async => throw UnimplementedError();
   @override
+  Future<void> clearAvatar(String localId) async {}
+  @override
   Future<void> deleteByInstanceId(String instanceId) async {}
 }
 

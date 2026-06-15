@@ -52,6 +52,7 @@ class InstanceListPage extends ConsumerWidget {
       await useCase.execute(instance.id);
       _invalidateData(ref);
     } on Exception catch (e) {
+      debugPrint('Failed to delete instance: $e');
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,

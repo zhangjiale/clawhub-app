@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
@@ -51,7 +52,7 @@ const _colorLabels = [
 
 /// 个性化配置页
 ///
-/// 允许用户修改 Agent 的昵称和主题色。
+/// 允许用户修改 Agent 的昵称、主题色和头像。
 /// 与 AgentProfilePage 共享同一个 AgentProfileViewModel。
 ///
 /// 表单初始化通过 [ref.listen] 在数据就绪后执行，
@@ -67,8 +68,31 @@ class AgentConfigPage extends ConsumerStatefulWidget {
 
 class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
   final _nicknameController = TextEditingController();
-  String _themeColor = '';
+  String _themeColor = '#007AFF'; // Agent 默认主题色，始终为有效 hex
   bool _formReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 当前状态可能已经包含已加载的数据（例如从 AgentProfilePage 导航而来，
+    // 两者共享同一个 agentProfileViewModelProvider）。
+    // ref.listen 只在状态转移时触发，不会对当前值触发，因此需要在 initState
+    // 中同步检查并初始化表单，覆盖「数据已就绪」的路径。
+    _tryInitForm();
+  }
+
+  void _tryInitForm() {
+    final state = ref.read(agentProfileViewModelProvider(widget.agentId));
+    final detail = switch (state.detailLoadState) {
+      LoadData<AgentDetailData>(:final value) => value,
+      _ => null,
+    };
+    if (detail != null) {
+      _formReady = true;
+      _nicknameController.text = detail.agent.nickname ?? '';
+      _themeColor = detail.agent.themeColor;
+    }
+  }
 
   @override
   void dispose() {
@@ -82,8 +106,111 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
     final nickname = text.isEmpty ? null : text;
     ref
         .read(agentProfileViewModelProvider(widget.agentId).notifier)
-        .saveProfile(nickname, _themeColor);
+        .saveProfile(nickname: nickname, themeColor: _themeColor);
   }
+
+  // ── Avatar picker ──────────────────────────────────────────
+
+  void _showAvatarPicker() {
+    final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
+    final state = ref.read(agentProfileViewModelProvider(widget.agentId));
+
+    // Extract current agent to check whether avatar is set
+    final detail = switch (state.detailLoadState) {
+      LoadData<AgentDetailData>(:final value) => value,
+      _ => null,
+    };
+    final hasAvatar = detail?.agent.avatarUrl != null;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('从相册选择'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('拍照'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickImage(ImageSource.camera);
+              },
+            ),
+            if (hasAvatar)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: XiaColors.red),
+                title: const Text(
+                  '移除头像',
+                  style: TextStyle(color: XiaColors.red),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  // removeAvatar() 内部已 try/catch 所有错误并写入 saveError；
+                  // .catchError 仅兜底防止未来重构后异常逃逸被 zone 静默吞掉。
+                  vm.removeAvatar().catchError((_) {
+                    /* handled internally */
+                  });
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final picker = ImagePicker();
+    final isCamera = source == ImageSource.camera;
+
+    // Phase 1: pick image (permission / picker errors)
+    final XFile? xfile;
+    try {
+      xfile = await picker.pickImage(
+        source: source,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 85,
+      );
+    } catch (e) {
+      debugPrint('ImagePicker failed for $source: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isCamera ? '无法访问相机，请检查权限设置' : '无法访问相册，请检查权限设置'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (xfile == null) return; // user cancelled
+
+    // Phase 2: read bytes + update avatar (I/O / DB errors)
+    try {
+      final bytes = await xfile.readAsBytes();
+      await ref
+          .read(agentProfileViewModelProvider(widget.agentId).notifier)
+          .updateAvatar(bytes);
+      // updateAvatar errors are surfaced via ref.listen → saveError SnackBar
+    } catch (e) {
+      debugPrint('Avatar processing failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('头像处理失败，请重试')));
+      }
+    }
+  }
+
+  // ── Build ──────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -219,38 +346,42 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
               ),
               child: Column(
                 children: [
-                  // Current avatar (read-only)
-                  Row(
-                    children: [
-                      EmojiAvatar(
-                        displayName: agent.displayName,
-                        themeColor: _themeColor,
-                        radius: 32,
-                      ),
-                      const SizedBox(width: XiaSpacing.s5),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              agent.displayName,
-                              style: const TextStyle(
-                                fontSize: XiaTypography.configAvatarName,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -0.3,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              '头像暂不支持更换',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: XiaColors.text4,
-                              ),
-                            ),
-                          ],
+                  // Avatar — tappable for change
+                  GestureDetector(
+                    onTap: state.isSaving ? null : _showAvatarPicker,
+                    child: Stack(
+                      children: [
+                        EmojiAvatar(
+                          displayName: agent.displayName,
+                          themeColor: _themeColor,
+                          avatarUrl: agent.avatarUrl,
+                          radius: 32,
                         ),
-                      ),
-                    ],
+                        if (state.isSaving)
+                          Positioned.fill(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black26,
+                                borderRadius: BorderRadius.circular(
+                                  XiaRadius.md,
+                                ),
+                              ),
+                              child: const Center(
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    agent.avatarUrl != null ? '点击更换头像' : '点击设置头像',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: XiaColors.text4,
+                    ),
                   ),
                   const SizedBox(height: XiaSpacing.s4),
                   // Nickname field

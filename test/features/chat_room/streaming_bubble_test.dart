@@ -60,9 +60,10 @@ void main() {
       expect(find.text('Hello streaming world'), findsOneWidget);
     });
 
-    testWidgets('shows agent avatar first character', (tester) async {
+    testWidgets('does NOT show agent avatar', (tester) async {
       await tester.pumpWidget(buildBubble('text', agentName: '测试虾'));
-      expect(find.text('测'), findsOneWidget);
+      // Per design spec 4.2.2: agent messages have no avatar in the bubble.
+      expect(find.text('测'), findsNothing);
     });
 
     testWidgets('shows blinking cursor via CustomPaint', (tester) async {

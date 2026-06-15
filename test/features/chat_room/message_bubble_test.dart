@@ -33,10 +33,7 @@ void main() {
     Widget buildBubble(Message message, {String agentName = '产品虾'}) {
       return MaterialApp(
         home: Scaffold(
-          body: MessageBubble(
-            message: message,
-            agentName: agentName,
-          ),
+          body: MessageBubble(message: message, agentName: agentName),
         ),
       );
     }
@@ -56,11 +53,12 @@ void main() {
       expect(find.text('产品虾'), findsNothing);
     });
 
-    testWidgets('agent message shows first character in avatar', (tester) async {
+    testWidgets('agent message does NOT show avatar', (tester) async {
       await tester.pumpWidget(buildBubble(agentMessage));
-      // Agent name is no longer shown above the bubble; only first char in avatar
+      // Per design spec 4.2.2: agent messages have no avatar in the bubble —
+      // the avatar only appears in the AppBar header (Section 4.1.2).
       expect(find.text('产品虾'), findsNothing);
-      expect(find.text('产'), findsOneWidget);
+      expect(find.text('产'), findsNothing);
     });
 
     testWidgets('agent message shows timestamp below bubble', (tester) async {
@@ -86,19 +84,13 @@ void main() {
     });
 
     testWidgets('image type shows placeholder text', (tester) async {
-      final imgMsg = userMessage.copyWith(
-        type: MessageType.image,
-        content: '',
-      );
+      final imgMsg = userMessage.copyWith(type: MessageType.image, content: '');
       await tester.pumpWidget(buildBubble(imgMsg));
       expect(find.text('[图片]'), findsOneWidget);
     });
 
     testWidgets('file type shows placeholder text', (tester) async {
-      final fileMsg = userMessage.copyWith(
-        type: MessageType.file,
-        content: '',
-      );
+      final fileMsg = userMessage.copyWith(type: MessageType.file, content: '');
       await tester.pumpWidget(buildBubble(fileMsg));
       expect(find.text('[文件]'), findsOneWidget);
     });

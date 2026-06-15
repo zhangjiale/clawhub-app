@@ -29,6 +29,12 @@ abstract class IAgentRepo {
     String? themeColor,
   });
 
+  /// 清除头像 — 将 avatarUrl 显式置为 null。
+  ///
+  /// 与 [updateLocalProfile] 不同：后者对 null 参数使用"跳过此列"语义，
+  /// 本方法保证数据库中的 avatarUrl 被设为 NULL。
+  Future<void> clearAvatar(String localId);
+
   /// 切换置顶状态
   Future<Agent> togglePin(String localId);
 

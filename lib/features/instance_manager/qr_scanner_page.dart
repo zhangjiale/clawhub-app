@@ -99,7 +99,7 @@ class _QrScannerPageState extends State<QrScannerPage> {
         setState(() => _hasTorch = !_hasTorch);
       }
     } catch (_) {
-      // Torch not available on this device
+      /* iron-law-allow: Law8 — torch not available on this device */
     }
   }
 

@@ -20,6 +20,7 @@ import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
+import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -105,10 +106,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;
 
-    // 预计算 Agent 颜色
-    final agentColor = agent != null
-        ? ColorExtension.fromHex(agent.themeColor)
-        : null;
+    // 预计算 Agent 颜色 — 不再需要（EmojiAvatar 自身处理）
 
     // C2: Auto-scroll — listen for state changes that should trigger scroll
     ref.listen(chatViewModelProvider(params), (prev, next) {
@@ -156,22 +154,13 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                   ),
                   child: Row(
                     children: [
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: agentColor,
-                          borderRadius: BorderRadius.circular(XiaRadius.sm),
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          agent.displayName.characters.first,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
+                      EmojiAvatar(
+                        displayName: agent.displayName,
+                        themeColor: agent.themeColor,
+                        avatarUrl: agent.avatarUrl,
+                        radius: 20, // 40×40
+                        borderRadius: XiaRadius.sm,
+                        fontSize: 18,
                       ),
                       const SizedBox(width: XiaSpacing.s3),
                       Expanded(
