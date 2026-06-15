@@ -1,11 +1,11 @@
 {
-    "name": "claw_hub",
-    "short_name": "claw_hub",
+    "name": "虾Hub",
+    "short_name": "虾Hub",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#111110",
+    "theme_color": "#111110",
+    "description": "虾Hub — 你的 AI 虾群移动管理中心",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
