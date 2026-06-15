@@ -20,8 +20,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('No Instances'), findsOneWidget);
-      expect(find.text('Add your first OpenClaw instance'), findsOneWidget);
+      expect(find.text('还没有实例'), findsOneWidget);
+      expect(find.text('添加你的第一个 OpenClaw 实例'), findsOneWidget);
     });
 
     testWidgets('has inline add instance card when empty', (tester) async {
@@ -41,17 +41,19 @@ void main() {
 
     testWidgets('shows instance cards when instances exist', (tester) async {
       final repo = InMemoryInstanceRepo();
-      await repo.save(Instance(
-        id: 'i1', name: 'Server A',
-        gatewayUrl: 'wss://a.com:18789', tokenRef: 'r1',
-        healthStatus: HealthStatus.online,
-      ));
+      await repo.save(
+        Instance(
+          id: 'i1',
+          name: 'Server A',
+          gatewayUrl: 'wss://a.com:18789',
+          tokenRef: 'r1',
+          healthStatus: HealthStatus.online,
+        ),
+      );
 
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            instanceRepoProvider.overrideWith((ref) => repo),
-          ],
+          overrides: [instanceRepoProvider.overrideWith((ref) => repo)],
           child: const MaterialApp(home: InstanceListPage()),
         ),
       );

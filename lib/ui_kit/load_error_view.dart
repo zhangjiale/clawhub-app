@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
 /// Generic error state with optional retry button.
 ///
@@ -26,14 +27,14 @@ class LoadErrorView extends StatelessWidget {
 
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.all(XiaSpacing.s7),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
-            const SizedBox(height: 12),
+            const SizedBox(height: XiaSpacing.s3),
             Text(title, style: theme.textTheme.bodyLarge),
-            const SizedBox(height: 8),
+            const SizedBox(height: XiaSpacing.s2),
             Text(
               '$error',
               style: theme.textTheme.bodySmall?.copyWith(
@@ -43,7 +44,7 @@ class LoadErrorView extends StatelessWidget {
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: XiaSpacing.s4),
             if (onRetry != null)
               FilledButton.icon(
                 onPressed: onRetry,

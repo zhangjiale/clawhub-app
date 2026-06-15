@@ -4,10 +4,12 @@ import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Conversation list row — matching ComponentSpec Section 3.2.
 ///
 /// Layout: [48×48 avatar + status dot] [name + preview] [time + unread badge]
+/// Press: bg→surface2, 200ms ease.
 class ConversationTile extends StatelessWidget {
   final ConversationPreview preview;
   final VoidCallback? onTap;
@@ -25,12 +27,13 @@ class ConversationTile extends StatelessWidget {
     final isUser = conv.lastMessageRole == MessageRole.user;
     final previewText = _truncate(isUser ? '你: $rawPreview' : rawPreview);
 
-    return InkWell(
+    return PressFeedback(
+      pressedColor: XiaColors.surface2,
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: XiaSpacing.s6,
-          vertical: XiaSpacing.s5 / 2,
+          vertical: XiaSpacing.s5,
         ),
         child: Row(
           children: [
@@ -62,8 +65,11 @@ class ConversationTile extends StatelessWidget {
                         ),
                       ),
                       if (conv.isMuted)
-                        Icon(Icons.volume_off,
-                            size: 14, color: XiaColors.text3),
+                        Icon(
+                          Icons.volume_off,
+                          size: 14,
+                          color: XiaColors.text3,
+                        ),
                     ],
                   ),
                   const SizedBox(height: 2),
@@ -71,8 +77,9 @@ class ConversationTile extends StatelessWidget {
                     previewText.isEmpty ? '开始对话吧' : previewText,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: hasUnread ? XiaColors.text1 : XiaColors.text3,
-                      fontWeight:
-                          hasUnread ? FontWeight.w500 : FontWeight.normal,
+                      fontWeight: hasUnread
+                          ? FontWeight.w500
+                          : FontWeight.normal,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -178,7 +185,8 @@ class _ConversationAvatar extends StatelessWidget {
               width: 8,
               height: 8,
               decoration: BoxDecoration(
-                color: healthStatus == HealthStatus.online ||
+                color:
+                    healthStatus == HealthStatus.online ||
                         healthStatus == HealthStatus.connecting
                     ? XiaColors.green
                     : XiaColors.text4,

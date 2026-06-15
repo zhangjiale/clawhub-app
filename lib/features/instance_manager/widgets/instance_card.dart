@@ -6,11 +6,13 @@ import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Instance card — matching ComponentSpec Section 7.2.
 ///
 /// Layout: [44×44 icon] [name + url + status] [action buttons]
 /// When [HealthStatus.pairingRequired], shows approval guidance inline.
+/// Press: scale(0.98), 200ms ease.
 class InstanceCard extends ConsumerWidget {
   final Instance instance;
   final VoidCallback onTap;
@@ -50,26 +52,23 @@ class InstanceCard extends ConsumerWidget {
     final pairingInfo = ref.watch(
       pairingInfoProvider.select((map) => map[instance.id]),
     );
-    // pairingRequired 不持久化到 DB（落库时改写为 offline），
-    // 因此不能用 instance.healthStatus 判断——直接以 pairingInfoProvider 为准。
     final showPairingHelp = pairingInfo != null;
-    // 当配对进行中时，状态点和文字应反映"等待审批"，而非 DB 中持久化的 offline。
     final effectiveStatus = showPairingHelp
         ? HealthStatus.pairingRequired
         : instance.healthStatus;
 
-    return Container(
-      margin: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
-        vertical: 6,
-      ),
-      decoration: BoxDecoration(
-        color: XiaColors.surface,
-        borderRadius: BorderRadius.circular(XiaRadius.lg),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(XiaRadius.lg),
+    return PressFeedback(
+      scale: 0.98,
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.symmetric(
+          horizontal: XiaSpacing.s6,
+          vertical: 6,
+        ),
+        decoration: BoxDecoration(
+          color: XiaColors.surface,
+          borderRadius: BorderRadius.circular(XiaRadius.lg),
+        ),
         child: Padding(
           padding: const EdgeInsets.all(XiaSpacing.s5),
           child: Column(
@@ -193,21 +192,26 @@ class _ActionBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 36,
-      height: 36,
-      child: Material(
-        color: danger ? XiaColors.redMuted : XiaColors.surface2,
-        borderRadius: BorderRadius.circular(XiaRadius.sm),
-        child: InkWell(
+    return PressFeedback(
+      onTap: onTap,
+      builder: (child, isPressed) => AnimatedContainer(
+        duration: XiaMotion.durationFast,
+        curve: XiaMotion.ease,
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: danger
+              ? XiaColors.redMuted
+              : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
           borderRadius: BorderRadius.circular(XiaRadius.sm),
-          onTap: onTap,
-          child: Icon(
-            icon,
-            size: 16,
-            color: danger ? XiaColors.red : XiaColors.text3,
-          ),
         ),
+        alignment: Alignment.center,
+        child: child,
+      ),
+      child: Icon(
+        icon,
+        size: 16,
+        color: danger ? XiaColors.red : XiaColors.text3,
       ),
     );
   }

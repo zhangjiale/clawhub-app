@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
@@ -9,6 +10,7 @@ import 'package:claw_hub/ui_kit/color_grid.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// 主题色选项，由 [AppColors.agentColors] 生成（唯一真相源），
 /// 中文标签来自 [_colorLabels]。
@@ -31,19 +33,20 @@ final _themeColorOptions = () {
 }();
 
 // 为每个颜色选项补充中文标签（顺序与 AppColors.agentColors 一一对应）
+// 标签名称与 design-tokens.md Section 1.5 的 Per-Agent 主题色一致
 const _colorLabels = [
-  '紫罗兰',
-  '海洋蓝',
-  '樱花粉',
-  '薄荷绿',
-  '活力橙',
+  '珊瑚',
+  '雾蓝',
+  '薄荷',
+  '暖橙',
+  '烟粉',
   '湖蓝',
-  '柠檬黄',
-  '玫瑰红',
-  '石墨灰',
-  '深灰',
-  '草绿',
+  '暖黄',
+  '玫瑰',
+  '石墨',
+  '翡翠',
   '靛蓝',
+  '焦糖',
 ];
 
 /// 个性化配置页
@@ -77,7 +80,8 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
   void _save() {
     final text = _nicknameController.text.trim();
     final nickname = text.isEmpty ? null : text;
-    ref.read(agentProfileViewModelProvider(widget.agentId).notifier)
+    ref
+        .read(agentProfileViewModelProvider(widget.agentId).notifier)
         .saveProfile(nickname, _themeColor);
   }
 
@@ -114,7 +118,8 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
 
       // 2) Save success → pop back
       if (next.saveSuccess && !(prev?.saveSuccess ?? false)) {
-        ref.read(agentProfileViewModelProvider(widget.agentId).notifier)
+        ref
+            .read(agentProfileViewModelProvider(widget.agentId).notifier)
             .clearSaveResult();
         if (mounted) context.pop();
       }
@@ -122,11 +127,13 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
       // 3) Save error → SnackBar
       if (next.saveError != null && next.saveError != prev?.saveError) {
         final msg = next.saveError!;
-        ref.read(agentProfileViewModelProvider(widget.agentId).notifier)
+        ref
+            .read(agentProfileViewModelProvider(widget.agentId).notifier)
             .clearSaveResult();
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(msg)));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(msg)));
         }
       }
     });
@@ -143,10 +150,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
 
     // 1) 加载中：骨架屏
     if (state.detailLoadState is LoadInProgress<AgentDetailData>) {
-      return Scaffold(
-        appBar: appBar,
-        body: const LoadingSkeleton(count: 3),
-      );
+      return Scaffold(appBar: appBar, body: const LoadingSkeleton(count: 3));
     }
 
     // 2) 加载失败：错误 UI + 重试
@@ -178,8 +182,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
       // Adding a manual context.pop() here would defeat canPop (see #1).
       child: Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
+          leading: XiaBackButton(
             onPressed: state.isSaving ? null : () => context.pop(),
           ),
           title: Text('${agent.displayName} · 个性化配置'),
@@ -188,22 +191,31 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
           children: [
             // Section: 基本信息
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+              padding: const EdgeInsets.fromLTRB(
+                XiaSpacing.s5,
+                XiaSpacing.s4,
+                XiaSpacing.s5,
+                XiaSpacing.s1,
+              ),
               child: Text(
                 '🦐 基本信息',
                 style: theme.textTheme.labelLarge?.copyWith(
-                  color: theme.colorScheme.outline,
+                  color: XiaColors.text3,
                   fontWeight: FontWeight.w600,
+                  fontSize: XiaTypography.sectionLabel,
+                  letterSpacing: 0.8,
                 ),
               ),
             ),
             Container(
-              margin:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              padding: const EdgeInsets.all(16),
+              margin: const EdgeInsets.symmetric(
+                horizontal: XiaSpacing.s6,
+                vertical: XiaSpacing.s2,
+              ),
+              padding: const EdgeInsets.all(XiaSpacing.s5),
               decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12),
+                color: XiaColors.surface,
+                borderRadius: BorderRadius.circular(XiaRadius.lg),
               ),
               child: Column(
                 children: [
@@ -213,24 +225,26 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
                       EmojiAvatar(
                         displayName: agent.displayName,
                         themeColor: _themeColor,
-                        radius: 28,
+                        radius: 32,
                       ),
-                      const SizedBox(width: 14),
+                      const SizedBox(width: XiaSpacing.s5),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               agent.displayName,
-                              style: theme.textTheme.titleMedium?.copyWith(
+                              style: const TextStyle(
+                                fontSize: XiaTypography.configAvatarName,
                                 fontWeight: FontWeight.w700,
+                                letterSpacing: -0.3,
                               ),
                             ),
                             const SizedBox(height: 2),
                             Text(
                               '头像暂不支持更换',
                               style: theme.textTheme.labelSmall?.copyWith(
-                                color: theme.colorScheme.outline,
+                                color: XiaColors.text4,
                               ),
                             ),
                           ],
@@ -238,7 +252,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: XiaSpacing.s4),
                   // Nickname field
                   TextFormField(
                     controller: _nicknameController,
@@ -255,22 +269,31 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
 
             // Section: 主题色
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+              padding: const EdgeInsets.fromLTRB(
+                XiaSpacing.s5,
+                XiaSpacing.s4,
+                XiaSpacing.s5,
+                XiaSpacing.s1,
+              ),
               child: Text(
                 '🎨 主题色',
                 style: theme.textTheme.labelLarge?.copyWith(
-                  color: theme.colorScheme.outline,
+                  color: XiaColors.text3,
                   fontWeight: FontWeight.w600,
+                  fontSize: XiaTypography.sectionLabel,
+                  letterSpacing: 0.8,
                 ),
               ),
             ),
             Container(
-              margin:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              padding: const EdgeInsets.all(16),
+              margin: const EdgeInsets.symmetric(
+                horizontal: XiaSpacing.s6,
+                vertical: XiaSpacing.s2,
+              ),
+              padding: const EdgeInsets.all(XiaSpacing.s5),
               decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12),
+                color: XiaColors.surface,
+                borderRadius: BorderRadius.circular(XiaRadius.lg),
               ),
               child: ColorGrid(
                 colors: _themeColorOptions,
@@ -283,28 +306,11 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
 
             // Save button
             Padding(
-              padding: const EdgeInsets.all(16),
-              child: FilledButton(
+              padding: const EdgeInsets.all(XiaSpacing.s6),
+              child: PrimaryButton(
+                label: '💾 保存配置',
+                isLoading: state.isSaving,
                 onPressed: state.isSaving ? null : _save,
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 48),
-                ),
-                child: state.isSaving
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Text(
-                        '💾 保存配置',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
               ),
             ),
           ],

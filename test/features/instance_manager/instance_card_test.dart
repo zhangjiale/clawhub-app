@@ -225,8 +225,8 @@ void main() {
         _wrap(InstanceCard(instance: testInstance, onTap: () => tapped = true)),
       );
 
-      // Multiple InkWell widgets now (card + action buttons); tap the first
-      await tester.tap(find.byType(InkWell).first);
+      // Multiple GestureDetector widgets now (card + action buttons); tap the card
+      await tester.tap(find.byType(InstanceCard));
       expect(tapped, isTrue);
     });
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
 
 /// 二维码扫码页面 (US-001)
@@ -107,10 +108,10 @@ class _QrScannerPageState extends State<QrScannerPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: XiaColors.bg,
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
+        backgroundColor: XiaColors.bg,
+        foregroundColor: XiaColors.text1,
         title: const Text('Scan QR Code'),
         actions: [
           IconButton(
@@ -138,11 +139,11 @@ class _QrScannerPageState extends State<QrScannerPage> {
                 }
                 return Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(32),
+                    padding: const EdgeInsets.all(XiaSpacing.s7),
                     child: Text(
                       message,
                       style: const TextStyle(
-                        color: Colors.white70,
+                        color: XiaColors.text2,
                         fontSize: 16,
                       ),
                       textAlign: TextAlign.center,
@@ -159,11 +160,8 @@ class _QrScannerPageState extends State<QrScannerPage> {
               width: 260,
               height: 260,
               decoration: BoxDecoration(
-                border: Border.all(
-                  color: Colors.white.withAlpha(100),
-                  width: 2,
-                ),
-                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: XiaColors.text3, width: 2),
+                borderRadius: BorderRadius.circular(XiaRadius.lg),
               ),
               child: Stack(
                 children: [
@@ -200,8 +198,10 @@ class _QrScannerPageState extends State<QrScannerPage> {
             child: Text(
               '将 OpenClaw Gateway 配置二维码置于框内',
               style: theme.textTheme.bodyLarge?.copyWith(
-                color: Colors.white,
-                shadows: [const Shadow(color: Colors.black54, blurRadius: 8)],
+                color: XiaColors.text1,
+                shadows: [
+                  const Shadow(color: Color(0x8A000000), blurRadius: 8),
+                ],
               ),
               textAlign: TextAlign.center,
             ),
@@ -215,22 +215,22 @@ class _QrScannerPageState extends State<QrScannerPage> {
               top: 0,
               child: Material(
                 elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                color: Colors.red.shade700,
+                borderRadius: BorderRadius.circular(XiaRadius.sm),
+                color: XiaColors.red,
                 child: Padding(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(XiaSpacing.s3),
                   child: Row(
                     children: [
                       const Icon(
                         Icons.error_outline,
-                        color: Colors.white,
+                        color: XiaColors.text1,
                         size: 20,
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: XiaSpacing.s2),
                       Expanded(
                         child: Text(
                           _errorMessage!,
-                          style: const TextStyle(color: Colors.white),
+                          style: const TextStyle(color: XiaColors.text1),
                         ),
                       ),
                     ],
@@ -270,7 +270,7 @@ class _CornerPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white
+      ..color = XiaColors.accent
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;

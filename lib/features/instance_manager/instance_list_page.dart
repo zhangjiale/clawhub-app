@@ -5,11 +5,13 @@ import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/features/instance_manager/providers/instance_providers.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/instance_manager/widgets/instance_card.dart';
 import 'package:claw_hub/features/instance_manager/qr_scanner_page.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
 import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
 import 'package:claw_hub/ui_kit/empty_state.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// 实例列表页 (P0 MVP)
 class InstanceListPage extends ConsumerWidget {
@@ -36,7 +38,7 @@ class InstanceListPage extends ConsumerWidget {
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            style: TextButton.styleFrom(foregroundColor: XiaColors.red),
             child: const Text('Delete'),
           ),
         ],
@@ -131,13 +133,13 @@ class InstanceListPage extends ConsumerWidget {
                   SizedBox(
                     height: MediaQuery.of(context).size.height * 0.5,
                     child: const EmptyState(
-                      icon: Icons.dns_outlined,
-                      title: 'No Instances',
-                      subtitle: 'Add your first OpenClaw instance',
+                      icon: Icon(Icons.dns_outlined),
+                      title: '还没有实例',
+                      subtitle: '添加你的第一个 OpenClaw 实例',
                     ),
                   ),
                   _AddInstanceCard(onTap: () => _showAddOptions(context, ref)),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: XiaSpacing.s4),
                 ],
               );
             }
@@ -182,6 +184,7 @@ class InstanceListPage extends ConsumerWidget {
 }
 
 /// 内联"添加实例"虚线卡片 — 对齐原型设计
+/// Press: border color→accent, 200ms ease.
 class _AddInstanceCard extends StatelessWidget {
   final VoidCallback onTap;
 
@@ -191,37 +194,38 @@ class _AddInstanceCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: theme.colorScheme.outline.withAlpha(60),
-              strokeAlign: BorderSide.strokeAlignInside,
-            ),
-            // Dashed effect via dotted border pattern
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.add, size: 20, color: theme.colorScheme.primary),
-              const SizedBox(width: 8),
-              Text(
-                '添加新实例',
-                style: theme.textTheme.titleSmall?.copyWith(
-                  color: theme.colorScheme.primary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+    return PressFeedback(
+      onTap: onTap,
+      builder: (child, isPressed) => AnimatedContainer(
+        duration: XiaMotion.durationFast,
+        curve: XiaMotion.ease,
+        margin: const EdgeInsets.symmetric(
+          horizontal: XiaSpacing.s6,
+          vertical: XiaSpacing.s3,
+        ),
+        padding: const EdgeInsets.all(XiaSpacing.s5),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(XiaRadius.lg),
+          border: Border.all(
+            color: isPressed ? XiaColors.accent : XiaColors.surface3,
+            strokeAlign: BorderSide.strokeAlignInside,
           ),
         ),
+        child: child,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.add, size: 20, color: XiaColors.accent),
+          const SizedBox(width: XiaSpacing.s2),
+          Text(
+            '添加新实例',
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: XiaColors.accent,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }

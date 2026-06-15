@@ -7,8 +7,36 @@ import 'package:claw_hub/app/theme/tokens.dart';
 /// outgoing page shifts left -30% with opacity fade.
 /// Back navigation: reverse of forward.
 ///
-/// Transform: 500ms XiaMotion.ease. Opacity: 350ms XiaMotion.ease.
-/// This staggered timing creates a "fast fade, slow slide" rhythm.
+/// **Timing (B6)**: Transform uses the full route transition duration (500ms)
+/// with XiaMotion.ease. Opacity uses Interval(0.0, 0.7) so the fade completes
+/// in ~350ms of the 500ms total — matching the spec's "先快后慢" rhythm.
+///
+/// Use [XiaTransitionPage] in GoRouter pageBuilder to set the 500ms
+/// transition duration on individual routes.
+class XiaTransitionPage<T> extends Page<T> {
+  final Widget child;
+
+  const XiaTransitionPage({required this.child, super.key, super.name});
+
+  @override
+  Route<T> createRoute(BuildContext context) {
+    return _XiaPageRoute<T>(builder: (_) => child, settings: this);
+  }
+}
+
+/// Internal [MaterialPageRoute] with 500ms transition duration (B6).
+class _XiaPageRoute<T> extends MaterialPageRoute<T> {
+  _XiaPageRoute({
+    required super.builder,
+    super.settings,
+    super.maintainState,
+    super.fullscreenDialog,
+  });
+
+  @override
+  Duration get transitionDuration => XiaMotion.durationSlow; // 500ms
+}
+
 class XiaPageTransitionsBuilder extends PageTransitionsBuilder {
   const XiaPageTransitionsBuilder();
 
@@ -20,24 +48,26 @@ class XiaPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    final curvedAnimation = CurvedAnimation(
+    // Slide: uses full animation duration (should be 500ms from route)
+    final slideAnimation = CurvedAnimation(
       parent: animation,
       curve: XiaMotion.ease,
     );
 
+    // Fade: completes in 70% of total duration via Interval (350ms of 500ms)
+    final fadeAnimation = CurvedAnimation(
+      parent: animation,
+      curve: const Interval(0.0, 0.7, curve: XiaMotion.ease),
+      reverseCurve: const Interval(0.3, 1.0, curve: XiaMotion.easeOut),
+    );
+
     return SlideTransition(
       position: Tween<Offset>(
-        begin: const Offset(1.0, 0.0), // start 100% right
+        begin: const Offset(1.0, 0.0),
         end: Offset.zero,
-      ).animate(curvedAnimation),
+      ).animate(slideAnimation),
       child: FadeTransition(
-        opacity: Tween<double>(begin: 0.0, end: 1.0).animate(
-          CurvedAnimation(
-            parent: animation,
-            curve: XiaMotion.ease,
-            reverseCurve: XiaMotion.easeOut,
-          ),
-        ),
+        opacity: Tween<double>(begin: 0.0, end: 1.0).animate(fadeAnimation),
         child: child,
       ),
     );

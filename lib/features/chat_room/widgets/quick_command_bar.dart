@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Quick command bar — horizontally scrollable capsule pills.
 /// Matching ComponentSpec Section 4.4.
@@ -29,30 +30,46 @@ class QuickCommandBar extends StatelessWidget {
           separatorBuilder: (_, __) => const SizedBox(width: XiaSpacing.s2),
           itemBuilder: (context, index) {
             final cmd = commands[index];
-            return GestureDetector(
+            return _QuickCmdPill(
+              label: cmd.label,
               onTap: () => onCommandTap(cmd.payload),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: XiaSpacing.s4,
-                  vertical: XiaSpacing.s2,
-                ),
-                decoration: BoxDecoration(
-                  color: XiaColors.surface2,
-                  borderRadius: BorderRadius.circular(XiaRadius.full),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  cmd.label,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: XiaColors.accent,
-                    letterSpacing: -0.1,
-                  ),
-                ),
-              ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+/// Single quick-command pill with press feedback.
+/// Spec: scale(0.95) + bg surface2→accentMuted, 200ms ease.
+class _QuickCmdPill extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _QuickCmdPill({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return PressFeedback(
+      scale: 0.95,
+      pressedColor: XiaColors.accentMuted,
+      normalColor: XiaColors.surface2,
+      borderRadius: BorderRadius.circular(XiaRadius.full),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: XiaSpacing.s4,
+          vertical: XiaSpacing.s2,
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+            color: XiaColors.accent,
+            letterSpacing: -0.1,
+          ),
         ),
       ),
     );

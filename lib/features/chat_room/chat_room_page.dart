@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
@@ -18,6 +19,7 @@ import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -45,11 +47,24 @@ class ChatRoomPage extends ConsumerStatefulWidget {
 
 class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ScrollController? _scrollController;
-
+  // C4: Swipe-back tracking
+  bool _swipeFromLeft = false;
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
+    // C2: Auto-scroll on page open
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  void _scrollToBottom() {
+    if (_scrollController?.hasClients ?? false) {
+      _scrollController?.animateTo(
+        0,
+        duration: const Duration(milliseconds: 60),
+        curve: XiaMotion.ease,
+      );
+    }
   }
 
   /// Smart back navigation (US-011).
@@ -74,6 +89,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   @override
   void dispose() {
     _scrollController?.dispose();
+    _scrollController =
+        null; // Prevent post-frame callback from accessing disposed controller
     super.dispose();
   }
 
@@ -93,6 +110,26 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         ? ColorExtension.fromHex(agent.themeColor)
         : null;
 
+    // C2: Auto-scroll — listen for state changes that should trigger scroll
+    ref.listen(chatViewModelProvider(params), (prev, next) {
+      void scheduleScroll() {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+      }
+
+      // Scroll when messages change (after send)
+      if (prev?.messages != next.messages) scheduleScroll();
+      // Scroll when thinking indicator appears
+      if (next.thinkingState == ThinkingState.thinking &&
+          prev?.thinkingState != ThinkingState.thinking) {
+        scheduleScroll();
+      }
+      // Scroll when streaming starts
+      if (next.streamingText.isNotEmpty &&
+          (prev?.streamingText.isEmpty ?? true)) {
+        scheduleScroll();
+      }
+    });
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -100,14 +137,10 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: _handleBack,
-          ),
+          leading: XiaBackButton(onPressed: _handleBack),
           title: agent != null
-              ? GestureDetector(
+              ? PressFeedback(
                   onTap: () {
-                    // Navigate to agent profile
                     context.push(
                       AppRoutes.agentProfileWithParams(
                         agent.localId,
@@ -115,21 +148,32 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                       ),
                     );
                   },
+                  builder: (child, isPressed) => AnimatedOpacity(
+                    opacity: isPressed ? 0.6 : 1.0,
+                    duration: XiaMotion.durationFast,
+                    curve: XiaMotion.ease,
+                    child: child,
+                  ),
                   child: Row(
                     children: [
-                      CircleAvatar(
-                        radius: 16,
-                        backgroundColor: agentColor,
-                        foregroundColor: agentColor!.contrastingTextColor(),
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: agentColor,
+                          borderRadius: BorderRadius.circular(XiaRadius.sm),
+                        ),
+                        alignment: Alignment.center,
                         child: Text(
                           agent.displayName.characters.first,
                           style: const TextStyle(
-                            fontSize: 14,
+                            fontSize: 18,
                             fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: XiaSpacing.s3),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -174,86 +218,104 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
               : const Text('Chat'),
           actions: [
             if (agent != null)
-              IconButton(
-                icon: const Icon(Icons.more_vert),
-                onPressed: () {
-                  context.push(
-                    AppRoutes.agentProfileWithParams(
-                      agent.localId,
-                      source: widget.source,
+              Padding(
+                padding: const EdgeInsets.only(right: XiaSpacing.s2),
+                child: HeaderButton(
+                  icon: Icons.more_vert,
+                  onPressed: () {
+                    context.push(
+                      AppRoutes.agentProfileWithParams(
+                        agent.localId,
+                        source: widget.source,
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+        body: GestureDetector(
+          // C4: Swipe-back — right swipe >80px from left edge <40px
+          onHorizontalDragStart: (details) {
+            if (details.localPosition.dx < 40) _swipeFromLeft = true;
+          },
+          onHorizontalDragEnd: (details) {
+            if (_swipeFromLeft &&
+                details.primaryVelocity != null &&
+                details.primaryVelocity! > 800) {
+              _handleBack();
+            }
+            _swipeFromLeft = false;
+          },
+          onHorizontalDragCancel: () => _swipeFromLeft = false,
+          child: Column(
+            children: [
+              // Disconnect / connecting banner
+              ConnectionBanner(connectionState: session.connectionState),
+
+              // Timeout banner
+              if (session.thinkingState == ThinkingState.timeout)
+                MaterialBanner(
+                  content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
+                  backgroundColor: AppColors.statusConnecting.withAlpha(30),
+                  leading: const Icon(
+                    Icons.hourglass_top,
+                    color: AppColors.statusConnecting,
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => vm.dismissTimeout(),
+                      child: const Text('取消等待'),
                     ),
-                  );
+                    TextButton(
+                      onPressed: () => vm.continueWaiting(),
+                      child: const Text('继续等待'),
+                    ),
+                  ],
+                ),
+
+              // Message list
+              Expanded(
+                child: switch (session.messages) {
+                  LoadInProgress() => const LoadingSkeleton(count: 3),
+                  LoadError(:final error) => LoadErrorView(
+                    error: error,
+                    title: 'Failed to load messages',
+                    onRetry: () => vm.retry(),
+                  ),
+                  LoadData(:final value) when value.isEmpty => _buildEmptyState(
+                    theme,
+                  ),
+                  LoadData(:final value) => _buildMessageList(
+                    value,
+                    session.toolCalls,
+                    agent?.displayName ?? 'Agent',
+                    theme,
+                  ),
                 },
               ),
-          ],
-        ),
-        body: Column(
-          children: [
-            // Disconnect / connecting banner
-            ConnectionBanner(connectionState: session.connectionState),
 
-            // Timeout banner
-            if (session.thinkingState == ThinkingState.timeout)
-              MaterialBanner(
-                content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
-                backgroundColor: AppColors.statusConnecting.withAlpha(30),
-                leading: const Icon(
-                  Icons.hourglass_top,
-                  color: AppColors.statusConnecting,
+              // Streaming bubble — show live text as it arrives
+              if (session.streamingText.isNotEmpty)
+                StreamingBubble(
+                  text: session.streamingText,
+                  agentName: agent?.displayName ?? 'Agent',
+                )
+              // Thinking indicator — show dots while waiting for first text
+              else if (session.thinkingState == ThinkingState.thinking)
+                const ThinkingIndicator(),
+
+              // Quick command bar
+              if (agent != null && agent.quickCommands.isNotEmpty)
+                QuickCommandBar(
+                  commands: agent.quickCommands,
+                  onCommandTap: (payload) => vm.send(payload),
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => vm.dismissTimeout(),
-                    child: const Text('取消等待'),
-                  ),
-                  TextButton(
-                    onPressed: () => vm.continueWaiting(),
-                    child: const Text('继续等待'),
-                  ),
-                ],
-              ),
 
-            // Message list
-            Expanded(
-              child: switch (session.messages) {
-                LoadInProgress() => const LoadingSkeleton(count: 3),
-                LoadError(:final error) => LoadErrorView(
-                  error: error,
-                  title: 'Failed to load messages',
-                  onRetry: () => vm.retry(),
-                ),
-                LoadData(:final value) when value.isEmpty => _buildEmptyState(
-                  theme,
-                ),
-                LoadData(:final value) => _buildMessageList(
-                  value,
-                  session.toolCalls,
-                  agent?.displayName ?? 'Agent',
-                  theme,
-                ),
-              },
-            ),
-
-            // Streaming bubble — show live text as it arrives
-            if (session.streamingText.isNotEmpty)
-              StreamingBubble(
-                text: session.streamingText,
-                agentName: agent?.displayName ?? 'Agent',
-              )
-            // Thinking indicator — show dots while waiting for first text
-            else if (session.thinkingState == ThinkingState.thinking)
-              const ThinkingIndicator(),
-
-            // Quick command bar
-            if (agent != null && agent.quickCommands.isNotEmpty)
-              QuickCommandBar(
-                commands: agent.quickCommands,
-                onCommandTap: (payload) => vm.send(payload),
-              ),
-
-            ChatInputBar(onSend: (text) => vm.send(text)),
-          ],
-        ),
+              ChatInputBar(onSend: (text) => vm.send(text)),
+            ],
+          ),
+        ), // GestureDetector (C4 swipe)
       ), // Scaffold
     ); // PopScope
   }
@@ -280,7 +342,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             size: 48,
             color: theme.colorScheme.outline,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: XiaSpacing.s3),
           Text(
             'Send a message to start',
             style: theme.textTheme.bodyMedium?.copyWith(
@@ -301,7 +363,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     return ListView.builder(
       controller: _scrollController,
       reverse: true,
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: XiaSpacing.s2),
       itemCount: messages.length,
       itemBuilder: (context, index) {
         final message = messages[index];
@@ -309,7 +371,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MessageBubble(message: message, agentName: agentName),
+            MessageBubble(message: message, agentName: agentName, index: index),
             if (tc != null) ToolCallCard(toolCall: tc),
           ],
         );

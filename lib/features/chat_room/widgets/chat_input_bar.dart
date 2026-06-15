@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/toast.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Chat input bar — matching ComponentSpec Section 4.5.
 ///
@@ -51,10 +52,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           // Plus button
-          _SmallButton(
-            icon: Icons.add,
-            onPressed: _showAttachmentOptions,
-          ),
+          _SmallButton(icon: Icons.add, onPressed: _showAttachmentOptions),
           const SizedBox(width: XiaSpacing.s3),
           // Input field
           Expanded(
@@ -62,7 +60,8 @@ class _ChatInputBarState extends State<ChatInputBar> {
               controller: _controller,
               minLines: 1,
               maxLines: 4,
-              textInputAction: TextInputAction.newline,
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _send(),
               style: const TextStyle(
                 color: XiaColors.text1,
                 fontSize: 15,
@@ -86,13 +85,10 @@ class _ChatInputBarState extends State<ChatInputBar> {
           ),
           const SizedBox(width: XiaSpacing.s3),
           // Send button
-          Opacity(
-            opacity: _hasText ? 1.0 : 0.3,
-            child: _SmallButton(
-              icon: Icons.send,
-              onPressed: _hasText ? _send : null,
-              accent: true,
-            ),
+          _SmallButton(
+            icon: Icons.send,
+            onPressed: _hasText ? _send : null,
+            accent: true,
           ),
         ],
       ),
@@ -105,28 +101,41 @@ class _SmallButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final bool accent;
 
-  const _SmallButton({
-    required this.icon,
-    this.onPressed,
-    this.accent = false,
-  });
+  const _SmallButton({required this.icon, this.onPressed, this.accent = false});
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 40,
-      height: 40,
-      child: Material(
-        color: accent ? XiaColors.accent : XiaColors.surface2,
-        borderRadius: BorderRadius.circular(XiaRadius.md),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(XiaRadius.md),
-          onTap: onPressed,
-          child: Icon(
-            icon,
-            color: accent ? Colors.white : XiaColors.text3,
-            size: 20,
+    final bool enabled = onPressed != null;
+
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.4,
+      child: PressFeedback(
+        scale: !enabled
+            ? 1.0
+            : accent
+            ? 0.92
+            : 0.95,
+        onTap: onPressed,
+        builder: (child, isPressed) => AnimatedContainer(
+          duration: XiaMotion.durationFast,
+          curve: XiaMotion.ease,
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: !enabled
+                ? (accent ? XiaColors.accent : XiaColors.surface2)
+                : accent
+                ? XiaColors.accent
+                : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
+            borderRadius: BorderRadius.circular(XiaRadius.md),
           ),
+          alignment: Alignment.center,
+          child: child,
+        ),
+        child: Icon(
+          icon,
+          color: accent ? Colors.white : XiaColors.text3,
+          size: 20,
         ),
       ),
     );

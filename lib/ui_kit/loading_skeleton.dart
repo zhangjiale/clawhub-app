@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
 /// 加载骨架屏组件
 /// 对齐: 架构 vFinal 8.2 (ui_kit/empty_states/)
@@ -15,10 +16,10 @@ class LoadingSkeleton extends StatelessWidget {
 
     return ListView.builder(
       itemCount: count,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(XiaSpacing.s4),
       itemBuilder: (context, index) {
         return const Padding(
-          padding: EdgeInsets.only(bottom: 12),
+          padding: EdgeInsets.only(bottom: XiaSpacing.s3),
           child: _SkeletonCard(),
         );
       },
@@ -34,7 +35,7 @@ class _SkeletonCard extends StatelessWidget {
     final theme = Theme.of(context);
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(XiaSpacing.s4),
         child: Row(
           children: [
             // Avatar placeholder
@@ -46,7 +47,7 @@ class _SkeletonCard extends StatelessWidget {
                 shape: BoxShape.circle,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: XiaSpacing.s3),
             // Text placeholders
             Expanded(
               child: Column(
@@ -60,7 +61,7 @@ class _SkeletonCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: XiaSpacing.s2),
                   Container(
                     height: 10,
                     decoration: BoxDecoration(

@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 
-/// Global empty state component matching design spec.
+/// Global empty state component matching design spec (Section 10.6).
 ///
-/// Icon: 48px, text4 color, opacity 0.7.
+/// Icon: 48px, text4 color, opacity 0.7 (when [icon] is an IconData).
+/// For emoji, pass a [Text] widget directly.
 /// Title: 17px, weight 600, text2 color.
 /// Description: 14px, text3 color, line-height 1.6.
 /// Padding: 48 vertical / 24 horizontal (s9/s6).
+///
+/// **C5**: [icon] parameter changed from IconData to Widget to support
+/// emoji text (🦐) as specified in the design spec.
 class EmptyState extends StatelessWidget {
-  final IconData icon;
+  final Widget icon;
   final String title;
   final String? subtitle;
   final String? actionLabel;
@@ -34,10 +38,7 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Opacity(
-              opacity: 0.7,
-              child: Icon(icon, size: 48, color: XiaColors.text4),
-            ),
+            Opacity(opacity: 0.7, child: _buildIcon()),
             const SizedBox(height: XiaSpacing.s5),
             Text(
               title,
@@ -62,14 +63,18 @@ class EmptyState extends StatelessWidget {
             ],
             if (onAction != null && actionLabel != null) ...[
               const SizedBox(height: XiaSpacing.s6),
-              ElevatedButton(
-                onPressed: onAction,
-                child: Text(actionLabel!),
-              ),
+              ElevatedButton(onPressed: onAction, child: Text(actionLabel!)),
             ],
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildIcon() {
+    // icon is typed Widget; all callers pass either Icon(IconData) or Text.
+    // The IconData switch branch was removed — it was unreachable because
+    // IconData is not a Widget subtype.
+    return icon;
   }
 }

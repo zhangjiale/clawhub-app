@@ -130,7 +130,7 @@ class ClawHubApp extends ConsumerWidget {
 
     return _ConnectionInitializer(
       child: MaterialApp.router(
-        title: 'ClawHub',
+        title: '虾Hub',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.darkTheme,
         darkTheme: AppTheme.darkTheme,

@@ -55,7 +55,7 @@ void main() {
     testWidgets('calls onTap when tapped', (tester) async {
       var tapped = false;
       await tester.pumpWidget(buildCard(onTap: () => tapped = true));
-      await tester.tap(find.byType(InkWell));
+      await tester.tap(find.byType(AgentCard));
       expect(tapped, isTrue);
     });
 

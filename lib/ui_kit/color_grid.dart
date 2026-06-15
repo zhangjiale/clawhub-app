@@ -20,7 +20,7 @@ class ColorOption {
 
 /// 12-color grid picker (6 columns, 40×40 rounded squares).
 /// Matching ComponentSpec Section 6.5.
-class ColorGrid extends StatelessWidget {
+class ColorGrid extends StatefulWidget {
   final List<ColorOption> colors;
   final String selectedColor;
   final ValueChanged<String> onColorSelected;
@@ -33,6 +33,13 @@ class ColorGrid extends StatelessWidget {
   });
 
   @override
+  State<ColorGrid> createState() => _ColorGridState();
+}
+
+class _ColorGridState extends State<ColorGrid> {
+  int? _pressedIndex;
+
+  @override
   Widget build(BuildContext context) {
     return GridView.builder(
       shrinkWrap: true,
@@ -43,44 +50,59 @@ class ColorGrid extends StatelessWidget {
         crossAxisSpacing: XiaSpacing.s3,
         childAspectRatio: 1,
       ),
-      itemCount: colors.length,
+      itemCount: widget.colors.length,
       itemBuilder: (context, index) {
-        final option = colors[index];
+        final option = widget.colors[index];
         final color = ColorExtension.fromHex(option.hex);
         final isSelected =
-            option.hex.toUpperCase() == selectedColor.toUpperCase();
+            option.hex.toUpperCase() == widget.selectedColor.toUpperCase();
+        final isPressed = _pressedIndex == index;
 
         return GestureDetector(
-          onTap: () => onColorSelected(option.hex),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: BorderRadius.circular(XiaRadius.sm),
-              border: isSelected
-                  ? Border.all(color: XiaColors.text1, width: 3)
-                  : Border.all(color: Colors.transparent, width: 3),
-              boxShadow: isSelected ? XiaShadow.selectedGlow : null,
-            ),
-            child: isSelected
-                ? const Center(
-                    child: Text(
-                      '✓',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                        shadows: [
-                          Shadow(
-                            color: Color(0x66000000),
-                            blurRadius: 3,
-                          ),
-                        ],
+          onTapDown: (_) => setState(() => _pressedIndex = index),
+          onTapUp: (_) {
+            // Defer reset so the pressed scale animation renders at least
+            // one frame — onTapDown/onTapUp fire in the same gesture cycle
+            // and setState calls would otherwise coalesce.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() => _pressedIndex = null);
+            });
+          },
+          onTapCancel: () {
+            if (mounted) setState(() => _pressedIndex = null);
+          },
+          onTap: () => widget.onColorSelected(option.hex),
+          child: AnimatedScale(
+            scale: isPressed ? 0.9 : 1.0,
+            duration: XiaMotion.durationFast,
+            curve: XiaMotion.ease,
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(XiaRadius.sm),
+                border: isSelected
+                    ? Border.all(color: XiaColors.text1, width: 3)
+                    : Border.all(color: Colors.transparent, width: 3),
+                boxShadow: isSelected ? XiaShadow.selectedGlow : null,
+              ),
+              child: isSelected
+                  ? const Center(
+                      child: Text(
+                        '✓',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          shadows: [
+                            Shadow(color: Color(0x66000000), blurRadius: 3),
+                          ],
+                        ),
                       ),
-                    ),
-                  )
-                : null,
+                    )
+                  : null,
+            ),
           ),
         );
       },

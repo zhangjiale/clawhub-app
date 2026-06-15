@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/app/theme/page_transition.dart';
 import 'package:claw_hub/features/instance_manager/instance_list_page.dart';
 import 'package:claw_hub/features/instance_manager/add_instance_page.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
@@ -10,7 +11,9 @@ import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/message_hub/message_hub_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
+import 'package:claw_hub/features/settings/settings_page.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Route path constants.
 class AppRoutes {
@@ -21,6 +24,7 @@ class AppRoutes {
   static const String instances = '/instances';
   static const String chat = '/chat/:agentId';
   static const String agentProfile = '/agent-profile/:agentId';
+  static const String settings = '/claws/settings';
   static const String addInstance = '/instances/add';
   static const String editInstance = '/instances/edit/:instanceId';
 
@@ -82,14 +86,17 @@ class AppRouter {
   static GoRoute _chatRoute() {
     return GoRoute(
       path: 'chat/:agentId',
-      builder: (context, state) {
+      pageBuilder: (context, state) {
         final agentId = state.pathParameters['agentId']!;
         final instanceId = state.uri.queryParameters['instanceId'] ?? '';
         final source = state.uri.queryParameters['source'];
-        return ChatRoomPage(
-          agentId: agentId,
-          instanceId: instanceId,
-          source: source,
+        return XiaTransitionPage(
+          key: state.pageKey,
+          child: ChatRoomPage(
+            agentId: agentId,
+            instanceId: instanceId,
+            source: source,
+          ),
         );
       },
     );
@@ -129,21 +136,34 @@ class AppRouter {
                   routes: [
                     _chatRoute(),
                     GoRoute(
+                      path: 'settings',
+                      pageBuilder: (context, state) => XiaTransitionPage(
+                        key: state.pageKey,
+                        child: const SettingsPage(),
+                      ),
+                    ),
+                    GoRoute(
                       path: 'agent-profile/:agentId',
-                      builder: (context, state) {
+                      pageBuilder: (context, state) {
                         final agentId = state.pathParameters['agentId']!;
                         final source = state.uri.queryParameters['source'];
-                        return AgentProfilePage(
-                          agentId: agentId,
-                          source: source,
+                        return XiaTransitionPage(
+                          key: state.pageKey,
+                          child: AgentProfilePage(
+                            agentId: agentId,
+                            source: source,
+                          ),
                         );
                       },
                     ),
                     GoRoute(
                       path: 'agent-profile/config/:agentId',
-                      builder: (context, state) {
+                      pageBuilder: (context, state) {
                         final agentId = state.pathParameters['agentId']!;
-                        return AgentConfigPage(agentId: agentId);
+                        return XiaTransitionPage(
+                          key: state.pageKey,
+                          child: AgentConfigPage(agentId: agentId),
+                        );
                       },
                     ),
                   ],
@@ -169,16 +189,22 @@ class AppRouter {
                   routes: [
                     GoRoute(
                       path: 'add',
-                      builder: (context, state) {
+                      pageBuilder: (context, state) {
                         final scanResult = state.extra as QrScanResult?;
-                        return AddInstancePage(scanResult: scanResult);
+                        return XiaTransitionPage(
+                          key: state.pageKey,
+                          child: AddInstancePage(scanResult: scanResult),
+                        );
                       },
                     ),
                     GoRoute(
                       path: 'edit/:instanceId',
-                      builder: (context, state) {
+                      pageBuilder: (context, state) {
                         final instanceId = state.pathParameters['instanceId']!;
-                        return AddInstancePage(instanceId: instanceId);
+                        return XiaTransitionPage(
+                          key: state.pageKey,
+                          child: AddInstancePage(instanceId: instanceId),
+                        );
                       },
                     ),
                   ],
@@ -192,55 +218,82 @@ class AppRouter {
   }
 }
 
+/// Routes that should NOT show the bottom navigation bar.
+const _fullScreenPaths = {
+  // Settings, agent profile, agent config (under /claws)
+  '/claws/settings',
+  '/claws/agent-profile',
+  '/claws/chat',
+  // Chat (under /messages)
+  '/messages/chat',
+  // Add/edit instance (under /instances)
+  '/instances/add',
+  '/instances/edit',
+};
+
 /// Three-tab scaffold with glassmorphism bottom nav.
+///
+/// Hides the bottom nav on detail pages (chat, settings, profile, etc.)
+/// so the user gets a full-screen chat experience.
 class _TabScaffold extends StatelessWidget {
   final StatefulNavigationShell navigationShell;
 
   const _TabScaffold({required this.navigationShell});
 
+  bool _isFullScreen(BuildContext context) {
+    final path = GoRouterState.of(context).uri.path;
+    return _fullScreenPaths.any(
+      (prefix) => path == prefix || path.startsWith('$prefix/'),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final showNav = !_isFullScreen(context);
+
     return Scaffold(
       body: navigationShell,
-      bottomNavigationBar: ClipRect(
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(
-            sigmaX: XiaGlass.navBlur,
-            sigmaY: XiaGlass.navBlur,
-          ),
-          child: Container(
-            height: 72,
-            decoration: const BoxDecoration(
-              color: XiaGlass.navBackground,
-              border: Border(top: BorderSide(color: XiaColors.divider)),
-            ),
-            child: Row(
-              children: [
-                _NavTab(
-                  icon: Icons.pets,
-                  label: '虾列表',
-                  isActive: navigationShell.currentIndex == 0,
-                  onTap: () => navigationShell.goBranch(0),
+      bottomNavigationBar: showNav
+          ? ClipRect(
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(
+                  sigmaX: XiaGlass.navBlur,
+                  sigmaY: XiaGlass.navBlur,
                 ),
-                _NavTab(
-                  icon: Icons.chat_bubble_outline,
-                  activeIcon: Icons.chat_bubble,
-                  label: '消息',
-                  isActive: navigationShell.currentIndex == 1,
-                  onTap: () => navigationShell.goBranch(1),
+                child: Container(
+                  height: 72,
+                  decoration: const BoxDecoration(
+                    color: XiaGlass.navBackground,
+                    border: Border(top: BorderSide(color: XiaColors.divider)),
+                  ),
+                  child: Row(
+                    children: [
+                      _NavTab(
+                        icon: Icons.pets,
+                        label: '虾列表',
+                        isActive: navigationShell.currentIndex == 0,
+                        onTap: () => navigationShell.goBranch(0),
+                      ),
+                      _NavTab(
+                        icon: Icons.chat_bubble_outline,
+                        activeIcon: Icons.chat_bubble,
+                        label: '消息',
+                        isActive: navigationShell.currentIndex == 1,
+                        onTap: () => navigationShell.goBranch(1),
+                      ),
+                      _NavTab(
+                        icon: Icons.dns_outlined,
+                        activeIcon: Icons.dns,
+                        label: '实例',
+                        isActive: navigationShell.currentIndex == 2,
+                        onTap: () => navigationShell.goBranch(2),
+                      ),
+                    ],
+                  ),
                 ),
-                _NavTab(
-                  icon: Icons.dns_outlined,
-                  activeIcon: Icons.dns,
-                  label: '实例',
-                  isActive: navigationShell.currentIndex == 2,
-                  onTap: () => navigationShell.goBranch(2),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+              ),
+            )
+          : null,
     );
   }
 }
@@ -265,7 +318,8 @@ class _NavTab extends StatelessWidget {
     final color = isActive ? XiaColors.accent : XiaColors.text4;
 
     return Expanded(
-      child: GestureDetector(
+      child: PressFeedback(
+        scale: 0.95,
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
         child: Padding(

@@ -308,8 +308,10 @@ class MockGatewayClient implements IGatewayClient {
 
   @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
-    // Mock 环境永不触发配对流程
-    return Stream.value(null);
+    // Mock 环境永不触发配对流程。
+    // asBroadcastStream delivers null to every subscriber, survives hot-reload
+    // disconnect/reconnect cycles in development.
+    return Stream<GatewayPairingInfo?>.value(null).asBroadcastStream();
   }
 
   StreamController<GatewayConnectionState> _getOrCreateConnectionController(

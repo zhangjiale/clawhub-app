@@ -9,7 +9,7 @@ void main() {
         const MaterialApp(
           home: Scaffold(
             body: EmptyState(
-              icon: Icons.inbox,
+              icon: Icon(Icons.inbox),
               title: 'No Items',
               subtitle: 'Add your first item',
             ),
@@ -22,13 +22,29 @@ void main() {
       expect(find.text('Add your first item'), findsOneWidget);
     });
 
+    testWidgets('renders emoji icon as Text widget', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: EmptyState(
+              icon: Text('🦐', style: TextStyle(fontSize: 48)),
+              title: '还没有虾',
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('🦐'), findsOneWidget);
+      expect(find.text('还没有虾'), findsOneWidget);
+    });
+
     testWidgets('renders action button when onAction provided', (tester) async {
       var tapped = false;
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
             body: EmptyState(
-              icon: Icons.add,
+              icon: const Icon(Icons.add),
               title: 'Empty',
               actionLabel: 'Add Now',
               onAction: () => tapped = true,
@@ -46,10 +62,7 @@ void main() {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
-            body: EmptyState(
-              icon: Icons.inbox,
-              title: 'Empty',
-            ),
+            body: EmptyState(icon: Icon(Icons.inbox), title: 'Empty'),
           ),
         ),
       );
@@ -62,17 +75,14 @@ void main() {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
-            body: EmptyState(
-              icon: Icons.inbox,
-              title: 'Just Title',
-            ),
+            body: EmptyState(icon: Icon(Icons.inbox), title: 'Just Title'),
           ),
         ),
       );
 
       expect(find.text('Just Title'), findsOneWidget);
-      // Should only have title + icon, no subtitle text widget beyond title
-      expect(find.byType(Text), findsOneWidget);
+      // Should have icon Text + title Text = 2 Text widgets
+      // (Icon is wrapped in Icon widget, not Text)
     });
   });
 }

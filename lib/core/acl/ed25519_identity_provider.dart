@@ -87,8 +87,10 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
             '[Ed25519Identity] Loaded keypair failed validation — '
             'clearing and regenerating',
           );
-          await _secureStorage.delete(key: _privateKeyKey);
-          await _secureStorage.delete(key: _publicKeyKey);
+          await Future.wait([
+            _secureStorage.delete(key: _privateKeyKey),
+            _secureStorage.delete(key: _publicKeyKey),
+          ]);
           _seedBytes = null;
           _publicKeyB64 = null;
           // Fall through to generation path below
@@ -161,9 +163,9 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
   // Internal
   // ---------------------------------------------------------------------------
 
-  /// 验证当前内存中的密钥对是否一致且可用。
+  /// 验证当前内存中的密钥对是否一致。
   ///
-  /// 从种子重建私钥，提取内嵌公钥并与持久化公钥比对。
+  /// 从种子重建私钥，比对提取的内嵌公钥与持久化公钥。
   /// 若种子损坏（例如安全存储写入部分失败），重建的公钥将不匹配，
   /// 此时返回 `false`，调用方应清除并重新生成。
   ///
@@ -176,9 +178,13 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
       // PrivateKey = 64 bytes: [32B seed] [32B publicKey]
       // ed25519_edwards 的 PrivateKey 未暴露独立的 .publicKey getter，
       // 因此从 bytes 中直接提取后 32 字节作为公钥。
+      // ed.newKeyFromSeed() reconstructs the full 64-byte private key
+      // from the stored seed; if that succeeds and the embedded public
+      // key bytes match the stored public key, the keypair is valid.
       _validateKeypairBytesMatch(privateKey);
 
-      // sign 调用成功即证明密钥可用（内部会验证数学一致性）
+      // 端到端密码学一致性验证：通过实际签名操作确认密钥可用。
+      // 仅靠字节比对无法捕获退化的曲线点或库内部状态损坏。
       const testMessage = 'clawhub-ed25519-validation';
       ed.sign(privateKey, Uint8List.fromList(testMessage.codeUnits));
 
@@ -226,19 +232,23 @@ class Ed25519IdentityProvider implements IDeviceIdentityProvider {
       Uint8List.fromList(keyPair.publicKey.bytes),
     );
 
-    await _secureStorage.write(
-      key: _privateKeyKey,
-      value: base64Url.encode(_seedBytes!),
-    );
-    await _secureStorage.write(key: _publicKeyKey, value: _publicKeyB64);
+    await Future.wait([
+      _secureStorage.write(
+        key: _privateKeyKey,
+        value: base64Url.encode(_seedBytes!),
+      ),
+      _secureStorage.write(key: _publicKeyKey, value: _publicKeyB64),
+    ]);
 
     if (!_validateKeypair()) {
       _logger.error(
         '[Ed25519Identity] Generated keypair failed validation — '
         'clearing and will retry on next ensureDeviceIdentity()',
       );
-      await _secureStorage.delete(key: _privateKeyKey);
-      await _secureStorage.delete(key: _publicKeyKey);
+      await Future.wait([
+        _secureStorage.delete(key: _privateKeyKey),
+        _secureStorage.delete(key: _publicKeyKey),
+      ]);
       _seedBytes = null;
       _publicKeyB64 = null;
       throw StateError('Ed25519 keypair validation failed after generation');

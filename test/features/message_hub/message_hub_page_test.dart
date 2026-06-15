@@ -13,21 +13,17 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
-            conversationListProvider
-                .overrideWith((ref) async => const ConversationListData(
-                      previews: [],
-                    )),
+            conversationListProvider.overrideWith(
+              (ref) async => const ConversationListData(previews: []),
+            ),
           ],
           child: const MaterialApp(home: MessageHubPage()),
         ),
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('No Messages'), findsOneWidget);
-      expect(
-        find.text('还没有和任何虾对话过，去虾列表找一只开始聊天吧'),
-        findsOneWidget,
-      );
+      expect(find.text('还没有消息'), findsOneWidget);
+      expect(find.text('去虾列表找一只虾开始聊天吧'), findsOneWidget);
     });
 
     testWidgets('shows conversation tiles when data exists', (tester) async {
@@ -48,16 +44,18 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
-            conversationListProvider.overrideWith((ref) async => ConversationListData(
-                  previews: [
-                    ConversationPreview(
-                      conversation: conversation,
-                      agent: agent,
-                      instanceName: 'My MacBook',
-                      healthStatus: HealthStatus.unknown,
-                    ),
-                  ],
-                )),
+            conversationListProvider.overrideWith(
+              (ref) async => ConversationListData(
+                previews: [
+                  ConversationPreview(
+                    conversation: conversation,
+                    agent: agent,
+                    instanceName: 'My MacBook',
+                    healthStatus: HealthStatus.unknown,
+                  ),
+                ],
+              ),
+            ),
           ],
           child: const MaterialApp(home: MessageHubPage()),
         ),
@@ -65,10 +63,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('产品虾'), findsOneWidget);
-      expect(
-        find.text('你好，有什么可以帮你的？'),
-        findsOneWidget,
-      );
+      expect(find.text('你好，有什么可以帮你的？'), findsOneWidget);
     });
 
     testWidgets('shows multiple conversation tiles', (tester) async {
@@ -91,32 +86,34 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
-            conversationListProvider.overrideWith((ref) async => ConversationListData(
-                  previews: [
-                    ConversationPreview(
-                      conversation: Conversation(
-                        agentId: 'local-1',
-                        instanceId: 'inst-1',
-                        lastMessagePreview: '产品相关的讨论',
-                        lastMessageTime: now,
-                      ),
-                      agent: agent1,
-                      instanceName: 'My MacBook',
-                      healthStatus: HealthStatus.unknown,
+            conversationListProvider.overrideWith(
+              (ref) async => ConversationListData(
+                previews: [
+                  ConversationPreview(
+                    conversation: Conversation(
+                      agentId: 'local-1',
+                      instanceId: 'inst-1',
+                      lastMessagePreview: '产品相关的讨论',
+                      lastMessageTime: now,
                     ),
-                    ConversationPreview(
-                      conversation: Conversation(
-                        agentId: 'local-2',
-                        instanceId: 'inst-1',
-                        lastMessagePreview: '代码已更新',
-                        lastMessageTime: now - 60000,
-                      ),
-                      agent: agent2,
-                      instanceName: 'My MacBook',
-                      healthStatus: HealthStatus.unknown,
+                    agent: agent1,
+                    instanceName: 'My MacBook',
+                    healthStatus: HealthStatus.unknown,
+                  ),
+                  ConversationPreview(
+                    conversation: Conversation(
+                      agentId: 'local-2',
+                      instanceId: 'inst-1',
+                      lastMessagePreview: '代码已更新',
+                      lastMessageTime: now - 60000,
                     ),
-                  ],
-                )),
+                    agent: agent2,
+                    instanceName: 'My MacBook',
+                    healthStatus: HealthStatus.unknown,
+                  ),
+                ],
+              ),
+            ),
           ],
           child: const MaterialApp(home: MessageHubPage()),
         ),

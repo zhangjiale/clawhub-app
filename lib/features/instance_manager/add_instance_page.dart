@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/di/providers.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/features/instance_manager/qr_scan_result.dart';
 
@@ -112,32 +114,35 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(isEditing ? 'Edit Instance' : 'Add Instance')),
+      appBar: AppBar(
+        leading: XiaBackButton(onPressed: () => context.pop()),
+        title: Text(isEditing ? 'Edit Instance' : 'Add Instance'),
+      ),
       body: Form(
         key: _formKey,
         child: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(XiaSpacing.s4),
           children: [
             // US-001: QR scan pre-fill indicator
             if (widget.scanResult != null) ...[
               Container(
-                padding: const EdgeInsets.all(12),
-                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.all(XiaSpacing.s3),
+                margin: const EdgeInsets.only(bottom: XiaSpacing.s4),
                 decoration: BoxDecoration(
-                  color: Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.green.shade200),
+                  color: XiaColors.greenMuted,
+                  borderRadius: BorderRadius.circular(XiaRadius.sm),
+                  border: Border.all(color: XiaColors.green),
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.qr_code, color: Colors.green.shade700, size: 20),
-                    const SizedBox(width: 8),
+                    const Icon(Icons.qr_code, color: XiaColors.green, size: 20),
+                    const SizedBox(width: XiaSpacing.s2),
                     Expanded(
                       child: Text(
                         'Info pre-filled from QR code',
-                        style: TextStyle(
-                          color: Colors.green.shade700,
-                          fontSize: 13,
+                        style: const TextStyle(
+                          color: XiaColors.green,
+                          fontSize: XiaTypography.aux,
                         ),
                       ),
                     ),
@@ -154,7 +159,7 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
               validator: _validateName,
               autovalidateMode: AutovalidateMode.onUserInteraction,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: XiaSpacing.s4),
             TextFormField(
               controller: _urlController,
               decoration: const InputDecoration(
@@ -165,7 +170,7 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
               keyboardType: TextInputType.url,
               autovalidateMode: AutovalidateMode.onUserInteraction,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: XiaSpacing.s4),
             TextFormField(
               controller: _tokenController,
               decoration: const InputDecoration(
@@ -174,16 +179,11 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
               ),
               obscureText: true,
             ),
-            const SizedBox(height: 32),
-            FilledButton(
+            const SizedBox(height: XiaSpacing.s7),
+            PrimaryButton(
+              label: 'Save',
+              isLoading: _isSaving,
               onPressed: _isSaving ? null : _onSave,
-              child: _isSaving
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Save'),
             ),
           ],
         ),

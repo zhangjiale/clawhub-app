@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Streaming text bubble — shows Agent reply text as it arrives in real time.
 ///
@@ -12,6 +13,8 @@ import 'package:claw_hub/app/theme/tokens.dart';
 /// - Debounced MarkdownBody rebuild (150ms) to avoid frame drops on mid-range devices
 /// - Height-constrained with internal scroll to prevent input-bar displacement
 /// - Image rendering disabled (security: prevents exfiltration via external URLs)
+///
+/// **Enter animation (B4)**: 350ms opacity + slide via [StaggeredEnterItem].
 class StreamingBubble extends StatefulWidget {
   final String text;
   final String agentName;
@@ -38,10 +41,12 @@ class _StreamingBubbleState extends State<StreamingBubble>
   @override
   void initState() {
     super.initState();
+    // Cursor blink duration (B4: changed from 600ms to durationFast).
     _cursorController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 600),
+      duration: XiaMotion.durationFast,
     )..repeat(reverse: true);
+
     _renderedText = widget.text;
   }
 
@@ -81,99 +86,90 @@ class _StreamingBubbleState extends State<StreamingBubble>
     final viewportHeight = MediaQuery.of(context).size.height;
     final maxBubbleHeight = viewportHeight * 0.4;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
-        vertical: 4,
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // Agent mini avatar (matches MessageBubble)
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(XiaRadius.sm),
-              color: XiaColors.accentMuted,
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              widget.agentName.characters.first,
-              style: const TextStyle(
-                fontSize: 12,
-                color: XiaColors.accent,
-                fontWeight: FontWeight.bold,
+    return StaggeredEnterItem(
+      index: 0,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: XiaSpacing.s6,
+          vertical: 4,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // Agent mini avatar (matches MessageBubble)
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(XiaRadius.sm),
+                color: XiaColors.accentMuted,
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                widget.agentName.characters.first,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: XiaColors.accent,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: XiaSpacing.s2),
-          Flexible(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: maxBubbleHeight),
-              child: Container(
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.78,
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: XiaSpacing.s5,
-                  vertical: XiaSpacing.s3,
-                ),
-                decoration: BoxDecoration(
-                  color: XiaColors.surface,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(XiaRadius.xl),
-                    topRight: Radius.circular(XiaRadius.xl),
-                    bottomRight: Radius.circular(XiaRadius.xl),
-                    bottomLeft: Radius.circular(XiaRadius.sm),
+            const SizedBox(width: XiaSpacing.s2),
+            Flexible(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxBubbleHeight),
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.78,
                   ),
-                  boxShadow: XiaShadow.s,
-                ),
-                child: SingleChildScrollView(
-                  reverse: true,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      MarkdownBody(
-                        data: _renderedText,
-                        selectable: true,
-                        // Security: never fetch external images during
-                        // streaming (prevents IP exfiltration).
-                        sizedImageBuilder: (_) => const SizedBox.shrink(),
-                        styleSheet: _markdownStyle(),
-                      ),
-                      // Blinking cursor below rendered markdown — using
-                      // Column instead of Stack+Positioned so the cursor
-                      // always sits at the text frontier, not at the
-                      // bottom-right corner of a multi-line MarkdownBody.
-                      //
-                      // The cursor is drawn via CustomPaint (not a Unicode
-                      // glyph) to guarantee identical rendering across all
-                      // platforms regardless of system font availability.
-                      const SizedBox(height: 2),
-                      AnimatedBuilder(
-                        animation: _cursorController,
-                        builder: (context, child) {
-                          return Opacity(
-                            opacity: _cursorController.value,
-                            child: const SizedBox(
-                              width: _CursorPainter.cursorWidth,
-                              height: _CursorPainter.cursorHeight,
-                              child: const CustomPaint(
-                                painter: const _CursorPainter(),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: XiaSpacing.s5,
+                    vertical: XiaSpacing.s3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: XiaColors.surface,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(XiaRadius.xl),
+                      topRight: Radius.circular(XiaRadius.xl),
+                      bottomRight: Radius.circular(XiaRadius.xl),
+                      bottomLeft: Radius.circular(XiaRadius.sm),
+                    ),
+                    boxShadow: XiaShadow.s,
+                  ),
+                  child: SingleChildScrollView(
+                    reverse: true,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        MarkdownBody(
+                          data: _renderedText,
+                          selectable: true,
+                          sizedImageBuilder: (_) => const SizedBox.shrink(),
+                          styleSheet: _markdownStyle(),
+                        ),
+                        const SizedBox(height: 2),
+                        AnimatedBuilder(
+                          animation: _cursorController,
+                          builder: (context, child) {
+                            return Opacity(
+                              opacity: _cursorController.value,
+                              child: const SizedBox(
+                                width: _CursorPainter.cursorWidth,
+                                height: _CursorPainter.cursorHeight,
+                                child: CustomPaint(painter: _CursorPainter()),
                               ),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

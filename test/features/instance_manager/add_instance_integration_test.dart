@@ -112,7 +112,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Empty list
-      expect(find.text('No Instances'), findsOneWidget);
+      expect(find.text('还没有实例'), findsOneWidget);
 
       // Navigate to add page
       await navigateToAddPage(tester);
