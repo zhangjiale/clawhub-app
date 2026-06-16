@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
@@ -56,7 +58,9 @@ class AgentCard extends StatelessWidget {
                   EmojiAvatar(
                     displayName: agent.displayName,
                     themeColor: agent.themeColor,
-                    avatarUrl: agent.avatarUrl,
+                    avatarImage: agent.avatarUrl != null
+                        ? FileImage(File(agent.avatarUrl!))
+                        : null,
                     radius: 24, // 48×48
                     borderRadius: XiaRadius.md,
                     fontSize: 24,

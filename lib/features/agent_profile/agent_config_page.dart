@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -13,42 +15,32 @@ import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
-/// 主题色选项，由 [AppColors.agentColors] 生成（唯一真相源），
-/// 中文标签来自 [_colorLabels]。
+/// 主题色选项，由 [AppColors.agentColors] + [XiaColors.agentColorLabels] 生成（唯一真相源）。
 ///
-/// 如果 _colorLabels 条目不足（颜色数 > 标签数），超出部分用 "颜色 N" 兜底，
-/// 避免 release 模式下因 assert 被移除而导致索引越界崩溃。
+/// 中文标签来自 [XiaColors.agentColorLabels]（`lib/app/theme/tokens.dart`），
+/// 不再在本地维护重复的 [_colorLabels] 列表。
+/// 如果标签条目不足，超出部分用 "颜色 N" 兜底，避免索引越界崩溃。
 final _themeColorOptions = () {
   assert(
-    _colorLabels.length >= AppColors.agentColors.length,
-    '_colorLabels (${_colorLabels.length}) 条目不足，'
-    'AppColors.agentColors 有 ${AppColors.agentColors.length} 个颜色',
+    () {
+      final colorCount = AppColors.agentColors.length;
+      final labels = XiaColors.agentColorLabels;
+      return colorCount <= labels.length &&
+          List.generate(
+            colorCount,
+            (i) => i,
+          ).every((i) => labels.containsKey(i));
+    }(),
+    'XiaColors.agentColorLabels 缺少索引 0..${AppColors.agentColors.length - 1} 的条目',
   );
   return List.generate(
     AppColors.agentColors.length,
     (i) => ColorOption(
       hex: AppColors.agentColors[i].toHex(),
-      label: i < _colorLabels.length ? _colorLabels[i] : '颜色 $i',
+      label: XiaColors.agentColorLabels[i] ?? '颜色 $i',
     ),
   );
 }();
-
-// 为每个颜色选项补充中文标签（顺序与 AppColors.agentColors 一一对应）
-// 标签名称与 design-tokens.md Section 1.5 的 Per-Agent 主题色一致
-const _colorLabels = [
-  '珊瑚',
-  '雾蓝',
-  '薄荷',
-  '暖橙',
-  '烟粉',
-  '湖蓝',
-  '暖黄',
-  '玫瑰',
-  '石墨',
-  '翡翠',
-  '靛蓝',
-  '焦糖',
-];
 
 /// 个性化配置页
 ///
@@ -354,7 +346,9 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
                         EmojiAvatar(
                           displayName: agent.displayName,
                           themeColor: _themeColor,
-                          avatarUrl: agent.avatarUrl,
+                          avatarImage: agent.avatarUrl != null
+                              ? FileImage(File(agent.avatarUrl!))
+                              : null,
                           radius: 32,
                         ),
                         if (state.isSaving)

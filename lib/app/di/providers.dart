@@ -6,7 +6,7 @@ import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
-import 'package:claw_hub/core/avatar_storage_service.dart';
+import 'package:claw_hub/data/services/avatar_storage_service.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/core/i_logger.dart';

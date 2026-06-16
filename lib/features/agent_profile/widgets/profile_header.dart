@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
@@ -28,7 +30,9 @@ class ProfileHeader extends StatelessWidget {
           EmojiAvatar(
             displayName: agent.displayName,
             themeColor: agent.themeColor,
-            avatarUrl: agent.avatarUrl,
+            avatarImage: agent.avatarUrl != null
+                ? FileImage(File(agent.avatarUrl!))
+                : null,
             radius: 36,
             borderRadius: XiaRadius.lg,
             fontSize: 36,

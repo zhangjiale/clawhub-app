@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
@@ -62,7 +64,7 @@ void main() {
             body: EmojiAvatar(
               displayName: '产品虾',
               themeColor: '#6c5ce7',
-              avatarUrl: '/nonexistent/path/avatar.jpg',
+              avatarImage: FileImage(File('/nonexistent/path/avatar.jpg')),
             ),
           ),
         ),

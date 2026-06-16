@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:claw_hub/core/avatar_storage_service.dart';
+import 'package:claw_hub/data/services/avatar_storage_service.dart';
 
 void main() {
   group('AvatarStorageService', () {

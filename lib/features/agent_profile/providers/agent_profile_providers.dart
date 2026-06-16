@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
@@ -19,6 +22,14 @@ final agentProfileViewModelProvider =
         messageRepo: ref.watch(messageRepoProvider),
         avatarStorageService: ref.watch(avatarStorageServiceProvider),
         agentId: agentId,
+        onAvatarChanged: (path) {
+          // Best-effort cache eviction — non-fatal if unavailable
+          try {
+            imageCache.evict(FileImage(File(path)));
+          } catch (_) {
+            /* iron-law-allow: Law8 — best-effort cache eviction */
+          }
+        },
       );
       vm.init();
       ref.onDispose(() => vm.dispose());

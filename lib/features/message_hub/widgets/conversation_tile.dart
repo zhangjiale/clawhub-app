@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/app/theme/theme.dart';
@@ -44,7 +46,9 @@ class ConversationTile extends StatelessWidget {
                 EmojiAvatar(
                   displayName: agent.displayName,
                   themeColor: agent.themeColor,
-                  avatarUrl: agent.avatarUrl,
+                  avatarImage: agent.avatarUrl != null
+                      ? FileImage(File(agent.avatarUrl!))
+                      : null,
                   backgroundColor: conv.isMuted ? XiaColors.surface2 : null,
                   radius: 24,
                   borderRadius: XiaRadius.md,

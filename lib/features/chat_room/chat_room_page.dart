@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -157,7 +159,9 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                       EmojiAvatar(
                         displayName: agent.displayName,
                         themeColor: agent.themeColor,
-                        avatarUrl: agent.avatarUrl,
+                        avatarImage: agent.avatarUrl != null
+                            ? FileImage(File(agent.avatarUrl!))
+                            : null,
                         radius: 20, // 40×40
                         borderRadius: XiaRadius.sm,
                         fontSize: 18,

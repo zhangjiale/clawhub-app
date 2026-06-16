@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
@@ -98,16 +96,25 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final IAvatarStorageService _avatarStorageService;
   final String agentId;
 
+  /// Optional callback invoked when an avatar file needs cache eviction.
+  ///
+  /// Receives the absolute file path of the old avatar image. The callback
+  /// is wired in the provider layer to call [imageCache.evict], keeping
+  /// [dart:io] and [package:flutter/widgets.dart] out of the ViewModel.
+  final void Function(String path)? _onAvatarChanged;
+
   AgentProfileViewModel({
     required IAgentRepo agentRepo,
     required IInstanceRepo instanceRepo,
     required IMessageRepo messageRepo,
     required IAvatarStorageService avatarStorageService,
     required this.agentId,
+    void Function(String path)? onAvatarChanged,
   }) : _agentRepo = agentRepo,
        _instanceRepo = instanceRepo,
        _messageRepo = messageRepo,
        _avatarStorageService = avatarStorageService,
+       _onAvatarChanged = onAvatarChanged,
        super(const AgentProfileState());
 
   /// 初始化：加载 agent 详情 + 实例信息 + 消息统计。
@@ -198,14 +205,10 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
       // 2) Persist path in database
       await _agentRepo.updateLocalProfile(agentId, avatarUrl: savedPath);
 
-      // 3) Evict stale Flutter image cache (same path → new content).
-      // Best-effort: non-fatal if the image cache is unavailable
-      // (e.g. in unit tests without Flutter bindings).
-      try {
-        imageCache.evict(FileImage(File(savedPath)));
-      } catch (_) {
-        /* iron-law-allow: Law8 — best-effort cache eviction */
-      }
+      // 3) Notify UI layer to evict stale Flutter image cache
+      // (same path → new content). Best-effort via callback —
+      // non-fatal if unavailable (e.g. in unit tests).
+      _onAvatarChanged?.call(savedPath);
 
       // 4) Reload agent data so UI picks up new avatarUrl
       await refresh();
@@ -247,14 +250,10 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
       //    使用 Value.absent() 语义（跳过该列），无法真正清除已有值。
       await _agentRepo.clearAvatar(agentId);
 
-      // 3) Evict stale cache — best-effort, non-fatal if unavailable.
+      // 3) Notify UI layer to evict stale cache — best-effort via callback.
       // Uses the known avatarUrl rather than recomputing via getAvatarPath.
       if (currentAvatarUrl != null) {
-        try {
-          imageCache.evict(FileImage(File(currentAvatarUrl)));
-        } catch (_) {
-          /* iron-law-allow: Law8 — best-effort cache eviction */
-        }
+        _onAvatarChanged?.call(currentAvatarUrl);
       }
 
       // 4) Reload
