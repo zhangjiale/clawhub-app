@@ -159,6 +159,31 @@ class InMemoryAgentRepo implements IAgentRepo {
   }
 
   @override
+  Future<void> updateFullProfile(
+    String localId, {
+    String? nickname,
+    String? avatarUrl,
+    String? themeColor,
+    List<QuickCommand>? quickCommands,
+  }) async {
+    final agent = _store[localId];
+    if (agent == null) throw StateError('Agent 不存在: $localId');
+
+    // In-memory: single copyWith is inherently atomic (no partial-write risk).
+    var updated = agent.copyWith(
+      nickname: nickname,
+      avatarUrl: avatarUrl,
+      themeColor: themeColor,
+    );
+    if (quickCommands != null) {
+      updated = updated.copyWith(
+        quickCommands: [...quickCommands]..sort(QuickCommand.sortByOrder),
+      );
+    }
+    _putAgent(updated);
+  }
+
+  @override
   Future<void> clearAvatar(String localId) async {
     final agent = _store[localId];
     if (agent == null) throw StateError('Agent 不存在: $localId');

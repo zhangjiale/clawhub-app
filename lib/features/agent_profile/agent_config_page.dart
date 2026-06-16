@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
@@ -14,6 +15,7 @@ import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
+import 'package:claw_hub/features/agent_profile/widgets/quick_commands_editor.dart';
 
 /// 主题色选项，由 [AppColors.agentColors] + [XiaColors.agentColorLabels] 生成（唯一真相源）。
 ///
@@ -61,6 +63,7 @@ class AgentConfigPage extends ConsumerStatefulWidget {
 class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
   final _nicknameController = TextEditingController();
   String _themeColor = '#007AFF'; // Agent 默认主题色，始终为有效 hex
+  List<QuickCommand> _quickCommands = const [];
   bool _formReady = false;
 
   @override
@@ -83,6 +86,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
       _formReady = true;
       _nicknameController.text = detail.agent.nickname ?? '';
       _themeColor = detail.agent.themeColor;
+      _quickCommands = detail.agent.quickCommands;
     }
   }
 
@@ -98,7 +102,11 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
     final nickname = text.isEmpty ? null : text;
     ref
         .read(agentProfileViewModelProvider(widget.agentId).notifier)
-        .saveProfile(nickname: nickname, themeColor: _themeColor);
+        .saveProfile(
+          nickname: nickname,
+          themeColor: _themeColor,
+          quickCommands: _quickCommands,
+        );
   }
 
   // ── Avatar picker ──────────────────────────────────────────
@@ -231,6 +239,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
             _formReady = true;
             _nicknameController.text = detail.agent.nickname ?? '';
             _themeColor = detail.agent.themeColor;
+            _quickCommands = detail.agent.quickCommands;
           });
         }
       }
@@ -426,6 +435,43 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
                 onColorSelected: state.isSaving
                     ? (_) {}
                     : (color) => setState(() => _themeColor = color),
+              ),
+            ),
+
+            // Section: 快捷指令
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                XiaSpacing.s5,
+                XiaSpacing.s4,
+                XiaSpacing.s5,
+                XiaSpacing.s1,
+              ),
+              child: Text(
+                '⚡ 快捷指令',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  color: XiaColors.text3,
+                  fontWeight: FontWeight.w600,
+                  fontSize: XiaTypography.sectionLabel,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ),
+            Container(
+              margin: const EdgeInsets.symmetric(
+                horizontal: XiaSpacing.s6,
+                vertical: XiaSpacing.s2,
+              ),
+              padding: const EdgeInsets.all(XiaSpacing.s5),
+              decoration: BoxDecoration(
+                color: XiaColors.surface,
+                borderRadius: BorderRadius.circular(XiaRadius.lg),
+              ),
+              child: QuickCommandsEditor(
+                agentId: agent.localId,
+                commands: _quickCommands,
+                onChanged: state.isSaving
+                    ? (_) {}
+                    : (cmds) => setState(() => _quickCommands = cmds),
               ),
             ),
 

@@ -194,7 +194,10 @@ final instanceRepoProvider = Provider<IInstanceRepo>((ref) {
 });
 
 final agentRepoProvider = Provider<IAgentRepo>((ref) {
-  return DriftAgentRepo(ref.watch(databaseProvider));
+  return DriftAgentRepo(
+    ref.watch(databaseProvider),
+    avatarStorage: ref.watch(avatarStorageServiceProvider),
+  );
 });
 
 final messageRepoProvider = Provider<IMessageRepo>((ref) {

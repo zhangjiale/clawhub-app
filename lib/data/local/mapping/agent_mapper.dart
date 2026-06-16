@@ -1,10 +1,9 @@
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
-
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
+import 'package:flutter/foundation.dart';
 
 import '../database/database.dart' as db;
+import 'quick_command_codec.dart';
 
 /// Maps between Drift-generated [db.Agent] rows and the domain [Agent] model.
 class AgentMapper {
@@ -24,7 +23,7 @@ class AgentMapper {
       themeColor: row.themeColor ?? '#007AFF',
       description: row.description,
       isPinned: row.isPinned == 1,
-      quickCommands: _parseQuickCommands(row.quickCommandsJson),
+      quickCommands: _safeDeserializeQuickCommands(row.quickCommandsJson),
       createdAt: row.createdAt,
     );
   }
@@ -33,21 +32,12 @@ class AgentMapper {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  static List<QuickCommand> _parseQuickCommands(String? json) {
-    if (json == null || json.isEmpty) return [];
+  /// Deserialize quick_commands_json with graceful fallback.
+  /// Corrupted JSON is logged and returns an empty list so the app doesn't
+  /// crash — the user can still re-add their commands.
+  static List<QuickCommand> _safeDeserializeQuickCommands(String? json) {
     try {
-      final list = jsonDecode(json) as List<dynamic>;
-      return list
-          .map(
-            (e) => QuickCommand(
-              id: e['id'] as String? ?? '',
-              agentId: e['agentId'] as String? ?? '',
-              label: e['label'] as String? ?? '',
-              payload: e['payload'] as String? ?? '',
-              sortOrder: e['sortOrder'] as int? ?? 0,
-            ),
-          )
-          .toList();
+      return QuickCommandCodec.deserialize(json);
     } catch (error, stackTrace) {
       debugPrint('Failed to parse quick_commands JSON: $error\n$stackTrace');
       return [];

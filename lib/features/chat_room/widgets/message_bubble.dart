@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/enums.dart';
@@ -60,7 +61,9 @@ class MessageBubble extends StatelessWidget {
                       vertical: XiaSpacing.s3,
                     ),
                     decoration: BoxDecoration(
-                      color: _isUser ? XiaColors.accent : XiaColors.surface,
+                      color: _isUser
+                          ? AgentTheme.of(context).primary
+                          : XiaColors.surface,
                       borderRadius: BorderRadius.only(
                         topLeft: const Radius.circular(XiaRadius.xl),
                         topRight: const Radius.circular(XiaRadius.xl),

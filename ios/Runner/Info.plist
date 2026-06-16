@@ -5,7 +5,7 @@
 		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>
 		<key>NSCameraUsageDescription</key>
-		<string>ClawHub needs camera access to scan OpenClaw Gateway configuration QR codes</string>
+		<string>ClawHub needs camera access to scan OpenClaw Gateway configuration QR codes and to set your agent's custom avatar</string>
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>虾Hub needs photo library access to set your agent's custom avatar</string>
 		<key>NSAppTransportSecurity</key>

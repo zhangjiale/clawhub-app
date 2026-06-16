@@ -139,6 +139,14 @@ class _NoopAgentRepo implements IAgentRepo {
   @override
   Future<void> clearAvatar(String localId) async {}
   @override
+  Future<void> updateFullProfile(
+    String localId, {
+    String? nickname,
+    String? avatarUrl,
+    String? themeColor,
+    List<QuickCommand>? quickCommands,
+  }) async {}
+  @override
   Future<void> deleteByInstanceId(String instanceId) async {}
 }
 

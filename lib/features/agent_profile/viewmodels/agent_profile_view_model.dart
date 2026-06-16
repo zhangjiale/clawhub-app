@@ -8,6 +8,7 @@ import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
+import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 
 /// Agent 详情聚合数据（不可变值对象）
@@ -165,17 +166,21 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     String? nickname,
     String? themeColor,
     String? avatarUrl,
+    List<QuickCommand>? quickCommands,
   }) async {
     if (state.isSaving) return;
     _updateState(
       (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
     );
     try {
-      await _agentRepo.updateLocalProfile(
+      // Single transactional write — profile fields + quick commands
+      // succeed or fail together (no half-committed state).
+      await _agentRepo.updateFullProfile(
         agentId,
         nickname: nickname,
         themeColor: themeColor,
         avatarUrl: avatarUrl,
+        quickCommands: quickCommands,
       );
       // 保存后刷新详情数据，Profile 页自动看到最新值
       await refresh();

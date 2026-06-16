@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
+import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
@@ -130,186 +132,205 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       }
     });
 
+    // Compute agent-themed colors *before* the Theme widget so the AppBar
+    // (which is constructed using this build method's context, not a child
+    // context) can use the correct values.
+    final agentPrimaryColor = agent != null
+        ? ColorExtension.fromHex(agent.themeColor)
+        : null;
+    final agentPrimaryMuted = agentPrimaryColor?.withAlpha(31);
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _handleBack();
       },
-      child: Scaffold(
-        appBar: AppBar(
-          leading: XiaBackButton(onPressed: _handleBack),
-          title: agent != null
-              ? PressFeedback(
-                  onTap: () {
-                    context.push(
-                      AppRoutes.agentProfileWithParams(
-                        agent.localId,
-                        source: widget.source,
-                      ),
-                    );
-                  },
-                  builder: (child, isPressed) => AnimatedOpacity(
-                    opacity: isPressed ? 0.6 : 1.0,
-                    duration: XiaMotion.durationFast,
-                    curve: XiaMotion.ease,
-                    child: child,
-                  ),
-                  child: Row(
-                    children: [
-                      EmojiAvatar(
-                        displayName: agent.displayName,
-                        themeColor: agent.themeColor,
-                        avatarImage: agent.avatarUrl != null
-                            ? FileImage(File(agent.avatarUrl!))
-                            : null,
-                        radius: 20, // 40×40
-                        borderRadius: XiaRadius.sm,
-                        fontSize: 18,
-                      ),
-                      const SizedBox(width: XiaSpacing.s3),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    agent.displayName,
-                                    style: theme.textTheme.titleSmall,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                // Connection status dot
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: _connectionDotColor(
-                                      session.connectionState,
-                                    ),
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (agent.description != null)
-                              Text(
-                                agent.description!,
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  color: theme.colorScheme.outline,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                          ],
+      child: Theme(
+        data: Theme.of(context).copyWith(
+          extensions: agentPrimaryColor != null
+              ? [
+                  ...Theme.of(context).extensions.values,
+                  AgentTheme(primary: agentPrimaryColor),
+                ]
+              : Theme.of(context).extensions.values.toList(),
+        ),
+        child: Scaffold(
+          appBar: AppBar(
+            backgroundColor:
+                agentPrimaryMuted ?? XiaColors.accent.withAlpha(31),
+            leading: XiaBackButton(onPressed: _handleBack),
+            title: agent != null
+                ? PressFeedback(
+                    onTap: () {
+                      context.push(
+                        AppRoutes.agentProfileWithParams(
+                          agent.localId,
+                          source: widget.source,
                         ),
+                      );
+                    },
+                    builder: (child, isPressed) => AnimatedOpacity(
+                      opacity: isPressed ? 0.6 : 1.0,
+                      duration: XiaMotion.durationFast,
+                      curve: XiaMotion.ease,
+                      child: child,
+                    ),
+                    child: Row(
+                      children: [
+                        EmojiAvatar(
+                          displayName: agent.displayName,
+                          themeColor: agent.themeColor,
+                          avatarImage: agent.avatarUrl != null
+                              ? FileImage(File(agent.avatarUrl!))
+                              : null,
+                          radius: 20, // 40×40
+                          borderRadius: XiaRadius.sm,
+                          fontSize: 18,
+                        ),
+                        const SizedBox(width: XiaSpacing.s3),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      agent.displayName,
+                                      style: theme.textTheme.titleSmall,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  // Connection status dot
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: _connectionDotColor(
+                                        session.connectionState,
+                                      ),
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (agent.description != null)
+                                Text(
+                                  agent.description!,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: theme.colorScheme.outline,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : const Text('Chat'),
+            actions: [
+              if (agent != null)
+                Padding(
+                  padding: const EdgeInsets.only(right: XiaSpacing.s2),
+                  child: HeaderButton(
+                    icon: Icons.more_vert,
+                    onPressed: () {
+                      context.push(
+                        AppRoutes.agentProfileWithParams(
+                          agent.localId,
+                          source: widget.source,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+          body: GestureDetector(
+            // C4: Swipe-back — right swipe >80px from left edge <40px
+            onHorizontalDragStart: (details) {
+              if (details.localPosition.dx < 40) _swipeFromLeft = true;
+            },
+            onHorizontalDragEnd: (details) {
+              if (_swipeFromLeft &&
+                  details.primaryVelocity != null &&
+                  details.primaryVelocity! > 800) {
+                _handleBack();
+              }
+              _swipeFromLeft = false;
+            },
+            onHorizontalDragCancel: () => _swipeFromLeft = false,
+            child: Column(
+              children: [
+                // Disconnect / connecting banner
+                ConnectionBanner(connectionState: session.connectionState),
+
+                // Timeout banner
+                if (session.thinkingState == ThinkingState.timeout)
+                  MaterialBanner(
+                    content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
+                    backgroundColor: AppColors.statusConnecting.withAlpha(30),
+                    leading: const Icon(
+                      Icons.hourglass_top,
+                      color: AppColors.statusConnecting,
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => vm.dismissTimeout(),
+                        child: const Text('取消等待'),
+                      ),
+                      TextButton(
+                        onPressed: () => vm.continueWaiting(),
+                        child: const Text('继续等待'),
                       ),
                     ],
                   ),
-                )
-              : const Text('Chat'),
-          actions: [
-            if (agent != null)
-              Padding(
-                padding: const EdgeInsets.only(right: XiaSpacing.s2),
-                child: HeaderButton(
-                  icon: Icons.more_vert,
-                  onPressed: () {
-                    context.push(
-                      AppRoutes.agentProfileWithParams(
-                        agent.localId,
-                        source: widget.source,
-                      ),
-                    );
+
+                // Message list
+                Expanded(
+                  child: switch (session.messages) {
+                    LoadInProgress() => const LoadingSkeleton(count: 3),
+                    LoadError(:final error) => LoadErrorView(
+                      error: error,
+                      title: 'Failed to load messages',
+                      onRetry: () => vm.retry(),
+                    ),
+                    LoadData(:final value) when value.isEmpty =>
+                      _buildEmptyState(theme),
+                    LoadData(:final value) => _buildMessageList(
+                      value,
+                      session.toolCalls,
+                      agent?.displayName ?? 'Agent',
+                      theme,
+                    ),
                   },
                 ),
-              ),
-          ],
-        ),
-        body: GestureDetector(
-          // C4: Swipe-back — right swipe >80px from left edge <40px
-          onHorizontalDragStart: (details) {
-            if (details.localPosition.dx < 40) _swipeFromLeft = true;
-          },
-          onHorizontalDragEnd: (details) {
-            if (_swipeFromLeft &&
-                details.primaryVelocity != null &&
-                details.primaryVelocity! > 800) {
-              _handleBack();
-            }
-            _swipeFromLeft = false;
-          },
-          onHorizontalDragCancel: () => _swipeFromLeft = false,
-          child: Column(
-            children: [
-              // Disconnect / connecting banner
-              ConnectionBanner(connectionState: session.connectionState),
 
-              // Timeout banner
-              if (session.thinkingState == ThinkingState.timeout)
-                MaterialBanner(
-                  content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
-                  backgroundColor: AppColors.statusConnecting.withAlpha(30),
-                  leading: const Icon(
-                    Icons.hourglass_top,
-                    color: AppColors.statusConnecting,
+                // Streaming bubble — show live text as it arrives
+                if (session.streamingText.isNotEmpty)
+                  StreamingBubble(
+                    text: session.streamingText,
+                    agentName: agent?.displayName ?? 'Agent',
+                  )
+                // Thinking indicator — show dots while waiting for first text
+                else if (session.thinkingState == ThinkingState.thinking)
+                  const ThinkingIndicator(),
+
+                // Quick command bar
+                if (agent != null && agent.quickCommands.isNotEmpty)
+                  QuickCommandBar(
+                    commands: agent.quickCommands,
+                    onCommandTap: (payload) => vm.send(payload),
                   ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => vm.dismissTimeout(),
-                      child: const Text('取消等待'),
-                    ),
-                    TextButton(
-                      onPressed: () => vm.continueWaiting(),
-                      child: const Text('继续等待'),
-                    ),
-                  ],
-                ),
 
-              // Message list
-              Expanded(
-                child: switch (session.messages) {
-                  LoadInProgress() => const LoadingSkeleton(count: 3),
-                  LoadError(:final error) => LoadErrorView(
-                    error: error,
-                    title: 'Failed to load messages',
-                    onRetry: () => vm.retry(),
-                  ),
-                  LoadData(:final value) when value.isEmpty => _buildEmptyState(
-                    theme,
-                  ),
-                  LoadData(:final value) => _buildMessageList(
-                    value,
-                    session.toolCalls,
-                    agent?.displayName ?? 'Agent',
-                    theme,
-                  ),
-                },
-              ),
-
-              // Streaming bubble — show live text as it arrives
-              if (session.streamingText.isNotEmpty)
-                StreamingBubble(
-                  text: session.streamingText,
-                  agentName: agent?.displayName ?? 'Agent',
-                )
-              // Thinking indicator — show dots while waiting for first text
-              else if (session.thinkingState == ThinkingState.thinking)
-                const ThinkingIndicator(),
-
-              // Quick command bar
-              if (agent != null && agent.quickCommands.isNotEmpty)
-                QuickCommandBar(
-                  commands: agent.quickCommands,
-                  onCommandTap: (payload) => vm.send(payload),
-                ),
-
-              ChatInputBar(onSend: (text) => vm.send(text)),
-            ],
-          ),
-        ), // GestureDetector (C4 swipe)
-      ), // Scaffold
+                ChatInputBar(onSend: (text) => vm.send(text)),
+              ],
+            ),
+          ), // GestureDetector (C4 swipe)
+        ), // Scaffold
+      ), // Theme
     ); // PopScope
   }
 

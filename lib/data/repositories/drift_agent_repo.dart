@@ -1,15 +1,20 @@
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:drift/drift.dart' show Value;
 
+import '../../core/i_avatar_storage_service.dart';
 import '../local/database/database.dart' as db;
 import '../local/mapping/agent_mapper.dart';
+import '../local/mapping/quick_command_codec.dart';
 
 /// Drift/SQLite implementation of [IAgentRepo].
 class DriftAgentRepo implements IAgentRepo {
   final db.AppDatabase _database;
+  final IAvatarStorageService? _avatarStorage;
 
-  DriftAgentRepo(this._database);
+  DriftAgentRepo(this._database, {IAvatarStorageService? avatarStorage})
+    : _avatarStorage = avatarStorage;
 
   @override
   Future<List<Agent>> getByInstanceId(String instanceId) async {
@@ -95,31 +100,78 @@ class DriftAgentRepo implements IAgentRepo {
     String? avatarUrl,
     String? themeColor,
   }) async {
-    final existing = await getById(localId);
-    if (existing == null) throw StateError('Agent 不存在: $localId');
+    // Existence check + write in a single transaction to prevent TOCTOU race.
+    await _database.transaction(() async {
+      final row = await _database.getAgentByLocalId(localId).getSingleOrNull();
+      if (row == null) throw StateError('Agent 不存在: $localId');
 
-    // Use Drift's typed update (not customStatement) so that table-watching
-    // streams are invalidated and UI widgets observing agent queries
-    // receive the update without manual refresh.
-    //
-    // Value.absent() means "skip this column" — equivalent to COALESCE(?, col).
-    await (_database.update(
-      _database.agents,
-    )..where((tbl) => tbl.localId.equals(localId))).write(
-      db.AgentsCompanion(
-        nickname: nickname != null
-            ? Value<String?>(nickname)
-            : const Value<String?>.absent(),
-        avatarUrl: avatarUrl != null
-            ? Value<String?>(avatarUrl)
-            : const Value<String?>.absent(),
-        themeColor: themeColor != null
-            ? Value<String?>(themeColor)
-            : const Value<String?>.absent(),
-      ),
-    );
+      // Use Drift's typed update (not customStatement) so that table-watching
+      // streams are invalidated and UI widgets observing agent queries
+      // receive the update without manual refresh.
+      //
+      // Value.absent() means "skip this column" — equivalent to COALESCE(?, col).
+      await (_database.update(
+        _database.agents,
+      )..where((tbl) => tbl.localId.equals(localId))).write(
+        db.AgentsCompanion(
+          nickname: nickname != null
+              ? Value<String?>(nickname)
+              : const Value<String?>.absent(),
+          avatarUrl: avatarUrl != null
+              ? Value<String?>(avatarUrl)
+              : const Value<String?>.absent(),
+          themeColor: themeColor != null
+              ? Value<String?>(themeColor)
+              : const Value<String?>.absent(),
+        ),
+      );
+    });
 
     return (await getById(localId))!;
+  }
+
+  @override
+  Future<void> updateFullProfile(
+    String localId, {
+    String? nickname,
+    String? avatarUrl,
+    String? themeColor,
+    List<QuickCommand>? quickCommands,
+  }) async {
+    // Existence check + write in a single transaction to prevent TOCTOU race.
+    await _database.transaction(() async {
+      final row = await _database.getAgentByLocalId(localId).getSingleOrNull();
+      if (row == null) throw StateError('Agent 不存在: $localId');
+
+      // 1) Profile fields (nickname / avatarUrl / themeColor)
+      final hasProfileUpdate =
+          nickname != null || avatarUrl != null || themeColor != null;
+      if (hasProfileUpdate) {
+        await (_database.update(
+          _database.agents,
+        )..where((tbl) => tbl.localId.equals(localId))).write(
+          db.AgentsCompanion(
+            nickname: nickname != null
+                ? Value<String?>(nickname)
+                : const Value<String?>.absent(),
+            avatarUrl: avatarUrl != null
+                ? Value<String?>(avatarUrl)
+                : const Value<String?>.absent(),
+            themeColor: themeColor != null
+                ? Value<String?>(themeColor)
+                : const Value<String?>.absent(),
+          ),
+        );
+      }
+
+      // 2) Quick commands
+      if (quickCommands != null) {
+        await _database.updateAgentQuickCommands(
+          QuickCommandCodec.serialize(quickCommands),
+          localId,
+        );
+      }
+    });
   }
 
   @override
@@ -151,6 +203,16 @@ class DriftAgentRepo implements IAgentRepo {
       for (final agent in agents) {
         // localId is the PRIMARY KEY — guaranteed non-null when read from DB.
         await _database.purgeMessagesFtsForAgent(agent.localId!);
+        // iron-law-allow: Law8 -- 清理沙箱文件失败不影响主流程
+        if (_avatarStorage != null) {
+          try {
+            await _avatarStorage!.deleteAvatar(agent.localId!);
+          } catch (_) {
+            // Best-effort: avatar file deletion must not block instance
+            // deletion. The file may already be gone or on an unmounted
+            // volume — both are acceptable outcomes.
+          }
+        }
       }
       await _database.deleteAgentsByInstanceId(instanceId);
     });

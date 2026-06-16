@@ -1,4 +1,5 @@
 import '../models/agent.dart';
+import '../models/quick_command.dart';
 
 /// Agent 仓库接口
 /// 对齐: 架构 vFinal 5.2 (消息中心聚合)
@@ -27,6 +28,17 @@ abstract class IAgentRepo {
     String? nickname,
     String? avatarUrl,
     String? themeColor,
+  });
+
+  /// Atomically update profile fields and quick commands in a single
+  /// transaction.  Guarantees all-or-nothing — if any write fails, none
+  /// of the changes are persisted.
+  Future<void> updateFullProfile(
+    String localId, {
+    String? nickname,
+    String? avatarUrl,
+    String? themeColor,
+    List<QuickCommand>? quickCommands,
   });
 
   /// 清除头像 — 将 avatarUrl 显式置为 null。

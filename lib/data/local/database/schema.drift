@@ -180,6 +180,9 @@ VALUES (:localId, :remoteId, :instanceId, :name, :nickname, :avatarUrl, :themeCo
 updateAgentFromGateway:
 UPDATE agents SET name = :name, description = :description WHERE local_id = :localId;
 
+updateAgentQuickCommands:
+UPDATE agents SET quick_commands_json = :json WHERE local_id = :localId;
+
 toggleAgentPin:
 UPDATE agents SET is_pinned = CASE WHEN is_pinned = 1 THEN 0 ELSE 1 END WHERE local_id = :localId;
 

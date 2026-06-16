@@ -3307,6 +3307,15 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Future<int> updateAgentQuickCommands(String? json, String? localId) {
+    return customUpdate(
+      'UPDATE agents SET quick_commands_json = ?1 WHERE local_id = ?2',
+      variables: [Variable<String>(json), Variable<String>(localId)],
+      updates: {agents},
+      updateKind: UpdateKind.update,
+    );
+  }
+
   Future<int> toggleAgentPin(String? localId) {
     return customUpdate(
       'UPDATE agents SET is_pinned = CASE WHEN is_pinned = 1 THEN 0 ELSE 1 END WHERE local_id = ?1',

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
@@ -19,6 +20,8 @@ class QuickCommandBar extends StatelessWidget {
   Widget build(BuildContext context) {
     if (commands.isEmpty) return const SizedBox.shrink();
 
+    final themeColor = AgentTheme.of(context).primary;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: XiaSpacing.s3),
       child: SizedBox(
@@ -32,6 +35,7 @@ class QuickCommandBar extends StatelessWidget {
             final cmd = commands[index];
             return _QuickCmdPill(
               label: cmd.label,
+              themeColor: themeColor,
               onTap: () => onCommandTap(cmd.payload),
             );
           },
@@ -45,15 +49,20 @@ class QuickCommandBar extends StatelessWidget {
 /// Spec: scale(0.95) + bg surface2→accentMuted, 200ms ease.
 class _QuickCmdPill extends StatelessWidget {
   final String label;
+  final Color themeColor;
   final VoidCallback onTap;
 
-  const _QuickCmdPill({required this.label, required this.onTap});
+  const _QuickCmdPill({
+    required this.label,
+    required this.themeColor,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     return PressFeedback(
       scale: 0.95,
-      pressedColor: XiaColors.accentMuted,
+      pressedColor: themeColor.withAlpha(31),
       normalColor: XiaColors.surface2,
       borderRadius: BorderRadius.circular(XiaRadius.full),
       onTap: onTap,
@@ -64,10 +73,10 @@ class _QuickCmdPill extends StatelessWidget {
         ),
         child: Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 13,
             fontWeight: FontWeight.w500,
-            color: XiaColors.accent,
+            color: themeColor,
             letterSpacing: -0.1,
           ),
         ),

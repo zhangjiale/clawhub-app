@@ -1,0 +1,116 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:claw_hub/app/theme/agent_theme.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/message_status.dart';
+import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
+
+void main() {
+  group('MessageBubble agent theme', () {
+    Widget wrap(Widget child, {AgentTheme? agentTheme}) => MaterialApp(
+      theme: ThemeData(extensions: agentTheme != null ? [agentTheme] : []),
+      home: Scaffold(body: SizedBox(width: 400, child: child)),
+    );
+
+    Message message({required MessageRole role, String content = 'hello'}) {
+      return Message(
+        clientId: 'm-${role.name}',
+        conversationId: 'conv-1',
+        agentId: 'agent-1',
+        role: role,
+        content: content,
+        type: MessageType.text,
+        status: MessageStatus.delivered,
+        timestamp: 0,
+        logicalClock: 0,
+      );
+    }
+
+    Color bubbleColor(WidgetTester tester, String text) {
+      final textFinder = find.text(text);
+      final containers = find.ancestor(
+        of: textFinder,
+        matching: find.byType(Container),
+      );
+      for (final element in containers.evaluate()) {
+        final widget = element.widget as Container;
+        final decoration = widget.decoration;
+        if (decoration is BoxDecoration && decoration.color != null) {
+          return decoration.color!;
+        }
+      }
+      fail('No decorated Container found for text $text');
+    }
+
+    testWidgets('user bubble uses AgentTheme primary color', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          MessageBubble(
+            message: message(role: MessageRole.user, content: 'user-blue'),
+            agentName: '产品虾',
+          ),
+          agentTheme: const AgentTheme(primary: Color(0xFF6C8AAF)),
+        ),
+      );
+
+      expect(bubbleColor(tester, 'user-blue'), const Color(0xFF6C8AAF));
+    });
+
+    testWidgets('user bubble falls back to coral when no AgentTheme', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          MessageBubble(
+            message: message(role: MessageRole.user, content: 'user-default'),
+            agentName: '产品虾',
+          ),
+        ),
+      );
+
+      expect(bubbleColor(tester, 'user-default'), const Color(0xFFC27C68));
+    });
+
+    testWidgets('agent bubble stays surface regardless of AgentTheme', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          MessageBubble(
+            message: message(role: MessageRole.agent, content: 'agent-themed'),
+            agentName: '产品虾',
+          ),
+          agentTheme: const AgentTheme(primary: Color(0xFFAA6E82)),
+        ),
+      );
+      expect(bubbleColor(tester, 'agent-themed'), XiaColors.surface);
+
+      await tester.pumpWidget(
+        wrap(
+          MessageBubble(
+            message: message(role: MessageRole.agent, content: 'agent-default'),
+            agentName: '产品虾',
+          ),
+        ),
+      );
+      expect(bubbleColor(tester, 'agent-default'), XiaColors.surface);
+    });
+
+    testWidgets('user bubble text is white', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          MessageBubble(
+            message: message(role: MessageRole.user, content: 'white-text'),
+            agentName: '产品虾',
+          ),
+          agentTheme: const AgentTheme(primary: Color(0xFF5F9B96)),
+        ),
+      );
+
+      final text = tester.widget<Text>(find.text('white-text'));
+      expect(text.style!.color, Colors.white);
+    });
+  });
+}

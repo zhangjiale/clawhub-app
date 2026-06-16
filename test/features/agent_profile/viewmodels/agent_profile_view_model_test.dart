@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
+import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
@@ -193,6 +194,15 @@ void main() {
         (_) async =>
             testAgent.copyWith(nickname: '我的产品虾', themeColor: '#0984e3'),
       );
+      when(
+        () => agentRepo.updateFullProfile(
+          'local-1',
+          nickname: any(named: 'nickname'),
+          avatarUrl: any(named: 'avatarUrl'),
+          themeColor: any(named: 'themeColor'),
+          quickCommands: any(named: 'quickCommands'),
+        ),
+      ).thenAnswer((_) async {});
 
       final vm = createVM();
       await vm.init();
@@ -227,10 +237,12 @@ void main() {
       await vm.init();
 
       when(
-        () => agentRepo.updateLocalProfile(
+        () => agentRepo.updateFullProfile(
           'local-1',
           nickname: any(named: 'nickname'),
+          avatarUrl: any(named: 'avatarUrl'),
           themeColor: any(named: 'themeColor'),
+          quickCommands: any(named: 'quickCommands'),
         ),
       ).thenThrow(Exception('Save failed'));
 
@@ -254,12 +266,14 @@ void main() {
       final vm = createVM();
       await vm.init();
 
-      final completer = Completer<Agent>();
+      final completer = Completer<void>();
       when(
-        () => agentRepo.updateLocalProfile(
+        () => agentRepo.updateFullProfile(
           'local-1',
           nickname: any(named: 'nickname'),
+          avatarUrl: any(named: 'avatarUrl'),
           themeColor: any(named: 'themeColor'),
+          quickCommands: any(named: 'quickCommands'),
         ),
       ).thenAnswer((_) => completer.future);
 
@@ -268,15 +282,17 @@ void main() {
       // 第二次调用应被 guard 直接丢弃
       final second = vm.saveProfile(nickname: 'nick2', themeColor: '#a29bfe');
 
-      completer.complete(testAgent);
+      completer.complete();
       await first;
       await second;
 
       verify(
-        () => agentRepo.updateLocalProfile(
+        () => agentRepo.updateFullProfile(
           'local-1',
           nickname: any(named: 'nickname'),
+          avatarUrl: any(named: 'avatarUrl'),
           themeColor: any(named: 'themeColor'),
+          quickCommands: any(named: 'quickCommands'),
         ),
       ).called(1);
     });
@@ -294,10 +310,12 @@ void main() {
       await vm.init();
 
       when(
-        () => agentRepo.updateLocalProfile(
+        () => agentRepo.updateFullProfile(
           'local-1',
           nickname: any(named: 'nickname'),
+          avatarUrl: any(named: 'avatarUrl'),
           themeColor: any(named: 'themeColor'),
+          quickCommands: any(named: 'quickCommands'),
         ),
       ).thenThrow(Exception('Save failed'));
       await vm.saveProfile(nickname: 'nick', themeColor: '#0984e3');
@@ -547,6 +565,107 @@ void main() {
         expect(vm.state.saveSuccess, false);
         expect(vm.state.saveError, isNull);
         expect(vm.state.isSaving, false);
+      });
+    });
+
+    group('saveProfile with quickCommands', () {
+      setUp(() {
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+        when(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            nickname: any(named: 'nickname'),
+            avatarUrl: any(named: 'avatarUrl'),
+            themeColor: any(named: 'themeColor'),
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        ).thenAnswer((_) async {});
+      });
+
+      test('calls updateFullProfile when quickCommands provided', () async {
+        final cmds = [
+          QuickCommand(
+            id: '1',
+            agentId: 'local-1',
+            label: '状态',
+            payload: '/status',
+          ),
+        ];
+
+        final vm = createVM();
+        await vm.init();
+
+        await vm.saveProfile(quickCommands: cmds);
+
+        verify(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            nickname: any(named: 'nickname'),
+            avatarUrl: any(named: 'avatarUrl'),
+            themeColor: any(named: 'themeColor'),
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        ).called(1);
+        expect(vm.state.saveSuccess, true);
+      });
+
+      test('empty list clears quick commands', () async {
+        final vm = createVM();
+        await vm.init();
+
+        await vm.saveProfile(quickCommands: []);
+
+        verify(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        ).called(1);
+      });
+
+      test('does not pass quickCommands when null', () async {
+        final vm = createVM();
+        await vm.init();
+
+        await vm.saveProfile(nickname: 'nick');
+
+        verify(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            nickname: any(named: 'nickname'),
+            avatarUrl: any(named: 'avatarUrl'),
+            themeColor: any(named: 'themeColor'),
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        ).called(1);
+      });
+
+      test('saveError set when updateFullProfile fails', () async {
+        when(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            nickname: any(named: 'nickname'),
+            avatarUrl: any(named: 'avatarUrl'),
+            themeColor: any(named: 'themeColor'),
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        ).thenThrow(Exception('DB error'));
+
+        final vm = createVM();
+        await vm.init();
+
+        await vm.saveProfile(quickCommands: []);
+
+        expect(vm.state.saveError, isNotNull);
+        expect(vm.state.saveSuccess, false);
       });
     });
   });
