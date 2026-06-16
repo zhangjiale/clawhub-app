@@ -35,6 +35,12 @@ dart run build_runner watch --delete-conflicting-outputs
 
 # Install Iron Laws pre-commit hook (on fresh clone)
 ./scripts/pre-commit --install
+
+# Integration test (requires a connected iOS/Android device or emulator)
+flutter test integration_test/app_test.dart
+
+# Pre-release checklist (manual, run before tagging a release)
+./scripts/pre-release-check
 ```
 
 ## Architecture
@@ -50,28 +56,36 @@ lib/
 │   ├── router/           # go_router with StatefulShellRoute (3-tab bottom nav)
 │   └── theme/            # Global theme, 12 agent colors, WCAG utilities
 ├── core/
-│   └── acl/              # Anti-Corruption Layer — all Gateway protocol code
-│       ├── i_gateway_client.dart      # Abstract interface
-│       ├── gateway_protocol.dart      # OpenClaw v4 protocol messages & parsing
-│       ├── connection_manager.dart    # WebSocket lifecycle (connect/reconnect/FSM)
-│       ├── mock_gateway_client.dart   # In-memory mock for development/testing
-│       └── ws_gateway_client.dart     # Real WebSocket client (production)
-├── domain/               # Pure Dart, zero Flutter/database imports
+│   ├── acl/              # Anti-Corruption Layer — the ONLY code that touches Gateway protocols
+│   │   ├── i_gateway_client.dart      # Abstract interface
+│   │   ├── gateway_protocol.dart      # OpenClaw v4 protocol messages & parsing
+│   │   ├── connection_manager.dart    # WebSocket lifecycle (connect/reconnect/FSM)
+│   │   ├── mock_gateway_client.dart   # In-memory mock (offline dev / unit tests)
+│   │   ├── ws_gateway_client.dart     # Real WebSocket client (current default)
+│   │   └── device_identity*.dart      # Ed25519 device identity + interface
+│   ├── database/, network/, security/, utils/   # Cross-cutting infra
+│   ├── analytics/, monitor/                       # Telemetry (WIP)
+│   └── localization/                              # i18n (zh-CN / en-US, WIP)
+├── domain/               # Pure Dart, zero Flutter/database imports (Law 1)
 │   ├── models/           # Entities (freezed): Instance, Agent, Message, Conversation, etc.
 │   ├── repositories/     # Abstract repository interfaces
 │   └── usecases/         # Business logic (SendMessage, SaveInstance, SyncAgents, etc.)
-├── data/
+├── data/                 # Repository implementations
 │   ├── local/database/   # Drift/SQLite schema (schema.drift → database.dart)
 │   ├── local/mapping/    # Drift ↔ Domain model mappers
-│   └── repositories/     # Drift-backed implementations + legacy InMemory repos
-├── features/             # Feature-based UI pages
+│   ├── remote/, services/   # Future remote sources + cross-entity services
+│   └── repositories/     # Drift-backed impls (drift_*.dart) + legacy in_memory_repos.dart
+├── features/             # Feature-based UI pages (one folder per feature)
 │   ├── instance_manager/ # Instance CRUD (list, add, QR scan)
 │   ├── agent_list/       # Agent list with stats
 │   ├── chat_room/        # Chat with message bubbles, thinking indicator, tool calls
 │   ├── message_hub/      # Cross-instance conversation aggregation
 │   ├── agent_profile/    # Agent profile & config
-│   └── shrimp_profile/   # Placeholder (empty)
+│   ├── settings/         # UI placeholder (design-review only)
+│   └── shrimp_profile/   # Empty directory
 └── ui_kit/               # Reusable UI components (no domain/business coupling)
+    ├── a11y/, empty_states/, theme/   # Sub-kits (some WIP / empty)
+    └── *.dart                          # Press feedback buttons, toast, banners, etc.
 ```
 
 ### Layer Dependency Rules (Enforced in Code Review)
@@ -114,11 +128,11 @@ All infrastructure/domain providers are defined in `lib/app/di/providers.dart`. 
 
 ### Current State
 
-The app uses **Drift/SQLite** for persistence (all 4 repositories: Instance, Agent, Message, Conversation). The legacy InMemory implementations in `lib/data/repositories/in_memory_repos.dart` are kept for reference but are no longer the active path.
+The app uses **Drift/SQLite** for persistence (all 4 repositories: Instance, Agent, Message, Conversation — see `lib/data/repositories/drift_*.dart`). The legacy InMemory implementations in `lib/data/repositories/in_memory_repos.dart` are kept for reference but are no longer the active path.
 
-The `gatewayClientProvider` currently points to `MockGatewayClient` (3 instances, 7 agents from `assets/mock/agents.json`). A production-ready `WsGatewayClient` (OpenClaw v4 protocol) is implemented and wired — switch by changing one line in `gatewayClientProvider` from `mockGatewayClientProvider` to `wsGatewayClientProvider`.
+`gatewayClientProvider` points to `wsGatewayClientProvider` (real WebSocket, OpenClaw v4 protocol, v2026.6.6). `MockGatewayClient` (3 instances, 7 agents from `assets/mock/agents.json`) is implemented as an offline-development / unit-test fallback — switch by changing one line in `lib/app/di/providers.dart` from `wsGatewayClientProvider` to `mockGatewayClientProvider`.
 
-All five feature pages are fully implemented: InstanceManager, AgentList, ChatRoom, MessageHub, and AgentProfile. Only `shrimp_profile/` is an empty placeholder.
+Five feature pages are fully implemented: InstanceManager, AgentList, ChatRoom, MessageHub, AgentProfile. `settings/` ships only a UI placeholder page (design-review only, not wired to settings provider). `shrimp_profile/` is an empty directory.
 
 ### Commit Convention
 
@@ -130,6 +144,7 @@ Key docs for AI-assisted development (all paths relative to `docs/`):
 
 | Document | Path | Use When |
 |---|---|---|
+| Docs Index | `README.md` | Top-level entry point for all design/technical/product docs |
 | Iron Laws (coding rules) | `engineering/iron-laws.md` | Before every code change — mandatory gate check |
 | PRD | `product/prd.md` | Understanding feature requirements, acceptance criteria |
 | User Stories | `product/user-stories.md` | Sprint planning, INVEST validation, dependency tracing |

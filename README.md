@@ -91,7 +91,7 @@ flutter test
 flutter analyze
 ```
 
-The app ships with a **mock gateway client** pre-loaded with 3 instances and 7 agents from `assets/mock/agents.json` — no real server needed to explore the UI.
+The app defaults to the real WebSocket `WsGatewayClient` (OpenClaw v4 protocol, v2026.6.6) and connects to configured Gateway instances. For offline development and unit tests, a `MockGatewayClient` backed by mock data at `assets/mock/agents.json` (3 instances, 7 agents) is provided as a fallback.
 
 To connect to a real OpenClaw Gateway, see [`docs/technical/api-protocol.md`](docs/technical/api-protocol.md) for the WebSocket protocol specification and authentication setup.
 
@@ -148,14 +148,14 @@ lib/
 The gateway client is configured in `lib/app/di/providers.dart`:
 
 ```dart
-// Mock (default — works without a server)
-final gatewayClientProvider = Provider<IGatewayClient>((ref) {
-  return ref.watch(mockGatewayClientProvider);
-});
-
-// Real WebSocket (production)
+// Real WebSocket (default — production)
 final gatewayClientProvider = Provider<IGatewayClient>((ref) {
   return ref.watch(wsGatewayClientProvider);
+});
+
+// Mock (offline development / unit tests)
+final gatewayClientProvider = Provider<IGatewayClient>((ref) {
+  return ref.watch(mockGatewayClientProvider);
 });
 ```
 
