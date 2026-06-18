@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/conversation.dart';
@@ -60,10 +61,6 @@ class ChatSessionState {
     this.retryFeedback,
   });
 
-  /// Sentinel to distinguish "omit param" (keep old value) from
-  /// "explicitly set to null" (clear) for the nullable [retryFeedback] field.
-  static const _noRetryFeedbackChange = Object();
-
   ChatSessionState copyWith({
     LoadState<List<Message>>? messages,
     ThinkingState? thinkingState,
@@ -71,7 +68,9 @@ class ChatSessionState {
     Map<String, ToolCall>? toolCalls,
     String? streamingText,
     int? outboxCount,
-    Object? retryFeedback = _noRetryFeedbackChange,
+    // retryFeedback 可空，需区分 "未传参"（保留旧值）与 "显式传 null"（清空），
+    // 复用项目统一的 [CopyWithSentinel] 工具（与 AgentProfileState 对齐）。
+    Object? retryFeedback = CopyWithSentinel.instance,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -80,9 +79,7 @@ class ChatSessionState {
       toolCalls: toolCalls ?? this.toolCalls,
       streamingText: streamingText ?? this.streamingText,
       outboxCount: outboxCount ?? this.outboxCount,
-      retryFeedback: identical(retryFeedback, _noRetryFeedbackChange)
-          ? this.retryFeedback
-          : retryFeedback as String?,
+      retryFeedback: copyWithNullable(retryFeedback, this.retryFeedback),
     );
   }
 
