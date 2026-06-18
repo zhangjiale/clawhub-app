@@ -246,11 +246,26 @@ WHERE conversation_id = :conversationId
 ORDER BY logical_clock DESC
 LIMIT :limit;
 
--- All messages for a conversation, sorted ASC (used for anchor window)
-getAllMessagesByConversationAsc:
+-- Anchor window: messages ABOVE the target (older), by logical_clock.
+-- Bounded by :limit (= before count). Uses a subquery to resolve the
+-- target's logical_clock without a separate round-trip, mirroring
+-- getMessagesByConversationBefore. Ordered DESC so the nearest-older
+-- messages come first; the repo reverses to ASC before merging.
+getMessagesByConversationBeforeAnchor:
 SELECT * FROM messages
 WHERE conversation_id = :conversationId
-ORDER BY logical_clock ASC;
+  AND logical_clock < (SELECT logical_clock FROM messages WHERE client_id = :targetClientId)
+ORDER BY logical_clock DESC
+LIMIT :limit;
+
+-- Anchor window: messages BELOW the target (newer), by logical_clock.
+-- Bounded by :limit (= after count). Ordered ASC nearest-newer first.
+getMessagesByConversationAfterAnchor:
+SELECT * FROM messages
+WHERE conversation_id = :conversationId
+  AND logical_clock > (SELECT logical_clock FROM messages WHERE client_id = :targetClientId)
+ORDER BY logical_clock ASC
+LIMIT :limit;
 
 insertMessage:
 INSERT INTO messages

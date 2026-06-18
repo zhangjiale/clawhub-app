@@ -112,21 +112,40 @@ class DriftMessageRepo implements IMessageRepo {
     int before = 5,
     int after = 10,
   }) async {
-    // Load all messages in this conversation (sorted ASC)
-    final all = await _database
-        .getAllMessagesByConversationAsc(conversationId)
+    // Bounded anchor window: load at most `before + 1 + after` rows instead
+    // of the whole conversation. Three indexed queries:
+    //   1. the target row itself (also serves as the "target not found" check)
+    //   2. `before` rows older than the target (DESC, reversed to ASC)
+    //   3. `after` rows newer than the target (ASC)
+    // Each query filters by conversation_id + logical_clock, so it never
+    // deserializes the entire history for a long conversation.
+    final target = await _database
+        .getMessageByClientId(targetClientId)
+        .getSingleOrNull();
+    if (target == null) return [];
+
+    final olderRows = await _database
+        .getMessagesByConversationBeforeAnchor(
+          conversationId,
+          targetClientId,
+          before,
+        )
         .get();
-    if (all.isEmpty) return [];
+    final newerRows = await _database
+        .getMessagesByConversationAfterAnchor(
+          conversationId,
+          targetClientId,
+          after,
+        )
+        .get();
 
-    final messages = all.map(MessageMapper.toDomain).toList();
+    // olderRows came back DESC (nearest-older first); reverse to ASC so the
+    // merged window is chronologically ordered: [older...], target, [newer...].
+    final older = olderRows.reversed.map(MessageMapper.toDomain).toList();
+    final targetMsg = MessageMapper.toDomain(target);
+    final newer = newerRows.map(MessageMapper.toDomain).toList();
 
-    // Find the target
-    final idx = messages.indexWhere((m) => m.clientId == targetClientId);
-    if (idx < 0) return [];
-
-    final start = (idx - before).clamp(0, messages.length);
-    final end = (idx + after + 1).clamp(0, messages.length);
-    return messages.sublist(start, end);
+    return [...older, targetMsg, ...newer];
   }
 
   @override

@@ -3478,10 +3478,34 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     ).asyncMap(messages.mapFromRow);
   }
 
-  Selectable<Message> getAllMessagesByConversationAsc(String conversationId) {
+  Selectable<Message> getMessagesByConversationBeforeAnchor(
+    String conversationId,
+    String targetClientId,
+    int limit,
+  ) {
     return customSelect(
-      'SELECT * FROM messages WHERE conversation_id = ?1 ORDER BY logical_clock ASC',
-      variables: [Variable<String>(conversationId)],
+      'SELECT * FROM messages WHERE conversation_id = ?1 AND logical_clock < (SELECT logical_clock FROM messages WHERE client_id = ?2) ORDER BY logical_clock DESC LIMIT ?3',
+      variables: [
+        Variable<String>(conversationId),
+        Variable<String>(targetClientId),
+        Variable<int>(limit),
+      ],
+      readsFrom: {messages},
+    ).asyncMap(messages.mapFromRow);
+  }
+
+  Selectable<Message> getMessagesByConversationAfterAnchor(
+    String conversationId,
+    String targetClientId,
+    int limit,
+  ) {
+    return customSelect(
+      'SELECT * FROM messages WHERE conversation_id = ?1 AND logical_clock > (SELECT logical_clock FROM messages WHERE client_id = ?2) ORDER BY logical_clock ASC LIMIT ?3',
+      variables: [
+        Variable<String>(conversationId),
+        Variable<String>(targetClientId),
+        Variable<int>(limit),
+      ],
       readsFrom: {messages},
     ).asyncMap(messages.mapFromRow);
   }

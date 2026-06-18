@@ -299,17 +299,32 @@ class InMemoryMessageRepo implements IMessageRepo {
     final target = _byClientId[targetClientId];
     if (target == null) return [];
 
-    final all = _byClientId.values
-        .where((m) => m.conversationId == conversationId)
-        .toList();
-    all.sort((a, b) => a.logicalClock.compareTo(b.logicalClock));
+    // Bounded anchor window mirroring the Drift implementation: take at most
+    // `before` older + target + `after` newer, filtered by logicalClock
+    // relative to the target. No unbounded full-conversation slice.
+    final older =
+        _byClientId.values
+            .where(
+              (m) =>
+                  m.conversationId == conversationId &&
+                  m.logicalClock < target.logicalClock,
+            )
+            .toList()
+          ..sort((a, b) => b.logicalClock.compareTo(a.logicalClock)); // DESC
+    final olderBounded = older.take(before).toList().reversed; // back to ASC
 
-    final idx = all.indexWhere((m) => m.clientId == targetClientId);
-    if (idx < 0) return [];
+    final newer =
+        _byClientId.values
+            .where(
+              (m) =>
+                  m.conversationId == conversationId &&
+                  m.logicalClock > target.logicalClock,
+            )
+            .toList()
+          ..sort((a, b) => a.logicalClock.compareTo(b.logicalClock)); // ASC
+    final newerBounded = newer.take(after);
 
-    final start = (idx - before).clamp(0, all.length);
-    final end = (idx + after + 1).clamp(0, all.length);
-    return all.sublist(start, end);
+    return [...olderBounded, target, ...newerBounded];
   }
 
   @override

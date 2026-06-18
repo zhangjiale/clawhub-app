@@ -294,4 +294,116 @@ void main() {
       },
     );
   });
+
+  group('InMemoryMessageRepo.getAnchorWindow (bounded)', () {
+    late InMemoryMessageRepo messageRepo;
+
+    /// Inserts N messages into one conversation with logicalClock 1..N and
+    /// clientId 'm{i}'. Returns the shared conversationId.
+    Future<String> seedConversation(int count) async {
+      final conv = 'conv-anchor';
+      for (var i = 1; i <= count; i++) {
+        await messageRepo.insert(
+          Message(
+            clientId: 'm$i',
+            conversationId: conv,
+            agentId: 'agent-1',
+            role: MessageRole.user,
+            content: 'msg $i',
+            type: MessageType.text,
+            status: MessageStatus.sent,
+            logicalClock: i,
+            timestamp: i,
+          ),
+        );
+      }
+      return conv;
+    }
+
+    setUp(() {
+      messageRepo = InMemoryMessageRepo();
+    });
+
+    test('returns before + target + after, chronologically ordered', () async {
+      final conv = await seedConversation(20);
+      // Target = m10. before=3 -> m7,m8,m9 ; after=4 -> m11,m12,m13,m14.
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 'm10',
+        before: 3,
+        after: 4,
+      );
+
+      expect(window.map((m) => m.clientId).toList(), [
+        'm7',
+        'm8',
+        'm9',
+        'm10',
+        'm11',
+        'm12',
+        'm13',
+        'm14',
+      ]);
+    });
+
+    test('never exceeds before + 1 + after rows', () async {
+      final conv = await seedConversation(1000);
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 'm500',
+        before: 5,
+        after: 10,
+      );
+      // Bounded: at most 5 + 1 + 10 = 16, regardless of conversation size.
+      expect(window.length, lessThanOrEqualTo(5 + 1 + 10));
+      expect(window.length, 16);
+    });
+
+    test('clamps before at the head of the conversation', () async {
+      final conv = await seedConversation(20);
+      // Target near the start — fewer than `before` older messages exist.
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 'm2',
+        before: 5,
+        after: 3,
+      );
+      expect(window.map((m) => m.clientId).toList(), [
+        'm1',
+        'm2',
+        'm3',
+        'm4',
+        'm5',
+      ]);
+    });
+
+    test('clamps after at the tail of the conversation', () async {
+      final conv = await seedConversation(20);
+      // Target near the end — fewer than `after` newer messages exist.
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 'm19',
+        before: 3,
+        after: 5,
+      );
+      expect(window.map((m) => m.clientId).toList(), [
+        'm16',
+        'm17',
+        'm18',
+        'm19',
+        'm20',
+      ]);
+    });
+
+    test('returns empty when target does not exist', () async {
+      final conv = await seedConversation(10);
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 'nonexistent',
+        before: 5,
+        after: 5,
+      );
+      expect(window, isEmpty);
+    });
+  });
 }
