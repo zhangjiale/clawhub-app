@@ -194,4 +194,104 @@ void main() {
       },
     );
   });
+
+  group('InMemoryMessageRepo.resetStaleSending (crash recovery)', () {
+    late InMemoryConversationRepo conversationRepo;
+    late InMemoryMessageRepo messageRepo;
+
+    setUp(() {
+      conversationRepo = InMemoryConversationRepo();
+      messageRepo = InMemoryMessageRepo(conversationRepo: conversationRepo);
+    });
+
+    /// Constructs a SENDING message, optionally already ACK'd (serverId set).
+    Message sendingMsg({
+      required String clientId,
+      required String conversationId,
+      String? serverId,
+    }) {
+      return Message(
+        clientId: clientId,
+        serverId: serverId,
+        conversationId: conversationId,
+        agentId: 'agent-1',
+        role: MessageRole.user,
+        content: 'test $clientId',
+        type: MessageType.text,
+        status: MessageStatus.sending,
+        logicalClock: 0,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+    }
+
+    test('resets SENDING without serverId back to PENDING', () async {
+      final convA = await conversationRepo.getOrCreate('inst-a', 'agent-1');
+      // SENDING, no serverId yet — app killed mid-send before ACK.
+      await messageRepo.insert(
+        sendingMsg(clientId: 'm1', conversationId: convA.id),
+      );
+
+      final count = await messageRepo.resetStaleSending('inst-a');
+
+      expect(count, 1);
+      final after = await messageRepo.getByClientId('m1');
+      expect(after!.status, MessageStatus.pending);
+    });
+
+    test('does NOT reset SENDING messages that already have a serverId '
+        '(prevents server-side duplicate on re-send)', () async {
+      final convA = await conversationRepo.getOrCreate('inst-a', 'agent-1');
+      // SENDING but already ACK'd by Gateway (bindServerId ran, status
+      // machine didn't advance to SENT before app kill). Resetting this to
+      // PENDING would cause the next flush to re-send an acknowledged
+      // message → server-side duplicate. Must be skipped.
+      await messageRepo.insert(
+        sendingMsg(
+          clientId: 'm-ack',
+          conversationId: convA.id,
+          serverId: 'srv-1',
+        ),
+      );
+
+      final count = await messageRepo.resetStaleSending('inst-a');
+
+      expect(count, 0);
+      final after = await messageRepo.getByClientId('m-ack');
+      expect(
+        after!.status,
+        MessageStatus.sending,
+        reason: 'ACK\'d SENDING message must not be reset to PENDING',
+      );
+      expect(after.serverId, 'srv-1');
+    });
+
+    test(
+      'resets only the target instance (cross-instance isolation)',
+      () async {
+        final convA = await conversationRepo.getOrCreate('inst-a', 'agent-1');
+        final convB = await conversationRepo.getOrCreate('inst-b', 'agent-1');
+
+        await messageRepo.insert(
+          sendingMsg(clientId: 'a1', conversationId: convA.id),
+        );
+        await messageRepo.insert(
+          sendingMsg(clientId: 'b1', conversationId: convB.id),
+        );
+
+        // Flush instance A only.
+        final count = await messageRepo.resetStaleSending('inst-a');
+
+        expect(count, 1);
+        expect(
+          (await messageRepo.getByClientId('a1'))!.status,
+          MessageStatus.pending,
+        );
+        // Instance B's in-flight SENDING must be untouched.
+        expect(
+          (await messageRepo.getByClientId('b1'))!.status,
+          MessageStatus.sending,
+        );
+      },
+    );
+  });
 }

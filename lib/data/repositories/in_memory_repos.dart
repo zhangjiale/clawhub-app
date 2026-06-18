@@ -409,6 +409,10 @@ class InMemoryMessageRepo implements IMessageRepo {
   Future<int> resetStaleSending(String instanceId) async {
     // 与 Drift 实现一致：仅重置该实例的 SENDING → PENDING，
     // 防止跨实例重置。无 conversationRepo 时无法按实例过滤，返回 0（向后兼容）。
+    //
+    // server_id 守卫：已绑定 serverId 的 SENDING 消息已被 Gateway ACK
+    // （bindServerId 执行了但状态机未推进到 SENT，App 即被 kill）。
+    // 重置它会让下一轮 flush 重发 → 服务端收到重复消息。跳过这类消息。
     if (_conversationRepo == null) return 0;
 
     final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
@@ -417,6 +421,7 @@ class InMemoryMessageRepo implements IMessageRepo {
     var count = 0;
     for (final entry in _byClientId.entries.toList()) {
       if (entry.value.status == MessageStatus.sending &&
+          entry.value.serverId == null &&
           convIds.contains(entry.value.conversationId)) {
         _byClientId[entry.key] = entry.value.copyWith(
           status: MessageStatus.pending,

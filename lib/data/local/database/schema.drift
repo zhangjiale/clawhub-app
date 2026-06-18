@@ -292,9 +292,15 @@ UPDATE messages SET status = 2 WHERE client_id = :clientId AND status = :expecte
 --- Called by OutboxProcessor before each flush.
 --- Scoped to a single instance via conversations JOIN to prevent cross-instance
 --- race: instance B flushing must not reset instance A's in-flight SENDING messages.
+---
+--- server_id guard: a SENDING message that already has a server_id has been
+--- ACK'd by the Gateway (bindServerId ran but the status machine didn't
+--- advance to SENT before the app was killed). Resetting it to PENDING would
+--- cause the next flush to re-send → server-side duplicate. Skip those.
 resetStaleSending:
 UPDATE messages SET status = 1
 WHERE status = 2
+  AND server_id IS NULL
 AND conversation_id IN (
   SELECT id FROM conversations WHERE instance_id = :instanceId
 );

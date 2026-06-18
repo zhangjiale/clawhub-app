@@ -3579,13 +3579,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
 
   Future<int> resetStaleSending(String instanceId) {
     return customUpdate(
-      'UPDATE messages SET status = 1 '
-      'WHERE status = 2 '
-      'AND conversation_id IN ('
-      '  SELECT id FROM conversations WHERE instance_id = ?1'
-      ')',
+      'UPDATE messages SET status = 1 WHERE status = 2 AND server_id IS NULL AND conversation_id IN (SELECT id FROM conversations WHERE instance_id = ?1)',
       variables: [Variable<String>(instanceId)],
-      updates: {messages, conversations},
+      updates: {messages},
       updateKind: UpdateKind.update,
     );
   }

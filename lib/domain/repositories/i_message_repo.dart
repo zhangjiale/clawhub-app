@@ -73,6 +73,10 @@ abstract class IMessageRepo {
   /// 仅影响 [instanceId] 对应的消息（通过 conversations JOIN 过滤），
   /// 防止跨实例竞态：实例 B 启动冲刷时不应重置实例 A 正在发送的消息。
   ///
+  /// **serverId 守卫**: 已绑定 `serverId` 的 SENDING 消息（已被 Gateway ACK，
+  /// 但状态机未推进到 SENT，App 即被 kill）**不会被重置**。否则下一轮 flush
+  /// 会重发已被服务端确认的消息，造成服务端重复。
+  ///
   /// 应在 App 启动时、OutboxProcessor flush 前调用。
   Future<int> resetStaleSending(String instanceId);
 
