@@ -3552,6 +3552,44 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     ).asyncMap(messages.mapFromRow);
   }
 
+  Selectable<Message> getOutboxMessagesByInstance(String instanceId) {
+    return customSelect(
+      'SELECT m.* FROM messages AS m JOIN conversations AS c ON m.conversation_id = c.id WHERE c.instance_id = ?1 AND m.status IN (1, 5) ORDER BY m.logical_clock ASC',
+      variables: [Variable<String>(instanceId)],
+      readsFrom: {messages, conversations},
+    ).asyncMap(messages.mapFromRow);
+  }
+
+  Selectable<int> getOutboxCountByInstance(String instanceId) {
+    return customSelect(
+      'SELECT COUNT(*) AS cnt FROM messages AS m JOIN conversations AS c ON m.conversation_id = c.id WHERE c.instance_id = ?1 AND m.status IN (1, 5)',
+      variables: [Variable<String>(instanceId)],
+      readsFrom: {messages, conversations},
+    ).map((QueryRow row) => row.read<int>('cnt'));
+  }
+
+  Future<int> tryTransitionToSending(String clientId, int expectedStatus) {
+    return customUpdate(
+      'UPDATE messages SET status = 2 WHERE client_id = ?1 AND status = ?2',
+      variables: [Variable<String>(clientId), Variable<int>(expectedStatus)],
+      updates: {messages},
+      updateKind: UpdateKind.update,
+    );
+  }
+
+  Future<int> resetStaleSending(String instanceId) {
+    return customUpdate(
+      'UPDATE messages SET status = 1 '
+      'WHERE status = 2 '
+      'AND conversation_id IN ('
+      '  SELECT id FROM conversations WHERE instance_id = ?1'
+      ')',
+      variables: [Variable<String>(instanceId)],
+      updates: {messages, conversations},
+      updateKind: UpdateKind.update,
+    );
+  }
+
   Selectable<Message> searchMessages(String query, int limit, int offset) {
     return customSelect(
       'SELECT m.* FROM messages AS m JOIN messages_fts AS fts ON m."rowid" = fts."rowid" WHERE messages_fts MATCH ?1 ORDER BY m.timestamp DESC LIMIT ?2 OFFSET ?3',

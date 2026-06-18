@@ -33,12 +33,12 @@ class SendMessageUseCase {
     required IGatewayClient gatewayClient,
     GeneratePreview? generatePreview,
     Uuid? uuid,
-  })  : _messageRepo = messageRepo,
-        _conversationRepo = conversationRepo,
-        _instanceRepo = instanceRepo,
-        _gatewayClient = gatewayClient,
-        _generatePreview = generatePreview ?? GeneratePreview(),
-        _uuid = uuid ?? const Uuid();
+  }) : _messageRepo = messageRepo,
+       _conversationRepo = conversationRepo,
+       _instanceRepo = instanceRepo,
+       _gatewayClient = gatewayClient,
+       _generatePreview = generatePreview ?? GeneratePreview(),
+       _uuid = uuid ?? const Uuid();
 
   /// 发送消息
   /// 返回最终状态的消息实体
@@ -51,7 +51,10 @@ class SendMessageUseCase {
   }) async {
     // 1. 生成 clientId 并构建消息
     final clientId = _uuid.v4();
-    final conversation = await _conversationRepo.getOrCreate(instanceId, agent.localId);
+    final conversation = await _conversationRepo.getOrCreate(
+      instanceId,
+      agent.localId,
+    );
 
     // Get monotonic logical clock (increment counter for each message sent)
     final logicalClock = _logicalClockCounter++;
@@ -92,24 +95,121 @@ class SendMessageUseCase {
       return message;
     }
 
-    // 5. 通过 Gateway 发送
-    try {
-      message = await _messageRepo.updateStatus(clientId, MessageStatus.sending);
+    // 5. 通过 Gateway 发送 — CAS 进入 SENDING。
+    //    与 [retry] / [OutboxProcessor] 共用同一道 PENDING→SENDING 闸口，
+    //    避免并发路径重复发送同一条消息，也避免对已被推进到 SENT 的消息
+    //    再次 updateStatus(sending) 触发 FSM 校验异常（SENT→sending 非法）。
+    final casOk = await _messageRepo.tryTransitionToSending(
+      clientId,
+      MessageStatus.pending,
+    );
+    if (!casOk) {
+      // 消息已被并发路径（OutboxProcessor / retry）接管并推进，
+      // 不重复发送，返回当前实体。
+      final current = await _messageRepo.getByClientId(clientId);
+      return current ?? message;
+    }
 
-      final ack = await _gatewayClient.sendMessage(
+    try {
+      message = await _deliverViaGateway(
+        clientId: clientId,
         instanceId: instanceId,
-        agentId: agent.remoteId,
+        agentRemoteId: agent.remoteId,
         message: message,
       );
-
-      // 6. 绑定 serverId，状态 → SENT
-      message = await _messageRepo.bindServerId(clientId, ack.serverId);
 
       return message;
     } catch (e) {
       // 7. 发送失败，标记 FAILED
       message = await _messageRepo.updateStatus(clientId, MessageStatus.failed);
       return message;
+    }
+  }
+
+  /// 通过 Gateway 发送消息并绑定 serverId（SENDING → SENT）。
+  ///
+  /// [execute] 和 [retry] 的共用发送尾巴，保证发送逻辑唯一入口，
+  /// 避免两条路径各自维护 sendMessage + bindServerId 而漂移。
+  Future<Message> _deliverViaGateway({
+    required String clientId,
+    required String instanceId,
+    required String agentRemoteId,
+    required Message message,
+  }) async {
+    final ack = await _gatewayClient.sendMessage(
+      instanceId: instanceId,
+      agentId: agentRemoteId,
+      message: message,
+    );
+    return _messageRepo.bindServerId(clientId, ack.serverId);
+  }
+
+  /// 重试一条 PENDING 或 FAILED 消息（统一发送入口）。
+  ///
+  /// 使用 CAS 条件更新（[expectedStatus] → SENDING）防止与并发的发送路径
+  /// （SendMessageUseCase / OutboxProcessor / ChatViewModel.retryMessage）
+  /// 重复操作同一条消息。
+  ///
+  /// **FAILED 的唯一权威**：发送失败 *或* 超时都由本方法的 catch 统一标记
+  /// FAILED。调用方（OutboxProcessor / ChatViewModel）只消费 `sentNow`，
+  /// 不得二次写入 FAILED —— 否则会出现三层状态写入彼此打架。
+  ///
+  /// 返回 record:
+  /// - `message`: 最终状态的消息实体
+  /// - `sentNow`: 本次调用是否成功发送给 gateway 并收到 ACK
+  ///   （CAS 失败 / 发送失败 / 超时 时为 false）
+  ///
+  /// [expectedStatus] 默认为 [MessageStatus.failed]（手动重试场景）；
+  /// OutboxProcessor 在冲刷队列时按消息当前状态传入 PENDING 或 FAILED。
+  ///
+  /// [timeout] 为单条消息发送超时上限；超时后标记 FAILED 并返回 sentNow=false。
+  /// OutboxProcessor 传入冲刷超时；手动重试（ChatViewModel）默认不超时。
+  Future<({Message message, bool sentNow})> retry({
+    required String clientId,
+    required String instanceId,
+    required String agentRemoteId,
+    MessageStatus expectedStatus = MessageStatus.failed,
+    Duration? timeout,
+  }) async {
+    // CAS: 仅当消息仍为 [expectedStatus] 时才过渡到 SENDING
+    final ok = await _messageRepo.tryTransitionToSending(
+      clientId,
+      expectedStatus,
+    );
+    if (!ok) {
+      // 消息已被其他路径推进或不存在 — 返回当前状态，未发送
+      final current = await _messageRepo.getByClientId(clientId);
+      if (current == null) {
+        throw StateError('消息不存在或已删除: $clientId');
+      }
+      return (message: current, sentNow: false);
+    }
+
+    // CAS 成功 — 当前状态为 SENDING，重新读取以获取最新实体
+    final message = await _messageRepo.getByClientId(clientId);
+    if (message == null) {
+      throw StateError('消息在 CAS 后丢失: $clientId');
+    }
+
+    try {
+      final deliverFuture = _deliverViaGateway(
+        clientId: clientId,
+        instanceId: instanceId,
+        agentRemoteId: agentRemoteId,
+        message: message,
+      );
+      final updated = timeout == null
+          ? await deliverFuture
+          : await deliverFuture.timeout(timeout);
+      return (message: updated, sentNow: true);
+    } catch (_) {
+      // iron-law-allow: Law8 -- 发送失败与超时统一在此标记 FAILED；
+      // 调用方只看 sentNow，不重复写状态。
+      final failed = await _messageRepo.updateStatus(
+        clientId,
+        MessageStatus.failed,
+      );
+      return (message: failed, sentNow: false);
     }
   }
 }

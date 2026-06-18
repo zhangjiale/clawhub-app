@@ -32,43 +32,104 @@ void main() {
 
     group('状态流转规则', () {
       test('DRAFT 只能流转到 PENDING 或自身(编辑中)', () {
-        expect(MessageStatus.draft.canTransitionTo(MessageStatus.pending), isTrue);
-        expect(MessageStatus.draft.canTransitionTo(MessageStatus.sending), isFalse);
-        expect(MessageStatus.draft.canTransitionTo(MessageStatus.sent), isFalse);
+        expect(
+          MessageStatus.draft.canTransitionTo(MessageStatus.pending),
+          isTrue,
+        );
+        expect(
+          MessageStatus.draft.canTransitionTo(MessageStatus.sending),
+          isFalse,
+        );
+        expect(
+          MessageStatus.draft.canTransitionTo(MessageStatus.sent),
+          isFalse,
+        );
       });
 
-      test('PENDING 可以流转到 SENDING 或 FAILED', () {
-        expect(MessageStatus.pending.canTransitionTo(MessageStatus.sending), isTrue);
-        expect(MessageStatus.pending.canTransitionTo(MessageStatus.failed), isTrue);
-        expect(MessageStatus.pending.canTransitionTo(MessageStatus.sent), isFalse);
+      test('PENDING 可以流转到 SENDING、FAILED 或 EXPIRED', () {
+        expect(
+          MessageStatus.pending.canTransitionTo(MessageStatus.sending),
+          isTrue,
+        );
+        expect(
+          MessageStatus.pending.canTransitionTo(MessageStatus.failed),
+          isTrue,
+        );
+        expect(
+          MessageStatus.pending.canTransitionTo(MessageStatus.expired),
+          isTrue,
+        );
+        expect(
+          MessageStatus.pending.canTransitionTo(MessageStatus.sent),
+          isFalse,
+        );
       });
 
       test('SENDING 可以流转到 SENT、FAILED 或 EXPIRED', () {
-        expect(MessageStatus.sending.canTransitionTo(MessageStatus.sent), isTrue);
-        expect(MessageStatus.sending.canTransitionTo(MessageStatus.failed), isTrue);
-        expect(MessageStatus.sending.canTransitionTo(MessageStatus.expired), isTrue);
-        expect(MessageStatus.sending.canTransitionTo(MessageStatus.draft), isFalse);
+        expect(
+          MessageStatus.sending.canTransitionTo(MessageStatus.sent),
+          isTrue,
+        );
+        expect(
+          MessageStatus.sending.canTransitionTo(MessageStatus.failed),
+          isTrue,
+        );
+        expect(
+          MessageStatus.sending.canTransitionTo(MessageStatus.expired),
+          isTrue,
+        );
+        expect(
+          MessageStatus.sending.canTransitionTo(MessageStatus.draft),
+          isFalse,
+        );
       });
 
       test('SENT 只能流转到 DELIVERED', () {
-        expect(MessageStatus.sent.canTransitionTo(MessageStatus.delivered), isTrue);
-        expect(MessageStatus.sent.canTransitionTo(MessageStatus.failed), isFalse);
+        expect(
+          MessageStatus.sent.canTransitionTo(MessageStatus.delivered),
+          isTrue,
+        );
+        expect(
+          MessageStatus.sent.canTransitionTo(MessageStatus.failed),
+          isFalse,
+        );
       });
 
       test('DELIVERED 是终态之一，不可再流转', () {
-        expect(MessageStatus.delivered.canTransitionTo(MessageStatus.sent), isFalse);
-        expect(MessageStatus.delivered.canTransitionTo(MessageStatus.failed), isFalse);
-        expect(MessageStatus.delivered.canTransitionTo(MessageStatus.expired), isFalse);
+        expect(
+          MessageStatus.delivered.canTransitionTo(MessageStatus.sent),
+          isFalse,
+        );
+        expect(
+          MessageStatus.delivered.canTransitionTo(MessageStatus.failed),
+          isFalse,
+        );
+        expect(
+          MessageStatus.delivered.canTransitionTo(MessageStatus.expired),
+          isFalse,
+        );
       });
 
       test('EXPIRED 是终态，不可再流转', () {
-        expect(MessageStatus.expired.canTransitionTo(MessageStatus.pending), isFalse);
-        expect(MessageStatus.expired.canTransitionTo(MessageStatus.sending), isFalse);
+        expect(
+          MessageStatus.expired.canTransitionTo(MessageStatus.pending),
+          isFalse,
+        );
+        expect(
+          MessageStatus.expired.canTransitionTo(MessageStatus.sending),
+          isFalse,
+        );
       });
 
       test('FAILED 可以重试流转到 SENDING', () {
-        expect(MessageStatus.failed.canTransitionTo(MessageStatus.sending), isTrue);
-        expect(MessageStatus.failed.canTransitionTo(MessageStatus.expired), isTrue);
+        expect(
+          MessageStatus.failed.canTransitionTo(MessageStatus.sending),
+          isTrue,
+        );
+        expect(
+          MessageStatus.failed.canTransitionTo(MessageStatus.expired),
+          isTrue,
+        );
       });
     });
 

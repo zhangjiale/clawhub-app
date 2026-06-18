@@ -10,10 +10,12 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/chat_input_bar.dart';
+import 'package:claw_hub/features/chat_room/widgets/outbox_warning_banner.dart';
 import 'package:claw_hub/features/chat_room/widgets/streaming_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/thinking_indicator.dart';
 import 'package:claw_hub/features/chat_room/widgets/tool_call_card.dart';
@@ -24,6 +26,7 @@ import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
+import 'package:claw_hub/ui_kit/status_banner.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
@@ -129,6 +132,21 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       if (next.streamingText.isNotEmpty &&
           (prev?.streamingText.isEmpty ?? true)) {
         scheduleScroll();
+      }
+    });
+
+    // Auto-dismiss retryFeedback after 3 seconds so the banner doesn't
+    // persist indefinitely.  Only fires on new (non-null) feedback values.
+    ref.listen(chatViewModelProvider(params), (prev, next) {
+      if (next.retryFeedback != null &&
+          prev?.retryFeedback != next.retryFeedback) {
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) {
+            ref
+                .read(chatViewModelProvider(params).notifier)
+                .clearRetryFeedback();
+          }
+        });
       }
     });
 
@@ -264,8 +282,23 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             onHorizontalDragCancel: () => _swipeFromLeft = false,
             child: Column(
               children: [
+                // Outbox warning banner (US-015 AC3) — 排在 ConnectionBanner 之上，
+                // 因为 outbox 堆积可能与连接异常并发出现，警告条更紧急。
+                OutboxWarningBanner(outboxCount: session.outboxCount),
+
                 // Disconnect / connecting banner
                 ConnectionBanner(connectionState: session.connectionState),
+
+                // Retry feedback banner (US-015 AC2) — shown when retryMessage
+                // skips due to preconditions (offline, agent deleted, etc.).
+                // Auto-dismissed after 3 seconds by the listener below.
+                if (session.retryFeedback != null)
+                  StatusBanner(
+                    message: session.retryFeedback!,
+                    foregroundColor: XiaColors.accent,
+                    backgroundColor: XiaColors.accentMuted,
+                    icon: Icons.error_outline,
+                  ),
 
                 // Timeout banner
                 if (session.thinkingState == ThinkingState.timeout)
@@ -374,6 +407,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     String agentName,
     ThemeData theme,
   ) {
+    final params = (instanceId: widget.instanceId, agentId: widget.agentId);
     return ListView.builder(
       controller: _scrollController,
       reverse: true,
@@ -385,7 +419,16 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MessageBubble(message: message, agentName: agentName, index: index),
+            MessageBubble(
+              message: message,
+              agentName: agentName,
+              index: index,
+              onRetry: message.status == MessageStatus.failed
+                  ? () => ref
+                        .read(chatViewModelProvider(params).notifier)
+                        .retryMessage(message.clientId)
+                  : null,
+            ),
             if (tc != null) ToolCallCard(toolCall: tc),
           ],
         );

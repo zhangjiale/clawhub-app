@@ -266,6 +266,39 @@ UPDATE messages SET server_id = :serverId, status = :status WHERE client_id = :c
 getOutboxMessages:
 SELECT * FROM messages WHERE agent_id = :agentId AND status IN (1, 5);
 
+--- Per-instance outbox: PENDING + FAILED, ordered by logical_clock ASC for sequential flush.
+--- Relies on conversations ON DELETE CASCADE to guarantee INNER JOIN never drops rows.
+--- If FK strategy ever changes to SET NULL / NO ACTION, switch to LEFT JOIN.
+getOutboxMessagesByInstance:
+SELECT m.* FROM messages m
+JOIN conversations c ON m.conversation_id = c.id
+WHERE c.instance_id = :instanceId AND m.status IN (1, 5)
+ORDER BY m.logical_clock ASC;
+
+--- Per-instance outbox count (for UI warning banner, AC3: >= 20 threshold)
+getOutboxCountByInstance:
+SELECT COUNT(*) AS cnt FROM messages m
+JOIN conversations c ON m.conversation_id = c.id
+WHERE c.instance_id = :instanceId AND m.status IN (1, 5);
+
+--- CAS conditional update: transition to SENDING only if current status matches expected.
+--- Returns affected row count (0 = CAS failed = message already processed by another path).
+--- Prevents TOCTOU race between SendMessageUseCase and OutboxProcessor.
+tryTransitionToSending:
+UPDATE messages SET status = 2 WHERE client_id = :clientId AND status = :expectedStatus;
+
+--- Crash recovery: reset stale SENDING messages back to PENDING after app kill.
+--- Bypasses FSM validation — this is crash recovery, not normal business flow.
+--- Called by OutboxProcessor before each flush.
+--- Scoped to a single instance via conversations JOIN to prevent cross-instance
+--- race: instance B flushing must not reset instance A's in-flight SENDING messages.
+resetStaleSending:
+UPDATE messages SET status = 1
+WHERE status = 2
+AND conversation_id IN (
+  SELECT id FROM conversations WHERE instance_id = :instanceId
+);
+
 -- FTS5-based search
 searchMessages:
 SELECT m.* FROM messages m

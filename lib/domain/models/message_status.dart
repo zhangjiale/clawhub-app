@@ -55,8 +55,16 @@ enum MessageStatus {
 
   static final Map<MessageStatus, Set<MessageStatus>> _allowedTransitions = {
     MessageStatus.draft: {MessageStatus.pending},
-    MessageStatus.pending: {MessageStatus.sending, MessageStatus.failed},
-    MessageStatus.sending: {MessageStatus.sent, MessageStatus.failed, MessageStatus.expired},
+    MessageStatus.pending: {
+      MessageStatus.sending,
+      MessageStatus.failed,
+      MessageStatus.expired,
+    },
+    MessageStatus.sending: {
+      MessageStatus.sent,
+      MessageStatus.failed,
+      MessageStatus.expired,
+    },
     MessageStatus.sent: {MessageStatus.delivered},
     MessageStatus.failed: {MessageStatus.sending, MessageStatus.expired},
     MessageStatus.delivered: <MessageStatus>{}, // 终态

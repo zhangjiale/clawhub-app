@@ -230,6 +230,14 @@ class InMemoryMessageRepo implements IMessageRepo {
   final Map<String, Message> _byClientId = {};
   final Map<String, Message> _byServerId = {};
 
+  /// 可选的 conversation repo，用于按 instanceId 过滤 outbox。
+  /// 为 null 时 getOutboxByInstance / getOutboxCountByInstance 返回空
+  /// （向后兼容不需要 instance 级过滤的旧测试）。
+  final InMemoryConversationRepo? _conversationRepo;
+
+  InMemoryMessageRepo({InMemoryConversationRepo? conversationRepo})
+    : _conversationRepo = conversationRepo;
+
   @override
   Future<Message> insert(Message message) async {
     _byClientId[message.clientId] = message;
@@ -323,6 +331,76 @@ class InMemoryMessageRepo implements IMessageRepo {
   }
 
   @override
+  Future<List<Message>> getOutboxByInstance(String instanceId) async {
+    if (_conversationRepo == null) return [];
+
+    final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
+    if (convIds.isEmpty) return [];
+
+    final results = _byClientId.values
+        .where(
+          (m) =>
+              convIds.contains(m.conversationId) &&
+              (m.status == MessageStatus.pending ||
+                  m.status == MessageStatus.failed),
+        )
+        .toList();
+    results.sort((a, b) => a.logicalClock.compareTo(b.logicalClock));
+    return results;
+  }
+
+  @override
+  Future<int> getOutboxCountByInstance(String instanceId) async {
+    if (_conversationRepo == null) return 0;
+
+    final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
+    if (convIds.isEmpty) return 0;
+
+    return _byClientId.values
+        .where(
+          (m) =>
+              convIds.contains(m.conversationId) &&
+              (m.status == MessageStatus.pending ||
+                  m.status == MessageStatus.failed),
+        )
+        .length;
+  }
+
+  @override
+  Future<bool> tryTransitionToSending(
+    String clientId,
+    MessageStatus expectedStatus,
+  ) async {
+    final message = _byClientId[clientId];
+    if (message == null || message.status != expectedStatus) return false;
+    final updated = message.transitionTo(MessageStatus.sending);
+    _byClientId[clientId] = updated;
+    return true;
+  }
+
+  @override
+  Future<int> resetStaleSending(String instanceId) async {
+    // 与 Drift 实现一致：仅重置该实例的 SENDING → PENDING，
+    // 防止跨实例重置。无 conversationRepo 时无法按实例过滤，返回 0（向后兼容）。
+    if (_conversationRepo == null) return 0;
+
+    final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
+    if (convIds.isEmpty) return 0;
+
+    var count = 0;
+    for (final entry in _byClientId.entries.toList()) {
+      if (entry.value.status == MessageStatus.sending &&
+          convIds.contains(entry.value.conversationId)) {
+        _byClientId[entry.key] = entry.value.copyWith(
+          status: MessageStatus.pending,
+        );
+        count++;
+      }
+    }
+    return count;
+  }
+
+  @override
   Future<List<Message>> search(
     String query, {
     int limit = 20,
@@ -387,6 +465,16 @@ class InMemoryMessageRepo implements IMessageRepo {
 /// 内存版会话仓库
 class InMemoryConversationRepo implements IConversationRepo {
   final Map<String, Conversation> _store = {};
+
+  /// 返回属于指定实例的所有 conversation ID 集合。
+  ///
+  /// 供 [InMemoryMessageRepo] 按 instanceId 过滤消息使用。
+  Set<String> getConversationIdsByInstance(String instanceId) {
+    return _store.values
+        .where((c) => c.instanceId == instanceId)
+        .map((c) => c.id)
+        .toSet();
+  }
 
   @override
   Future<Conversation> getOrCreate(String instanceId, String agentId) async {

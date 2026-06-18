@@ -136,6 +136,37 @@ class DriftMessageRepo implements IMessageRepo {
   }
 
   @override
+  Future<List<Message>> getOutboxByInstance(String instanceId) async {
+    final rows = await _database.getOutboxMessagesByInstance(instanceId).get();
+    return rows.map(MessageMapper.toDomain).toList();
+  }
+
+  @override
+  Future<int> getOutboxCountByInstance(String instanceId) async {
+    final count = await _database
+        .getOutboxCountByInstance(instanceId)
+        .getSingle();
+    return count;
+  }
+
+  @override
+  Future<bool> tryTransitionToSending(
+    String clientId,
+    MessageStatus expectedStatus,
+  ) async {
+    final affected = await _database.tryTransitionToSending(
+      clientId,
+      expectedStatus.toInt(),
+    );
+    return affected == 1;
+  }
+
+  @override
+  Future<int> resetStaleSending(String instanceId) async {
+    return _database.resetStaleSending(instanceId);
+  }
+
+  @override
   Future<List<Message>> search(
     String query, {
     int limit = 20,

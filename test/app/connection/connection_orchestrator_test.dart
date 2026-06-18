@@ -1117,6 +1117,97 @@ void main() {
       await orch.onInstanceDeleted('non-existent-id');
       // No exception means the test passes
     });
+
+    // =====================================================================
+    // _onInstanceConnected — .whenComplete guarantees single invocation
+    // =====================================================================
+
+    test('_onInstanceConnected fires after successful agent sync', () async {
+      var connectedCallCount = 0;
+      String? connectedInstanceId;
+
+      final gateway = _FakeGatewayClient(
+        stubAgents: {
+          'inst-1': [_agent('local-1', 'inst-1', '产品虾')],
+        },
+      );
+      final orch = ConnectionOrchestrator(
+        gatewayClient: gateway,
+        instanceRepo: instanceRepo,
+        agentRepo: agentRepo,
+        onInstanceConnected: (id) {
+          connectedCallCount++;
+          connectedInstanceId = id;
+        },
+      );
+      addTearDown(() => orch.dispose());
+
+      final instance = Instance(
+        id: 'inst-1',
+        name: 'Test',
+        gatewayUrl: 'wss://test.com:18789',
+        tokenRef: 'token',
+        healthStatus: HealthStatus.online,
+      );
+      await instanceRepo.save(instance);
+
+      await orch.onInstanceSaved(instance);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(
+        connectedCallCount,
+        1,
+        reason: '_onInstanceConnected must fire exactly once',
+      );
+      expect(connectedInstanceId, 'inst-1');
+    });
+
+    test(
+      '_onInstanceConnected fires exactly once even when agent sync fails',
+      () async {
+        var connectedCallCount = 0;
+
+        // Gateway that always fails fetchAgents
+        final gateway = _FailsThenSucceedsGateway(
+          failOnCalls: {1, 2, 3}, // all 3 attempts fail
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+          onInstanceConnected: (_) => connectedCallCount++,
+        );
+        addTearDown(() => orch.dispose());
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+
+        orch.onInstanceSaved(instance);
+        // Wait for all retry delays to complete (5s + 10s)
+        await Future<void>.delayed(const Duration(milliseconds: 15300));
+
+        // .whenComplete fires exactly once even when _syncAgentsForInstance
+        // exhausts all retries.  The old .then/.catchError dual-call pattern
+        // would also fire once here, but .whenComplete is structurally safer
+        // against future code additions that throw inside .then.
+        expect(
+          connectedCallCount,
+          1,
+          reason:
+              '.whenComplete must fire exactly once after sync failure. '
+              'If the old .then/.catchError dual-call pattern were changed '
+              'to add throwing code in .then, it could double-fire. '
+              '.whenComplete prevents this.',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
   });
 }
 

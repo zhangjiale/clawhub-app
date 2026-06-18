@@ -21,6 +21,7 @@ import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/domain/usecases/save_instance.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/usecases/delete_instance.dart';
+import 'package:claw_hub/domain/usecases/outbox_processor.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/config/app_config.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
@@ -35,6 +36,18 @@ import 'package:claw_hub/app/config/platform_info.dart';
 /// Agent 同步完成信号 — [ConnectionOrchestrator] 在 _syncAgentsForInstance
 /// 成功后递增，[agentListProvider] 通过 watch 此值自动 refresh UI。
 final agentSyncTickerProvider = StateProvider<int>((ref) => 0);
+
+/// Outbox 冲刷信号 — [OutboxProcessor.flushOutbox] 成功发送至少一条消息后递增。
+///
+/// 按 instanceId 隔离，避免实例 A 冲刷时触发实例 B/C/D 的 ChatViewModel
+/// 不必要的 refreshOutbox() 调用（广播风暴）。
+///
+/// [ChatViewModel] 通过 listen 此值，在重连后自动刷新消息列表和 outbox 计数 —
+/// 因为 OutboxProcessor 在后台冲刷时，ChatViewModel 自身的消息流不会感知
+/// 这些状态变化（PENDING → SENT 是数据库直接更新，不经过 messageStream）。
+final outboxFlushTickerProvider = StateProvider.family<int, String>(
+  (ref, instanceId) => 0,
+);
 
 /// 配对信息 — instanceId → GatewayPairingInfo。
 ///
@@ -167,6 +180,36 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
       }
       notifier.state = newMap;
     },
+    onInstanceConnected: (instanceId) {
+      // 在 agent sync 完成后触发 — 冲刷待发送队列（US-015）。fire-and-forget。
+      // 外层 try-catch：集成测试可能只 override 部分 provider，未 override
+      // messageRepo/databaseProvider 时 outboxProcessorProvider 解析会抛
+      // UnimplementedError — 静默即可，不影响业务流程。
+      try {
+        ref
+            .read(outboxProcessorProvider)
+            .flushOutbox(instanceId)
+            .then((sent) {
+              if (sent > 0) {
+                // 通知 ChatViewModel 刷新 outbox count（监听 outboxFlushTickerProvider）
+                ref
+                    .read(outboxFlushTickerProvider(instanceId).notifier)
+                    .state++;
+              }
+            })
+            .catchError((Object e, StackTrace st) {
+              // loggerProvider 有 DebugPrintLogger 默认实现，解析不会抛。
+              ref
+                  .read(loggerProvider)
+                  .error(
+                    '[OutboxProcessor] Flush failed for $instanceId: $e',
+                    st,
+                  );
+            });
+      } catch (_) {
+        // iron-law-allow: Law8 -- outboxProcessorProvider unavailable in test env with partial overrides
+      }
+    },
   );
   ref.onDispose(() => orchestrator.dispose());
   return orchestrator;
@@ -216,6 +259,20 @@ final sendMessageUseCaseProvider = Provider<SendMessageUseCase>((ref) {
     conversationRepo: ref.watch(conversationRepoProvider),
     instanceRepo: ref.watch(instanceRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
+  );
+});
+
+/// OutboxProcessor — 离线消息队列冲刷处理器（US-015）。
+///
+/// 在 [ConnectionOrchestrator] 检测到实例重连成功且 agent 同步完成后触发，
+/// 按 [Message.logicalClock] 升序冲刷 PENDING + FAILED 消息。
+final outboxProcessorProvider = Provider<OutboxProcessor>((ref) {
+  return OutboxProcessor(
+    messageRepo: ref.watch(messageRepoProvider),
+    instanceRepo: ref.watch(instanceRepoProvider),
+    agentRepo: ref.watch(agentRepoProvider),
+    sendMessageUseCase: ref.watch(sendMessageUseCaseProvider),
+    logger: ref.watch(loggerProvider),
   );
 });
 

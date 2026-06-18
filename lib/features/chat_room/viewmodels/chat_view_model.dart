@@ -40,13 +40,29 @@ class ChatSessionState {
   final Map<String, ToolCall> toolCalls;
   final String streamingText;
 
+  /// 该实例的 outbox 计数（PENDING + FAILED 消息数）。
+  /// 仅在 init / send / 连接状态变化 / outbox flush 时刷新，
+  /// 不绑定 _loadMessages 以避免每次消息变化都查 DB。
+  final int outboxCount;
+
+  /// 非 null 时表示 retryMessage 因前置条件未满足而跳过，
+  /// UI 层应展示此消息并调用 [ChatViewModel.clearRetryFeedback] 清除。
+  /// 例如："实例离线，请等待自动重发"、"Agent 已被删除，无法重试"。
+  final String? retryFeedback;
+
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
     this.connectionState = GatewayConnectionState.disconnected,
     this.toolCalls = const {},
     this.streamingText = '',
+    this.outboxCount = 0,
+    this.retryFeedback,
   });
+
+  /// Sentinel to distinguish "omit param" (keep old value) from
+  /// "explicitly set to null" (clear) for the nullable [retryFeedback] field.
+  static const _noRetryFeedbackChange = Object();
 
   ChatSessionState copyWith({
     LoadState<List<Message>>? messages,
@@ -54,6 +70,8 @@ class ChatSessionState {
     GatewayConnectionState? connectionState,
     Map<String, ToolCall>? toolCalls,
     String? streamingText,
+    int? outboxCount,
+    Object? retryFeedback = _noRetryFeedbackChange,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -61,6 +79,10 @@ class ChatSessionState {
       connectionState: connectionState ?? this.connectionState,
       toolCalls: toolCalls ?? this.toolCalls,
       streamingText: streamingText ?? this.streamingText,
+      outboxCount: outboxCount ?? this.outboxCount,
+      retryFeedback: identical(retryFeedback, _noRetryFeedbackChange)
+          ? this.retryFeedback
+          : retryFeedback as String?,
     );
   }
 
@@ -72,7 +94,9 @@ class ChatSessionState {
           connectionState == other.connectionState &&
           messages == other.messages &&
           toolCalls == other.toolCalls &&
-          streamingText == other.streamingText;
+          streamingText == other.streamingText &&
+          outboxCount == other.outboxCount &&
+          retryFeedback == other.retryFeedback;
 
   @override
   int get hashCode => Object.hash(
@@ -81,6 +105,8 @@ class ChatSessionState {
     messages,
     toolCalls,
     streamingText,
+    outboxCount,
+    retryFeedback,
   );
 }
 
@@ -103,6 +129,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   final IAgentRepo _agentRepo;
   final IConversationRepo _conversationRepo;
   final IMessageRepo _messageRepo;
+  final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
   final SendMessageUseCase _sendMessageUseCase;
   final String instanceId;
@@ -163,6 +190,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     required IAgentRepo agentRepo,
     required IConversationRepo conversationRepo,
     required IMessageRepo messageRepo,
+    required IInstanceRepo instanceRepo,
     required IGatewayClient gatewayClient,
     required SendMessageUseCase sendMessageUseCase,
     required this.instanceId,
@@ -171,6 +199,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   }) : _agentRepo = agentRepo,
        _conversationRepo = conversationRepo,
        _messageRepo = messageRepo,
+       _instanceRepo = instanceRepo,
        _gatewayClient = gatewayClient,
        _sendMessageUseCase = sendMessageUseCase,
        super(const ChatSessionState());
@@ -215,6 +244,18 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           .connectionStateStream(instanceId)
           .listen((state) {
             _updateState((s) => s.copyWith(connectionState: state));
+            // 连接状态变化时刷新消息列表和 outbox 计数 —
+            // OutboxProcessor 可能在后台冲刷，将 PENDING 推进到 SENT；
+            // 这些变化通过 messageStream 不会传达（DB 直接更新）。
+            if (state == GatewayConnectionState.connected) {
+              // OutboxProcessor 在 connected 后冲刷队列（PENDING → SENT），
+              // 需要同时刷新消息列表和 outbox 计数。
+              unawaited(refreshOutbox());
+            } else if (state == GatewayConnectionState.disconnected) {
+              // 断开时仅刷新 outbox 计数 — 新消息可能进入 PENDING，
+              // 但消息列表本身不会变化（OutboxProcessor 只在 connected 时运行）。
+              unawaited(_loadOutboxCount());
+            }
           });
 
       // 5. Subscribe to real-time streams BEFORE history fetch — broadcast
@@ -316,6 +357,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           'History fetch failed for $instanceId/$remoteId: $error\n$stackTrace',
         );
       }
+
+      // 7. 初始化时刷新 outbox count（用于 OutboxWarningBanner，AC3）。
+      await _loadOutboxCount();
     } catch (error, stackTrace) {
       debugPrint(
         '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
@@ -402,6 +446,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         _updateState((s) => s.copyWith(thinkingState: ThinkingState.timeout));
       });
     }
+
+    // 刷新 outbox count — 离线时新消息会进入 PENDING 状态，
+    // 用于决定是否显示 OutboxWarningBanner（AC3）。
+    await _loadOutboxCount();
 
     onStatsChanged?.call();
   }
@@ -506,6 +554,91 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     } catch (error, stackTrace) {
       _updateState((s) => s.copyWith(messages: LoadError(error, stackTrace)));
     }
+  }
+
+  /// 刷新 outbox 计数（PENDING + FAILED 消息数）。
+  ///
+  /// 解耦于 [_loadMessages]，仅在以下场景调用：
+  /// - [init] 完成后
+  /// - [send] 完成后（新消息可能进入 PENDING）
+  /// - 连接状态变化时（OutboxProcessor 可能已冲刷）
+  /// - [retryMessage] 完成后
+  Future<void> _loadOutboxCount() async {
+    try {
+      final count = await _messageRepo.getOutboxCountByInstance(instanceId);
+      _updateState((s) => s.copyWith(outboxCount: count));
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[ChatViewModel] _loadOutboxCount failed for $instanceId: $error\n$stackTrace',
+      );
+    }
+  }
+
+  /// 外部触发的刷新入口 — 供 [chatViewModelProvider] 响应
+  /// [outboxFlushTickerProvider] 时调用，替代重建 ViewModel。
+  ///
+  /// 刷新消息列表和 outbox 计数，使 UI 反映 OutboxProcessor 在后台
+  /// 冲刷后的最新状态（PENDING → SENT 是数据库直接更新，不经 messageStream）。
+  Future<void> refreshOutbox() async {
+    // 两次查询互不依赖，并行执行；各自 _updateState 写入不同字段，无 lost update。
+    await Future.wait([_loadMessages(), _loadOutboxCount()]);
+  }
+
+  /// 重试一条 FAILED 消息（US-015 AC2 手动重试入口）。
+  ///
+  /// 通过 [SendMessageUseCase.retry] 走统一的发送路径，与 [OutboxProcessor]
+  /// 共用 CAS 防竞争逻辑，避免同一消息被重复发送。
+  ///
+  /// 前置检查：
+  /// - 消息存在且为 FAILED 状态
+  /// - 实例存在且可连接（离线时跳过，等待 OutboxProcessor 自动处理）
+  /// - Agent 存在（可能已被删除）
+  ///
+  /// 当前置条件未满足时，通过 [ChatSessionState.retryFeedback] 向 UI
+  /// 传递可读的跳过原因，避免静默失败。
+  Future<void> retryMessage(String clientId) async {
+    final message = await _messageRepo.getByClientId(clientId);
+    if (message == null || !message.isRetryable) {
+      _updateState((s) => s.copyWith(retryFeedback: '该消息无法重试'));
+      return;
+    }
+
+    final instance = await _instanceRepo.getById(instanceId);
+    if (instance == null || !instance.healthStatus.isConnectable) {
+      _updateState((s) => s.copyWith(retryFeedback: '实例离线，请等待自动重发'));
+      return;
+    }
+
+    final agent = await _agentRepo.getById(agentId);
+    if (agent == null) {
+      _updateState((s) => s.copyWith(retryFeedback: 'Agent 已被删除，无法重试'));
+      return;
+    }
+
+    try {
+      final result = await _sendMessageUseCase.retry(
+        clientId: clientId,
+        instanceId: instanceId,
+        agentRemoteId: agent.remoteId,
+        expectedStatus: message.status, // 显式传入，避免默认值 FAILED 与未来 PENDING 可重试冲突
+      );
+      if (!result.sentNow && result.message.status == MessageStatus.failed) {
+        _updateState((s) => s.copyWith(retryFeedback: '重试失败，请稍后再试'));
+      }
+    } catch (error, stackTrace) {
+      // retry 内部已尝试标记 FAILED；这里只防止异常冒泡。
+      debugPrint(
+        '[ChatViewModel] retryMessage failed for $clientId: $error\n$stackTrace',
+      );
+      _updateState((s) => s.copyWith(retryFeedback: '重试异常，请稍后再试'));
+    }
+
+    await refreshOutbox();
+  }
+
+  /// 清除 [ChatSessionState.retryFeedback]（UI 展示后调用）。
+  void clearRetryFeedback() {
+    _updateState((s) => s.copyWith(retryFeedback: null));
   }
 
   void _updateState(ChatSessionState Function(ChatSessionState) transform) {

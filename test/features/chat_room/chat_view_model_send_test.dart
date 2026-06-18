@@ -41,6 +41,7 @@ void main() {
         agentRepo: agentRepo,
         conversationRepo: conversationRepo,
         messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
         gatewayClient: gateway,
         sendMessageUseCase: SendMessageUseCase(
           messageRepo: messageRepo,
@@ -237,6 +238,7 @@ void main() {
         agentRepo: agentRepo,
         conversationRepo: conversationRepo,
         messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
         gatewayClient: failingGateway,
         sendMessageUseCase: failingUseCase,
         instanceId: 'inst-1',
@@ -289,6 +291,7 @@ void main() {
         agentRepo: agentRepo,
         conversationRepo: conversationRepo,
         messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
         gatewayClient: gateway,
         sendMessageUseCase: SendMessageUseCase(
           messageRepo: messageRepo,
@@ -346,6 +349,7 @@ void main() {
         agentRepo: agentRepo,
         conversationRepo: conversationRepo,
         messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
         gatewayClient: gateway,
         sendMessageUseCase: SendMessageUseCase(
           messageRepo: messageRepo,

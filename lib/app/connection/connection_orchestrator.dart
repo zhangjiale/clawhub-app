@@ -34,6 +34,16 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   final void Function(String instanceId, GatewayPairingInfo? info)?
   _onPairingInfoCb;
 
+  /// 实例连接成功的回调（在 agent 同步完成后触发）。
+  ///
+  /// 用于 [OutboxProcessor] 在重连后冲刷待发送队列。
+  /// 故意放在 agent sync 之后：[OutboxProcessor] 需要 [IAgentRepo.getById]
+  /// 能查到 agent 的 remoteId，否则离线期间发送的消息会被静默跳过。
+  ///
+  /// 注：如果未来需要第三个以上的 connected 回调，应重构为
+  /// `Stream<InstanceEvent>` 广播模式，避免回调堆积。
+  final void Function(String instanceId)? _onInstanceConnected;
+
   /// instanceId → GatewayConnectionState 订阅
   final Map<String, StreamSubscription<GatewayConnectionState>>
   _connectionSubscriptions = {};
@@ -83,6 +93,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     IConnectivity? connectivity,
     void Function()? onAgentsSynced,
     void Function(String instanceId, GatewayPairingInfo? info)? onPairingInfo,
+    void Function(String instanceId)? onInstanceConnected,
     DateTime Function()? clock,
     Duration syncLoopCooldown = const Duration(seconds: 1),
   }) : _gatewayClient = gatewayClient,
@@ -90,6 +101,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
        _agentRepo = agentRepo,
        _onAgentsSynced = onAgentsSynced,
        _onPairingInfoCb = onPairingInfo,
+       _onInstanceConnected = onInstanceConnected,
        _connectivity = connectivity ?? ConnectivityAdapter(),
        _clock = clock ?? (() => DateTime.now()),
        _syncLoopCooldown = syncLoopCooldown;
@@ -438,17 +450,28 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       // fire-and-forget：同步失败不影响连接状态，且下一次连接/tick 会重试。
       // catchError 是最后的安全网，防止意外的同步异常（如 Set.add 在极端
       // 并发下的同步抛出）成为未处理的异步错误。
+      //
+      // [_onInstanceConnected] 回调在 agent sync 完成后触发，
+      // 用于 [OutboxProcessor] 冲刷待发送队列 — 必须放在 sync 之后，
+      // 因为 OutboxProcessor 需要从 IAgentRepo 查 agent.remoteId。
+      // 即使 sync 失败也触发回调（本地缓存可能已足够发送）。
       if (state == GatewayConnectionState.connected) {
         unawaited(
-          _syncAgentsForInstance(instanceId).catchError((
-            Object e,
-            StackTrace st,
-          ) {
-            debugPrint(
-              '[ConnectionOrchestrator] Unhandled sync error for '
-              '$instanceId: $e\n$st',
-            );
-          }),
+          _syncAgentsForInstance(instanceId)
+              .catchError((Object e, StackTrace st) {
+                debugPrint(
+                  '[ConnectionOrchestrator] Unhandled sync error for '
+                  '$instanceId: $e\n$st',
+                );
+                // error logged but not re-thrown — whenComplete fires once below
+              })
+              .whenComplete(() {
+                // .whenComplete guarantees exactly one invocation regardless of
+                // whether _syncAgentsForInstance succeeds, fails, or a future
+                // maintainer adds throwing code to the success path.  Safer than
+                // dual .then/.catchError call sites.
+                _onInstanceConnected?.call(instanceId);
+              }),
         );
       }
     } catch (error) {

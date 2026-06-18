@@ -39,6 +39,30 @@ abstract class IMessageRepo {
   /// 获取待发送队列（PENDING 和 FAILED 状态的消息）
   Future<List<Message>> getOutbox(String agentId);
 
+  /// 获取指定实例的待发送队列（PENDING 和 FAILED 状态的消息）
+  /// 按 logicalClock 升序排列，保证按发送顺序重发
+  Future<List<Message>> getOutboxByInstance(String instanceId);
+
+  /// 获取指定实例的待发送消息数量（用于 UI 警告提示）
+  Future<int> getOutboxCountByInstance(String instanceId);
+
+  /// CAS 条件更新: 仅当消息当前状态为 [expectedStatus] 时才过渡到 SENDING。
+  /// 返回 true 表示更新成功，false 表示状态已变化（被其他路径处理）。
+  /// 防止 SendMessageUseCase 和 OutboxProcessor 并发操作同一条消息。
+  Future<bool> tryTransitionToSending(
+    String clientId,
+    MessageStatus expectedStatus,
+  );
+
+  /// 崩溃恢复: 将指定实例中所有 SENDING 状态的消息重置为 PENDING。
+  /// 不经过 FSM 校验 — 这是崩溃恢复而非正常业务流转。
+  ///
+  /// 仅影响 [instanceId] 对应的消息（通过 conversations JOIN 过滤），
+  /// 防止跨实例竞态：实例 B 启动冲刷时不应重置实例 A 正在发送的消息。
+  ///
+  /// 应在 App 启动时、OutboxProcessor flush 前调用。
+  Future<int> resetStaleSending(String instanceId);
+
   /// 全文搜索（基于 FTS5）
   Future<List<Message>> search(String query, {int limit = 20, int offset = 0});
 

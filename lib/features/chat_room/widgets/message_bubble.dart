@@ -21,15 +21,43 @@ class MessageBubble extends StatelessWidget {
   final Message message;
   final String agentName;
   final int index; // B3: for staggered enter delay
+  final VoidCallback? onRetry; // US-015 AC2: retry FAILED messages
 
   const MessageBubble({
     super.key,
     required this.message,
     required this.agentName,
     this.index = 0,
+    this.onRetry,
   });
 
   bool get _isUser => message.role == MessageRole.user;
+
+  /// 失败消息且 [onRetry] 可用时，渲染可点击的"状态图标 + 重试"组合；
+  /// 否则渲染普通 [StatusIcon]。
+  Widget _buildStatusIndicator() {
+    if (message.status != MessageStatus.failed || onRetry == null) {
+      return StatusIcon(status: message.status, size: 14);
+    }
+    return Tooltip(
+      message: '重试发送',
+      child: GestureDetector(
+        onTap: onRetry,
+        behavior: HitTestBehavior.opaque, // larger hit area
+        child: Padding(
+          padding: const EdgeInsets.all(2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              StatusIcon(status: message.status, size: 14),
+              const SizedBox(width: 2),
+              const Icon(Icons.refresh, size: 12, color: XiaColors.red),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -109,10 +137,7 @@ class MessageBubble extends StatelessWidget {
                 ],
               ),
             ),
-            if (_isUser) ...[
-              const SizedBox(width: 4),
-              StatusIcon(status: message.status, size: 14),
-            ],
+            if (_isUser) ...[const SizedBox(width: 4), _buildStatusIndicator()],
           ],
         ),
       ),
