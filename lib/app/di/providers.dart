@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
@@ -23,6 +25,7 @@ import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/usecases/delete_instance.dart';
 import 'package:claw_hub/domain/usecases/outbox_processor.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
+import 'package:claw_hub/app/connection/instance_event.dart';
 import 'package:claw_hub/app/config/app_config.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
 
@@ -169,49 +172,67 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     agentRepo: ref.watch(agentRepoProvider),
     connectivity: ref.watch(connectivityProvider),
-    onAgentsSynced: () => ref.read(agentSyncTickerProvider.notifier).state++,
-    onPairingInfo: (instanceId, info) {
-      final notifier = ref.read(pairingInfoProvider.notifier);
-      final newMap = Map<String, GatewayPairingInfo>.from(notifier.state);
-      if (info == null) {
-        newMap.remove(instanceId);
-      } else {
-        newMap[instanceId] = info;
-      }
-      notifier.state = newMap;
-    },
-    onInstanceConnected: (instanceId) {
-      // 在 agent sync 完成后触发 — 冲刷待发送队列（US-015）。fire-and-forget。
-      // 外层 try-catch：集成测试可能只 override 部分 provider，未 override
-      // messageRepo/databaseProvider 时 outboxProcessorProvider 解析会抛
-      // UnimplementedError — 静默即可，不影响业务流程。
-      try {
-        ref
-            .read(outboxProcessorProvider)
-            .flushOutbox(instanceId)
-            .then((sent) {
+  );
+
+  // 订阅编排器生命周期事件（替代旧的三段回调闭包）。
+  // 订阅在 provider body 内同步建立，早于 initialize() 的异步事件源
+  // （已核对 main.dart:76-77 时序），故无晚订阅丢事件风险。
+  final streamSub = orchestrator.events.listen(
+    (event) {
+      switch (event) {
+        case AgentsSyncedEvent():
+          ref.read(agentSyncTickerProvider.notifier).state++;
+        case PairingInfoChangedEvent(:final instanceId, :final info):
+          final notifier = ref.read(pairingInfoProvider.notifier);
+          final newMap = Map<String, GatewayPairingInfo>.from(notifier.state);
+          if (info == null) {
+            newMap.remove(instanceId);
+          } else {
+            newMap[instanceId] = info;
+          }
+          notifier.state = newMap;
+        case InstanceConnectedEvent(:final instanceId):
+          // 在 agent sync 完成后触发 — 冲刷待发送队列（US-015）。fire-and-forget。
+          //
+          // outboxProcessorProvider 解析失败（如测试环境未 override
+          // messageRepo/databaseProvider 抛 UnimplementedError）必须被捕获并
+          // 打日志 —— 旧代码用 try-catch 静默吞掉，导致 outbox 永不冲刷且无日志。
+          // 注意：ref.read 解析是同步的，UnimplementedError 在 .catchError 之前
+          // 抛出，故必须用 try-catch 包住解析步骤，不能只靠 .catchError。
+          unawaited(() async {
+            try {
+              final processor = ref.read(outboxProcessorProvider);
+              final sent = await processor.flushOutbox(instanceId);
               if (sent > 0) {
                 // 通知 ChatViewModel 刷新 outbox count（监听 outboxFlushTickerProvider）
                 ref
                     .read(outboxFlushTickerProvider(instanceId).notifier)
                     .state++;
               }
-            })
-            .catchError((Object e, StackTrace st) {
-              // loggerProvider 有 DebugPrintLogger 默认实现，解析不会抛。
+            } catch (e, st) {
               ref
                   .read(loggerProvider)
                   .error(
                     '[OutboxProcessor] Flush failed for $instanceId: $e',
                     st,
                   );
-            });
-      } catch (_) {
-        // iron-law-allow: Law8 -- outboxProcessorProvider unavailable in test env with partial overrides
+            }
+          }());
       }
     },
+    onError: (Object error, StackTrace stack) {
+      // 事件处理器自身的未捕获异常 — 日志记录，不崩溃。
+      // 取代旧 onInstanceConnected 闭包里静默吞异常的 catch (_)。
+      ref
+          .read(loggerProvider)
+          .error('[ConnectionOrchestrator] Event handler error: $error', stack);
+    },
   );
-  ref.onDispose(() => orchestrator.dispose());
+
+  ref.onDispose(() {
+    streamSub.cancel();
+    orchestrator.dispose();
+  });
   return orchestrator;
 });
 

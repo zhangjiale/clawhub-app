@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
+import 'package:claw_hub/app/connection/instance_event.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
@@ -1066,11 +1067,17 @@ void main() {
           gatewayClient: gateway,
           instanceRepo: instanceRepo,
           agentRepo: agentRepo,
-          onPairingInfo: (id, info) {
-            if (info == null) pairingCleared.add(id);
-          },
         );
-        addTearDown(() => orch.dispose());
+        // 订阅事件流 — 断开时 _disconnect emit PairingInfoChangedEvent(info: null)
+        final sub = orch.events.listen((event) {
+          if (event is PairingInfoChangedEvent && event.info == null) {
+            pairingCleared.add(event.instanceId);
+          }
+        });
+        addTearDown(() {
+          sub.cancel();
+          orch.dispose();
+        });
 
         final instance = Instance(
           id: 'inst-1',
@@ -1098,7 +1105,7 @@ void main() {
           pairingCleared,
           contains('inst-1'),
           reason:
-              'onInstanceDeleted must call onPairingInfo(id, null) '
+              'onInstanceDeleted must emit PairingInfoChangedEvent(info: null) '
               'to clear pairing data from UI',
         );
       },
@@ -1135,12 +1142,18 @@ void main() {
         gatewayClient: gateway,
         instanceRepo: instanceRepo,
         agentRepo: agentRepo,
-        onInstanceConnected: (id) {
-          connectedCallCount++;
-          connectedInstanceId = id;
-        },
       );
-      addTearDown(() => orch.dispose());
+      // 订阅事件流 — agent sync 完成后 .whenComplete emit InstanceConnectedEvent
+      final sub = orch.events.listen((event) {
+        if (event is InstanceConnectedEvent) {
+          connectedCallCount++;
+          connectedInstanceId = event.instanceId;
+        }
+      });
+      addTearDown(() {
+        sub.cancel();
+        orch.dispose();
+      });
 
       final instance = Instance(
         id: 'inst-1',
@@ -1157,7 +1170,7 @@ void main() {
       expect(
         connectedCallCount,
         1,
-        reason: '_onInstanceConnected must fire exactly once',
+        reason: 'InstanceConnectedEvent must fire exactly once',
       );
       expect(connectedInstanceId, 'inst-1');
     });
@@ -1175,9 +1188,15 @@ void main() {
           gatewayClient: gateway,
           instanceRepo: instanceRepo,
           agentRepo: agentRepo,
-          onInstanceConnected: (_) => connectedCallCount++,
         );
-        addTearDown(() => orch.dispose());
+        // 订阅事件流 — .whenComplete 保证 sync 失败仍单次 emit
+        final sub = orch.events.listen((event) {
+          if (event is InstanceConnectedEvent) connectedCallCount++;
+        });
+        addTearDown(() {
+          sub.cancel();
+          orch.dispose();
+        });
 
         final instance = Instance(
           id: 'inst-1',
@@ -1200,14 +1219,201 @@ void main() {
           connectedCallCount,
           1,
           reason:
-              '.whenComplete must fire exactly once after sync failure. '
-              'If the old .then/.catchError dual-call pattern were changed '
-              'to add throwing code in .then, it could double-fire. '
-              '.whenComplete prevents this.',
+              '.whenComplete must emit InstanceConnectedEvent exactly once '
+              'after sync failure. If the old .then/.catchError dual-call '
+              'pattern were changed to add throwing code in .then, it could '
+              'double-fire. .whenComplete prevents this.',
         );
       },
       timeout: const Timeout(Duration(seconds: 30)),
     );
+
+    // =====================================================================
+    // events stream — Stream<InstanceEvent> 广播（方案 B）
+    // =====================================================================
+
+    group('events stream', () {
+      Instance onlineInstance(String id) => Instance(
+        id: id,
+        name: 'Test',
+        gatewayUrl: 'wss://test.com:18789',
+        tokenRef: 'token',
+        healthStatus: HealthStatus.online,
+      );
+
+      test('emits AgentsSyncedEvent after successful agent sync', () async {
+        final gateway = _FakeGatewayClient(
+          stubAgents: {
+            'inst-1': [_agent('local-1', 'inst-1', '产品虾')],
+          },
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+        final syncedEvents = <AgentsSyncedEvent>[];
+        final sub = orch.events.listen((e) {
+          if (e is AgentsSyncedEvent) syncedEvents.add(e);
+        });
+        addTearDown(() {
+          sub.cancel();
+          orch.dispose();
+        });
+
+        await instanceRepo.save(onlineInstance('inst-1'));
+        await orch.onInstanceSaved(onlineInstance('inst-1'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(
+          syncedEvents.length,
+          1,
+          reason: 'AgentsSyncedEvent must fire exactly once after sync',
+        );
+      });
+
+      test(
+        'does NOT emit AgentsSyncedEvent when agent sync fails',
+        () async {
+          // sync 失败 → 不 emit AgentsSyncedEvent（语义边界：sync 成功才通知 UI 刷新）
+          final gateway = _FailsThenSucceedsGateway(failOnCalls: {1, 2, 3});
+          final orch = ConnectionOrchestrator(
+            gatewayClient: gateway,
+            instanceRepo: instanceRepo,
+            agentRepo: agentRepo,
+          );
+          final syncedEvents = <AgentsSyncedEvent>[];
+          final sub = orch.events.listen((e) {
+            if (e is AgentsSyncedEvent) syncedEvents.add(e);
+          });
+          addTearDown(() {
+            sub.cancel();
+            orch.dispose();
+          });
+
+          await instanceRepo.save(onlineInstance('inst-1'));
+          orch.onInstanceSaved(onlineInstance('inst-1'));
+          await Future<void>.delayed(const Duration(milliseconds: 15300));
+
+          expect(
+            syncedEvents,
+            isEmpty,
+            reason: 'sync 失败时不应 emit AgentsSyncedEvent',
+          );
+        },
+        timeout: const Timeout(Duration(seconds: 30)),
+      );
+
+      test(
+        'emits PairingInfoChangedEvent(info) when pairing info arrives',
+        () async {
+          final gateway = _FakeGatewayClient(
+            pairingOnConnect: true,
+            pairingRequestId: 'req-abc',
+          );
+          final orch = ConnectionOrchestrator(
+            gatewayClient: gateway,
+            instanceRepo: instanceRepo,
+            agentRepo: agentRepo,
+          );
+          final pairingEvents = <PairingInfoChangedEvent>[];
+          final sub = orch.events.listen((e) {
+            if (e is PairingInfoChangedEvent) pairingEvents.add(e);
+          });
+          addTearDown(() {
+            sub.cancel();
+            orch.dispose();
+          });
+
+          await instanceRepo.save(onlineInstance('inst-1'));
+          await orch.onInstanceSaved(onlineInstance('inst-1'));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+
+          expect(pairingEvents, isNotEmpty);
+          final withInfo = pairingEvents.where((e) => e.info != null);
+          expect(
+            withInfo,
+            isNotEmpty,
+            reason: '配对到达时必须 emit 携带 info 的 PairingInfoChangedEvent',
+          );
+          expect(withInfo.first.instanceId, 'inst-1');
+        },
+      );
+
+      test('broadcast: multiple listeners receive the same event', () async {
+        // 验证 broadcast 特性 — 两个独立订阅都收到同一 AgentsSyncedEvent
+        final gateway = _FakeGatewayClient(
+          stubAgents: {
+            'inst-1': [_agent('local-1', 'inst-1', '产品虾')],
+          },
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+        final listenerA = <InstanceEvent>[];
+        final listenerB = <InstanceEvent>[];
+        final subA = orch.events.listen(listenerA.add);
+        final subB = orch.events.listen(listenerB.add);
+        addTearDown(() {
+          subA.cancel();
+          subB.cancel();
+          orch.dispose();
+        });
+
+        await instanceRepo.save(onlineInstance('inst-1'));
+        await orch.onInstanceSaved(onlineInstance('inst-1'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        final aSynced = listenerA.whereType<AgentsSyncedEvent>().length;
+        final bSynced = listenerB.whereType<AgentsSyncedEvent>().length;
+        expect(aSynced, bSynced, reason: 'broadcast stream 必须向所有订阅者投递相同事件');
+        expect(aSynced, 1);
+      });
+
+      test(
+        'does not throw when an event is emitted with no listener attached',
+        () async {
+          // Law 8 合规：broadcast stream 无订阅者时 emit 不抛异常。
+          // 场景：orchestrator 在 provider 建订阅前就触发事件（理论上不会发生，
+          // 但 broadcast 语义必须保证不抛）。
+          final gateway = _FakeGatewayClient(
+            stubAgents: {
+              'inst-1': [_agent('local-1', 'inst-1', '产品虾')],
+            },
+          );
+          final orch = ConnectionOrchestrator(
+            gatewayClient: gateway,
+            instanceRepo: instanceRepo,
+            agentRepo: agentRepo,
+          );
+          addTearDown(() => orch.dispose());
+
+          // 不订阅 events，直接驱动 sync —— 不应抛异常
+          await instanceRepo.save(onlineInstance('inst-1'));
+          await orch.onInstanceSaved(onlineInstance('inst-1'));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+
+          // 到此无异常即通过
+          expect(orch.events, isA<Stream<InstanceEvent>>());
+        },
+      );
+
+      test('events stream is closed after dispose', () async {
+        final gateway = _FakeGatewayClient();
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+
+        await orch.dispose();
+
+        // 关闭后 stream 发出 done 事件
+        await expectLater(orch.events, emitsDone);
+      });
+    });
   });
 }
 

@@ -11,6 +11,7 @@ import '../../domain/models/instance.dart';
 import '../../domain/repositories/i_agent_repo.dart';
 import '../../domain/repositories/i_instance_repo.dart';
 import '../../domain/usecases/instance_lifecycle.dart';
+import 'instance_event.dart';
 
 /// 实例连接编排器 — 管理所有 Gateway 实例的连接生命周期。
 ///
@@ -30,19 +31,19 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   final IInstanceRepo _instanceRepo;
   final IAgentRepo _agentRepo;
   final IConnectivity _connectivity;
-  final void Function()? _onAgentsSynced;
-  final void Function(String instanceId, GatewayPairingInfo? info)?
-  _onPairingInfoCb;
 
-  /// 实例连接成功的回调（在 agent 同步完成后触发）。
-  ///
-  /// 用于 [OutboxProcessor] 在重连后冲刷待发送队列。
-  /// 故意放在 agent sync 之后：[OutboxProcessor] 需要 [IAgentRepo.getById]
-  /// 能查到 agent 的 remoteId，否则离线期间发送的消息会被静默跳过。
-  ///
-  /// 注：如果未来需要第三个以上的 connected 回调，应重构为
-  /// `Stream<InstanceEvent>` 广播模式，避免回调堆积。
-  final void Function(String instanceId)? _onInstanceConnected;
+  /// 生命周期事件广播流 — 收编历史上累积的三个离散回调字段
+  /// （agent 同步完成 / 配对信息变更 / 实例连接完成）。
+  /// 新增生命周期关注点时只加 [InstanceEvent] 子类型，不扩构造函数签名。
+  /// broadcast 模式：多个消费者可同时订阅；无订阅者时事件直接丢弃，不抛异常。
+  final StreamController<InstanceEvent> _eventController =
+      StreamController<InstanceEvent>.broadcast();
+
+  /// 生命周期事件流。订阅必须在 [initialize] 之前完成 ——
+  /// `connectionOrchestratorProvider` 的 body 同步建订阅，
+  /// `initialize()` 由 `_ConnectionInitializer` 在其后异步调用，
+  /// 故晚订阅丢事件的风险不存在（已核对 main.dart:76-77 时序）。
+  Stream<InstanceEvent> get events => _eventController.stream;
 
   /// instanceId → GatewayConnectionState 订阅
   final Map<String, StreamSubscription<GatewayConnectionState>>
@@ -91,17 +92,11 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     required IInstanceRepo instanceRepo,
     required IAgentRepo agentRepo,
     IConnectivity? connectivity,
-    void Function()? onAgentsSynced,
-    void Function(String instanceId, GatewayPairingInfo? info)? onPairingInfo,
-    void Function(String instanceId)? onInstanceConnected,
     DateTime Function()? clock,
     Duration syncLoopCooldown = const Duration(seconds: 1),
   }) : _gatewayClient = gatewayClient,
        _instanceRepo = instanceRepo,
        _agentRepo = agentRepo,
-       _onAgentsSynced = onAgentsSynced,
-       _onPairingInfoCb = onPairingInfo,
-       _onInstanceConnected = onInstanceConnected,
        _connectivity = connectivity ?? ConnectivityAdapter(),
        _clock = clock ?? (() => DateTime.now()),
        _syncLoopCooldown = syncLoopCooldown;
@@ -227,6 +222,8 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     }
     _pairingInfoSubscriptions.clear();
     _connecting.clear();
+
+    await _eventController.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -257,7 +254,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       await _pairingInfoSubscriptions[instance.id]?.cancel();
       _pairingInfoSubscriptions[instance.id] = _gatewayClient
           .pairingInfoStream(instance.id)
-          .listen((info) => _onPairingInfo(instance.id, info));
+          .listen((info) => _handlePairingInfo(instance.id, info));
 
       // 2. 通过 Gateway 建立 WebSocket 连接
       await _gatewayClient.connect(instance);
@@ -279,8 +276,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     }
   }
 
-  void _onPairingInfo(String instanceId, GatewayPairingInfo? info) {
-    _onPairingInfoCb?.call(instanceId, info);
+  void _handlePairingInfo(String instanceId, GatewayPairingInfo? info) {
+    _eventController.add(
+      PairingInfoChangedEvent(instanceId: instanceId, info: info),
+    );
   }
 
   Future<void> _disconnect(String instanceId) async {
@@ -292,8 +291,11 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     _lastReconnectAttempt.remove(instanceId);
     await _gatewayClient.disconnect(instanceId);
 
-    // 清除配对信息
-    _onPairingInfoCb?.call(instanceId, null);
+    // 清除配对信息 — emit 事件，由 connectionOrchestratorProvider 的订阅消费
+    // 并更新 pairingInfoProvider（info == null 表示移除该实例的配对信息）。
+    _eventController.add(
+      PairingInfoChangedEvent(instanceId: instanceId, info: null),
+    );
 
     debugPrint('[ConnectionOrchestrator] Disconnected from $instanceId');
   }
@@ -341,7 +343,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
               'for $instanceId',
             );
             // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建
-            _onAgentsSynced?.call();
+            _eventController.add(const AgentsSyncedEvent());
             // Success — break out of for-loop, then check
             // _syncPendingRetry for pending retries below.
             break;
@@ -470,7 +472,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
                 // whether _syncAgentsForInstance succeeds, fails, or a future
                 // maintainer adds throwing code to the success path.  Safer than
                 // dual .then/.catchError call sites.
-                _onInstanceConnected?.call(instanceId);
+                _eventController.add(InstanceConnectedEvent(instanceId));
               }),
         );
       }
