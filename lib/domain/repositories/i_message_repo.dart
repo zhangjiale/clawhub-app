@@ -67,6 +67,9 @@ abstract class IMessageRepo {
   /// 崩溃恢复: 将指定实例中所有 SENDING 状态的消息重置为 PENDING。
   /// 不经过 FSM 校验 — 这是崩溃恢复而非正常业务流转。
   ///
+  /// **⚠️ 仅供 [OutboxProcessor] 崩溃恢复调用，绕过领域状态机（[Message.transitionTo]）。
+  /// 业务路径不得调用 —— 正常状态流转必须经 FSM 校验，否则会破坏 7-state 生命周期不变量。**
+  ///
   /// 仅影响 [instanceId] 对应的消息（通过 conversations JOIN 过滤），
   /// 防止跨实例竞态：实例 B 启动冲刷时不应重置实例 A 正在发送的消息。
   ///

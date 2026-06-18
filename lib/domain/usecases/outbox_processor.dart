@@ -32,6 +32,15 @@ class OutboxProcessor {
   /// 单条消息发送超时上限。
   static const Duration _perMessageTimeout = Duration(seconds: 30);
 
+  /// 整轮 flush 总时长上限。
+  ///
+  /// outbox 顺序串行重发，最坏情况 N × [_perMessageTimeout]。大队列时
+  /// 一轮可能长时间占用连接、阻塞用户感知的重试反馈。设整轮上限后，
+  /// 超时则停止本轮（已发送的计入返回值），剩余消息留待下一轮 flush
+  /// （连接恢复/手动重试会再次触发）。下一轮会重新 resetStaleSending
+  /// 把卡在 SENDING 的消息拉回 PENDING。
+  static const Duration _flushRoundTimeout = Duration(minutes: 5);
+
   OutboxProcessor({
     required IMessageRepo messageRepo,
     required IInstanceRepo instanceRepo,
@@ -93,6 +102,7 @@ class OutboxProcessor {
       if (outbox.isEmpty) return 0;
 
       final now = DateTime.now().millisecondsSinceEpoch;
+      final roundDeadline = DateTime.now().add(_flushRoundTimeout);
       var sent = 0;
 
       // Agent 查询缓存 — 避免 N+1 查询（同一 agent 的多条消息共享一次 DB 查询）。
@@ -101,7 +111,18 @@ class OutboxProcessor {
 
       // 4. 顺序遍历队列
       for (final message in outbox) {
-        // 4a. 过期检查：超过 24h 的消息标记 EXPIRED
+        // 4a. 整轮超时检查：超过 _flushRoundTimeout 则停止本轮，
+        //     剩余消息留待下一轮 flush（连接恢复/手动重试再次触发）。
+        if (DateTime.now().isAfter(roundDeadline)) {
+          _logger.info(
+            '[OutboxProcessor] Round timeout reached for $instanceId — '
+            'flushed $sent/${outbox.length} this round, '
+            'remaining deferred to next flush',
+          );
+          break;
+        }
+
+        // 4b. 过期检查：超过 24h 的消息标记 EXPIRED
         if (now - message.timestamp > _expireThreshold.inMilliseconds) {
           try {
             await _messageRepo.updateStatus(
@@ -118,7 +139,7 @@ class OutboxProcessor {
           continue;
         }
 
-        // 4b. 查 agent 的 remoteId（带缓存，避免 N+1 查询）。
+        // 4c. 查 agent 的 remoteId（带缓存，避免 N+1 查询）。
         //     同一 agent 的多条消息共享一次 DB 查询；
         //     null 也会被缓存，避免重复查询已删除的 agent。
         final agent =
@@ -133,7 +154,7 @@ class OutboxProcessor {
           continue;
         }
 
-        // 4c. 通过 SendMessageUseCase.retry 发送（统一发送路径）。
+        // 4d. 通过 SendMessageUseCase.retry 发送（统一发送路径）。
         //     retry 是 FAILED 的唯一权威：发送失败 / 超时都由 retry 的 catch
         //     统一标记 FAILED，此处只消费 sentNow，不再二次写状态。
         //     retry 返回 (message, sentNow)：
