@@ -46,6 +46,16 @@ abstract class IMessageRepo {
   /// 获取指定实例的待发送消息数量（用于 UI 警告提示）
   Future<int> getOutboxCountByInstance(String instanceId);
 
+  /// 监听指定实例的待发送消息数量变化（SSOT 驱动 OutboxWarningBanner）。
+  ///
+  /// 任何影响 outbox 计数的写入（insert/updateStatus/bindServerId/
+  /// tryTransitionToSending/resetStaleSending）都应触发新值发射；
+  /// 首次订阅时发射当前值。返回 int stream，开销低（单值，非列表查询）。
+  ///
+  /// 取代 ChatViewModel 里散落在 init/send/connection/retry 多处的
+  /// 显式 `getOutboxCountByInstance` 轮询 —— 让 DB 写入自动驱动 UI 计数。
+  Stream<int> watchOutboxCount(String instanceId);
+
   /// CAS 条件更新: 仅当消息当前状态为 [expectedStatus] 时才过渡到 SENDING。
   /// 返回 true 表示更新成功，false 表示状态已变化（被其他路径处理）。
   /// 防止 SendMessageUseCase 和 OutboxProcessor 并发操作同一条消息。

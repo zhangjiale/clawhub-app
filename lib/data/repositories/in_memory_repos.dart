@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../../domain/models/models.dart';
 import '../../domain/repositories/repositories.dart';
 
@@ -235,8 +237,18 @@ class InMemoryMessageRepo implements IMessageRepo {
   /// （向后兼容不需要 instance 级过滤的旧测试）。
   final InMemoryConversationRepo? _conversationRepo;
 
+  /// 消息变更广播 — 任何写操作后通知 [watchOutboxCount] 订阅者重查。
+  /// 对齐 Drift 实现的 stream query 语义（写即重发）。
+  final StreamController<void> _messagesChanged =
+      StreamController<void>.broadcast();
+
   InMemoryMessageRepo({InMemoryConversationRepo? conversationRepo})
     : _conversationRepo = conversationRepo;
+
+  /// 通知 outbox 计数订阅者重查（写操作后调用）。
+  void _notifyChanged() {
+    if (!_messagesChanged.isClosed) _messagesChanged.add(null);
+  }
 
   @override
   Future<Message> insert(Message message) async {
@@ -244,6 +256,7 @@ class InMemoryMessageRepo implements IMessageRepo {
     if (message.serverId != null) {
       _byServerId[message.serverId!] = message;
     }
+    _notifyChanged();
     return message;
   }
 
@@ -305,6 +318,7 @@ class InMemoryMessageRepo implements IMessageRepo {
     if (msg == null) throw StateError('消息不存在: $clientId');
     final updated = msg.transitionTo(status); // 使用领域模型的状态机验证
     _byClientId[clientId] = updated;
+    _notifyChanged();
     return updated;
   }
 
@@ -315,6 +329,7 @@ class InMemoryMessageRepo implements IMessageRepo {
     final updated = msg.bindServerId(serverId);
     _byClientId[clientId] = updated;
     _byServerId[serverId] = updated;
+    _notifyChanged();
     return updated;
   }
 
@@ -367,6 +382,17 @@ class InMemoryMessageRepo implements IMessageRepo {
   }
 
   @override
+  Stream<int> watchOutboxCount(String instanceId) async* {
+    // 首次订阅发射当前值（对齐 Drift watchSingle 语义），
+    // 之后任何写操作触发 _messagesChanged → 重查并发射新值。
+    // async* 生成的 stream 支持订阅取消（VM dispose 时自动终止）。
+    yield await getOutboxCountByInstance(instanceId);
+    await for (final _ in _messagesChanged.stream) {
+      yield await getOutboxCountByInstance(instanceId);
+    }
+  }
+
+  @override
   Future<bool> tryTransitionToSending(
     String clientId,
     MessageStatus expectedStatus,
@@ -375,6 +401,7 @@ class InMemoryMessageRepo implements IMessageRepo {
     if (message == null || message.status != expectedStatus) return false;
     final updated = message.transitionTo(MessageStatus.sending);
     _byClientId[clientId] = updated;
+    _notifyChanged();
     return true;
   }
 
@@ -397,6 +424,7 @@ class InMemoryMessageRepo implements IMessageRepo {
         count++;
       }
     }
+    if (count > 0) _notifyChanged();
     return count;
   }
 
@@ -429,6 +457,7 @@ class InMemoryMessageRepo implements IMessageRepo {
       _byClientId.remove(msg.clientId);
       if (msg.serverId != null) _byServerId.remove(msg.serverId);
     }
+    if (toRemove.isNotEmpty) _notifyChanged();
     return toRemove.length;
   }
 
@@ -459,6 +488,7 @@ class InMemoryMessageRepo implements IMessageRepo {
   Future<void> deleteByClientId(String clientId) async {
     final msg = _byClientId.remove(clientId);
     if (msg?.serverId != null) _byServerId.remove(msg!.serverId);
+    _notifyChanged();
   }
 }
 

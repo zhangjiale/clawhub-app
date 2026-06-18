@@ -40,14 +40,18 @@ import 'package:claw_hub/app/config/platform_info.dart';
 /// 成功后递增，[agentListProvider] 通过 watch 此值自动 refresh UI。
 final agentSyncTickerProvider = StateProvider<int>((ref) => 0);
 
-/// Outbox 冲刷信号 — [OutboxProcessor.flushOutbox] 成功发送至少一条消息后递增。
+/// Outbox 冲刷完成信号 — [OutboxProcessor.flushOutbox] 成功发送至少一条消息后递增。
 ///
 /// 按 instanceId 隔离，避免实例 A 冲刷时触发实例 B/C/D 的 ChatViewModel
-/// 不必要的 refreshOutbox() 调用（广播风暴）。
+/// 不必要的 reloadMessages() 调用（广播风暴）。
 ///
-/// [ChatViewModel] 通过 listen 此值，在重连后自动刷新消息列表和 outbox 计数 —
-/// 因为 OutboxProcessor 在后台冲刷时，ChatViewModel 自身的消息流不会感知
-/// 这些状态变化（PENDING → SENT 是数据库直接更新，不经过 messageStream）。
+/// **收窄后的职责**：仅作"整轮 flush 完成 → 重载消息列表"的 fire-once 信号，
+/// 让聊天气泡反映冲刷后的最终 SENT 状态（PENDING → SENDING → SENT 的状态变更
+/// 不经 messageStream，per-write 的 watchOutboxCount stream 无法表达"整轮结束"语义）。
+///
+/// outbox **计数**已改为 stream 驱动（[IMessageRepo.watchOutboxCount]），
+/// 不再经过此 ticker —— 本信号仅用于消息列表重载。
+/// 完整移除本信号需方案 A 全量的 watchByConversation，留待后续迭代。
 final outboxFlushTickerProvider = StateProvider.family<int, String>(
   (ref, instanceId) => 0,
 );

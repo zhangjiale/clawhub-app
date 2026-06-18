@@ -150,6 +150,14 @@ class DriftMessageRepo implements IMessageRepo {
   }
 
   @override
+  Stream<int> watchOutboxCount(String instanceId) {
+    // drift 的 stream query：首次订阅发射当前值，之后 messages/conversations
+    // 表任何变更自动重查并发射新值。写操作无需任何改动 —— 这是本方案的核心红利。
+    // 单值 int 查询，开销低；按 instanceId 过滤，跨实例不互相干扰。
+    return _database.getOutboxCountByInstance(instanceId).watchSingle();
+  }
+
+  @override
   Future<bool> tryTransitionToSending(
     String clientId,
     MessageStatus expectedStatus,

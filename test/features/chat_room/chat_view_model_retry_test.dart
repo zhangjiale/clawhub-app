@@ -278,7 +278,7 @@ void main() {
     );
   });
 
-  group('ChatViewModel.refreshOutbox (US-015)', () {
+  group('ChatViewModel.reloadMessages / outboxCount stream (US-015)', () {
     late InMemoryAgentRepo agentRepo;
     late InMemoryMessageRepo messageRepo;
     late InMemoryConversationRepo conversationRepo;
@@ -287,8 +287,10 @@ void main() {
 
     setUp(() {
       agentRepo = InMemoryAgentRepo();
-      messageRepo = InMemoryMessageRepo();
       conversationRepo = InMemoryConversationRepo();
+      // 注入 conversationRepo 以便 getOutboxCountByInstance / watchOutboxCount
+      // 能按 instance 过滤出真实计数（测试 stream 驱动行为）。
+      messageRepo = InMemoryMessageRepo(conversationRepo: conversationRepo);
       instanceRepo = InMemoryInstanceRepo();
       gateway = MockGatewayClient();
     });
@@ -359,48 +361,86 @@ void main() {
               'Message inserted outside VM should not be visible before refresh',
         );
 
-        // Call refreshOutbox — simulates what ref.listen does on ticker change
-        await vm.refreshOutbox();
+        // Call reloadMessages — simulates what ref.listen does on ticker change
+        await vm.reloadMessages();
 
         // After refresh, the VM should see the message
         messages = (vm.state.messages as LoadData<List<Message>>).value;
         expect(
           messages.any((m) => m.clientId == 'bg-msg-1'),
           isTrue,
-          reason: 'refreshOutbox should reload messages from repo',
+          reason: 'reloadMessages should reload messages from repo',
         );
       },
     );
 
-    test('refreshOutbox updates outbox count', () async {
-      final vm = await setupVm();
-      expect(vm.state.outboxCount, 0);
+    test(
+      'outboxCount updates via stream when a PENDING message is inserted',
+      () async {
+        final vm = await setupVm();
+        expect(vm.state.outboxCount, 0);
 
-      // Insert a PENDING message (simulating an offline send)
-      final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
-      final pendingMsg = Message(
-        clientId: 'pending-1',
-        conversationId: canonicalConvId,
-        agentId: 'local-1',
-        role: MessageRole.user,
-        content: 'pending message',
-        type: MessageType.text,
-        status: MessageStatus.pending,
-        logicalClock: 1000,
-      );
-      await messageRepo.insert(pendingMsg);
+        // Insert a PENDING message (simulating an offline send).
+        // conversationRepo 已注入，getOutboxCountByInstance 能按 instance 过滤；
+        // init 时 getOrCreate 已建立 conv-1 → canonicalConvId，故计数可命中。
+        final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+        final pendingMsg = Message(
+          clientId: 'pending-1',
+          conversationId: canonicalConvId,
+          agentId: 'local-1',
+          role: MessageRole.user,
+          content: 'pending message',
+          type: MessageType.text,
+          status: MessageStatus.pending,
+          logicalClock: 1000,
+        );
+        await messageRepo.insert(pendingMsg);
 
-      // Also update the conversation so getOutboxCountByInstance can find it
-      // (InMemoryMessageRepo.getOutboxCountByInstance returns 0 — stub).
-      // This test verifies the method flows through correctly with the
-      // InMemory stub; the real outbox count behaviour is covered by
-      // outbox_processor_test.dart.
-      await vm.refreshOutbox();
+        // stream 异步推送 —— pump 让 listener 处理事件
+        await Future<void>.delayed(Duration.zero);
 
-      // In-memory stub returns 0 for getOutboxCountByInstance, but
-      // the method should complete without throwing and state should
-      // still be LoadData (not LoadError).
-      expect(vm.state.messages, isA<LoadData<List<Message>>>());
-    });
+        // outboxCount 现在由 watchOutboxCount stream 自动驱动，无需手动刷新
+        expect(
+          vm.state.outboxCount,
+          1,
+          reason: 'insert PENDING 后 stream 应自动推送新计数',
+        );
+      },
+    );
+
+    test(
+      'outboxCount drops to 0 when a PENDING message transitions to SENT',
+      () async {
+        final vm = await setupVm();
+        final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+        // 插入 PENDING → 计数 1
+        await messageRepo.insert(
+          Message(
+            clientId: 'pending-2',
+            conversationId: canonicalConvId,
+            agentId: 'local-1',
+            role: MessageRole.user,
+            content: 'x',
+            type: MessageType.text,
+            status: MessageStatus.pending,
+            logicalClock: 1001,
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(vm.state.outboxCount, 1);
+
+        // CAS PENDING→SENDING（离开 outbox）→ 计数应降为 0
+        await messageRepo.tryTransitionToSending(
+          'pending-2',
+          MessageStatus.pending,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          vm.state.outboxCount,
+          0,
+          reason: 'PENDING→SENDING 后消息离开 outbox，stream 应推送计数 0',
+        );
+      },
+    );
   });
 }

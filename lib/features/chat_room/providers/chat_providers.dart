@@ -33,15 +33,17 @@ final chatViewModelProvider =
       ref.onDispose(() => vm.dispose());
 
       // Listen (not watch) outboxFlushTickerProvider — when OutboxProcessor
-      // flushes the queue in the background, call refreshOutbox() on the
+      // flushes the queue in the background, call reloadMessages() on the
       // existing ViewModel instead of disposing and recreating it.  Watching
       // would rebuild the entire StateNotifierProvider.family, tearing down
       // all stream subscriptions (message, connection, streaming) and losing
       // in-progress streaming text.
       //
-      // 按 instanceId 隔离，仅本实例冲刷时触发刷新，避免跨实例广播风暴。
+      // outbox 计数已由 ChatViewModel 内部的 watchOutboxCount 订阅自动驱动，
+      // 此处仅触发消息列表重载（反映冲刷后的最终 SENT 状态）。
+      // 按 instanceId 隔离，仅本实例冲刷时触发，避免跨实例广播风暴。
       ref.listen(outboxFlushTickerProvider(params.instanceId), (_, __) {
-        vm.refreshOutbox();
+        vm.reloadMessages();
       });
 
       return vm;

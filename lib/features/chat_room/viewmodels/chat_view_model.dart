@@ -139,6 +139,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   StreamSubscription<GatewayConnectionState>? _connectionSubscription;
   StreamSubscription<ToolCall>? _toolCallSubscription;
   StreamSubscription<StreamingEvent>? _streamingSubscription;
+  StreamSubscription<int>? _outboxCountSubscription;
   Timer? _timeoutTimer;
   Timer? _stallTimer;
 
@@ -244,17 +245,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           .connectionStateStream(instanceId)
           .listen((state) {
             _updateState((s) => s.copyWith(connectionState: state));
-            // 连接状态变化时刷新消息列表和 outbox 计数 —
+            // 连接状态变化时刷新消息列表 —
             // OutboxProcessor 可能在后台冲刷，将 PENDING 推进到 SENT；
-            // 这些变化通过 messageStream 不会传达（DB 直接更新）。
+            // 这些状态变更通过 messageStream 不会传达（DB 直接更新），
+            // 故 connected 后重载一次消息列表以反映最新状态。
+            // outbox 计数不再在此刷新 —— 由 _outboxCountSubscription 自动驱动。
             if (state == GatewayConnectionState.connected) {
-              // OutboxProcessor 在 connected 后冲刷队列（PENDING → SENT），
-              // 需要同时刷新消息列表和 outbox 计数。
-              unawaited(refreshOutbox());
-            } else if (state == GatewayConnectionState.disconnected) {
-              // 断开时仅刷新 outbox 计数 — 新消息可能进入 PENDING，
-              // 但消息列表本身不会变化（OutboxProcessor 只在 connected 时运行）。
-              unawaited(_loadOutboxCount());
+              unawaited(reloadMessages());
             }
           });
 
@@ -358,8 +355,22 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         );
       }
 
-      // 7. 初始化时刷新 outbox count（用于 OutboxWarningBanner，AC3）。
-      await _loadOutboxCount();
+      // 7. outbox 计数 —— SSOT stream 驱动（取代散落的 _loadOutboxCount 轮询）。
+      //    bootstrap 一次拿初始值（await 保证 init 返回时 state 已就绪），
+      //    之后任何影响 outbox 的 DB 写入由 watchOutboxCount 自动推送。
+      final initCount = await _messageRepo.getOutboxCountByInstance(instanceId);
+      _updateState((s) => s.copyWith(outboxCount: initCount));
+      _outboxCountSubscription = _messageRepo
+          .watchOutboxCount(instanceId)
+          .listen(
+            (count) => _updateState((s) => s.copyWith(outboxCount: count)),
+            onError: (Object error, StackTrace stack) {
+              debugPrint(
+                '[ChatViewModel] outbox count stream error for $instanceId: '
+                '$error\n$stack',
+              );
+            },
+          );
     } catch (error, stackTrace) {
       debugPrint(
         '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
@@ -447,9 +458,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       });
     }
 
-    // 刷新 outbox count — 离线时新消息会进入 PENDING 状态，
-    // 用于决定是否显示 OutboxWarningBanner（AC3）。
-    await _loadOutboxCount();
+    // outbox 计数由 _outboxCountSubscription 自动驱动，无需在此手动刷新。
+    // 离线时新消息进入 PENDING，写库后 stream 自动推送新计数到 OutboxWarningBanner。
 
     onStatsChanged?.call();
   }
@@ -556,32 +566,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     }
   }
 
-  /// 刷新 outbox 计数（PENDING + FAILED 消息数）。
+  /// 重载消息列表。供 [chatViewModelProvider] 响应
+  /// [outboxFlushTickerProvider]（OutboxProcessor 后台冲刷完成信号）时调用，
+  /// 替代重建 ViewModel。
   ///
-  /// 解耦于 [_loadMessages]，仅在以下场景调用：
-  /// - [init] 完成后
-  /// - [send] 完成后（新消息可能进入 PENDING）
-  /// - 连接状态变化时（OutboxProcessor 可能已冲刷）
-  /// - [retryMessage] 完成后
-  Future<void> _loadOutboxCount() async {
-    try {
-      final count = await _messageRepo.getOutboxCountByInstance(instanceId);
-      _updateState((s) => s.copyWith(outboxCount: count));
-    } catch (error, stackTrace) {
-      debugPrint(
-        '[ChatViewModel] _loadOutboxCount failed for $instanceId: $error\n$stackTrace',
-      );
-    }
-  }
-
-  /// 外部触发的刷新入口 — 供 [chatViewModelProvider] 响应
-  /// [outboxFlushTickerProvider] 时调用，替代重建 ViewModel。
-  ///
-  /// 刷新消息列表和 outbox 计数，使 UI 反映 OutboxProcessor 在后台
-  /// 冲刷后的最新状态（PENDING → SENT 是数据库直接更新，不经 messageStream）。
-  Future<void> refreshOutbox() async {
-    // 两次查询互不依赖，并行执行；各自 _updateState 写入不同字段，无 lost update。
-    await Future.wait([_loadMessages(), _loadOutboxCount()]);
+  /// 仅重载消息列表 —— outbox 计数由 [_outboxCountSubscription] 自动驱动。
+  /// 冲刷产生的状态变更（PENDING → SENDING → SENT）不经 messageStream，
+  /// 故需要这个 fire-once 信号触发重载以反映最终 SENT 状态。
+  /// （完整移除此信号需方案 A 全量的 watchByConversation，留待后续迭代。）
+  Future<void> reloadMessages() async {
+    await _loadMessages();
   }
 
   /// 重试一条 FAILED 消息（US-015 AC2 手动重试入口）。
@@ -633,7 +627,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       _updateState((s) => s.copyWith(retryFeedback: '重试异常，请稍后再试'));
     }
 
-    await refreshOutbox();
+    await reloadMessages();
   }
 
   /// 清除 [ChatSessionState.retryFeedback]（UI 展示后调用）。
@@ -681,6 +675,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _toolCallSubscription = null;
     _streamingSubscription?.cancel();
     _streamingSubscription = null;
+    _outboxCountSubscription?.cancel();
+    _outboxCountSubscription = null;
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     _stallTimer?.cancel();
