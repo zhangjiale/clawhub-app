@@ -61,6 +61,15 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
           Padding(
             padding: const EdgeInsets.only(right: XiaSpacing.s2),
             child: HeaderButton(
+              icon: Icons.search,
+              tooltip: '搜索消息',
+              onPressed: () =>
+                  context.push(AppRoutes.searchWithParams(source: 'claws')),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: XiaSpacing.s2),
+            child: HeaderButton(
               icon: Icons.dns_outlined,
               tooltip: '实例管理',
               onPressed: () => context.go(AppRoutes.instances),

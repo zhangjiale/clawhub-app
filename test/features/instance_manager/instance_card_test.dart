@@ -120,6 +120,8 @@ class _NoopAgentRepo implements IAgentRepo {
   @override
   Future<Agent?> getById(String localId) async => null;
   @override
+  Future<Map<String, Agent>> getByIds(List<String> localIds) async => {};
+  @override
   Future<Agent?> findByCompositeKey(String instanceId, String remoteId) async =>
       null;
   @override

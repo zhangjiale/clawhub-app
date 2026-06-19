@@ -12,6 +12,7 @@ import 'package:claw_hub/features/message_hub/message_hub_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
 import 'package:claw_hub/features/settings/settings_page.dart';
+import 'package:claw_hub/features/search/search_page.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
@@ -25,6 +26,7 @@ class AppRoutes {
   static const String chat = '/chat/:agentId';
   static const String agentProfile = '/agent-profile/:agentId';
   static const String settings = '/claws/settings';
+  static const String search = '/search';
   static const String addInstance = '/instances/add';
   static const String editInstance = '/instances/edit/:instanceId';
 
@@ -32,10 +34,18 @@ class AppRoutes {
     String agentId,
     String instanceId, {
     String? source,
+    String? highlightMessageId,
+    String? highlightQuery,
   }) {
     final params = <String, String>{'instanceId': instanceId};
     if (source != null) params['source'] = source;
-    final query = params.entries.map((e) => '${e.key}=${e.value}').join('&');
+    if (highlightMessageId != null) {
+      params['highlightMessageId'] = highlightMessageId;
+    }
+    if (highlightQuery != null) {
+      params['highlightQuery'] = highlightQuery;
+    }
+    final query = Uri(queryParameters: params).query;
     // Use absolute path — the chat route exists under both /claws and /messages
     // branches, so we use source to pick the correct branch prefix.
     final branch = source == 'messages' ? '/messages' : '/claws';
@@ -49,6 +59,19 @@ class AppRoutes {
   //
   // Unlike chatWithParams, these helpers ignore the source parameter
   // because there is no /messages-branch route to redirect to.
+  //
+  // NOTE: searchWithParams differs from agentProfileWithParams — search
+  // routes exist under BOTH /claws and /messages branches, so the branch
+  // prefix must be included (same as chatWithParams).
+  static String searchWithParams({String? source}) {
+    final branch = source == 'messages' ? '/messages' : '/claws';
+    final encodedSource = source != null
+        ? Uri.encodeQueryComponent(source)
+        : null;
+    if (encodedSource != null) return '$branch$search?source=$encodedSource';
+    return '$branch$search';
+  }
+
   static String agentProfileWithParams(String agentId, {String? source}) {
     if (source != null) return '/claws/agent-profile/$agentId?source=$source';
     return '/claws/agent-profile/$agentId';
@@ -90,15 +113,30 @@ class AppRouter {
         final agentId = state.pathParameters['agentId']!;
         final instanceId = state.uri.queryParameters['instanceId'] ?? '';
         final source = state.uri.queryParameters['source'];
+        final highlightMessageId =
+            state.uri.queryParameters['highlightMessageId'];
+        final highlightQuery = state.uri.queryParameters['highlightQuery'];
         return XiaTransitionPage(
           key: state.pageKey,
           child: ChatRoomPage(
             agentId: agentId,
             instanceId: instanceId,
             source: source,
+            highlightMessageId: highlightMessageId,
+            highlightQuery: highlightQuery,
           ),
         );
       },
+    );
+  }
+
+  static GoRoute _searchRoute() {
+    return GoRoute(
+      path: 'search',
+      pageBuilder: (context, state) => XiaTransitionPage(
+        key: state.pageKey,
+        child: SearchPage(source: state.uri.queryParameters['source']),
+      ),
     );
   }
 
@@ -135,6 +173,7 @@ class AppRouter {
                   builder: (context, state) => const AgentListPage(),
                   routes: [
                     _chatRoute(),
+                    _searchRoute(),
                     GoRoute(
                       path: 'settings',
                       pageBuilder: (context, state) => XiaTransitionPage(
@@ -176,7 +215,7 @@ class AppRouter {
                 GoRoute(
                   path: AppRoutes.messages,
                   builder: (context, state) => const MessageHubPage(),
-                  routes: [_chatRoute()],
+                  routes: [_chatRoute(), _searchRoute()],
                 ),
               ],
             ),
@@ -220,12 +259,14 @@ class AppRouter {
 
 /// Routes that should NOT show the bottom navigation bar.
 const _fullScreenPaths = {
-  // Settings, agent profile, agent config (under /claws)
+  // Settings, agent profile, agent config, search (under /claws)
   '/claws/settings',
   '/claws/agent-profile',
   '/claws/chat',
-  // Chat (under /messages)
+  '/claws/search',
+  // Chat, search (under /messages)
   '/messages/chat',
+  '/messages/search',
   // Add/edit instance (under /instances)
   '/instances/add',
   '/instances/edit',

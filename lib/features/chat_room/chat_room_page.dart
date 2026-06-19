@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
+import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
@@ -42,12 +43,16 @@ class ChatRoomPage extends ConsumerStatefulWidget {
   final String agentId;
   final String instanceId;
   final String? source;
+  final String? highlightMessageId;
+  final String? highlightQuery;
 
   const ChatRoomPage({
     super.key,
     required this.agentId,
     required this.instanceId,
     this.source,
+    this.highlightMessageId,
+    this.highlightQuery,
   });
 
   @override
@@ -76,23 +81,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     }
   }
 
-  /// Smart back navigation (US-011).
-  ///
-  /// Pops from the current branch navigator if possible. Falls back to
-  /// switching to the source tab using `StatefulShellRoute` branch index.
   void _handleBack() {
-    if (mounted && context.canPop()) {
-      context.pop();
-    } else if (mounted) {
-      // Fallback: navigate to source tab root
-      final source = widget.source;
-      if (source == 'messages') {
-        context.go(AppRoutes.messages);
-      } else {
-        // Default and 'claws' both go to claws tab
-        context.go(AppRoutes.claws);
-      }
-    }
+    if (mounted) smartBack(context, source: widget.source);
   }
 
   /// 用户点击"重连耗尽"横幅的重试入口（US-016 AC-3）。
@@ -174,6 +164,30 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       }
     });
 
+    // Apply search-result highlight when messages first load, then auto-fade.
+    ref.listen(chatViewModelProvider(params), (prev, next) {
+      final highlightId = widget.highlightMessageId;
+      final highlightQ = widget.highlightQuery;
+      if (highlightId == null || highlightQ == null) return;
+      // Only fire once: when messages first transition to LoadData and the
+      // highlight hasn't been set yet.
+      if (next.messages is LoadData &&
+          next.highlightedMessageId != highlightId) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ref
+              .read(chatViewModelProvider(params).notifier)
+              .loadHighlightWindow(highlightId, highlightQ);
+          // Auto-fade highlight after 2 seconds.
+          Future.delayed(const Duration(seconds: 2), () {
+            if (mounted) {
+              ref.read(chatViewModelProvider(params).notifier).clearHighlight();
+            }
+          });
+        });
+      }
+    });
+
     // Compute agent-themed colors *before* the Theme widget so the AppBar
     // (which is constructed using this build method's context, not a child
     // context) can use the correct values.
@@ -188,13 +202,13 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         if (!didPop) _handleBack();
       },
       child: Theme(
-        data: Theme.of(context).copyWith(
+        data: theme.copyWith(
           extensions: agentPrimaryColor != null
               ? [
-                  ...Theme.of(context).extensions.values,
+                  ...theme.extensions.values,
                   AgentTheme(primary: agentPrimaryColor),
                 ]
-              : Theme.of(context).extensions.values.toList(),
+              : theme.extensions.values.toList(),
         ),
         child: Scaffold(
           appBar: AppBar(
@@ -374,6 +388,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                       session.toolCalls,
                       agent?.displayName ?? 'Agent',
                       theme,
+                      session.highlightedMessageId,
                     ),
                   },
                 ),
@@ -444,6 +459,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     Map<String, ToolCall> toolCalls,
     String agentName,
     ThemeData theme,
+    String? highlightedMessageId,
   ) {
     final params = (instanceId: widget.instanceId, agentId: widget.agentId);
     return ListView.builder(
@@ -461,6 +477,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
               message: message,
               agentName: agentName,
               index: index,
+              isHighlighted: highlightedMessageId == message.clientId,
               onRetry: message.status == MessageStatus.failed
                   ? () => ref
                         .read(chatViewModelProvider(params).notifier)

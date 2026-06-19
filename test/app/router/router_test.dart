@@ -83,5 +83,78 @@ void main() {
       final path = AppRoutes.agentConfigWithParams('agent-1');
       expect(path, '/claws/agent-profile/config/agent-1');
     });
+
+    // ---------------------------------------------------------------------------
+    // Law 16(A): searchWithParams — 参数化路径方法必须有返回值断言
+    // ---------------------------------------------------------------------------
+    group('searchWithParams', () {
+      test('returns claws-branch path when source is claws', () {
+        final path = AppRoutes.searchWithParams(source: 'claws');
+        expect(path, '/claws/search?source=claws');
+      });
+
+      test('returns messages-branch path when source is messages', () {
+        final path = AppRoutes.searchWithParams(source: 'messages');
+        expect(path, '/messages/search?source=messages');
+      });
+
+      test('returns claws-branch path when source is null', () {
+        final path = AppRoutes.searchWithParams();
+        expect(path, '/claws/search');
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Law 16(A): chatWithParams — 高亮参数必须出现在返回 URL 中
+    // ---------------------------------------------------------------------------
+    group('chatWithParams highlight params', () {
+      test('includes highlightMessageId in query string', () {
+        final path = AppRoutes.chatWithParams(
+          'agent-1',
+          'inst-1',
+          highlightMessageId: 'msg-abc',
+        );
+        expect(path, contains('highlightMessageId=msg-abc'));
+      });
+
+      test('includes highlightQuery in query string', () {
+        final path = AppRoutes.chatWithParams(
+          'agent-1',
+          'inst-1',
+          highlightQuery: 'hello world',
+        );
+        expect(path, contains('highlightQuery=hello+world'));
+      });
+
+      test('includes both highlight params together', () {
+        final path = AppRoutes.chatWithParams(
+          'agent-1',
+          'inst-1',
+          source: 'messages',
+          highlightMessageId: 'msg-xyz',
+          highlightQuery: 'test query',
+        );
+        expect(path, startsWith('/messages/chat/agent-1?'));
+        expect(path, contains('highlightMessageId=msg-xyz'));
+        expect(path, contains('highlightQuery=test+query'));
+      });
+
+      test('URL-encodes special characters in highlightQuery', () {
+        final path = AppRoutes.chatWithParams(
+          'agent-1',
+          'inst-1',
+          highlightMessageId: 'msg-xyz',
+          highlightQuery: 'a & b',
+        );
+        expect(path, contains('highlightQuery=a+%26+b'));
+        // Must NOT contain unencoded & from the query value
+        // (only & separating params)
+        final paramPart = path.split('?')[1];
+        final pairs = paramPart.split('&');
+        // instanceId + highlightMessageId + highlightQuery = 3 pairs,
+        // no extra params from unencoded &
+        expect(pairs.length, 3);
+      });
+    });
   });
 }

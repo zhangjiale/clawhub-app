@@ -1,7 +1,7 @@
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
-import 'package:drift/drift.dart' show Value;
+import 'package:drift/drift.dart' show Value, Variable;
 
 import '../../core/i_avatar_storage_service.dart';
 import '../local/database/database.dart' as db;
@@ -32,6 +32,25 @@ class DriftAgentRepo implements IAgentRepo {
   Future<Agent?> getById(String localId) async {
     final row = await _database.getAgentByLocalId(localId).getSingleOrNull();
     return row != null ? AgentMapper.toDomain(row) : null;
+  }
+
+  @override
+  Future<Map<String, Agent>> getByIds(List<String> localIds) async {
+    if (localIds.isEmpty) return {};
+    final placeholders = localIds.map((_) => '?').join(', ');
+    final rows = await _database
+        .customSelect(
+          'SELECT * FROM agents WHERE local_id IN ($placeholders)',
+          variables: [for (final id in localIds) Variable.withString(id)],
+          readsFrom: {_database.agents},
+        )
+        .get();
+    final result = <String, Agent>{};
+    for (final row in rows) {
+      final agent = AgentMapper.toDomain(db.Agent.fromJson(row.data));
+      result[agent.localId] = agent;
+    }
+    return result;
   }
 
   @override

@@ -13,6 +13,11 @@ abstract class IAgentRepo {
   /// 根据本地 ID 获取 Agent
   Future<Agent?> getById(String localId);
 
+  /// 批量根据本地 ID 获取 Agent（替代 N+1 查询）。
+  /// 返回 Map<localId, Agent>，未找到的 ID 不出现在结果中。
+  /// 传入空列表时返回空 Map（不查询数据库）。
+  Future<Map<String, Agent>> getByIds(List<String> localIds);
+
   /// 根据复合键 (instanceId, remoteId) 查找
   Future<Agent?> findByCompositeKey(String instanceId, String remoteId);
 

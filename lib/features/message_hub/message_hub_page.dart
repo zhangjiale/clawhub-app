@@ -46,6 +46,15 @@ class _MessageHubPageState extends ConsumerState<MessageHubPage> {
           Padding(
             padding: const EdgeInsets.only(right: XiaSpacing.s2),
             child: HeaderButton(
+              icon: Icons.search,
+              tooltip: '搜索消息',
+              onPressed: () =>
+                  context.push(AppRoutes.searchWithParams(source: 'messages')),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: XiaSpacing.s2),
+            child: HeaderButton(
               icon: Icons.settings_outlined,
               tooltip: '设置',
               onPressed: () => context.push(AppRoutes.settings),

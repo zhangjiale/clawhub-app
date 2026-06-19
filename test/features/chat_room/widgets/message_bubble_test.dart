@@ -112,5 +112,141 @@ void main() {
       final text = tester.widget<Text>(find.text('white-text'));
       expect(text.style!.color, Colors.white);
     });
+
+    // -----------------------------------------------------------------------
+    // Law 14: isHighlighted rendering — 搜索高亮必须有 widget 测试覆盖
+    // -----------------------------------------------------------------------
+    group('isHighlighted', () {
+      testWidgets('agent bubble uses accent background when highlighted', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: message(
+                role: MessageRole.agent,
+                content: 'agent-highlighted',
+              ),
+              agentName: '产品虾',
+              isHighlighted: true,
+            ),
+            agentTheme: const AgentTheme(primary: Color(0xFF007AFF)),
+          ),
+        );
+
+        // Highlighted agent bubble uses accent.withAlpha(23), not surface
+        expect(
+          bubbleColor(tester, 'agent-highlighted'),
+          XiaColors.accent.withAlpha(23),
+        );
+      });
+
+      testWidgets('user bubble keeps user color when highlighted', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: message(
+                role: MessageRole.user,
+                content: 'user-highlighted',
+              ),
+              agentName: '产品虾',
+              isHighlighted: true,
+            ),
+            agentTheme: const AgentTheme(primary: Color(0xFF6C8AAF)),
+          ),
+        );
+
+        // Highlighted user bubble keeps AgentTheme.primary (not accent)
+        expect(
+          bubbleColor(tester, 'user-highlighted'),
+          const Color(0xFF6C8AAF),
+        );
+      });
+
+      testWidgets('highlighted bubble has accent border', (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: message(role: MessageRole.agent, content: 'border-test'),
+              agentName: '产品虾',
+              isHighlighted: true,
+            ),
+          ),
+        );
+
+        final containers = find.ancestor(
+          of: find.text('border-test'),
+          matching: find.byType(Container),
+        );
+        BoxDecoration? foundDecoration;
+        for (final element in containers.evaluate()) {
+          final widget = element.widget as Container;
+          final d = widget.decoration;
+          if (d is BoxDecoration && d.border != null) {
+            foundDecoration = d;
+            break;
+          }
+        }
+        expect(foundDecoration, isNotNull);
+        expect(foundDecoration!.border, isNotNull);
+      });
+
+      testWidgets('non-highlighted bubble has no accent border', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: message(
+                role: MessageRole.agent,
+                content: 'no-border-test',
+              ),
+              agentName: '产品虾',
+              isHighlighted: false,
+            ),
+          ),
+        );
+
+        final containers = find.ancestor(
+          of: find.text('no-border-test'),
+          matching: find.byType(Container),
+        );
+        for (final element in containers.evaluate()) {
+          final widget = element.widget as Container;
+          final d = widget.decoration;
+          if (d is BoxDecoration && d.border != null) {
+            fail('Non-highlighted bubble should not have accent border');
+          }
+        }
+        // Test passes if no decorated container with border found
+      });
+
+      testWidgets('short message still shrink-wraps', (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: message(role: MessageRole.agent, content: 'OK'),
+              agentName: '产品虾',
+            ),
+          ),
+        );
+
+        final bubble = tester.widget<Container>(
+          find
+              .ancestor(of: find.text('OK'), matching: find.byType(Container))
+              .first,
+        );
+
+        // BoxConstraints(maxWidth: ...) allows shrink-wrapping — verify
+        // the constraint is maxWidth (not tight width)
+        final constraints = bubble.constraints;
+        expect(constraints, isNotNull);
+        if (constraints != null) {
+          expect(constraints.minWidth, lessThan(constraints.maxWidth));
+        }
+      });
+    });
   });
 }

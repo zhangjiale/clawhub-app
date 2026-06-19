@@ -51,6 +51,14 @@ class ChatSessionState {
   /// 例如："实例离线，请等待自动重发"、"Agent 已被删除，无法重试"。
   final String? retryFeedback;
 
+  /// 从搜索页跳转时置为目标的 clientId，UI 层据此高亮对应气泡。
+  /// 使用 [CopyWithSentinel] 以支持显式清空（null 表示清空高亮）。
+  final String? highlightedMessageId;
+
+  /// 高亮消息对应的搜索关键词（用于 MessageBubble 内容高亮）。
+  /// 使用 [CopyWithSentinel] 以支持显式清空。
+  final String? highlightedQuery;
+
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
@@ -59,6 +67,8 @@ class ChatSessionState {
     this.streamingText = '',
     this.outboxCount = 0,
     this.retryFeedback,
+    this.highlightedMessageId,
+    this.highlightedQuery,
   });
 
   ChatSessionState copyWith({
@@ -71,6 +81,8 @@ class ChatSessionState {
     // retryFeedback 可空，需区分 "未传参"（保留旧值）与 "显式传 null"（清空），
     // 复用项目统一的 [CopyWithSentinel] 工具（与 AgentProfileState 对齐）。
     Object? retryFeedback = CopyWithSentinel.instance,
+    Object? highlightedMessageId = CopyWithSentinel.instance,
+    Object? highlightedQuery = CopyWithSentinel.instance,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -80,6 +92,14 @@ class ChatSessionState {
       streamingText: streamingText ?? this.streamingText,
       outboxCount: outboxCount ?? this.outboxCount,
       retryFeedback: copyWithNullable(retryFeedback, this.retryFeedback),
+      highlightedMessageId: copyWithNullable(
+        highlightedMessageId,
+        this.highlightedMessageId,
+      ),
+      highlightedQuery: copyWithNullable(
+        highlightedQuery,
+        this.highlightedQuery,
+      ),
     );
   }
 
@@ -93,7 +113,9 @@ class ChatSessionState {
           toolCalls == other.toolCalls &&
           streamingText == other.streamingText &&
           outboxCount == other.outboxCount &&
-          retryFeedback == other.retryFeedback;
+          retryFeedback == other.retryFeedback &&
+          highlightedMessageId == other.highlightedMessageId &&
+          highlightedQuery == other.highlightedQuery;
 
   @override
   int get hashCode => Object.hash(
@@ -104,6 +126,8 @@ class ChatSessionState {
     streamingText,
     outboxCount,
     retryFeedback,
+    highlightedMessageId,
+    highlightedQuery,
   );
 }
 
@@ -180,6 +204,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// by the listener, so [send] can skip [_startThinking] when the
   /// reply already arrived.
   bool _awaitingReply = false;
+
+  /// 激活时，实时消息监听器跳过 `_loadMessages()` 以避免覆盖高亮锚定窗口。
+  /// 由 [loadHighlightWindow] 设置，在 [clearHighlight] 或 2 秒后清除。
+  bool _highlightActive = false;
 
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
@@ -289,7 +317,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               // does not already match a known conversation.
               final fixedMsg = msg.copyWith(conversationId: _conversationId);
               await _messageRepo.insert(fixedMsg);
-              await _loadMessages();
+              // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
+              if (!_highlightActive) {
+                await _loadMessages();
+              }
               if (fixedMsg.role == MessageRole.agent) {
                 // Clear streaming text when the final message lands —
                 // eliminates the race window between StreamingDone and
@@ -559,6 +590,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       final messages = await _messageRepo.getByConversation(_conversationId);
       _updateState((s) => s.copyWith(messages: LoadData(messages)));
     } catch (error, stackTrace) {
+      debugPrint(
+        '[ChatViewModel] _loadMessages failed for $_conversationId: '
+        '$error\n$stackTrace',
+      );
       _updateState((s) => s.copyWith(messages: LoadError(error, stackTrace)));
     }
   }
@@ -633,12 +668,64 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   }
 
   void _updateState(ChatSessionState Function(ChatSessionState) transform) {
+    if (!mounted) return;
     state = transform(state);
   }
 
   /// Retry initialization after a previous failure.
   ///
   /// Call this from the UI's retry button (e.g. [LoadErrorView.onRetry]).
+  /// Load the anchor window around a target message and mark it as highlighted.
+  ///
+  /// Used when navigating from search results — replaces the current message
+  /// list with a bounded window (5 before + 10 after) centered on
+  /// [targetClientId], and stores the highlight so [MessageBubble] can
+  /// render the accent background.
+  Future<void> loadHighlightWindow(
+    String targetClientId,
+    String highlightQuery,
+  ) async {
+    _highlightActive = true;
+    try {
+      final messages = await _messageRepo.getAnchorWindow(
+        _conversationId,
+        targetClientId: targetClientId,
+        before: 5,
+        after: 10,
+      );
+      _updateState(
+        (s) => s.copyWith(
+          messages: LoadData(messages),
+          highlightedMessageId: targetClientId,
+          highlightedQuery: highlightQuery,
+        ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[ChatViewModel] loadHighlightWindow failed '
+        'for target=$targetClientId: $error\n$stackTrace',
+      );
+      // Fallback: just highlight without scrolling — regular load still
+      // shows the message if it's in the page.
+      _updateState(
+        (s) => s.copyWith(
+          highlightedMessageId: targetClientId,
+          highlightedQuery: highlightQuery,
+        ),
+      );
+    }
+  }
+
+  /// Clear the search-result highlight from the message bubble.
+  void clearHighlight() {
+    _highlightActive = false;
+    _updateState(
+      (s) => s.copyWith(highlightedMessageId: null, highlightedQuery: null),
+    );
+    // 恢复完整消息列表（高亮期间实时消息的全量重载被跳过以保护锚定窗口）
+    reloadMessages();
+  }
+
   /// Resets all state and re-runs agent lookup, history fetch, and stream
   /// subscriptions from scratch.  Safe to call even if init succeeded.
   Future<void> retry() async {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
+import 'package:claw_hub/ui_kit/xia_markdown_styles.dart';
 
 /// Streaming text bubble — shows Agent reply text as it arrives in real time.
 ///
@@ -127,7 +128,7 @@ class _StreamingBubbleState extends State<StreamingBubble>
                           data: _renderedText,
                           selectable: true,
                           sizedImageBuilder: (_) => const SizedBox.shrink(),
-                          styleSheet: _markdownStyle(),
+                          styleSheet: XiaMarkdownStyles.streaming,
                         ),
                         const SizedBox(height: 2),
                         AnimatedBuilder(
@@ -154,17 +155,6 @@ class _StreamingBubbleState extends State<StreamingBubble>
       ),
     );
   }
-
-  MarkdownStyleSheet _markdownStyle() => MarkdownStyleSheet(
-    p: const TextStyle(color: XiaColors.text1, fontSize: 15, height: 1.6),
-    code: const TextStyle(
-      backgroundColor: XiaColors.codeBlockBg,
-      color: XiaColors.accent,
-      fontSize: 13,
-      fontFamily: 'monospace',
-    ),
-    strong: const TextStyle(fontWeight: FontWeight.bold),
-  );
 }
 
 /// Paints the blinking text cursor as a filled rounded rectangle.

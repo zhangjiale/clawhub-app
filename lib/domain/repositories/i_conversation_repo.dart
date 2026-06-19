@@ -13,6 +13,11 @@ abstract class IConversationRepo {
   /// 根据 ID 获取会话
   Future<Conversation?> getById(String id);
 
+  /// 批量根据 ID 获取会话（替代 N+1 查询）。
+  /// 返回 Map<id, Conversation>，未找到的 ID 不出现在结果中。
+  /// 传入空列表时返回空 Map（不查询数据库）。
+  Future<Map<String, Conversation>> getByIds(List<String> ids);
+
   /// 更新最后消息预览（由 Repository 在事务中完成）
   Future<Conversation> updateLastMessage({
     required String conversationId,

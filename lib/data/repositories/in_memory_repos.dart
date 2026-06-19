@@ -103,6 +103,16 @@ class InMemoryAgentRepo implements IAgentRepo {
   Future<Agent?> getById(String localId) async => _store[localId];
 
   @override
+  Future<Map<String, Agent>> getByIds(List<String> localIds) async {
+    final result = <String, Agent>{};
+    for (final id in localIds) {
+      final agent = _store[id];
+      if (agent != null) result[id] = agent;
+    }
+    return result;
+  }
+
+  @override
   Future<Agent?> findByCompositeKey(String instanceId, String remoteId) async {
     return _byCompositeKey[_compositeKey(instanceId, remoteId)];
   }
@@ -574,6 +584,16 @@ class InMemoryConversationRepo implements IConversationRepo {
 
   @override
   Future<Conversation?> getById(String id) async => _store[id];
+
+  @override
+  Future<Map<String, Conversation>> getByIds(List<String> ids) async {
+    final result = <String, Conversation>{};
+    for (final id in ids) {
+      final conv = _store[id];
+      if (conv != null) result[id] = conv;
+    }
+    return result;
+  }
 
   @override
   Future<Conversation> updateLastMessage({

@@ -7,6 +7,7 @@ import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/ui_kit/status_icon.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/ui_kit/xia_markdown_styles.dart';
 
 /// Message bubble — matching ComponentSpec Section 4.2.2.
 ///
@@ -22,6 +23,7 @@ class MessageBubble extends StatelessWidget {
   final String agentName;
   final int index; // B3: for staggered enter delay
   final VoidCallback? onRetry; // US-015 AC2: retry FAILED messages
+  final bool isHighlighted; // search-result highlight
 
   const MessageBubble({
     super.key,
@@ -29,6 +31,7 @@ class MessageBubble extends StatelessWidget {
     required this.agentName,
     this.index = 0,
     this.onRetry,
+    this.isHighlighted = false,
   });
 
   bool get _isUser => message.role == MessageRole.user;
@@ -91,6 +94,8 @@ class MessageBubble extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: _isUser
                           ? AgentTheme.of(context).primary
+                          : isHighlighted
+                          ? XiaColors.accent.withAlpha(23)
                           : XiaColors.surface,
                       borderRadius: BorderRadius.only(
                         topLeft: const Radius.circular(XiaRadius.xl),
@@ -102,8 +107,20 @@ class MessageBubble extends StatelessWidget {
                           _isUser ? XiaRadius.sm : XiaRadius.xl,
                         ),
                       ),
-                      boxShadow: _isUser ? null : XiaShadow.s,
-                      border: message.status == MessageStatus.failed
+                      boxShadow: isHighlighted
+                          ? [
+                              BoxShadow(
+                                color: XiaColors.accent.withAlpha(77),
+                                blurRadius: 8,
+                                spreadRadius: 1,
+                              ),
+                            ]
+                          : (_isUser ? null : XiaShadow.s),
+                      // 高亮边框优先于失败边框 —— 搜索结果高亮是用户主动导航的目标，
+                      // 即使消息发送失败，用户仍需看到"这就是你搜的那条"的视觉反馈。
+                      border: isHighlighted
+                          ? Border.all(color: XiaColors.accent, width: 2)
+                          : message.status == MessageStatus.failed
                           ? Border.all(color: XiaColors.red, width: 1.5)
                           : null,
                     ),
@@ -167,58 +184,7 @@ class MessageBubble extends StatelessWidget {
     return MarkdownBody(
       data: data,
       selectable: true,
-      styleSheet: MarkdownStyleSheet(
-        p: const TextStyle(color: XiaColors.text1, fontSize: 15, height: 1.6),
-        h1: const TextStyle(
-          color: XiaColors.text1,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
-        h2: const TextStyle(
-          color: XiaColors.text1,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
-        h3: const TextStyle(
-          color: XiaColors.text1,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
-        strong: const TextStyle(
-          color: XiaColors.text1,
-          fontWeight: FontWeight.bold,
-        ),
-        em: const TextStyle(
-          color: XiaColors.text1,
-          fontStyle: FontStyle.italic,
-        ),
-        a: const TextStyle(
-          color: XiaColors.accent,
-          decoration: TextDecoration.underline,
-        ),
-        code: const TextStyle(
-          backgroundColor: XiaColors.codeBlockBg,
-          color: XiaColors.accent,
-          fontSize: 13,
-          fontFamily: 'monospace',
-        ),
-        codeblockDecoration: BoxDecoration(
-          color: XiaColors.surface2,
-          borderRadius: BorderRadius.circular(XiaRadius.md),
-        ),
-        codeblockPadding: const EdgeInsets.all(XiaSpacing.s4),
-        blockquoteDecoration: const BoxDecoration(
-          border: Border(left: BorderSide(color: XiaColors.accent, width: 3)),
-        ),
-        blockquotePadding: const EdgeInsets.only(left: XiaSpacing.s3),
-        tableBorder: TableBorder.all(color: XiaColors.divider),
-        tableHead: const TextStyle(
-          color: XiaColors.text1,
-          fontWeight: FontWeight.bold,
-        ),
-        tableBody: const TextStyle(color: XiaColors.text1),
-        listBullet: const TextStyle(color: XiaColors.text1),
-      ),
+      styleSheet: XiaMarkdownStyles.message,
     );
   }
 }

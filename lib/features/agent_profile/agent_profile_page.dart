@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
+import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/widgets/profile_header.dart';
@@ -27,18 +28,8 @@ class AgentProfilePage extends ConsumerStatefulWidget {
 }
 
 class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
-  /// Smart back navigation (matches ChatRoomPage pattern).
   void _handleBack() {
-    if (mounted && context.canPop()) {
-      context.pop();
-    } else if (mounted) {
-      final source = widget.source;
-      if (source == 'messages') {
-        context.go(AppRoutes.messages);
-      } else {
-        context.go(AppRoutes.claws);
-      }
-    }
+    if (mounted) smartBack(context, source: widget.source);
   }
 
   @override

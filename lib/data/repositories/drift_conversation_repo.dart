@@ -49,6 +49,27 @@ class DriftConversationRepo implements IConversationRepo {
   }
 
   @override
+  Future<Map<String, Conversation>> getByIds(List<String> ids) async {
+    if (ids.isEmpty) return {};
+    final placeholders = ids.map((_) => '?').join(', ');
+    final rows = await _database
+        .customSelect(
+          'SELECT * FROM conversations WHERE id IN ($placeholders)',
+          variables: [for (final id in ids) Variable.withString(id)],
+          readsFrom: {_database.conversations},
+        )
+        .get();
+    final result = <String, Conversation>{};
+    for (final row in rows) {
+      final conv = ConversationMapper.toDomain(
+        db.Conversation.fromJson(row.data),
+      );
+      result[conv.id] = conv;
+    }
+    return result;
+  }
+
+  @override
   Future<Conversation> updateLastMessage({
     required String conversationId,
     required String messageId,
@@ -75,7 +96,10 @@ class DriftConversationRepo implements IConversationRepo {
   }) async {
     final current = await getById(conversationId);
     if (current == null) throw StateError('会话不存在: $conversationId');
-    await _database.incrementConversationUnread(count.toDouble(), conversationId);
+    await _database.incrementConversationUnread(
+      count.toDouble(),
+      conversationId,
+    );
     return current.copyWith(unreadCount: current.unreadCount + count);
   }
 
