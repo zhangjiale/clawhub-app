@@ -17,6 +17,7 @@ import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
 import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
 import 'package:claw_hub/data/repositories/drift_message_repo.dart';
 import 'package:claw_hub/data/repositories/drift_conversation_repo.dart';
+import 'package:claw_hub/data/repositories/drift_settings_repo.dart';
 import 'package:claw_hub/data/local/database/database.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
@@ -336,6 +337,10 @@ final messageRepoProvider = Provider<IMessageRepo>((ref) {
 
 final conversationRepoProvider = Provider<IConversationRepo>((ref) {
   return DriftConversationRepo(ref.watch(databaseProvider));
+});
+
+final settingsRepoProvider = Provider<ISettingsRepo>((ref) {
+  return DriftSettingsRepo(ref.watch(databaseProvider));
 });
 
 // --- Use Cases ---

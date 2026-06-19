@@ -7,3 +7,5 @@ export 'conversation.dart';
 export 'message.dart';
 export 'tool_call.dart';
 export 'quick_command.dart';
+export 'storage_info.dart';
+export 'user_preferences.dart';

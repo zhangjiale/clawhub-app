@@ -3081,6 +3081,693 @@ class ToolCallsCompanion extends UpdateCompanion<ToolCall> {
   }
 }
 
+class UserPreferences extends Table
+    with TableInfo<UserPreferences, UserPreference> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  UserPreferences(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'PRIMARY KEY DEFAULT 1 CHECK (id = 1)',
+    defaultValue: const CustomExpression('1'),
+  );
+  static const VerificationMeta _notificationsEnabledMeta =
+      const VerificationMeta('notificationsEnabled');
+  late final GeneratedColumn<int> notificationsEnabled = GeneratedColumn<int>(
+    'notifications_enabled',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 1',
+    defaultValue: const CustomExpression('1'),
+  );
+  static const VerificationMeta _notifyOnReplyMeta = const VerificationMeta(
+    'notifyOnReply',
+  );
+  late final GeneratedColumn<int> notifyOnReply = GeneratedColumn<int>(
+    'notify_on_reply',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 1',
+    defaultValue: const CustomExpression('1'),
+  );
+  static const VerificationMeta _notifyOnErrorMeta = const VerificationMeta(
+    'notifyOnError',
+  );
+  late final GeneratedColumn<int> notifyOnError = GeneratedColumn<int>(
+    'notify_on_error',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 1',
+    defaultValue: const CustomExpression('1'),
+  );
+  static const VerificationMeta _notifyOnConnectionChangeMeta =
+      const VerificationMeta('notifyOnConnectionChange');
+  late final GeneratedColumn<int> notifyOnConnectionChange =
+      GeneratedColumn<int>(
+        'notify_on_connection_change',
+        aliasedName,
+        false,
+        type: DriftSqlType.int,
+        requiredDuringInsert: false,
+        $customConstraints: 'NOT NULL DEFAULT 1',
+        defaultValue: const CustomExpression('1'),
+      );
+  static const VerificationMeta _dndEnabledMeta = const VerificationMeta(
+    'dndEnabled',
+  );
+  late final GeneratedColumn<int> dndEnabled = GeneratedColumn<int>(
+    'dnd_enabled',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _dndStartHourMeta = const VerificationMeta(
+    'dndStartHour',
+  );
+  late final GeneratedColumn<int> dndStartHour = GeneratedColumn<int>(
+    'dnd_start_hour',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 22',
+    defaultValue: const CustomExpression('22'),
+  );
+  static const VerificationMeta _dndStartMinuteMeta = const VerificationMeta(
+    'dndStartMinute',
+  );
+  late final GeneratedColumn<int> dndStartMinute = GeneratedColumn<int>(
+    'dnd_start_minute',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _dndEndHourMeta = const VerificationMeta(
+    'dndEndHour',
+  );
+  late final GeneratedColumn<int> dndEndHour = GeneratedColumn<int>(
+    'dnd_end_hour',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 8',
+    defaultValue: const CustomExpression('8'),
+  );
+  static const VerificationMeta _dndEndMinuteMeta = const VerificationMeta(
+    'dndEndMinute',
+  );
+  late final GeneratedColumn<int> dndEndMinute = GeneratedColumn<int>(
+    'dnd_end_minute',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _biometricEnabledMeta = const VerificationMeta(
+    'biometricEnabled',
+  );
+  late final GeneratedColumn<int> biometricEnabled = GeneratedColumn<int>(
+    'biometric_enabled',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0',
+    defaultValue: const CustomExpression('0'),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    notificationsEnabled,
+    notifyOnReply,
+    notifyOnError,
+    notifyOnConnectionChange,
+    dndEnabled,
+    dndStartHour,
+    dndStartMinute,
+    dndEndHour,
+    dndEndMinute,
+    biometricEnabled,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'user_preferences';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<UserPreference> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('notifications_enabled')) {
+      context.handle(
+        _notificationsEnabledMeta,
+        notificationsEnabled.isAcceptableOrUnknown(
+          data['notifications_enabled']!,
+          _notificationsEnabledMeta,
+        ),
+      );
+    }
+    if (data.containsKey('notify_on_reply')) {
+      context.handle(
+        _notifyOnReplyMeta,
+        notifyOnReply.isAcceptableOrUnknown(
+          data['notify_on_reply']!,
+          _notifyOnReplyMeta,
+        ),
+      );
+    }
+    if (data.containsKey('notify_on_error')) {
+      context.handle(
+        _notifyOnErrorMeta,
+        notifyOnError.isAcceptableOrUnknown(
+          data['notify_on_error']!,
+          _notifyOnErrorMeta,
+        ),
+      );
+    }
+    if (data.containsKey('notify_on_connection_change')) {
+      context.handle(
+        _notifyOnConnectionChangeMeta,
+        notifyOnConnectionChange.isAcceptableOrUnknown(
+          data['notify_on_connection_change']!,
+          _notifyOnConnectionChangeMeta,
+        ),
+      );
+    }
+    if (data.containsKey('dnd_enabled')) {
+      context.handle(
+        _dndEnabledMeta,
+        dndEnabled.isAcceptableOrUnknown(data['dnd_enabled']!, _dndEnabledMeta),
+      );
+    }
+    if (data.containsKey('dnd_start_hour')) {
+      context.handle(
+        _dndStartHourMeta,
+        dndStartHour.isAcceptableOrUnknown(
+          data['dnd_start_hour']!,
+          _dndStartHourMeta,
+        ),
+      );
+    }
+    if (data.containsKey('dnd_start_minute')) {
+      context.handle(
+        _dndStartMinuteMeta,
+        dndStartMinute.isAcceptableOrUnknown(
+          data['dnd_start_minute']!,
+          _dndStartMinuteMeta,
+        ),
+      );
+    }
+    if (data.containsKey('dnd_end_hour')) {
+      context.handle(
+        _dndEndHourMeta,
+        dndEndHour.isAcceptableOrUnknown(
+          data['dnd_end_hour']!,
+          _dndEndHourMeta,
+        ),
+      );
+    }
+    if (data.containsKey('dnd_end_minute')) {
+      context.handle(
+        _dndEndMinuteMeta,
+        dndEndMinute.isAcceptableOrUnknown(
+          data['dnd_end_minute']!,
+          _dndEndMinuteMeta,
+        ),
+      );
+    }
+    if (data.containsKey('biometric_enabled')) {
+      context.handle(
+        _biometricEnabledMeta,
+        biometricEnabled.isAcceptableOrUnknown(
+          data['biometric_enabled']!,
+          _biometricEnabledMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  UserPreference map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return UserPreference(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      notificationsEnabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}notifications_enabled'],
+      )!,
+      notifyOnReply: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}notify_on_reply'],
+      )!,
+      notifyOnError: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}notify_on_error'],
+      )!,
+      notifyOnConnectionChange: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}notify_on_connection_change'],
+      )!,
+      dndEnabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}dnd_enabled'],
+      )!,
+      dndStartHour: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}dnd_start_hour'],
+      )!,
+      dndStartMinute: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}dnd_start_minute'],
+      )!,
+      dndEndHour: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}dnd_end_hour'],
+      )!,
+      dndEndMinute: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}dnd_end_minute'],
+      )!,
+      biometricEnabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}biometric_enabled'],
+      )!,
+    );
+  }
+
+  @override
+  UserPreferences createAlias(String alias) {
+    return UserPreferences(attachedDatabase, alias);
+  }
+
+  @override
+  bool get dontWriteConstraints => true;
+}
+
+class UserPreference extends DataClass implements Insertable<UserPreference> {
+  final int id;
+  final int notificationsEnabled;
+  final int notifyOnReply;
+  final int notifyOnError;
+  final int notifyOnConnectionChange;
+  final int dndEnabled;
+  final int dndStartHour;
+  final int dndStartMinute;
+  final int dndEndHour;
+  final int dndEndMinute;
+  final int biometricEnabled;
+  const UserPreference({
+    required this.id,
+    required this.notificationsEnabled,
+    required this.notifyOnReply,
+    required this.notifyOnError,
+    required this.notifyOnConnectionChange,
+    required this.dndEnabled,
+    required this.dndStartHour,
+    required this.dndStartMinute,
+    required this.dndEndHour,
+    required this.dndEndMinute,
+    required this.biometricEnabled,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['notifications_enabled'] = Variable<int>(notificationsEnabled);
+    map['notify_on_reply'] = Variable<int>(notifyOnReply);
+    map['notify_on_error'] = Variable<int>(notifyOnError);
+    map['notify_on_connection_change'] = Variable<int>(
+      notifyOnConnectionChange,
+    );
+    map['dnd_enabled'] = Variable<int>(dndEnabled);
+    map['dnd_start_hour'] = Variable<int>(dndStartHour);
+    map['dnd_start_minute'] = Variable<int>(dndStartMinute);
+    map['dnd_end_hour'] = Variable<int>(dndEndHour);
+    map['dnd_end_minute'] = Variable<int>(dndEndMinute);
+    map['biometric_enabled'] = Variable<int>(biometricEnabled);
+    return map;
+  }
+
+  UserPreferencesCompanion toCompanion(bool nullToAbsent) {
+    return UserPreferencesCompanion(
+      id: Value(id),
+      notificationsEnabled: Value(notificationsEnabled),
+      notifyOnReply: Value(notifyOnReply),
+      notifyOnError: Value(notifyOnError),
+      notifyOnConnectionChange: Value(notifyOnConnectionChange),
+      dndEnabled: Value(dndEnabled),
+      dndStartHour: Value(dndStartHour),
+      dndStartMinute: Value(dndStartMinute),
+      dndEndHour: Value(dndEndHour),
+      dndEndMinute: Value(dndEndMinute),
+      biometricEnabled: Value(biometricEnabled),
+    );
+  }
+
+  factory UserPreference.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return UserPreference(
+      id: serializer.fromJson<int>(json['id']),
+      notificationsEnabled: serializer.fromJson<int>(
+        json['notifications_enabled'],
+      ),
+      notifyOnReply: serializer.fromJson<int>(json['notify_on_reply']),
+      notifyOnError: serializer.fromJson<int>(json['notify_on_error']),
+      notifyOnConnectionChange: serializer.fromJson<int>(
+        json['notify_on_connection_change'],
+      ),
+      dndEnabled: serializer.fromJson<int>(json['dnd_enabled']),
+      dndStartHour: serializer.fromJson<int>(json['dnd_start_hour']),
+      dndStartMinute: serializer.fromJson<int>(json['dnd_start_minute']),
+      dndEndHour: serializer.fromJson<int>(json['dnd_end_hour']),
+      dndEndMinute: serializer.fromJson<int>(json['dnd_end_minute']),
+      biometricEnabled: serializer.fromJson<int>(json['biometric_enabled']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'notifications_enabled': serializer.toJson<int>(notificationsEnabled),
+      'notify_on_reply': serializer.toJson<int>(notifyOnReply),
+      'notify_on_error': serializer.toJson<int>(notifyOnError),
+      'notify_on_connection_change': serializer.toJson<int>(
+        notifyOnConnectionChange,
+      ),
+      'dnd_enabled': serializer.toJson<int>(dndEnabled),
+      'dnd_start_hour': serializer.toJson<int>(dndStartHour),
+      'dnd_start_minute': serializer.toJson<int>(dndStartMinute),
+      'dnd_end_hour': serializer.toJson<int>(dndEndHour),
+      'dnd_end_minute': serializer.toJson<int>(dndEndMinute),
+      'biometric_enabled': serializer.toJson<int>(biometricEnabled),
+    };
+  }
+
+  UserPreference copyWith({
+    int? id,
+    int? notificationsEnabled,
+    int? notifyOnReply,
+    int? notifyOnError,
+    int? notifyOnConnectionChange,
+    int? dndEnabled,
+    int? dndStartHour,
+    int? dndStartMinute,
+    int? dndEndHour,
+    int? dndEndMinute,
+    int? biometricEnabled,
+  }) => UserPreference(
+    id: id ?? this.id,
+    notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
+    notifyOnReply: notifyOnReply ?? this.notifyOnReply,
+    notifyOnError: notifyOnError ?? this.notifyOnError,
+    notifyOnConnectionChange:
+        notifyOnConnectionChange ?? this.notifyOnConnectionChange,
+    dndEnabled: dndEnabled ?? this.dndEnabled,
+    dndStartHour: dndStartHour ?? this.dndStartHour,
+    dndStartMinute: dndStartMinute ?? this.dndStartMinute,
+    dndEndHour: dndEndHour ?? this.dndEndHour,
+    dndEndMinute: dndEndMinute ?? this.dndEndMinute,
+    biometricEnabled: biometricEnabled ?? this.biometricEnabled,
+  );
+  UserPreference copyWithCompanion(UserPreferencesCompanion data) {
+    return UserPreference(
+      id: data.id.present ? data.id.value : this.id,
+      notificationsEnabled: data.notificationsEnabled.present
+          ? data.notificationsEnabled.value
+          : this.notificationsEnabled,
+      notifyOnReply: data.notifyOnReply.present
+          ? data.notifyOnReply.value
+          : this.notifyOnReply,
+      notifyOnError: data.notifyOnError.present
+          ? data.notifyOnError.value
+          : this.notifyOnError,
+      notifyOnConnectionChange: data.notifyOnConnectionChange.present
+          ? data.notifyOnConnectionChange.value
+          : this.notifyOnConnectionChange,
+      dndEnabled: data.dndEnabled.present
+          ? data.dndEnabled.value
+          : this.dndEnabled,
+      dndStartHour: data.dndStartHour.present
+          ? data.dndStartHour.value
+          : this.dndStartHour,
+      dndStartMinute: data.dndStartMinute.present
+          ? data.dndStartMinute.value
+          : this.dndStartMinute,
+      dndEndHour: data.dndEndHour.present
+          ? data.dndEndHour.value
+          : this.dndEndHour,
+      dndEndMinute: data.dndEndMinute.present
+          ? data.dndEndMinute.value
+          : this.dndEndMinute,
+      biometricEnabled: data.biometricEnabled.present
+          ? data.biometricEnabled.value
+          : this.biometricEnabled,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('UserPreference(')
+          ..write('id: $id, ')
+          ..write('notificationsEnabled: $notificationsEnabled, ')
+          ..write('notifyOnReply: $notifyOnReply, ')
+          ..write('notifyOnError: $notifyOnError, ')
+          ..write('notifyOnConnectionChange: $notifyOnConnectionChange, ')
+          ..write('dndEnabled: $dndEnabled, ')
+          ..write('dndStartHour: $dndStartHour, ')
+          ..write('dndStartMinute: $dndStartMinute, ')
+          ..write('dndEndHour: $dndEndHour, ')
+          ..write('dndEndMinute: $dndEndMinute, ')
+          ..write('biometricEnabled: $biometricEnabled')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    notificationsEnabled,
+    notifyOnReply,
+    notifyOnError,
+    notifyOnConnectionChange,
+    dndEnabled,
+    dndStartHour,
+    dndStartMinute,
+    dndEndHour,
+    dndEndMinute,
+    biometricEnabled,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is UserPreference &&
+          other.id == this.id &&
+          other.notificationsEnabled == this.notificationsEnabled &&
+          other.notifyOnReply == this.notifyOnReply &&
+          other.notifyOnError == this.notifyOnError &&
+          other.notifyOnConnectionChange == this.notifyOnConnectionChange &&
+          other.dndEnabled == this.dndEnabled &&
+          other.dndStartHour == this.dndStartHour &&
+          other.dndStartMinute == this.dndStartMinute &&
+          other.dndEndHour == this.dndEndHour &&
+          other.dndEndMinute == this.dndEndMinute &&
+          other.biometricEnabled == this.biometricEnabled);
+}
+
+class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
+  final Value<int> id;
+  final Value<int> notificationsEnabled;
+  final Value<int> notifyOnReply;
+  final Value<int> notifyOnError;
+  final Value<int> notifyOnConnectionChange;
+  final Value<int> dndEnabled;
+  final Value<int> dndStartHour;
+  final Value<int> dndStartMinute;
+  final Value<int> dndEndHour;
+  final Value<int> dndEndMinute;
+  final Value<int> biometricEnabled;
+  const UserPreferencesCompanion({
+    this.id = const Value.absent(),
+    this.notificationsEnabled = const Value.absent(),
+    this.notifyOnReply = const Value.absent(),
+    this.notifyOnError = const Value.absent(),
+    this.notifyOnConnectionChange = const Value.absent(),
+    this.dndEnabled = const Value.absent(),
+    this.dndStartHour = const Value.absent(),
+    this.dndStartMinute = const Value.absent(),
+    this.dndEndHour = const Value.absent(),
+    this.dndEndMinute = const Value.absent(),
+    this.biometricEnabled = const Value.absent(),
+  });
+  UserPreferencesCompanion.insert({
+    this.id = const Value.absent(),
+    this.notificationsEnabled = const Value.absent(),
+    this.notifyOnReply = const Value.absent(),
+    this.notifyOnError = const Value.absent(),
+    this.notifyOnConnectionChange = const Value.absent(),
+    this.dndEnabled = const Value.absent(),
+    this.dndStartHour = const Value.absent(),
+    this.dndStartMinute = const Value.absent(),
+    this.dndEndHour = const Value.absent(),
+    this.dndEndMinute = const Value.absent(),
+    this.biometricEnabled = const Value.absent(),
+  });
+  static Insertable<UserPreference> custom({
+    Expression<int>? id,
+    Expression<int>? notificationsEnabled,
+    Expression<int>? notifyOnReply,
+    Expression<int>? notifyOnError,
+    Expression<int>? notifyOnConnectionChange,
+    Expression<int>? dndEnabled,
+    Expression<int>? dndStartHour,
+    Expression<int>? dndStartMinute,
+    Expression<int>? dndEndHour,
+    Expression<int>? dndEndMinute,
+    Expression<int>? biometricEnabled,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (notificationsEnabled != null)
+        'notifications_enabled': notificationsEnabled,
+      if (notifyOnReply != null) 'notify_on_reply': notifyOnReply,
+      if (notifyOnError != null) 'notify_on_error': notifyOnError,
+      if (notifyOnConnectionChange != null)
+        'notify_on_connection_change': notifyOnConnectionChange,
+      if (dndEnabled != null) 'dnd_enabled': dndEnabled,
+      if (dndStartHour != null) 'dnd_start_hour': dndStartHour,
+      if (dndStartMinute != null) 'dnd_start_minute': dndStartMinute,
+      if (dndEndHour != null) 'dnd_end_hour': dndEndHour,
+      if (dndEndMinute != null) 'dnd_end_minute': dndEndMinute,
+      if (biometricEnabled != null) 'biometric_enabled': biometricEnabled,
+    });
+  }
+
+  UserPreferencesCompanion copyWith({
+    Value<int>? id,
+    Value<int>? notificationsEnabled,
+    Value<int>? notifyOnReply,
+    Value<int>? notifyOnError,
+    Value<int>? notifyOnConnectionChange,
+    Value<int>? dndEnabled,
+    Value<int>? dndStartHour,
+    Value<int>? dndStartMinute,
+    Value<int>? dndEndHour,
+    Value<int>? dndEndMinute,
+    Value<int>? biometricEnabled,
+  }) {
+    return UserPreferencesCompanion(
+      id: id ?? this.id,
+      notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
+      notifyOnReply: notifyOnReply ?? this.notifyOnReply,
+      notifyOnError: notifyOnError ?? this.notifyOnError,
+      notifyOnConnectionChange:
+          notifyOnConnectionChange ?? this.notifyOnConnectionChange,
+      dndEnabled: dndEnabled ?? this.dndEnabled,
+      dndStartHour: dndStartHour ?? this.dndStartHour,
+      dndStartMinute: dndStartMinute ?? this.dndStartMinute,
+      dndEndHour: dndEndHour ?? this.dndEndHour,
+      dndEndMinute: dndEndMinute ?? this.dndEndMinute,
+      biometricEnabled: biometricEnabled ?? this.biometricEnabled,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (notificationsEnabled.present) {
+      map['notifications_enabled'] = Variable<int>(notificationsEnabled.value);
+    }
+    if (notifyOnReply.present) {
+      map['notify_on_reply'] = Variable<int>(notifyOnReply.value);
+    }
+    if (notifyOnError.present) {
+      map['notify_on_error'] = Variable<int>(notifyOnError.value);
+    }
+    if (notifyOnConnectionChange.present) {
+      map['notify_on_connection_change'] = Variable<int>(
+        notifyOnConnectionChange.value,
+      );
+    }
+    if (dndEnabled.present) {
+      map['dnd_enabled'] = Variable<int>(dndEnabled.value);
+    }
+    if (dndStartHour.present) {
+      map['dnd_start_hour'] = Variable<int>(dndStartHour.value);
+    }
+    if (dndStartMinute.present) {
+      map['dnd_start_minute'] = Variable<int>(dndStartMinute.value);
+    }
+    if (dndEndHour.present) {
+      map['dnd_end_hour'] = Variable<int>(dndEndHour.value);
+    }
+    if (dndEndMinute.present) {
+      map['dnd_end_minute'] = Variable<int>(dndEndMinute.value);
+    }
+    if (biometricEnabled.present) {
+      map['biometric_enabled'] = Variable<int>(biometricEnabled.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('UserPreferencesCompanion(')
+          ..write('id: $id, ')
+          ..write('notificationsEnabled: $notificationsEnabled, ')
+          ..write('notifyOnReply: $notifyOnReply, ')
+          ..write('notifyOnError: $notifyOnError, ')
+          ..write('notifyOnConnectionChange: $notifyOnConnectionChange, ')
+          ..write('dndEnabled: $dndEnabled, ')
+          ..write('dndStartHour: $dndStartHour, ')
+          ..write('dndStartMinute: $dndStartMinute, ')
+          ..write('dndEndHour: $dndEndHour, ')
+          ..write('dndEndMinute: $dndEndMinute, ')
+          ..write('biometricEnabled: $biometricEnabled')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -3137,6 +3824,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     'idx_tool_calls_msg',
     'CREATE INDEX idx_tool_calls_msg ON tool_calls (message_id)',
   );
+  late final UserPreferences userPreferences = UserPreferences(this);
   Selectable<Instance> getAllInstances() {
     return customSelect(
       'SELECT * FROM instances ORDER BY last_connected_at DESC',
@@ -3648,6 +4336,44 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Selectable<UserPreference> getUserPreferences() {
+    return customSelect(
+      'SELECT * FROM user_preferences WHERE id = 1',
+      variables: [],
+      readsFrom: {userPreferences},
+    ).asyncMap(userPreferences.mapFromRow);
+  }
+
+  Future<int> upsertUserPreferences(
+    int notificationsEnabled,
+    int notifyOnReply,
+    int notifyOnError,
+    int notifyOnConnectionChange,
+    int dndEnabled,
+    int dndStartHour,
+    int dndStartMinute,
+    int dndEndHour,
+    int dndEndMinute,
+    int biometricEnabled,
+  ) {
+    return customInsert(
+      'INSERT OR REPLACE INTO user_preferences (id, notifications_enabled, notify_on_reply, notify_on_error, notify_on_connection_change, dnd_enabled, dnd_start_hour, dnd_start_minute, dnd_end_hour, dnd_end_minute, biometric_enabled) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)',
+      variables: [
+        Variable<int>(notificationsEnabled),
+        Variable<int>(notifyOnReply),
+        Variable<int>(notifyOnError),
+        Variable<int>(notifyOnConnectionChange),
+        Variable<int>(dndEnabled),
+        Variable<int>(dndStartHour),
+        Variable<int>(dndStartMinute),
+        Variable<int>(dndEndHour),
+        Variable<int>(dndEndMinute),
+        Variable<int>(biometricEnabled),
+      ],
+      updates: {userPreferences},
+    );
+  }
+
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -3670,6 +4396,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     idxMsgsStatus,
     idxMsgsConvClock,
     idxToolCallsMsg,
+    userPreferences,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -5133,6 +5860,334 @@ typedef $ToolCallsProcessedTableManager =
       ToolCall,
       PrefetchHooks Function()
     >;
+typedef $UserPreferencesCreateCompanionBuilder =
+    UserPreferencesCompanion Function({
+      Value<int> id,
+      Value<int> notificationsEnabled,
+      Value<int> notifyOnReply,
+      Value<int> notifyOnError,
+      Value<int> notifyOnConnectionChange,
+      Value<int> dndEnabled,
+      Value<int> dndStartHour,
+      Value<int> dndStartMinute,
+      Value<int> dndEndHour,
+      Value<int> dndEndMinute,
+      Value<int> biometricEnabled,
+    });
+typedef $UserPreferencesUpdateCompanionBuilder =
+    UserPreferencesCompanion Function({
+      Value<int> id,
+      Value<int> notificationsEnabled,
+      Value<int> notifyOnReply,
+      Value<int> notifyOnError,
+      Value<int> notifyOnConnectionChange,
+      Value<int> dndEnabled,
+      Value<int> dndStartHour,
+      Value<int> dndStartMinute,
+      Value<int> dndEndHour,
+      Value<int> dndEndMinute,
+      Value<int> biometricEnabled,
+    });
+
+class $UserPreferencesFilterComposer
+    extends Composer<_$AppDatabase, UserPreferences> {
+  $UserPreferencesFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notificationsEnabled => $composableBuilder(
+    column: $table.notificationsEnabled,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notifyOnReply => $composableBuilder(
+    column: $table.notifyOnReply,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notifyOnError => $composableBuilder(
+    column: $table.notifyOnError,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notifyOnConnectionChange => $composableBuilder(
+    column: $table.notifyOnConnectionChange,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get dndEnabled => $composableBuilder(
+    column: $table.dndEnabled,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get dndStartHour => $composableBuilder(
+    column: $table.dndStartHour,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get dndStartMinute => $composableBuilder(
+    column: $table.dndStartMinute,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get dndEndHour => $composableBuilder(
+    column: $table.dndEndHour,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get dndEndMinute => $composableBuilder(
+    column: $table.dndEndMinute,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get biometricEnabled => $composableBuilder(
+    column: $table.biometricEnabled,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $UserPreferencesOrderingComposer
+    extends Composer<_$AppDatabase, UserPreferences> {
+  $UserPreferencesOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notificationsEnabled => $composableBuilder(
+    column: $table.notificationsEnabled,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notifyOnReply => $composableBuilder(
+    column: $table.notifyOnReply,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notifyOnError => $composableBuilder(
+    column: $table.notifyOnError,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notifyOnConnectionChange => $composableBuilder(
+    column: $table.notifyOnConnectionChange,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get dndEnabled => $composableBuilder(
+    column: $table.dndEnabled,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get dndStartHour => $composableBuilder(
+    column: $table.dndStartHour,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get dndStartMinute => $composableBuilder(
+    column: $table.dndStartMinute,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get dndEndHour => $composableBuilder(
+    column: $table.dndEndHour,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get dndEndMinute => $composableBuilder(
+    column: $table.dndEndMinute,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get biometricEnabled => $composableBuilder(
+    column: $table.biometricEnabled,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $UserPreferencesAnnotationComposer
+    extends Composer<_$AppDatabase, UserPreferences> {
+  $UserPreferencesAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<int> get notificationsEnabled => $composableBuilder(
+    column: $table.notificationsEnabled,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get notifyOnReply => $composableBuilder(
+    column: $table.notifyOnReply,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get notifyOnError => $composableBuilder(
+    column: $table.notifyOnError,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get notifyOnConnectionChange => $composableBuilder(
+    column: $table.notifyOnConnectionChange,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get dndEnabled => $composableBuilder(
+    column: $table.dndEnabled,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get dndStartHour => $composableBuilder(
+    column: $table.dndStartHour,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get dndStartMinute => $composableBuilder(
+    column: $table.dndStartMinute,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get dndEndHour => $composableBuilder(
+    column: $table.dndEndHour,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get dndEndMinute => $composableBuilder(
+    column: $table.dndEndMinute,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get biometricEnabled => $composableBuilder(
+    column: $table.biometricEnabled,
+    builder: (column) => column,
+  );
+}
+
+class $UserPreferencesTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          UserPreferences,
+          UserPreference,
+          $UserPreferencesFilterComposer,
+          $UserPreferencesOrderingComposer,
+          $UserPreferencesAnnotationComposer,
+          $UserPreferencesCreateCompanionBuilder,
+          $UserPreferencesUpdateCompanionBuilder,
+          (
+            UserPreference,
+            BaseReferences<_$AppDatabase, UserPreferences, UserPreference>,
+          ),
+          UserPreference,
+          PrefetchHooks Function()
+        > {
+  $UserPreferencesTableManager(_$AppDatabase db, UserPreferences table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $UserPreferencesFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $UserPreferencesOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $UserPreferencesAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<int> notificationsEnabled = const Value.absent(),
+                Value<int> notifyOnReply = const Value.absent(),
+                Value<int> notifyOnError = const Value.absent(),
+                Value<int> notifyOnConnectionChange = const Value.absent(),
+                Value<int> dndEnabled = const Value.absent(),
+                Value<int> dndStartHour = const Value.absent(),
+                Value<int> dndStartMinute = const Value.absent(),
+                Value<int> dndEndHour = const Value.absent(),
+                Value<int> dndEndMinute = const Value.absent(),
+                Value<int> biometricEnabled = const Value.absent(),
+              }) => UserPreferencesCompanion(
+                id: id,
+                notificationsEnabled: notificationsEnabled,
+                notifyOnReply: notifyOnReply,
+                notifyOnError: notifyOnError,
+                notifyOnConnectionChange: notifyOnConnectionChange,
+                dndEnabled: dndEnabled,
+                dndStartHour: dndStartHour,
+                dndStartMinute: dndStartMinute,
+                dndEndHour: dndEndHour,
+                dndEndMinute: dndEndMinute,
+                biometricEnabled: biometricEnabled,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<int> notificationsEnabled = const Value.absent(),
+                Value<int> notifyOnReply = const Value.absent(),
+                Value<int> notifyOnError = const Value.absent(),
+                Value<int> notifyOnConnectionChange = const Value.absent(),
+                Value<int> dndEnabled = const Value.absent(),
+                Value<int> dndStartHour = const Value.absent(),
+                Value<int> dndStartMinute = const Value.absent(),
+                Value<int> dndEndHour = const Value.absent(),
+                Value<int> dndEndMinute = const Value.absent(),
+                Value<int> biometricEnabled = const Value.absent(),
+              }) => UserPreferencesCompanion.insert(
+                id: id,
+                notificationsEnabled: notificationsEnabled,
+                notifyOnReply: notifyOnReply,
+                notifyOnError: notifyOnError,
+                notifyOnConnectionChange: notifyOnConnectionChange,
+                dndEnabled: dndEnabled,
+                dndStartHour: dndStartHour,
+                dndStartMinute: dndStartMinute,
+                dndEndHour: dndEndHour,
+                dndEndMinute: dndEndMinute,
+                biometricEnabled: biometricEnabled,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $UserPreferencesProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      UserPreferences,
+      UserPreference,
+      $UserPreferencesFilterComposer,
+      $UserPreferencesOrderingComposer,
+      $UserPreferencesAnnotationComposer,
+      $UserPreferencesCreateCompanionBuilder,
+      $UserPreferencesUpdateCompanionBuilder,
+      (
+        UserPreference,
+        BaseReferences<_$AppDatabase, UserPreferences, UserPreference>,
+      ),
+      UserPreference,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -5146,4 +6201,6 @@ class $AppDatabaseManager {
       $MessagesTableManager(_db, _db.messages);
   $ToolCallsTableManager get toolCalls =>
       $ToolCallsTableManager(_db, _db.toolCalls);
+  $UserPreferencesTableManager get userPreferences =>
+      $UserPreferencesTableManager(_db, _db.userPreferences);
 }

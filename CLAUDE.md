@@ -81,7 +81,7 @@ lib/
 │   ├── chat_room/        # Chat with message bubbles, thinking indicator, tool calls
 │   ├── message_hub/      # Cross-instance conversation aggregation
 │   ├── agent_profile/    # Agent profile & config
-│   ├── settings/         # UI placeholder (design-review only)
+│   ├── settings/         # Settings with sub-pages (notification, DND, biometric, etc.)
 │   └── shrimp_profile/   # Empty directory
 └── ui_kit/               # Reusable UI components (no domain/business coupling)
     ├── a11y/, empty_states/, theme/   # Sub-kits (some WIP / empty)
@@ -104,6 +104,8 @@ lib/
 - **Message Lifecycle (7-state)**: `DRAFT → PENDING → SENDING → SENT → DELIVERED`, with `FAILED` and `EXPIRED` as retry/terminal branches.
 - **Conversation Composite Key**: `hash(instanceId + agentId)` guarantees global uniqueness across instances.
 - **Smart Back Stack**: Routes carry a `source` parameter so the back button returns to the correct origin tab (e.g., navigating from Messages tab vs Agent list).
+- **ConnectionOrchestrator**: A global singleton (Riverpod-held) that manages all Gateway instance connection lifecycles — auto-connect on startup, connect/disconnect on instance save/delete, network change detection (WiFi ↔ cellular), and GatewayConnectionState → HealthStatus synchronization. Implements `IInstanceLifecycle` so UseCases can trigger lifecycle events without depending on the orchestrator directly.
+- **CopyWithSentinel**: A utility pattern (`CopyWithSentinel<T>`) that distinguishes "no change" from "set to null." Used by state classes to avoid ambiguous `copyWith(param: null)` calls — the sentinel value signals "don't update this field" while an explicit null signals "clear this field."
 
 ### Technology Stack
 
@@ -132,7 +134,7 @@ The app uses **Drift/SQLite** for persistence (all 4 repositories: Instance, Age
 
 `gatewayClientProvider` points to `wsGatewayClientProvider` (real WebSocket, OpenClaw v4 protocol, v2026.6.6). `MockGatewayClient` (3 instances, 7 agents from `assets/mock/agents.json`) is implemented as an offline-development / unit-test fallback — switch by changing one line in `lib/app/di/providers.dart` from `wsGatewayClientProvider` to `mockGatewayClientProvider`.
 
-Five feature pages are fully implemented: InstanceManager, AgentList, ChatRoom, MessageHub, AgentProfile. `settings/` ships only a UI placeholder page (design-review only, not wired to settings provider). `shrimp_profile/` is an empty directory.
+Five feature pages are fully implemented: InstanceManager, AgentList, ChatRoom, MessageHub, AgentProfile. `settings/` is in active development with SettingsPage, 6 sub-pages (Notification, DND, Biometric, Network, Storage Management, About), a ViewModel, `ISettingsRepo`/`DriftSettingsRepo`, and tests. `shrimp_profile/` is an empty directory.
 
 ### Commit Convention
 
@@ -178,7 +180,7 @@ A pre-commit hook enforces 4 mechanically-verifiable laws on staged `.dart` file
 
 The hook also runs `dart format` on staged files and re-adds them.
 
-**Suppression**: Add `// iron-law-allow: LawN -- justification` on the violating line.
+**Suppression**: Add `// iron-law-allow: LawN -- justification` on the violating line, or `// iron-law-allow-file: LawN -- justification` within the first 20 lines for file-level suppression.
 **Escape hatch**: `git commit --no-verify` (for prototype branches, emergency hotfixes).
 
 **Periodic audit**: Every ~20 commits, run a manual full-codebase iron-law review to catch architectural drift (laws that grep cannot verify: Law 2, 3, 5, 7, 9, 10, 14-17).

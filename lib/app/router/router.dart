@@ -13,6 +13,12 @@ import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
 import 'package:claw_hub/features/settings/settings_page.dart';
 import 'package:claw_hub/features/search/search_page.dart';
+import 'package:claw_hub/features/settings/notification_settings_page.dart';
+import 'package:claw_hub/features/settings/dnd_page.dart';
+import 'package:claw_hub/features/settings/biometric_settings_page.dart';
+import 'package:claw_hub/features/settings/network_settings_page.dart';
+import 'package:claw_hub/features/settings/storage_management_page.dart';
+import 'package:claw_hub/features/settings/about_page.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
@@ -26,6 +32,12 @@ class AppRoutes {
   static const String chat = '/chat/:agentId';
   static const String agentProfile = '/agent-profile/:agentId';
   static const String settings = '/claws/settings';
+  static const String settingsNotification = 'notification';
+  static const String settingsDnd = 'dnd';
+  static const String settingsBiometric = 'biometric';
+  static const String settingsNetwork = 'network';
+  static const String settingsStorage = 'storage';
+  static const String settingsAbout = 'about';
   static const String search = '/search';
   static const String addInstance = '/instances/add';
   static const String editInstance = '/instances/edit/:instanceId';
@@ -130,6 +142,14 @@ class AppRouter {
     );
   }
 
+  static GoRoute _settingsSubRoute(String path, Widget page) {
+    return GoRoute(
+      path: path,
+      pageBuilder: (context, state) =>
+          XiaTransitionPage(key: state.pageKey, child: page),
+    );
+  }
+
   static GoRoute _searchRoute() {
     return GoRoute(
       path: 'search',
@@ -180,6 +200,26 @@ class AppRouter {
                         key: state.pageKey,
                         child: const SettingsPage(),
                       ),
+                      routes: [
+                        _settingsSubRoute(
+                          'notification',
+                          const NotificationSettingsPage(),
+                        ),
+                        _settingsSubRoute('dnd', const DoNotDisturbPage()),
+                        _settingsSubRoute(
+                          'biometric',
+                          const BiometricSettingsPage(),
+                        ),
+                        _settingsSubRoute(
+                          'network',
+                          const NetworkSettingsPage(),
+                        ),
+                        _settingsSubRoute(
+                          'storage',
+                          const StorageManagementPage(),
+                        ),
+                        _settingsSubRoute('about', const AboutPage()),
+                      ],
                     ),
                     GoRoute(
                       path: 'agent-profile/:agentId',
@@ -259,7 +299,7 @@ class AppRouter {
 
 /// Routes that should NOT show the bottom navigation bar.
 const _fullScreenPaths = {
-  // Settings, agent profile, agent config, search (under /claws)
+  // Settings, settings sub-pages, agent profile, agent config, search (under /claws)
   '/claws/settings',
   '/claws/agent-profile',
   '/claws/chat',

@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration {
@@ -71,9 +71,9 @@ class AppDatabase extends _$AppDatabase {
         ''');
       },
       onUpgrade: (migrator, from, to) async {
-        // Schema v1: no prior versions to migrate from.
-        // When schemaVersion is bumped, add migration steps here for each
-        // version increment (e.g. if (from < 2) { ... }).
+        if (from < 2) {
+          await migrator.createTable(userPreferences);
+        }
       },
     );
   }
