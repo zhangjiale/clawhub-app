@@ -95,4 +95,12 @@ abstract class IMessageRepo {
 
   /// 删除消息（仅本地）
   Future<void> deleteByClientId(String clientId);
+
+  /// 批量插入消息，同时按 clientId 和 serverId 去重（US-016 AC-2）。
+  ///
+  /// 跳过已有 clientId 或 serverId 的消息。在单次事务中执行 INSERT + FTS5 同步。
+  /// 调用方负责在调用前将所有消息的 [Message.conversationId] 规整化为规范值。
+  ///
+  /// 返回实际插入的消息列表。
+  Future<List<Message>> batchInsertByIndexedIds(List<Message> messages);
 }

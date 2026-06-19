@@ -125,6 +125,15 @@ class _FakeGatewayClient implements IGatewayClient {
     }
   }
 
+  /// Emit an arbitrary state on the given instance's connection state stream.
+  /// Used by tests to inject reconnectExhausted / disconnected events.
+  void emitState(String instanceId, GatewayConnectionState state) {
+    final ctrl = _stateCtrls[instanceId];
+    if (ctrl != null && !ctrl.isClosed) {
+      ctrl.add(state);
+    }
+  }
+
   @override
   Future<void> disconnect(String instanceId) async {
     disconnectCounts[instanceId] = (disconnectCounts[instanceId] ?? 0) + 1;
@@ -1412,6 +1421,181 @@ void main() {
 
         // 关闭后 stream 发出 done 事件
         await expectLater(orch.events, emitsDone);
+      });
+    });
+
+    // Bug 1: dispose 后 _emitEvent 静默丢弃，不抛 BadStateError
+    group('Bug 1: _emitEvent guard after dispose', () {
+      test('dispose during connectivity recovery does not throw', () async {
+        final gateway = _FakeGatewayClient(synchronousEvents: true);
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'ws://test:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+        await orch.onInstanceSaved(instance);
+
+        // Dispose immediately — must not throw BadStateError
+        await orch.dispose();
+        // If we reach here without exception, the guard works
+        expect(orch.events, isA<Stream<InstanceEvent>>());
+      });
+    });
+
+    // Bug 2: ReconnectExhaustedEvent fires even when DB write fails
+    group('Bug 2: ReconnectExhaustedEvent decoupled from DB', () {
+      test('ReconnectExhaustedEvent fires when DB write fails', () async {
+        final gateway = _FakeGatewayClient(synchronousEvents: true);
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+
+        // Collect events
+        final events = <InstanceEvent>[];
+        final sub = orch.events.listen(events.add);
+
+        // Set up the orchestrator to track this instance
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'ws://test:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+        // Trigger connect to establish subscription
+        await orch.onInstanceSaved(instance);
+        // Wait for connected event to propagate
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // Emit reconnectExhausted via fake gateway helper
+        gateway.emitState('inst-1', GatewayConnectionState.reconnectExhausted);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        final hasReconnectExhausted = events.any(
+          (e) => e is ReconnectExhaustedEvent && e.instanceId == 'inst-1',
+        );
+        expect(
+          hasReconnectExhausted,
+          isTrue,
+          reason:
+              'ReconnectExhaustedEvent must fire even after best-effort '
+              'DB persistence',
+        );
+
+        await sub.cancel();
+        await orch.dispose();
+      });
+    });
+
+    // Bug 3: InstanceConnectedEvent only fires when sync actually runs
+    // and connection is still alive
+    group('Bug 3: InstanceConnectedEvent guarded', () {
+      test('InstanceConnectedEvent fires after sync does real work, '
+          'not on lock-contended early return', () async {
+        final fetchStarted1 = Completer<void>();
+        final fetchBlocker1 = Completer<void>();
+        final gateway = _BlockingFetchGateway(
+          fetchStarted: fetchStarted1,
+          fetchBlocker: fetchBlocker1,
+        );
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+          syncLoopCooldown: Duration.zero,
+        );
+
+        final events = <InstanceEvent>[];
+        final sub = orch.events.listen(events.add);
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'ws://test:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+        await orch.onInstanceSaved(instance);
+
+        // Wait for the first connected event → triggers first sync (blocked)
+        await fetchStarted1.future;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // No InstanceConnectedEvent yet — sync is blocked
+        expect(events.whereType<InstanceConnectedEvent>(), isEmpty);
+
+        // Release the first sync
+        fetchBlocker1.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // Now exactly one InstanceConnectedEvent should have fired
+        final connectedEvents = events.whereType<InstanceConnectedEvent>();
+        expect(
+          connectedEvents.length,
+          1,
+          reason:
+              'Only one InstanceConnectedEvent after real sync, '
+              'no premature emission on lock-contended path',
+        );
+
+        await sub.cancel();
+        await orch.dispose();
+      });
+    });
+
+    // Bug 4: Per-instance async serialization
+    group('Bug 4: async interleaving serialization', () {
+      test('rapid same-instance state changes are serialized', () async {
+        final gateway = _FakeGatewayClient(synchronousEvents: true);
+        final orch = ConnectionOrchestrator(
+          gatewayClient: gateway,
+          instanceRepo: instanceRepo,
+          agentRepo: agentRepo,
+        );
+
+        final instance = Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'ws://test:18789',
+          tokenRef: 'token',
+          healthStatus: HealthStatus.online,
+        );
+        await instanceRepo.save(instance);
+        await orch.onInstanceSaved(instance);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Inject recovering → connected → disconnected rapidly
+        gateway.emitState('inst-1', GatewayConnectionState.recovering);
+        gateway.emitState('inst-1', GatewayConnectionState.connected);
+        gateway.emitState('inst-1', GatewayConnectionState.disconnected);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // After serialization, the final DB state should reflect the last
+        // event (disconnected → offline), not stale interleaving
+        final finalInstance = await instanceRepo.getById('inst-1');
+        expect(finalInstance, isNotNull);
+        // disconnected maps to offline
+        expect(
+          finalInstance!.healthStatus,
+          HealthStatus.offline,
+          reason:
+              'Final state after disconnected must be offline, '
+              'not stale from interleaved handler reads',
+        );
+
+        await orch.dispose();
       });
     });
   });

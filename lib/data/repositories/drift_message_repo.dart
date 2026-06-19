@@ -39,19 +39,30 @@ class DriftMessageRepo implements IMessageRepo {
         message.metadata != null ? jsonEncode(message.metadata) : null,
       );
 
-      // Sync FTS5 index (best-effort — message persistence is primary).
-      // FTS sync failure must not prevent the message from being saved.
-      try {
-        final rowid = await _database.getLastInsertRowid();
-        await _database.syncFtsInsert(rowid, message.content);
-      } catch (error, stackTrace) {
-        debugPrint(
-          'FTS sync failed for message ${message.clientId}: $error\n$stackTrace',
-        );
-      }
+      await _syncFtsForMessage(message.clientId, message.content);
     });
 
     return message;
+  }
+
+  /// Best-effort FTS5 index sync — failure is logged but never propagated.
+  ///
+  /// Uses [db.AppDatabase.getLastInsertRowid] + [db.AppDatabase.syncFtsInsert].
+  /// Must be called inside a transaction, immediately after the INSERT that
+  /// produced the rowid.
+  ///
+  /// 这是单条插入路径（[insert]）的 FTS 同步；批量路径
+  /// [batchInsertByIndexedIds] 改用 [db.AppDatabase.batchSyncFtsInsert]
+  /// 一次性多行同步。两条路径语义等价（INSERT + FTS），只是实现不同：
+  /// 单条用 `last_insert_rowid()`（标准做法、更高效），批量用"先 INSERT 再
+  /// SELECT rowid 映射"（batch API 不返回逐行 rowid）。不为一致性统一改造单条路径。
+  Future<void> _syncFtsForMessage(String clientId, String? content) async {
+    try {
+      final rowid = await _database.getLastInsertRowid();
+      await _database.syncFtsInsert(rowid, content);
+    } catch (error, stackTrace) {
+      debugPrint('FTS sync failed for message $clientId: $error\n$stackTrace');
+    }
   }
 
   @override
@@ -123,6 +134,12 @@ class DriftMessageRepo implements IMessageRepo {
         .getMessageByClientId(targetClientId)
         .getSingleOrNull();
     if (target == null) return [];
+
+    // Bug 6: Target must belong to the requested conversation.
+    // getMessageByClientId is a global query (no conversation filter on
+    // the client_id UNIQUE index), so a target from a different conversation
+    // would produce a wrong anchor window.
+    if (target.conversationId != conversationId) return [];
 
     final olderRows = await _database
         .getMessagesByConversationBeforeAnchor(
@@ -242,6 +259,114 @@ class DriftMessageRepo implements IMessageRepo {
   // ---------------------------------------------------------------------------
   // Maintenance & batch
   // ---------------------------------------------------------------------------
+
+  @override
+  Future<List<Message>> batchInsertByIndexedIds(List<Message> messages) async {
+    if (messages.isEmpty) return <Message>[];
+
+    // 1. Collect non-null / non-empty indexed IDs
+    final serverIds = messages
+        .where((m) => m.serverId != null && m.serverId!.isNotEmpty)
+        .map((m) => m.serverId!)
+        .toList();
+    final clientIds = messages
+        .where((m) => m.clientId.isNotEmpty)
+        .map((m) => m.clientId)
+        .toList();
+    if (serverIds.isEmpty && clientIds.isEmpty) return <Message>[];
+
+    // 2. Build IN-clause placeholders for the dedup SELECT.
+    //    SQLite default max variable number is 999; _pageSize (50) × 2 IDs = 100,
+    //    well within the limit.  batchInsertMessages 自带 900 变量守卫（11 列/行）。
+    final serverPlaceholders = serverIds.isNotEmpty
+        ? serverIds.map((_) => '?').join(', ')
+        : 'NULL';
+    final clientPlaceholders = clientIds.isNotEmpty
+        ? clientIds.map((_) => '?').join(', ')
+        : 'NULL';
+    final allIds = [...serverIds, ...clientIds];
+
+    // 3. SELECT existing IDs + 批量 INSERT + 批量 FTS 同步，全在单事务内。
+    //    dedup SELECT 必须在事务内（见下注释）；批量 INSERT/FTS 用单条多行
+    //    VALUES 语句，消除逐条 await 的 N+1（Iron Law 6）。
+    final inserted = <Message>[];
+    await _database.transaction(() async {
+      final existingServerIds = <String>{};
+      final existingClientIds = <String>{};
+
+      if (allIds.isNotEmpty) {
+        final rows = await _database
+            .customSelect(
+              'SELECT server_id, client_id FROM messages '
+              'WHERE server_id IN ($serverPlaceholders) '
+              'OR client_id IN ($clientPlaceholders)',
+              variables: allIds.map((id) => Variable.withString(id)).toList(),
+              readsFrom: {_database.messages},
+            )
+            .get();
+
+        for (final row in rows) {
+          final sid = row.readNullable<String>('server_id');
+          final cid = row.read<String>('client_id');
+          if (sid != null && sid.isNotEmpty) existingServerIds.add(sid);
+          if (cid.isNotEmpty) existingClientIds.add(cid);
+        }
+      }
+
+      // 收集真正新增的消息（serverId 与 clientId 均不存在）。
+      // 注意：同一批内可能有重复 clientId（catch-up 翻页边界偶发），
+      // 用 seenClientIds 去重，避免 UNIQUE 冲突击穿整批 INSERT。
+      final newMessages = <Message>[];
+      final seenClientIds = <String>{};
+      for (final msg in messages) {
+        if (msg.serverId != null && existingServerIds.contains(msg.serverId)) {
+          continue;
+        }
+        if (existingClientIds.contains(msg.clientId)) continue;
+        if (!seenClientIds.add(msg.clientId)) continue;
+
+        newMessages.add(msg);
+      }
+      if (newMessages.isEmpty) return;
+
+      // 单条多行 INSERT — 替代 N 次 insertMessage 循环。
+      final rowidMap = await _database.batchInsertMessages([
+        for (final m in newMessages)
+          (
+            clientId: m.clientId,
+            serverId: m.serverId,
+            conversationId: m.conversationId,
+            agentId: m.agentId,
+            role: m.role.toInt(),
+            content: m.content,
+            type: m.type.toInt(),
+            status: m.status.toInt(),
+            logicalClock: m.logicalClock,
+            timestamp: m.timestamp,
+            metadata: m.metadata != null ? jsonEncode(m.metadata) : null,
+          ),
+      ]);
+
+      // 单条多行 FTS 同步 — best-effort，失败不阻断（与 _syncFtsForMessage 一致）。
+      final rowidToContent = <int, String?>{};
+      for (final m in newMessages) {
+        final rowid = rowidMap[m.clientId];
+        if (rowid != null) rowidToContent[rowid] = m.content;
+      }
+      try {
+        await _database.batchSyncFtsInsert(rowidToContent);
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Batch FTS sync failed for ${rowidToContent.length} messages: '
+          '$error\n$stackTrace',
+        );
+      }
+
+      inserted.addAll(newMessages);
+    });
+
+    return inserted;
+  }
 
   @override
   Future<int> cleanupOldMessages(String agentId, {int keep = 1000}) async {

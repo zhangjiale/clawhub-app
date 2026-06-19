@@ -62,4 +62,13 @@ class RetryStrategy {
     maxDelaySeconds: 10,
     maxAttempts: 3,
   );
+
+  /// Network-level reconnect with a cap of 3 total attempts — 1 initial + 2
+  /// retries (US-016 AC-3). Same backoff as [networkReconnect].
+  /// `maxAttempts: 2` = 3 total per the field doc (1 initial + n-1 retries).
+  static const networkReconnectLimited = RetryStrategy(
+    baseDelaySeconds: 1,
+    maxDelaySeconds: 30,
+    maxAttempts: 2,
+  );
 }

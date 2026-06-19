@@ -251,15 +251,22 @@ LIMIT :limit;
 -- target's logical_clock without a separate round-trip, mirroring
 -- getMessagesByConversationBefore. Ordered DESC so the nearest-older
 -- messages come first; the repo reverses to ASC before merging.
+--
+-- Bug 5 fix: <= instead of < — preserves messages with the same
+-- logicalClock as the target (historical/ties treated as "before").
+-- client_id exclusion prevents the target itself from being included.
 getMessagesByConversationBeforeAnchor:
 SELECT * FROM messages
 WHERE conversation_id = :conversationId
-  AND logical_clock < (SELECT logical_clock FROM messages WHERE client_id = :targetClientId)
+  AND logical_clock <= (SELECT logical_clock FROM messages WHERE client_id = :targetClientId)
+  AND client_id != :targetClientId
 ORDER BY logical_clock DESC
 LIMIT :limit;
 
 -- Anchor window: messages BELOW the target (newer), by logical_clock.
 -- Bounded by :limit (= after count). Ordered ASC nearest-newer first.
+-- Uses strict > — same-clock messages are assigned to the before side
+-- to avoid duplication.
 getMessagesByConversationAfterAnchor:
 SELECT * FROM messages
 WHERE conversation_id = :conversationId

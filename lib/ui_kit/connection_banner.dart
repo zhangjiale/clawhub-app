@@ -15,7 +15,19 @@ import 'package:claw_hub/ui_kit/status_banner.dart';
 class ConnectionBanner extends StatefulWidget {
   final GatewayConnectionState connectionState;
 
-  const ConnectionBanner({super.key, required this.connectionState});
+  /// 重连重试回调 — 仅在 [GatewayConnectionState.reconnectExhausted] 状态下生效。
+  ///
+  /// 该状态下 banner 文案为"点击重试"，需要由上层（ChatRoomPage）注入实际触发
+  /// `orchestrator.reconnect` 的闭包。其他状态分支忽略此回调（保持不可点击），
+  /// 因为它们要么是自动恢复中（connecting/recovering）、要么是终态不可手动恢复
+  /// （disconnected/authFailed 走自动重连）。
+  final VoidCallback? onRetry;
+
+  const ConnectionBanner({
+    super.key,
+    required this.connectionState,
+    this.onRetry,
+  });
 
   @override
   State<ConnectionBanner> createState() => _ConnectionBannerState();
@@ -30,7 +42,8 @@ class _ConnectionBannerState extends State<ConnectionBanner>
       widget.connectionState == GatewayConnectionState.disconnected ||
       widget.connectionState == GatewayConnectionState.authFailed ||
       widget.connectionState == GatewayConnectionState.connecting ||
-      widget.connectionState == GatewayConnectionState.recovering;
+      widget.connectionState == GatewayConnectionState.recovering ||
+      widget.connectionState == GatewayConnectionState.reconnectExhausted;
 
   @override
   void initState() {
@@ -89,6 +102,23 @@ class _ConnectionBannerState extends State<ConnectionBanner>
         foregroundColor: XiaColors.yellow,
         backgroundColor: XiaColors.yellowMuted,
         icon: Icons.wifi_off,
+      );
+    }
+    if (widget.connectionState == GatewayConnectionState.reconnectExhausted) {
+      // 防御：onRetry 为 null 时文案不应包含"点击重试"（bug #14）。
+      // 生产环境中 fallback 为纯提示文案，避免误导用户点击无效横幅。
+      assert(
+        widget.onRetry != null,
+        'reconnectExhausted 状态下 onRetry 必须提供，否则"点击重试"不可用',
+      );
+      return StatusBanner(
+        message: widget.onRetry != null
+            ? '无法连接到虾，请检查网络或实例状态。点击重试'
+            : '无法连接到虾，请检查网络或实例状态',
+        foregroundColor: XiaColors.red,
+        backgroundColor: XiaColors.redMuted,
+        icon: Icons.warning_amber_rounded,
+        onTap: widget.onRetry,
       );
     }
     if (widget.connectionState == GatewayConnectionState.connecting ||

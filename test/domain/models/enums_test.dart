@@ -21,9 +21,11 @@ void main() {
       expect(HealthStatus.pairingRequired.toInt(), 5);
     });
 
-    test('无效值抛异常', () {
-      expect(() => HealthStatus.fromInt(-1), throwsA(isA<ArgumentError>()));
-      expect(() => HealthStatus.fromInt(99), throwsA(isA<ArgumentError>()));
+    test('未知值回退到 offline', () {
+      // 未知值（未来版本、降级、DB 损坏）优雅回退为 offline，
+      // 避免 ArgumentError 导致 crash — 见 HealthStatus.fromInt。
+      expect(HealthStatus.fromInt(-1), HealthStatus.offline);
+      expect(HealthStatus.fromInt(99), HealthStatus.offline);
     });
 
     test('isConnectable - 仅在线和未知状态可连接', () {

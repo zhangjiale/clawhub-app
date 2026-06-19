@@ -33,6 +33,7 @@ class InstanceCard extends ConsumerWidget {
       HealthStatus.pairingRequired => XiaColors.yellow,
       HealthStatus.expectedOffline => XiaColors.text4,
       HealthStatus.unknown => XiaColors.text4,
+      HealthStatus.reconnectExhausted => XiaColors.red,
     };
   }
 
@@ -41,6 +42,7 @@ class InstanceCard extends ConsumerWidget {
       HealthStatus.online => '在线',
       HealthStatus.connecting => '连接中…',
       HealthStatus.pairingRequired => '等待审批',
+      HealthStatus.reconnectExhausted => '重连失败',
       _ => '离线',
     };
   }
@@ -53,9 +55,19 @@ class InstanceCard extends ConsumerWidget {
       pairingInfoProvider.select((map) => map[instance.id]),
     );
     final showPairingHelp = pairingInfo != null;
-    final effectiveStatus = showPairingHelp
-        ? HealthStatus.pairingRequired
-        : instance.healthStatus;
+
+    // 重连耗尽是瞬态状态，不落库（DB 里是 offline），只能通过
+    // reconnectExhaustedProvider 实时感知。优先级高于 pairing —— 耗尽时
+    // 实例已不可达，展示"重连失败"比"等待审批"更准确。
+    final isExhausted = ref.watch(
+      reconnectExhaustedProvider.select((set) => set.contains(instance.id)),
+    );
+
+    final effectiveStatus = isExhausted
+        ? HealthStatus.reconnectExhausted
+        : (showPairingHelp
+              ? HealthStatus.pairingRequired
+              : instance.healthStatus);
 
     return PressFeedback(
       scale: 0.98,

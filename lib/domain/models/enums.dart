@@ -10,7 +10,12 @@ enum HealthStatus {
   /// 设备待审批配对 — Gateway 返回 PAIRING_REQUIRED。
   /// 该状态不持久化到 DB（数据库中存储为 offline），
   /// 仅通过 [pairingInfoProvider] 实时传递给 UI。
-  pairingRequired(5);
+  pairingRequired(5),
+
+  /// 自动重连已耗尽 — 连续 N 次重连失败后停止自动重试（US-016 AC-3）。
+  /// 该状态不持久化到 DB（数据库中存储为 offline），
+  /// 仅通过 [reconnectExhaustedProvider] 实时传递给 UI。
+  reconnectExhausted(6);
 
   const HealthStatus(this.value);
   final int value;
@@ -18,7 +23,9 @@ enum HealthStatus {
   static HealthStatus fromInt(int value) {
     return HealthStatus.values.firstWhere(
       (s) => s.value == value,
-      orElse: () => throw ArgumentError('Invalid HealthStatus value: $value'),
+      // Safety: treat unknown values as offline — prevents ArgumentError if DB
+      // contains a value from a newer app version after a downgrade.
+      orElse: () => HealthStatus.offline,
     );
   }
 
@@ -35,6 +42,14 @@ enum HealthStatus {
   /// offline 可能是上次运行的 authFailed / pairingRequired 被落库为 offline，
   /// pairingRequired 可能在 App 关闭期间已被服务器审批通过。
   bool get shouldAttemptReconnect => this != HealthStatus.expectedOffline;
+
+  /// 是否为瞬态 — 该状态不持久化到 DB，仅通过 Provider 实时传递。
+  ///
+  /// 瞬态状态的持久化值被改写为 [offline]，UI 层通过对应 Provider
+  /// （如 [pairingInfoProvider]、[reconnectExhaustedProvider]）感知。
+  bool get isTransient =>
+      this == HealthStatus.pairingRequired ||
+      this == HealthStatus.reconnectExhausted;
 }
 
 /// 消息角色

@@ -841,10 +841,10 @@ class WsGatewayClient implements IGatewayClient {
 
   @visibleForTesting
   static bool isTestTerminalState(GatewayConnectionState state) {
-    return state == GatewayConnectionState.connected ||
-        state == GatewayConnectionState.authFailed ||
-        state == GatewayConnectionState.disconnected ||
-        state == GatewayConnectionState.pairingRequired;
+    // Test-level concept of "settled" — includes connected (a steady state
+    // from a test's perspective), unlike GatewayConnectionState.isTerminal
+    // which excludes connected (it can transition to recovering on error).
+    return state.isTerminal || state == GatewayConnectionState.connected;
   }
 
   /// Resolve a [sessionKey] to its remote agent ID, logging on failure.

@@ -81,6 +81,20 @@ enum GatewayConnectionState {
   /// 设备未配对 — Gateway 返回 NOT_PAIRED / PAIRING_REQUIRED。
   /// 与 [authFailed] 不同：配对是可恢复的（用户在服务器审批后自动重连成功）。
   pairingRequired,
+
+  /// 自动重连已耗尽 — 连续 N 次重连失败后停止自动重试（US-016 AC-3）。
+  /// 终端状态：不再有定时器或自动重试触发。需用户手动重连。
+  reconnectExhausted;
+
+  /// 是否为终态 — 状态机不再自动产生新的重连/恢复动作。
+  ///
+  /// 终态只通过外部动作离开（手动重连、配对审批等）。注意 [connected]
+  /// 不在此列 — 它虽是稳态，但可从 [connected] 因传输层错误回退到
+  /// [recovering]，故不作为终态对待。
+  bool get isTerminal => switch (this) {
+    disconnected || authFailed || pairingRequired || reconnectExhausted => true,
+    _ => false,
+  };
 }
 
 /// 连接尚未建立时被抛出的异常，用于调用方以类型匹配替代字符串匹配。

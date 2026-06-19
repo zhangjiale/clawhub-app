@@ -405,5 +405,121 @@ void main() {
       );
       expect(window, isEmpty);
     });
+
+    // Bug 5: Messages with same logicalClock as target must be included.
+    test('includes messages with same logicalClock as target', () async {
+      final conv = 'conv-tied-clock';
+      // Insert messages with logicalClock ties around target m3.
+      await messageRepo.insert(_msg('m1', conv, clock: 5));
+      await messageRepo.insert(_msg('m2', conv, clock: 5)); // tied with m3
+      await messageRepo.insert(_msg('m3', conv, clock: 5)); // target
+      await messageRepo.insert(_msg('m4', conv, clock: 6));
+      await messageRepo.insert(_msg('m5', conv, clock: 7));
+
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 'm3',
+        before: 5,
+        after: 5,
+      );
+
+      final ids = window.map((m) => m.clientId).toList();
+
+      // Target must appear exactly once in the middle
+      expect(
+        ids.where((id) => id == 'm3').length,
+        1,
+        reason: 'Target must appear exactly once',
+      );
+      // Tied-clock m1,m2 must appear before target
+      final targetIdx = ids.indexOf('m3');
+      expect(
+        ids.sublist(0, targetIdx).toSet(),
+        {'m1', 'm2'},
+        reason: 'Same-clock messages must appear before target',
+      );
+      // Strictly newer m4,m5 must appear after target
+      expect(ids.sublist(targetIdx + 1), ['m4', 'm5']);
+      // All 5 messages present
+      expect(ids.toSet(), {'m1', 'm2', 'm3', 'm4', 'm5'});
+    });
+
+    // Bug 5: Target itself must not appear twice.
+    test('target appears exactly once even with tied clocks', () async {
+      final conv = 'conv-no-dup-target';
+      await messageRepo.insert(_msg('t1', conv, clock: 10));
+      await messageRepo.insert(_msg('t2', conv, clock: 10)); // target
+      await messageRepo.insert(_msg('t3', conv, clock: 10));
+
+      final window = await messageRepo.getAnchorWindow(
+        conv,
+        targetClientId: 't2',
+        before: 5,
+        after: 5,
+      );
+
+      final ids = window.map((m) => m.clientId).toList();
+      expect(
+        ids.where((id) => id == 't2').length,
+        1,
+        reason: 'Target must appear exactly once',
+      );
+      expect(ids, contains('t1'));
+      expect(ids, contains('t3'));
+    });
+
+    // Bug 6: Target from different conversation → empty result.
+    test(
+      'returns empty when target clientId belongs to other conversation',
+      () async {
+        final convA = 'conv-a';
+        final convB = 'conv-b';
+        await messageRepo.insert(_msg('m1', convA, clock: 1));
+        await messageRepo.insert(_msg('m2', convB, clock: 1));
+
+        final window = await messageRepo.getAnchorWindow(
+          convA,
+          targetClientId: 'm2', // m2 belongs to convB, not convA
+          before: 5,
+          after: 5,
+        );
+        expect(window, isEmpty);
+      },
+    );
+
+    // Bug 6: Normal case with correct conversation still works.
+    test(
+      'returns correct window when target is in correct conversation',
+      () async {
+        final convA = 'conv-a';
+        final convB = 'conv-b';
+        await messageRepo.insert(_msg('a1', convA, clock: 1));
+        await messageRepo.insert(_msg('a2', convA, clock: 2)); // target
+        await messageRepo.insert(_msg('a3', convA, clock: 3));
+        await messageRepo.insert(_msg('b1', convB, clock: 1));
+
+        final window = await messageRepo.getAnchorWindow(
+          convA,
+          targetClientId: 'a2',
+          before: 5,
+          after: 5,
+        );
+        expect(window.map((m) => m.clientId).toList(), ['a1', 'a2', 'a3']);
+      },
+    );
   });
+}
+
+Message _msg(String clientId, String conversationId, {int clock = 0}) {
+  return Message(
+    clientId: clientId,
+    conversationId: conversationId,
+    agentId: 'agent-1',
+    role: MessageRole.user,
+    content: 'msg $clientId',
+    type: MessageType.text,
+    status: MessageStatus.sent,
+    logicalClock: clock,
+    timestamp: clock,
+  );
 }

@@ -303,5 +303,62 @@ void main() {
             'not a hardcoded ID.',
       );
     });
+
+    testWidgets('shows red dot and 重连失败 when in reconnectExhaustedProvider', (
+      tester,
+    ) async {
+      // DB 落库为 offline（reconnectExhausted 是瞬态不落库），
+      // 但 provider 实时标记该实例已耗尽 —— card 必须显示"重连失败"而非"离线"。
+      final offline = testInstance.copyWith(healthStatus: HealthStatus.offline);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            reconnectExhaustedProvider.overrideWith((ref) => {'inst-1'}),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: InstanceCard(instance: offline, onTap: () {}),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('重连失败'), findsOneWidget);
+
+      final container = tester.widget<Container>(
+        find.byWidgetPredicate(
+          (w) =>
+              w is Container &&
+              w.decoration is BoxDecoration &&
+              (w.decoration as BoxDecoration).shape == BoxShape.circle &&
+              (w.decoration as BoxDecoration).color == XiaColors.red,
+        ),
+      );
+      expect(container, isNotNull);
+    });
+
+    testWidgets('reconnectExhausted takes priority over pairingRequired', (
+      tester,
+    ) async {
+      // 两态同时标记时，耗尽优先 —— 实例不可达比"等待审批"更准确。
+      final pairing = testInstance.copyWith(
+        healthStatus: HealthStatus.pairingRequired,
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            reconnectExhaustedProvider.overrideWith((ref) => {'inst-1'}),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: InstanceCard(instance: pairing, onTap: () {}),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('重连失败'), findsOneWidget);
+      expect(find.text('等待审批'), findsNothing);
+    });
   });
 }

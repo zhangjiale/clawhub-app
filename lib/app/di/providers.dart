@@ -24,6 +24,7 @@ import 'package:claw_hub/domain/usecases/save_instance.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/domain/usecases/delete_instance.dart';
 import 'package:claw_hub/domain/usecases/outbox_processor.dart';
+import 'package:claw_hub/domain/usecases/message_catch_up_service.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/connection/instance_event.dart';
 import 'package:claw_hub/app/config/app_config.dart';
@@ -62,6 +63,29 @@ final outboxFlushTickerProvider = StateProvider.family<int, String>(
 /// UI 层 watch 此 provider 以在实例卡片上展示审批指引。
 final pairingInfoProvider = StateProvider<Map<String, GatewayPairingInfo>>(
   (ref) => {},
+);
+
+/// 重连耗尽状态 — instanceId 集合（US-016 AC-3）。
+///
+/// [ConnectionOrchestrator] 在重连耗尽时通过 [ReconnectExhaustedEvent]
+/// 将 instanceId 加入此 Set。连接成功后从 Set 中移除。
+/// UI 层 watch 此 provider 以展示"无法连接到虾"重试提示。
+final reconnectExhaustedProvider = StateProvider<Set<String>>(
+  (ref) => <String>{},
+);
+
+/// 历史同步截断状态 — instanceId 集合（US-016 AC-2）。
+///
+/// [MessageCatchUpService] 在断线重连增量同步撞到翻页上限（仍有更早历史
+/// 未拉取）时，由 [connectionOrchestratorProvider] 的事件处理器将
+/// instanceId 加入此 Set；下次完整同步（非截断）后移除。
+///
+/// 与 [reconnectExhaustedProvider] 不同：截断信息无法从连接状态枚举派生
+/// （它是同步结果而非连接状态），故独立承载——这是必要的"额外数据"，
+/// 不构成 SSOT 双源问题。UI 层 watch 此 provider 以展示
+/// "历史消息较多，仅同步了最近部分"提示，避免用户误以为历史已完整。
+final catchUpTruncatedProvider = StateProvider<Set<String>>(
+  (ref) => <String>{},
 );
 
 // --- Connection Initialization State ---
@@ -196,19 +220,44 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
           }
           notifier.state = newMap;
         case InstanceConnectedEvent(:final instanceId):
-          // 在 agent sync 完成后触发 — 冲刷待发送队列（US-015）。fire-and-forget。
-          //
-          // outboxProcessorProvider 解析失败（如测试环境未 override
-          // messageRepo/databaseProvider 抛 UnimplementedError）必须被捕获并
-          // 打日志 —— 旧代码用 try-catch 静默吞掉，导致 outbox 永不冲刷且无日志。
-          // 注意：ref.read 解析是同步的，UnimplementedError 在 .catchError 之前
-          // 抛出，故必须用 try-catch 包住解析步骤，不能只靠 .catchError。
+          // 在 agent sync 完成后触发。fire-and-forget。
           unawaited(() async {
+            // Step 1: Message incremental sync (US-016 AC-1/AC-2)
+            // Best-effort — failure does NOT block outbox flush.
+            try {
+              final catchUpService = ref.read(messageCatchUpServiceProvider);
+              final result = await catchUpService.catchUp(instanceId);
+              // US-016 AC-2: surface truncation to UI. 撞翻页上限意味着更早
+              // 历史未拉取——必须通知 UI，否则用户会误以为历史已完整。
+              // 非截断（含 0 插入）则清除上次的截断标记。
+              final truncatedNotifier = ref.read(
+                catchUpTruncatedProvider.notifier,
+              );
+              final wasTruncated = truncatedNotifier.state.contains(instanceId);
+              if (result.truncated && !wasTruncated) {
+                truncatedNotifier.state = {
+                  ...truncatedNotifier.state,
+                  instanceId,
+                };
+              } else if (!result.truncated && wasTruncated) {
+                truncatedNotifier.state = {...truncatedNotifier.state}
+                  ..remove(instanceId);
+              }
+            } catch (e, st) {
+              ref
+                  .read(loggerProvider)
+                  .error(
+                    '[Post-connect] Message catch-up failed for '
+                    '$instanceId: $e',
+                    st,
+                  );
+            }
+
+            // Step 2: Outbox flush (US-015) — always runs.
             try {
               final processor = ref.read(outboxProcessorProvider);
               final sent = await processor.flushOutbox(instanceId);
               if (sent > 0) {
-                // 通知 ChatViewModel 刷新 outbox count（监听 outboxFlushTickerProvider）
                 ref
                     .read(outboxFlushTickerProvider(instanceId).notifier)
                     .state++;
@@ -217,11 +266,24 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
               ref
                   .read(loggerProvider)
                   .error(
-                    '[OutboxProcessor] Flush failed for $instanceId: $e',
+                    '[Post-connect] Outbox flush failed for $instanceId: $e',
                     st,
                   );
             }
+
+            // Clear reconnectExhausted state on successful reconnect
+            final notifier = ref.read(reconnectExhaustedProvider.notifier);
+            if (notifier.state.contains(instanceId)) {
+              notifier.state = {...notifier.state}..remove(instanceId);
+            }
           }());
+
+        case ReconnectExhaustedEvent(:final instanceId):
+          // US-016 AC-3: auto-reconnect exhausted, show retry prompt
+          final notifier = ref.read(reconnectExhaustedProvider.notifier);
+          if (!notifier.state.contains(instanceId)) {
+            notifier.state = {...notifier.state, instanceId};
+          }
       }
     },
     onError: (Object error, StackTrace stack) {
@@ -297,6 +359,20 @@ final outboxProcessorProvider = Provider<OutboxProcessor>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     agentRepo: ref.watch(agentRepoProvider),
     sendMessageUseCase: ref.watch(sendMessageUseCaseProvider),
+    logger: ref.watch(loggerProvider),
+  );
+});
+
+/// MessageCatchUpService — 断线重连后增量同步 Gateway 新消息（US-016）。
+///
+/// 在 [OutboxProcessor.flushOutbox] 之前运行，确保本地消息库拥有
+/// 完整的会话上下文后再冲刷待发送队列。
+final messageCatchUpServiceProvider = Provider<MessageCatchUpService>((ref) {
+  return MessageCatchUpService(
+    agentRepo: ref.watch(agentRepoProvider),
+    messageRepo: ref.watch(messageRepoProvider),
+    conversationRepo: ref.watch(conversationRepoProvider),
+    gatewayClient: ref.watch(gatewayClientProvider),
     logger: ref.watch(loggerProvider),
   );
 });

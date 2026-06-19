@@ -299,15 +299,24 @@ class InMemoryMessageRepo implements IMessageRepo {
     final target = _byClientId[targetClientId];
     if (target == null) return [];
 
+    // Bug 6: Target must belong to the requested conversation.
+    // _byClientId is a global lookup without conversation filter.
+    if (target.conversationId != conversationId) return [];
+
     // Bounded anchor window mirroring the Drift implementation: take at most
     // `before` older + target + `after` newer, filtered by logicalClock
     // relative to the target. No unbounded full-conversation slice.
+    //
+    // Bug 5: <= in older filter preserves same-clock messages (treated as
+    // "before"). After filter uses strict > to avoid duplication.
+    // clientId exclusion prevents the target itself from appearing twice.
     final older =
         _byClientId.values
             .where(
               (m) =>
                   m.conversationId == conversationId &&
-                  m.logicalClock < target.logicalClock,
+                  m.logicalClock <= target.logicalClock &&
+                  m.clientId != targetClientId,
             )
             .toList()
           ..sort((a, b) => b.logicalClock.compareTo(a.logicalClock)); // DESC
@@ -509,6 +518,27 @@ class InMemoryMessageRepo implements IMessageRepo {
     final msg = _byClientId.remove(clientId);
     if (msg?.serverId != null) _byServerId.remove(msg!.serverId);
     _notifyChanged();
+  }
+
+  @override
+  Future<List<Message>> batchInsertByIndexedIds(List<Message> messages) async {
+    final inserted = <Message>[];
+    for (final msg in messages) {
+      // Dedup by both clientId and serverId
+      if (_byClientId.containsKey(msg.clientId)) continue;
+      // bug #12: 对齐 Drift 的空字符串守卫 — serverId="" 不是真实 ID
+      if (msg.serverId != null &&
+          msg.serverId!.isNotEmpty &&
+          _byServerId.containsKey(msg.serverId))
+        continue;
+      _byClientId[msg.clientId] = msg;
+      if (msg.serverId != null && msg.serverId!.isNotEmpty) {
+        _byServerId[msg.serverId!] = msg;
+      }
+      inserted.add(msg);
+    }
+    if (inserted.isNotEmpty) _notifyChanged();
+    return inserted;
   }
 }
 

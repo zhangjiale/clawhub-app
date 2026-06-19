@@ -41,3 +41,16 @@ class InstanceConnectedEvent extends InstanceEvent {
 
   const InstanceConnectedEvent(this.instanceId);
 }
+
+/// 自动重连已耗尽（US-016 AC-3）。
+///
+/// 当 [ConnectionManager] 连续 N 次重连失败后发出。
+/// provider 层将 instanceId 加入 [reconnectExhaustedProvider] 的 Set，
+/// UI 层 watch 该 provider 展示"无法连接到虾"重试提示。
+///
+/// 当同一 instanceId 后续重连成功时，[InstanceConnectedEvent] 触发，
+/// provider 层从 Set 中移除该 id 以清除提示。
+class ReconnectExhaustedEvent extends InstanceEvent {
+  final String instanceId;
+  const ReconnectExhaustedEvent(this.instanceId);
+}

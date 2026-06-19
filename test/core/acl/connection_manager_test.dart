@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:claw_hub/core/acl/connection_manager.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/utils/retry_strategy.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -808,6 +809,9 @@ void main() {
         webSocketFactory: (_) =>
             throw WebSocketChannelException('Connection refused'),
         timerFactory: timers.call,
+        // Use infinite retries for backoff sequence test — the new default
+        // (maxAttempts: 3) would stop after 3 failures and break the sequence.
+        retryStrategy: RetryStrategy.networkReconnect,
       );
     }
 

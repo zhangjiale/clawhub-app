@@ -2,6 +2,23 @@ import 'package:drift/drift.dart';
 
 part 'database.g.dart';
 
+/// 单条消息的原始字段，用于批量插入（与 [AppDatabase.insertMessage] 的参数一一对应）。
+///
+/// database 层保持 drift-pure，不引入 domain Message 依赖，故用 record 传参。
+typedef MessageRow = ({
+  String clientId,
+  String? serverId,
+  String conversationId,
+  String agentId,
+  int role,
+  String? content,
+  int type,
+  int status,
+  int logicalClock,
+  int timestamp,
+  String? metadata,
+});
+
 /// Application database for ClawHub.
 ///
 /// Tables and named queries are defined in [schema.drift].
@@ -165,6 +182,100 @@ class AppDatabase extends _$AppDatabase {
       result[row.read<String>('agent_id')] = row.read<int>('cnt');
     }
     return result;
+  }
+
+  /// 批量插入消息 — 单条多行 VALUES INSERT，替代 N 次 [insertMessage] 循环。
+  ///
+  /// 返回 clientId → rowid 映射，供调用方随后批量同步 FTS5 索引。
+  /// **必须在事务内调用**（与 dedup SELECT 同事务，保证原子性与并发安全）。
+  ///
+  /// SQLite 默认单语句最多 999 个绑定变量；每行 11 列，故上限约 81 行/语句。
+  /// 超出时抛 [StateError] —— 调用方应分块。当前 catch-up 单页 50 条安全。
+  Future<Map<String, int>> batchInsertMessages(List<MessageRow> rows) async {
+    if (rows.isEmpty) return {};
+
+    const columnsPerRow = 11;
+    // 留余量给后续 FTS/SELECT 语句，用 900 而非 999。
+    final maxRows = 900 ~/ columnsPerRow;
+    if (rows.length > maxRows) {
+      throw StateError(
+        'batchInsertMessages: ${rows.length} rows exceed SQLite variable '
+        'limit (max $maxRows rows × $columnsPerRow cols). Chunk the input.',
+      );
+    }
+
+    // 构建 `VALUES (?,?,?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?,?,?), ...`
+    final rowPlaceholder = '(${List.filled(columnsPerRow, '?').join(', ')})';
+    final valuesClause = List.filled(rows.length, rowPlaceholder).join(', ');
+
+    // 用 customStatement + 裸值列表（与 syncFtsInsert 一致），避免可空列的
+    // Variable 构造问题；null 直接传 null，SQLite 绑定为 NULL。
+    final args = <Object?>[];
+    for (final m in rows) {
+      args
+        ..add(m.clientId)
+        ..add(m.serverId)
+        ..add(m.conversationId)
+        ..add(m.agentId)
+        ..add(m.role)
+        ..add(m.content)
+        ..add(m.type)
+        ..add(m.status)
+        ..add(m.logicalClock)
+        ..add(m.timestamp)
+        ..add(m.metadata);
+    }
+
+    await customStatement(
+      'INSERT INTO messages '
+      '(client_id, server_id, conversation_id, agent_id, role, content, '
+      'type, status, logical_clock, timestamp, metadata) '
+      'VALUES $valuesClause',
+      args,
+    );
+
+    // 一次性查出所有插入行的 clientId → rowid 映射。client_id 有 UNIQUE 索引，
+    // 50 条查询开销可忽略。用 IN 子句匹配刚插入的 clientId。
+    final clientIds = rows.map((m) => m.clientId).toList();
+    final placeholders = clientIds.map((_) => '?').join(', ');
+    final selectRows = await customSelect(
+      'SELECT rowid, client_id FROM messages WHERE client_id IN ($placeholders)',
+      variables: [for (final id in clientIds) Variable.withString(id)],
+      readsFrom: {messages},
+    ).get();
+
+    final result = <String, int>{};
+    for (final row in selectRows) {
+      result[row.read<String>('client_id')] = row.read<int>('rowid');
+    }
+    return result;
+  }
+
+  /// 批量同步 FTS5 索引 — 单条多行 VALUES INSERT，替代 N 次 [syncFtsInsert] 循环。
+  ///
+  /// 与 [syncFtsInsert] 一致：抛出异常由调用方做 best-effort 捕获
+  /// （FTS 失败不得阻断消息持久化）。**必须在事务内调用**，紧接
+  /// [batchInsertMessages] 之后。
+  Future<void> batchSyncFtsInsert(Map<int, String?> rowidToContent) async {
+    if (rowidToContent.isEmpty) return;
+
+    // 每行 2 个变量，上限约 450 行。
+    final maxRows = 900 ~/ 2;
+    if (rowidToContent.length > maxRows) {
+      throw StateError(
+        'batchSyncFtsInsert: ${rowidToContent.length} entries exceed SQLite '
+        'variable limit (max $maxRows rows × 2 cols). Chunk the input.',
+      );
+    }
+
+    final entries = rowidToContent.entries.toList();
+    final valuesClause = List.filled(entries.length, '(?, ?)').join(', ');
+    await customStatement(
+      'INSERT INTO messages_fts(rowid, content) VALUES $valuesClause',
+      [
+        for (final e in entries) ...[e.key, e.value],
+      ],
+    );
   }
 
   /// Get the rowid and content for a message by its client_id.

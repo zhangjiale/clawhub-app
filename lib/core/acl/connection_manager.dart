@@ -94,6 +94,12 @@ class ConnectionManager {
   /// challenge nonce，收到 connect.challenge 后设置
   String? _challengeNonce;
 
+  /// Default reconnect strategy: exponential backoff capped at 3 consecutive
+  /// failures (US-016 AC-3).  After 3 failed attempts the state machine
+  /// transitions to [GatewayConnectionState.reconnectExhausted] and stops
+  /// auto-reconnecting until the user triggers a manual reconnect.
+  static const _defaultRetryStrategy = RetryStrategy.networkReconnectLimited;
+
   ConnectionManager({
     required String instanceId,
     required String gatewayUrl,
@@ -104,7 +110,7 @@ class ConnectionManager {
     WebSocketChannel Function(Uri)? webSocketFactory,
     @visibleForTesting TimerFactory? timerFactory,
     RetryStrategy? retryStrategy,
-  }) : _retryStrategy = retryStrategy ?? RetryStrategy.networkReconnect,
+  }) : _retryStrategy = retryStrategy ?? _defaultRetryStrategy,
        _instanceId = instanceId,
        _gatewayUrl = gatewayUrl,
        _token = token,
@@ -387,10 +393,20 @@ class ConnectionManager {
 
     _channel!.sink.add(requestJson);
 
-    completer.future.then(
-      (res) => _handleConnectResponse(res),
-      onError: (error) => _handleAuthFailure('Connect request failed: $error'),
-    );
+    // bug #8: .then() 返回的 Future 若 _handleConnectResponse 同步抛异常
+    // 会成为未处理拒绝。链式 .catchError 记录日志，避免静默丢失。
+    completer.future
+        .then(
+          (res) => _handleConnectResponse(res),
+          onError: (error) =>
+              _handleAuthFailure('Connect request failed: $error'),
+        )
+        .catchError((Object error, StackTrace stackTrace) {
+          debugPrint(
+            '[CM] Unhandled error in connect response handler '
+            'for $_instanceId: $error\n$stackTrace',
+          );
+        });
   }
 
   void _handleConnectResponse(ResponseFrame res) {
@@ -434,9 +450,18 @@ class ConnectionManager {
       );
 
       if (errorCode == 'NOT_PAIRED') {
-        _handlePairingRequired(res.error!);
+        unawaited(
+          Future.sync(() => _handlePairingRequired(res.error!)).catchError(
+            (e, st) => debugPrint('[CM] _handlePairingRequired error: $e\n$st'),
+          ),
+        );
       } else if (errorCode == 'DEVICE_AUTH_DEVICE_ID_MISMATCH') {
-        _handleDeviceIdMismatch(res.error!);
+        unawaited(
+          Future.sync(() => _handleDeviceIdMismatch(res.error!)).catchError(
+            (e, st) =>
+                debugPrint('[CM] _handleDeviceIdMismatch error: $e\n$st'),
+          ),
+        );
       } else {
         _handleAuthFailure(
           res.error?.message ?? 'Authentication rejected',
@@ -537,21 +562,16 @@ class ConnectionManager {
         // fire a new _doConnect() while the old channel is still being
         // torn down, creating a race where the delayed cleanup nulls
         // the newly-established _channel/_incomingSubscription.
-        _closeWebSocket()
-            .then((_) {
-              if (_intentionalDisconnect) return;
-              _setState(GatewayConnectionState.recovering);
-              _scheduleReconnect();
-            })
-            .catchError((error, stackTrace) {
-              debugPrint(
-                '[CM] Tick timeout close failed for $_instanceId: '
-                '$error\n$stackTrace',
-              );
-              if (_intentionalDisconnect) return;
-              _setState(GatewayConnectionState.recovering);
-              _scheduleReconnect();
-            });
+        _closeWebSocket().then((_) => _onWebSocketClosed()).catchError((
+          error,
+          stackTrace,
+        ) {
+          debugPrint(
+            '[CM] Tick timeout close failed for $_instanceId: '
+            '$error\n$stackTrace',
+          );
+          _onWebSocketClosed();
+        });
       },
     );
   }
@@ -561,6 +581,17 @@ class ConnectionManager {
   // ---------------------------------------------------------------------------
 
   void _scheduleReconnect() {
+    // AC-3: stop auto-reconnecting after maxAttempts consecutive failures.
+    // Manual reconnect (connect() resets _reconnectAttempt to 0) is unaffected.
+    if (!_retryStrategy.shouldRetry(_reconnectAttempt)) {
+      debugPrint(
+        '[CM] Reconnect exhausted for $_instanceId '
+        'after $_reconnectAttempt consecutive failures',
+      );
+      _setState(GatewayConnectionState.reconnectExhausted);
+      return;
+    }
+
     _scheduleDoConnect(
       delaySeconds: _retryStrategy.delayForAttempt(_reconnectAttempt).inSeconds,
       reason: 'reconnect (attempt ${_reconnectAttempt + 1})',
@@ -639,8 +670,7 @@ class ConnectionManager {
     debugPrint('[CM] WebSocket error for $_instanceId: $error');
     // 在任何非终态下收到传输层错误都应尝试恢复，而不仅仅是 connected。
     // 认证阶段的协议错误若被忽略，会等到 15s 握手超时才处理。
-    if (_state != GatewayConnectionState.disconnected &&
-        _state != GatewayConnectionState.authFailed) {
+    if (!_state.isTerminal) {
       _setState(GatewayConnectionState.recovering);
     }
   }
@@ -651,8 +681,11 @@ class ConnectionManager {
     _cancelTimers();
     _failAllPending('Connection closed');
 
-    if (!_intentionalDisconnect &&
-        _state != GatewayConnectionState.authFailed) {
+    // Only attempt recovery from non-terminal states.
+    // Terminal states (authFailed, pairingRequired, reconnectExhausted) must
+    // not be clobbered back to recovering — that would prevent the Orchestrator
+    // from emitting the correct terminal event.
+    if (!_intentionalDisconnect && !_state.isTerminal) {
       _setState(GatewayConnectionState.recovering);
       _scheduleReconnect();
     }
@@ -661,6 +694,18 @@ class ConnectionManager {
   // ---------------------------------------------------------------------------
   // 内部：辅助方法
   // ---------------------------------------------------------------------------
+
+  /// Shared recovery hook for tick timeout and WebSocket close paths.
+  ///
+  /// Called after [_closeWebSocket] completes or errors — transitions to
+  /// recovering and schedules a reconnect attempt unless the disconnect was
+  /// intentional or the state machine is already in a terminal state.
+  void _onWebSocketClosed() {
+    if (_intentionalDisconnect) return;
+    if (_state.isTerminal) return;
+    _setState(GatewayConnectionState.recovering);
+    _scheduleReconnect();
+  }
 
   void _setState(GatewayConnectionState newState) {
     if (_state == newState) return;

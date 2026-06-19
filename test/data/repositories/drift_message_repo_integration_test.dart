@@ -8,6 +8,7 @@ import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/instance.dart';
+import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
@@ -225,6 +226,168 @@ void main() {
       expect(reloaded.type, MessageType.text);
       // Status should be SENT (MockGateway ACK), not stuck at PENDING
       expect(reloaded.status, MessageStatus.sent);
+    });
+  });
+
+  group('DriftMessageRepo batchInsertByIndexedIds', () {
+    late db.AppDatabase database;
+    late DriftMessageRepo messageRepo;
+    late DriftConversationRepo conversationRepo;
+    late DriftAgentRepo agentRepo;
+    late DriftInstanceRepo instanceRepo;
+    late String conversationId;
+
+    setUp(() async {
+      database = await _createTestDb();
+      messageRepo = DriftMessageRepo(database);
+      conversationRepo = DriftConversationRepo(database);
+      agentRepo = DriftAgentRepo(database);
+      instanceRepo = DriftInstanceRepo(database);
+
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://t.example.com:443',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+      await agentRepo.syncFromGateway('inst-1', [
+        Agent(
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: 'Agent',
+          themeColor: '#000',
+        ),
+      ]);
+      await conversationRepo.getOrCreate('inst-1', 'local-1');
+      conversationId = Conversation.generateId('inst-1', 'local-1');
+    });
+
+    Message makeMsg({
+      required String clientId,
+      String? serverId,
+      String content = 'hello',
+      int clock = 0,
+    }) {
+      return Message(
+        clientId: clientId,
+        serverId: serverId,
+        conversationId: conversationId,
+        agentId: 'local-1',
+        role: MessageRole.agent,
+        content: content,
+        type: MessageType.text,
+        status: MessageStatus.delivered,
+        logicalClock: clock,
+      );
+    }
+
+    test('inserts all-new messages and indexes them for FTS5', () async {
+      final msgs = [
+        for (var i = 0; i < 50; i++)
+          makeMsg(clientId: 'c$i', serverId: 's$i', content: 'content $i'),
+      ];
+
+      final inserted = await messageRepo.batchInsertByIndexedIds(msgs);
+
+      expect(inserted.length, 50);
+      // All 50 persisted.
+      final all = await messageRepo.getByConversation(conversationId);
+      expect(all.length, 50);
+
+      // FTS5 indexes every inserted message — batch sync path exercised.
+      // searchMessagesSanitized caps at limit (default 20), so verify a
+      // high-indexed message is findable rather than counting all 50.
+      final lateHit = await database.searchMessagesSanitized('content 49');
+      expect(
+        lateHit,
+        isNotEmpty,
+        reason: 'last-inserted message must be FTS-indexed',
+      );
+      final earlyHit = await database.searchMessagesSanitized('content 0');
+      expect(
+        earlyHit,
+        isNotEmpty,
+        reason: 'first-inserted message must be FTS-indexed',
+      );
+    });
+
+    test('dedup skips messages with existing clientId', () async {
+      // Pre-insert one via the single-row path.
+      await messageRepo.insert(makeMsg(clientId: 'c0', serverId: 's0'));
+
+      final msgs = [
+        makeMsg(clientId: 'c0', serverId: 's0'), // dup by both ids
+        makeMsg(clientId: 'c1', serverId: 's1'), // new
+      ];
+
+      final inserted = await messageRepo.batchInsertByIndexedIds(msgs);
+
+      expect(inserted.length, 1);
+      expect(inserted.single.clientId, 'c1');
+      final all = await messageRepo.getByConversation(conversationId);
+      expect(all.length, 2); // c0 (pre-inserted) + c1
+    });
+
+    test('dedup skips messages with existing serverId only', () async {
+      // Pre-insert c0 with serverId s0.
+      await messageRepo.insert(makeMsg(clientId: 'c0', serverId: 's0'));
+
+      // Different clientId, SAME serverId → must dedup by serverId.
+      final msgs = [makeMsg(clientId: 'c-new', serverId: 's0')];
+
+      final inserted = await messageRepo.batchInsertByIndexedIds(msgs);
+
+      expect(inserted, isEmpty, reason: 'serverId collision must skip insert');
+      final all = await messageRepo.getByConversation(conversationId);
+      expect(all.length, 1);
+      expect(all.single.clientId, 'c0');
+    });
+
+    test('empty input is a no-op', () async {
+      final inserted = await messageRepo.batchInsertByIndexedIds([]);
+      expect(inserted, isEmpty);
+      final all = await messageRepo.getByConversation(conversationId);
+      expect(all, isEmpty);
+    });
+
+    test('FTS failure does not block batch persistence', () async {
+      // Drop the FTS table so the batch FTS sync fails.
+      await database.customStatement('DROP TABLE IF EXISTS messages_fts');
+
+      final msgs = [
+        makeMsg(clientId: 'c0', serverId: 's0', content: 'survives fts fail'),
+      ];
+
+      final inserted = await messageRepo.batchInsertByIndexedIds(msgs);
+
+      expect(inserted.length, 1);
+      final loaded = await messageRepo.getByClientId('c0');
+      expect(
+        loaded,
+        isNotNull,
+        reason: 'Messages MUST persist even when batch FTS sync fails',
+      );
+      expect(loaded!.content, 'survives fts fail');
+    });
+
+    test('intra-batch duplicate clientIds do not crash the batch', () async {
+      // Same clientId twice in one batch — must dedup internally, not hit
+      // a UNIQUE constraint that aborts the whole INSERT.
+      final msgs = [
+        makeMsg(clientId: 'dup', serverId: 's0', content: 'first'),
+        makeMsg(clientId: 'dup', serverId: 's1', content: 'second'),
+      ];
+
+      final inserted = await messageRepo.batchInsertByIndexedIds(msgs);
+
+      expect(inserted.length, 1, reason: 'intra-batch dup collapsed to one');
+      final all = await messageRepo.getByConversation(conversationId);
+      expect(all.length, 1);
     });
   });
 }

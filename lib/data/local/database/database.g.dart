@@ -3484,7 +3484,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     int limit,
   ) {
     return customSelect(
-      'SELECT * FROM messages WHERE conversation_id = ?1 AND logical_clock < (SELECT logical_clock FROM messages WHERE client_id = ?2) ORDER BY logical_clock DESC LIMIT ?3',
+      'SELECT * FROM messages WHERE conversation_id = ?1 AND logical_clock <= (SELECT logical_clock FROM messages WHERE client_id = ?2) AND client_id != ?2 ORDER BY logical_clock DESC LIMIT ?3',
       variables: [
         Variable<String>(conversationId),
         Variable<String>(targetClientId),

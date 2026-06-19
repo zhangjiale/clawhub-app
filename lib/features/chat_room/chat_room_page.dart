@@ -21,6 +21,7 @@ import 'package:claw_hub/features/chat_room/widgets/thinking_indicator.dart';
 import 'package:claw_hub/features/chat_room/widgets/tool_call_card.dart';
 import 'package:claw_hub/features/chat_room/widgets/quick_command_bar.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
+import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/connection_banner.dart';
@@ -94,6 +95,23 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     }
   }
 
+  /// 用户点击"重连耗尽"横幅的重试入口（US-016 AC-3）。
+  ///
+  /// 拉取实例后触发手动重连。`orchestrator.reconnect` 内部会重置重连计数器
+  /// 并把 FSM 从 reconnectExhausted 终态拉回 connecting/connected，banner 随
+  /// connectionState 流的下一帧自动消失。
+  ///
+  /// 用 ref.read（事件回调，无需重建）；异步 gap 后校验 mounted 防止 dispose
+  /// 后调用。orchestrator 自带 2s 防抖，快速连点不会重复建连。
+  Future<void> _handleRetry() async {
+    final instance = await ref
+        .read(instanceRepoProvider)
+        .getById(widget.instanceId);
+    if (instance != null && mounted) {
+      await ref.read(connectionOrchestratorProvider).reconnect(instance);
+    }
+  }
+
   @override
   void dispose() {
     _scrollController?.dispose();
@@ -112,6 +130,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     // .notifier gives us the ChatViewModel for calling action methods.
     final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;
+    // 历史同步是否被截断（US-016 AC-2）—— 重连后 catch-up 撞翻页上限时为 true。
+    // .select() 限定重建范围：仅当本实例的截断状态变化时才重建此 Widget，
+    // 其他实例的 catch-up 完成不会触发无关 ChatRoomPage 重建。
+    final historyTruncated = ref.watch(
+      catchUpTruncatedProvider.select((s) => s.contains(widget.instanceId)),
+    );
 
     // 预计算 Agent 颜色 — 不再需要（EmojiAvatar 自身处理）
 
@@ -287,7 +311,20 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                 OutboxWarningBanner(outboxCount: session.outboxCount),
 
                 // Disconnect / connecting banner
-                ConnectionBanner(connectionState: session.connectionState),
+                ConnectionBanner(
+                  connectionState: session.connectionState,
+                  onRetry: _handleRetry,
+                ),
+
+                // History-sync truncation banner (US-016 AC-2) — catch-up
+                // 撞翻页上限时展示，提示用户更早历史未同步。
+                if (historyTruncated)
+                  const StatusBanner(
+                    message: '历史消息较多，仅同步了最近部分',
+                    foregroundColor: XiaColors.accent,
+                    backgroundColor: XiaColors.accentMuted,
+                    icon: Icons.history,
+                  ),
 
                 // Retry feedback banner (US-015 AC2) — shown when retryMessage
                 // skips due to preconditions (offline, agent deleted, etc.).
@@ -375,7 +412,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       GatewayConnectionState.recovering ||
       GatewayConnectionState.pairingRequired => AppColors.statusConnecting,
       GatewayConnectionState.disconnected ||
-      GatewayConnectionState.authFailed => AppColors.statusOffline,
+      GatewayConnectionState.authFailed ||
+      GatewayConnectionState.reconnectExhausted => AppColors.statusOffline,
     };
   }
 

@@ -77,6 +77,13 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   /// 标记 dispose 已调用，initialize() 中的异步操作应提前退出。
   bool _isDisposed = false;
 
+  /// 按 instanceId 序列化 [_onConnectionStateChanged] 的异步调用（Bug 4）。
+  ///
+  /// Dart 广播流在 async 回调的 Future 完成前就会投递下一个事件。
+  /// Completer 链保证同一实例的两次状态变化不会交错执行，
+  /// 防止 await _instanceRepo.getById() 读到脏数据。
+  final Map<String, Completer<void>> _stateSerializers = {};
+
   /// 可注入的时间函数，用于测试 reconnect 防抖逻辑。
   /// 生产环境默认使用 [DateTime.now]。
   final DateTime Function() _clock;
@@ -277,9 +284,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   }
 
   void _handlePairingInfo(String instanceId, GatewayPairingInfo? info) {
-    _eventController.add(
-      PairingInfoChangedEvent(instanceId: instanceId, info: info),
-    );
+    _emitEvent(PairingInfoChangedEvent(instanceId: instanceId, info: info));
   }
 
   Future<void> _disconnect(String instanceId) async {
@@ -293,9 +298,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
 
     // 清除配对信息 — emit 事件，由 connectionOrchestratorProvider 的订阅消费
     // 并更新 pairingInfoProvider（info == null 表示移除该实例的配对信息）。
-    _eventController.add(
-      PairingInfoChangedEvent(instanceId: instanceId, info: null),
-    );
+    _emitEvent(PairingInfoChangedEvent(instanceId: instanceId, info: null));
 
     debugPrint('[ConnectionOrchestrator] Disconnected from $instanceId');
   }
@@ -343,7 +346,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
               'for $instanceId',
             );
             // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建
-            _eventController.add(const AgentsSyncedEvent());
+            _emitEvent(const AgentsSyncedEvent());
             // Success — break out of for-loop, then check
             // _syncPendingRetry for pending retries below.
             break;
@@ -383,6 +386,18 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
           'Pending retry discarded; next connected event will re-trigger sync.',
         );
       }
+
+      // Bug 3: Emit InstanceConnectedEvent inside _syncAgentsForInstance
+      // (not from .whenComplete) — guards against:
+      //   (a) premature emission when early-returning due to lock contention,
+      //   (b) stale emission after connection drops mid-sync clearing
+      //       reconnectExhausted flag.
+      // Only fires when sync DID real work (entered the do-while body,
+      // i.e. lock was acquired) AND the connection subscription is still
+      // alive (hasn't been cancelled by _disconnect).
+      if (!_isDisposed && _connectionSubscriptions.containsKey(instanceId)) {
+        _emitEvent(InstanceConnectedEvent(instanceId));
+      }
     } finally {
       _syncingAgents.remove(instanceId);
     }
@@ -402,6 +417,8 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       GatewayConnectionState.pairingRequired => HealthStatus.pairingRequired,
       GatewayConnectionState.disconnected ||
       GatewayConnectionState.authFailed => HealthStatus.offline,
+      GatewayConnectionState.reconnectExhausted =>
+        HealthStatus.reconnectExhausted,
     };
   }
 
@@ -409,88 +426,99 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     String instanceId,
     GatewayConnectionState state,
   ) async {
-    // 中间状态（connecting / authenticating / recovering）不写入数据库。
-    //
-    // 原因：SaveInstanceUseCase 先写入 online，然后调用 _connect() 建连，
-    // 建连过程会触发 connecting → connected 两次状态变化，两个 async handler
-    // 可能同时读到 online 旧值，导致 connected handler 的 online==online 判
-    // 跳过更新，而 connecting handler 的写入最终覆盖 DB，healthStatus 卡在
-    // connecting，UI 显示"离线"。
-    //
-    // 只允许终态传播到 DB。
-    final isTerminal =
-        state == GatewayConnectionState.connected ||
-        state == GatewayConnectionState.disconnected ||
-        state == GatewayConnectionState.authFailed ||
-        state == GatewayConnectionState.pairingRequired;
-    if (!isTerminal) {
-      return;
-    }
-
-    final health = _mapToHealthStatus(state);
-    // pairingRequired 不持久化到 DB（对齐 enums.dart 注释），
-    // 改写为 offline 落库。配对信息由 pairingInfoProvider 实时传递。
-    final persistHealth = health == HealthStatus.pairingRequired
-        ? HealthStatus.offline
-        : health;
+    // Bug 4: 按实例序列化异步调用。Dart 广播流在 async 回调的 Future
+    // 完成前就会投递下一个事件 — 两次对同一 instanceId 的调用会在
+    // await _instanceRepo.getById() 处交错，导致读到脏数据并写入
+    // 错误的 DB 状态。Completer 链保证按到达顺序串行执行。
+    final completer = Completer<void>();
+    final previous = _stateSerializers[instanceId];
+    _stateSerializers[instanceId] = completer;
+    await previous?.future;
 
     try {
-      // 只更新与当前数据库不同的状态（避免不必要的写入）
-      final current = await _instanceRepo.getById(instanceId);
-      if (current != null && current.healthStatus != persistHealth) {
-        await _instanceRepo.updateHealthStatus(instanceId, persistHealth);
-        if (health == HealthStatus.online) {
-          await _instanceRepo.updateLastConnectedAt(
-            instanceId,
-            DateTime.now().millisecondsSinceEpoch ~/ 1000,
-          );
-        }
+      // 中间状态（connecting / authenticating / recovering）不写入数据库。
+      //
+      // 原因：SaveInstanceUseCase 先写入 online，然后调用 _connect() 建连，
+      // 建连过程会触发 connecting → connected 两次状态变化，两个 async handler
+      // 可能同时读到 online 旧值，导致 connected handler 的 online==online 判
+      // 跳过更新，而 connecting handler 的写入最终覆盖 DB，healthStatus 卡在
+      // connecting，UI 显示"离线"。
+      //
+      // 只允许终态 + connected 传播到 DB。
+      // connected 不是 isTerminal（传输层错误可能回退到 recovering），
+      // 但作为稳态必须持久化。
+      if (!state.isTerminal && state != GatewayConnectionState.connected) {
+        return;
       }
 
-      // 连接成功后自动同步 Agent 列表（协议流程：connect → agents.list）
-      // 放在 DB 状态更新之后，确保 healthStatus=online 已持久化。
-      // fire-and-forget：同步失败不影响连接状态，且下一次连接/tick 会重试。
-      // catchError 是最后的安全网，防止意外的同步异常（如 Set.add 在极端
-      // 并发下的同步抛出）成为未处理的异步错误。
-      //
-      // [_onInstanceConnected] 回调在 agent sync 完成后触发，
-      // 用于 [OutboxProcessor] 冲刷待发送队列 — 必须放在 sync 之后，
-      // 因为 OutboxProcessor 需要从 IAgentRepo 查 agent.remoteId。
-      // 即使 sync 失败也触发回调（本地缓存可能已足够发送）。
-      if (state == GatewayConnectionState.connected) {
-        unawaited(
-          _syncAgentsForInstance(instanceId)
-              .catchError((Object e, StackTrace st) {
-                debugPrint(
-                  '[ConnectionOrchestrator] Unhandled sync error for '
-                  '$instanceId: $e\n$st',
-                );
-                // error logged but not re-thrown — whenComplete fires once below
-              })
-              .whenComplete(() {
-                // .whenComplete guarantees exactly one invocation regardless of
-                // whether _syncAgentsForInstance succeeds, fails, or a future
-                // maintainer adds throwing code to the success path.  Safer than
-                // dual .then/.catchError call sites.
-                _eventController.add(InstanceConnectedEvent(instanceId));
-              }),
-        );
+      final health = _mapToHealthStatus(state);
+      // 瞬态状态不持久化到 DB，改写为 offline 落库。
+      // 瞬态信息由对应 Provider 实时传递（如 pairingInfoProvider、
+      // reconnectExhaustedProvider）。
+      final persistHealth = health.isTransient ? HealthStatus.offline : health;
+
+      // Bug 2: ReconnectExhaustedEvent 必须在 try-DB 之前发射，
+      // 确保 DB 写入失败时 UI 仍能收到重试入口。
+      // 解耦 UI 事件（必须可达）与持久化（best-effort）。
+      if (state == GatewayConnectionState.reconnectExhausted) {
+        _emitEvent(ReconnectExhaustedEvent(instanceId));
       }
-    } catch (error) {
-      // 实例可能已被删除 — 静默处理
-      debugPrint(
-        '[ConnectionOrchestrator] Failed to sync health status for '
-        '$instanceId: $error',
-      );
+
+      try {
+        // 只更新与当前数据库不同的状态（避免不必要的写入）
+        final current = await _instanceRepo.getById(instanceId);
+        if (current != null && current.healthStatus != persistHealth) {
+          await _instanceRepo.updateHealthStatus(instanceId, persistHealth);
+          if (health == HealthStatus.online) {
+            await _instanceRepo.updateLastConnectedAt(
+              instanceId,
+              DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            );
+          }
+        }
+
+        // 连接成功后自动同步 Agent 列表（协议流程：connect → agents.list）
+        // 放在 DB 状态更新之后，确保 healthStatus=online 已持久化。
+        // fire-and-forget：同步失败不影响连接状态，且下一次连接/tick 会重试。
+        //
+        // Bug 3: InstanceConnectedEvent 由 _syncAgentsForInstance 内部发射
+        //（仅在成功路径 + 连接仍存活时），不在 .whenComplete 中无条件发射，
+        // 防止过期事件清除 reconnectExhausted 标记。
+        if (state == GatewayConnectionState.connected) {
+          unawaited(
+            _syncAgentsForInstance(instanceId).catchError((
+              Object e,
+              StackTrace st,
+            ) {
+              debugPrint(
+                '[ConnectionOrchestrator] Unhandled sync error for '
+                '$instanceId: $e\n$st',
+              );
+            }),
+          );
+        }
+      } catch (error) {
+        // 实例可能已被删除 — 静默处理
+        debugPrint(
+          '[ConnectionOrchestrator] Failed to sync health status for '
+          '$instanceId: $error',
+        );
+      } finally {
+        // 终态（不可恢复）时释放 _connect 的去重锁。
+        // 瞬态状态配对/耗尽为 offline 但也是终态，同样需释放锁。
+        // 尽管 _connect() 的 finally 通常先执行，但在异步时序竞争下
+        // _onConnectionStateChanged 可能先于 finally，此时额外释放一次
+        // （Set.remove 是幂等的）防止永久泄漏。
+        if (health == HealthStatus.offline || health.isTransient) {
+          _connecting.remove(instanceId);
+        }
+      }
     } finally {
-      // 终态（offline / pairingRequired）时释放 _connect 的去重锁。
-      // pairingRequired 的锁释放：尽管 _connect() 的 finally 通常先执行，
-      // 但在异步时序竞争下 _onConnectionStateChanged 可能先于 finally，
-      // 此时额外释放一次（Set.remove 是幂等的）防止永久泄漏。
-      // 放在 finally 中确保即使 DB 操作抛异常也不会永久泄漏锁。
-      if (health == HealthStatus.offline ||
-          health == HealthStatus.pairingRequired) {
-        _connecting.remove(instanceId);
+      completer.complete();
+      // 如果当前 completer 仍是最新的（没有新事件注册到我们之后），
+      // 则清理以防止内存泄漏。
+      if (_stateSerializers[instanceId] == completer) {
+        _stateSerializers.remove(instanceId);
       }
     }
   }
@@ -626,5 +654,17 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
         '[ConnectionOrchestrator] Failed to update health status: $error',
       );
     }
+  }
+
+  /// 安全发射事件 — dispose 后静默丢弃（Bug 1 修复）。
+  ///
+  /// 所有 _eventController.add() 调用必须通过此方法路由，
+  /// 防止 fire-and-forget 异步任务在 [dispose] 关闭控制器后
+  /// 仍调用 .add() 导致 BadStateError 崩溃。
+  /// 静默丢弃不违反 Law 8：dispose 意味着所有下游消费方已不可达，
+  /// 事件无消费者，丢弃是正确行为。
+  void _emitEvent(InstanceEvent event) {
+    if (_isDisposed) return;
+    _eventController.add(event);
   }
 }
