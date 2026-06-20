@@ -703,6 +703,205 @@ void main() {
         );
       });
     });
+
+    // ====================================================================
+    // Message routing: per-instance stream → per-agent conversation
+    // ====================================================================
+    group('message routing (per-instance stream → per-agent conversation)', () {
+      late InMemoryAgentRepo agentRepo;
+      late InMemoryMessageRepo messageRepo;
+      late InMemoryConversationRepo conversationRepo;
+      late InMemoryInstanceRepo instanceRepo;
+      late _ControllableStreamsGateway gateway;
+
+      setUp(() {
+        agentRepo = InMemoryAgentRepo();
+        messageRepo = InMemoryMessageRepo();
+        conversationRepo = InMemoryConversationRepo();
+        instanceRepo = InMemoryInstanceRepo();
+        gateway = _ControllableStreamsGateway();
+      });
+
+      ChatViewModel createViewModel({
+        required String instanceId,
+        required String agentId,
+      }) {
+        return ChatViewModel(
+          agentRepo: agentRepo,
+          conversationRepo: conversationRepo,
+          messageRepo: messageRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+          sendMessageUseCase: SendMessageUseCase(
+            messageRepo: messageRepo,
+            conversationRepo: conversationRepo,
+            instanceRepo: instanceRepo,
+            gatewayClient: gateway,
+          ),
+          instanceId: instanceId,
+          agentId: agentId,
+          flushDelay: Duration.zero,
+        );
+      }
+
+      Future<void> setupTwoAgentsSameInstance() async {
+        final agentA = Agent(
+          localId: 'local-a',
+          remoteId: 'r-a',
+          instanceId: 'inst-1',
+          name: 'Agent A',
+          themeColor: '#FF0000',
+        );
+        final agentB = Agent(
+          localId: 'local-b',
+          remoteId: 'r-b',
+          instanceId: 'inst-1',
+          name: 'Agent B',
+          themeColor: '#0000FF',
+        );
+        await agentRepo.syncFromGateway('inst-1', [agentA, agentB]);
+        await instanceRepo.save(
+          Instance(
+            id: 'inst-1',
+            name: 'Test',
+            gatewayUrl: 'wss://test.example.com:443',
+            tokenRef: 'tok',
+            healthStatus: HealthStatus.online,
+            isLocalNetwork: false,
+          ),
+        );
+      }
+
+      // ------------------------------------------------------------------
+      // Message routing: per-instance stream, correctly filtered by agentId
+      // ------------------------------------------------------------------
+      test('message for agent-B is NOT stored when only agent-A VM is active '
+          '(agentId guard)', () async {
+        await setupTwoAgentsSameInstance();
+
+        // Only create VM for agent A
+        final vmA = createViewModel(instanceId: 'inst-1', agentId: 'local-a');
+        await vmA.init();
+
+        // Simulate Gateway pushing a message intended for agent B via the
+        // per-instance messageStream.  The agentId guard should prevent
+        // agent-A's VM from claiming this message.
+        final msgForB = Message(
+          clientId: 'msg-for-agent-b',
+          conversationId: '',
+          agentId: 'r-b',
+          role: MessageRole.agent,
+          content: 'Hello from Agent B',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: DateTime.now().millisecondsSinceEpoch,
+        );
+        gateway.emitMessage('inst-1', msgForB);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        final convA = Conversation.generateId('inst-1', 'local-a');
+
+        // The message should NOT leak into agent-A's conversation
+        final msgsInConvA = await messageRepo.getByConversation(convA);
+        final leaked = msgsInConvA.where(
+          (m) => m.clientId == 'msg-for-agent-b',
+        );
+        expect(
+          leaked,
+          isEmpty,
+          reason:
+              'Messages for other agents must not leak into '
+              'agent-A conversation',
+        );
+      });
+
+      test('message for agent-B is correctly stored in agent-B conversation '
+          'when agent-B VM is active', () async {
+        await setupTwoAgentsSameInstance();
+
+        // Both VMs active (simulates tab switching with StatefulShellRoute)
+        final vmA = createViewModel(instanceId: 'inst-1', agentId: 'local-a');
+        await vmA.init();
+        final vmB = createViewModel(instanceId: 'inst-1', agentId: 'local-b');
+        await vmB.init();
+
+        // Push a message meant for agent B
+        final msgForB = Message(
+          clientId: 'msg-for-b-v2',
+          conversationId: '',
+          agentId: 'r-b',
+          role: MessageRole.agent,
+          content: 'Reply for Agent B',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: DateTime.now().millisecondsSinceEpoch,
+        );
+        gateway.emitMessage('inst-1', msgForB);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        final convA = Conversation.generateId('inst-1', 'local-a');
+        final convB = Conversation.generateId('inst-1', 'local-b');
+
+        final storedMsg = await messageRepo.getByClientId('msg-for-b-v2');
+        expect(
+          storedMsg,
+          isNotNull,
+          reason:
+              'Message should be persisted when the correct agent VM '
+              'is listening',
+        );
+
+        // The message must be stored in agent-B's conversation
+        expect(
+          storedMsg!.conversationId,
+          convB,
+          reason: 'Message for agent-B must be stored in agent-B conversation',
+        );
+
+        // And must NOT appear in agent-A's conversation
+        final msgsInConvA = await messageRepo.getByConversation(convA);
+        expect(
+          msgsInConvA.where((m) => m.clientId == 'msg-for-b-v2'),
+          isEmpty,
+          reason: 'Message for agent-B must not leak into agent-A conversation',
+        );
+      });
+
+      test('message with empty agentId is still processed '
+          '(backward compat with legacy Gateways)', () async {
+        await setupTwoAgentsSameInstance();
+
+        final vmA = createViewModel(instanceId: 'inst-1', agentId: 'local-a');
+        await vmA.init();
+
+        // Legacy Gateway may omit agentId — the guard must NOT drop these
+        final msgNoAgentId = Message(
+          clientId: 'msg-no-agent-id',
+          conversationId: '',
+          agentId: '', // Gateway omitted agentId
+          role: MessageRole.agent,
+          content: 'Legacy message without agentId',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: DateTime.now().millisecondsSinceEpoch,
+        );
+        gateway.emitMessage('inst-1', msgNoAgentId);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        final convA = Conversation.generateId('inst-1', 'local-a');
+        final storedMsg = await messageRepo.getByClientId('msg-no-agent-id');
+        expect(
+          storedMsg,
+          isNotNull,
+          reason: 'Messages with empty agentId must still be processed',
+        );
+        expect(
+          storedMsg!.conversationId,
+          convA,
+          reason: 'Legacy messages are routed to the active conversation',
+        );
+      });
+    });
   });
 }
 
@@ -758,6 +957,18 @@ class _ControllableStreamsGateway extends MockGatewayClient {
           () => StreamController<StreamingEvent>.broadcast(),
         )
         .stream;
+  }
+
+  @override
+  Future<({List<Message> messages, String? nextCursor})> fetchMessageHistory({
+    required String instanceId,
+    required String agentId,
+    String? cursor,
+    int limit = 50,
+  }) async {
+    // Return empty history in tests — avoids rootBundle dependency
+    // inherited from MockGatewayClient.loadMockData().
+    return (messages: <Message>[], nextCursor: null);
   }
 
   void emitMessage(String instanceId, Message msg) {
