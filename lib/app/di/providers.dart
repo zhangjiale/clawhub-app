@@ -89,6 +89,18 @@ final catchUpTruncatedProvider = StateProvider<Set<String>>(
   (ref) => <String>{},
 );
 
+/// Message catch-up 完成 ticker（US-016 AC-1）。
+///
+/// [MessageCatchUpService.catchUp] 完成后递增此值，
+/// [chatViewModelProvider] listen 到变化后调用 [ChatViewModel.reloadMessages]，
+/// 确保 ViewModel 在 catch-up 写入新消息后刷新消息列表。
+///
+/// 与 [outboxFlushTickerProvider] 模式一致：per-instance 隔离，
+/// 按 `family<int, String>` 递增，避免跨实例广播。
+final catchUpCompletedTickerProvider = StateProvider.family<int, String>(
+  (ref, instanceId) => 0,
+);
+
 // --- Connection Initialization State ---
 
 /// 连接编排器初始化状态。
@@ -244,6 +256,14 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
                 truncatedNotifier.state = {...truncatedNotifier.state}
                   ..remove(instanceId);
               }
+              // US-016 AC-1: notify ChatViewModel that catch-up is complete.
+              // Increment ticker even when result.inserted == 0 — the ViewModel
+              // must reload after the connected-triggered reload (which may have
+              // run before catchUp finished), ensuring the UI always reflects
+              // the post-sync state.
+              ref
+                  .read(catchUpCompletedTickerProvider(instanceId).notifier)
+                  .state++;
             } catch (e, st) {
               ref
                   .read(loggerProvider)

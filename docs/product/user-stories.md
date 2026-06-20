@@ -318,9 +318,9 @@
 **Story Points**：5
 
 **Acceptance Criteria**：
-- [ ] Given WebSocket断线后自动重连成功, When 重连完成, Then 从Gateway拉取断线期间Agent产生的新消息，增量合并到本地对话记录
-- [ ] Given 消息合并时存在重复（相同消息ID）, When 合并执行, Then 以Gateway返回的为准，本地不重复展示
-- [ ] Given 重连3次仍失败, When 最后一次失败, Then 停止自动重连，展示"无法连接到虾，请检查网络或实例状态。点击重试"
+- [x] Given WebSocket断线后自动重连成功, When 重连完成, Then 从Gateway拉取断线期间Agent产生的新消息，增量合并到本地对话记录
+- [x] Given 消息合并时存在重复（相同消息ID）, When 合并执行, Then 以Gateway返回的为准，本地不重复展示
+- [x] Given 重连3次仍失败, When 最后一次失败, Then 停止自动重连，展示"无法连接到虾，请检查网络或实例状态。点击重试"
 
 **依赖**：US-015（需待发送队列基础）
 **技术备注**：消息去重基于Gateway生成的唯一消息ID；增量拉取需Gateway支持since参数

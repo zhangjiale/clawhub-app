@@ -46,5 +46,19 @@ final chatViewModelProvider =
         vm.reloadMessages();
       });
 
+      // Listen (not watch) catchUpCompletedTickerProvider — when
+      // MessageCatchUpService finishes incremental sync after reconnect
+      // (US-016 AC-1), call reloadMessages() on the existing ViewModel.
+      // The connected-triggered reload in ChatViewModel._connectionSubscription
+      // may have run before catchUp finished; this ensures the UI reflects
+      // the post-sync state with any messages that arrived during the
+      // disconnection period.
+      //
+      // Same listen-not-watch pattern as outboxFlushTickerProvider above,
+      // per-instance isolation via family.
+      ref.listen(catchUpCompletedTickerProvider(params.instanceId), (_, _) {
+        vm.reloadMessages();
+      });
+
       return vm;
     });
