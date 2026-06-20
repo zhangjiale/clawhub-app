@@ -291,6 +291,24 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           .messageStream(instanceId)
           .listen(
             (msg) async {
+              // Guard: messageStream is per-instance and carries messages
+              // for ALL agents in that instance.  Only process messages
+              // that belong to this ViewModel's agent — otherwise the
+              // unconditional conversationId overwrite below would misroute
+              // another agent's reply into this conversation (causing the
+              // message to "appear in the wrong chat" and "disappear" from
+              // its rightful owner).
+              //
+              // msg.agentId is empty only when the Gateway omits it (legacy
+              // v3 fallback); in that case we process the message rather
+              // than silently dropping it.
+              final agentRemoteId = _agent?.remoteId;
+              if (agentRemoteId != null &&
+                  msg.agentId.isNotEmpty &&
+                  msg.agentId != agentRemoteId) {
+                return;
+              }
+
               // Normalise conversationId to the canonical SHA-256 hash.
               //
               // The ACL may construct messages with a raw conversationId
@@ -304,17 +322,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               // Overriding with _conversationId guarantees the FK
               // constraint is satisfied and the message routes to the
               // correct conversation for _loadMessages() below.
-              //
-              // WARNING: This unconditional copyWith assumes the
-              // message stream for this instanceId is already
-              // effectively single-conversation — i.e. every message
-              // belongs to (_instanceId, _agentId).  If the ACL
-              // ever replays history, emits system messages, or
-              // multiplexes multiple agents onto the same instance
-              // stream, this broad overwrite will misroute those
-              // messages.  A future hardening could make this
-              // conditional: only override when msg.conversationId
-              // does not already match a known conversation.
               final fixedMsg = msg.copyWith(conversationId: _conversationId);
               await _messageRepo.insert(fixedMsg);
               // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
