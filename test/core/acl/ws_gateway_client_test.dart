@@ -562,6 +562,85 @@ void main() {
       await client.dispose();
     });
 
+    test(
+      'chat final without logicalClock assigns timestamp-based clock (not 0)',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+
+        final messages = <Message>[];
+        final sub = client.messageStream('test-instance').listen(messages.add);
+
+        final before = DateTime.now().millisecondsSinceEpoch;
+
+        // Gateway omits logicalClock — _parseMessage must NOT default to 0
+        // because user messages use timestamp-based clocks (~1.7 trillion).
+        // Ordering by logical_clock DESC would put agent messages (0) after
+        // all user messages, breaking chronological display.
+        ws.simulateServerFrame(
+          chatFinalJson(
+            sessionKey: 'agent:r-1:main',
+            messageContent:
+                '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+                '"content":"Reply","role":"agent","type":"text"}',
+          ),
+        );
+        await pumpMicrotasks();
+
+        final after = DateTime.now().millisecondsSinceEpoch;
+
+        expect(messages.length, 1);
+        final msg = messages.first;
+        expect(
+          msg.logicalClock,
+          greaterThanOrEqualTo(before),
+          reason:
+              'logicalClock should be >= time before the event was sent, '
+              'not 0 (which breaks message ordering)',
+        );
+        expect(
+          msg.logicalClock,
+          lessThanOrEqualTo(after),
+          reason:
+              'logicalClock should be <= time after the event was processed',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test(
+      'chat final with logicalClock preserves Gateway-provided value',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+
+        final messages = <Message>[];
+        final sub = client.messageStream('test-instance').listen(messages.add);
+
+        // Gateway provides explicit logicalClock
+        ws.simulateServerFrame(
+          chatFinalJson(
+            sessionKey: 'agent:r-1:main',
+            messageContent:
+                '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+                '"content":"Reply","role":"agent","type":"text",'
+                '"logicalClock":999999}',
+          ),
+        );
+        await pumpMicrotasks();
+
+        expect(messages.length, 1);
+        expect(
+          messages.first.logicalClock,
+          999999,
+          reason: 'Should preserve Gateway-provided logicalClock',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
     test('chat final parses List-format content (real Gateway format)', () async {
       final (:client, :ws) = await connectAndHandshake();
 
@@ -742,6 +821,69 @@ void main() {
       await sub.cancel();
       await client.dispose();
     });
+
+    test(
+      'chat.delta + agent.assistant for same session does NOT duplicate deltas',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+
+        final events = <StreamingEvent>[];
+        final sub = client
+            .streamingDeltaStream('test-instance')
+            .listen(events.add);
+
+        // Gateway sends BOTH chat.delta and agent.assistant for the same
+        // streaming response — only ONE StreamingDelta should be emitted
+        // per chunk, not two.
+        ws.simulateServerFrame(chatDeltaJson(deltaText: '你好'));
+        await pumpMicrotasks();
+        ws.simulateServerFrame(agentAssistantJson(delta: '你好'));
+        await pumpMicrotasks();
+
+        ws.simulateServerFrame(chatDeltaJson(deltaText: '世界'));
+        await pumpMicrotasks();
+        ws.simulateServerFrame(agentAssistantJson(delta: '世界'));
+        await pumpMicrotasks();
+
+        final deltas = events.whereType<StreamingDelta>().toList();
+        expect(
+          deltas.length,
+          2,
+          reason:
+              'When Gateway sends both chat.delta and agent.assistant '
+              'for the same session, only one delta per chunk should '
+              'be emitted — got ${deltas.length} instead of 2',
+        );
+        expect(deltas[0].text, '你好');
+        expect(deltas[1].text, '世界');
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test(
+      'agent.assistant-only deltas work when no chat.delta arrives',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+
+        final events = <StreamingEvent>[];
+        final sub = client
+            .streamingDeltaStream('test-instance')
+            .listen(events.add);
+
+        // v3 Gateway sends only agent.assistant — should work normally
+        ws.simulateServerFrame(agentAssistantJson(delta: 'v3 only'));
+        await pumpMicrotasks();
+
+        final deltas = events.whereType<StreamingDelta>().toList();
+        expect(deltas.length, 1);
+        expect(deltas[0].text, 'v3 only');
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
 
     // ====================================================================
     // lifecycle.end 事件测试 — Phase 3: 假设验证

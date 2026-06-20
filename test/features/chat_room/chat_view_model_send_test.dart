@@ -464,6 +464,69 @@ void main() {
       );
     });
 
+    test('message stream: agent reply with small logicalClock '
+        'sorts chronologically (not grouped by sender)', () async {
+      final vm = await setupAgentAndInit();
+      final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+
+      // User sends first message
+      await vm.send('my msg1');
+
+      // Agent replies with logicalClock=1 (simulating Gateway's clock)
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'agent-reply-1',
+          conversationId: 'raw-conv-id',
+          agentId: 'r-1',
+          role: MessageRole.agent,
+          content: 'agent msg1',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1, // Gateway's incompatible clock
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // User sends second message
+      await vm.send('my msg2');
+
+      // Agent replies again with logicalClock=2
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'agent-reply-2',
+          conversationId: 'raw-conv-id',
+          agentId: 'r-1',
+          role: MessageRole.agent,
+          content: 'agent msg2',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 2, // Gateway's incompatible clock
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Verify chronological order: user1, agent1, user2, agent2
+      // getByConversation returns DESC, ListView reverses → ASC visual.
+      // We check DESC order: agent2, user2, agent1, user1.
+      final messages = await messageRepo.getByConversation(canonicalConvId);
+      expect(messages.length, 4);
+
+      // In DESC order, the newest (highest logicalClock) is first.
+      // With the fix, agent replies get client-timestamp logicalClock,
+      // so they sort correctly relative to user messages.
+      final contents = messages.map((m) => m.content).toList();
+      expect(
+        contents,
+        ['agent msg2', 'my msg2', 'agent msg1', 'my msg1'],
+        reason:
+            'Messages should be in strict chronological DESC order. '
+            'Agent replies must NOT be grouped after all user messages '
+            '(which happens when logicalClock from Gateway is too small).',
+      );
+    });
+
     test('connection state stream: updates state.connectionState', () async {
       final vm = await setupAgentAndInit();
 

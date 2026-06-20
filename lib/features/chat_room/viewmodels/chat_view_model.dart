@@ -334,7 +334,23 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               // Overriding with _conversationId guarantees the FK
               // constraint is satisfied and the message routes to the
               // correct conversation for _loadMessages() below.
-              final fixedMsg = msg.copyWith(conversationId: _conversationId);
+              //
+              // Also override logicalClock when the Gateway's value is
+              // incompatible with the client's timestamp-based counter.
+              // SendMessageUseCase starts at DateTime.now().millisecondsSinceEpoch;
+              // a Gateway clock < year-2020 epoch would sort all agent messages
+              // after all user messages in the DESC-ordered list, breaking
+              // chronological display.
+              //
+              // Uses the shared counter from SendMessageUseCase to guarantee
+              // strict monotonic ordering across both user-sent and agent-received
+              // messages, even when they arrive within the same millisecond.
+              final fixedMsg = msg.copyWith(
+                conversationId: _conversationId,
+                logicalClock: msg.logicalClock < 1577836800000
+                    ? _sendMessageUseCase.nextLogicalClock()
+                    : msg.logicalClock,
+              );
               await _messageRepo.insert(fixedMsg);
               // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
               if (!_highlightActive) {

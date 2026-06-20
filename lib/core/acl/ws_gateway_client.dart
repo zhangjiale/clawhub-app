@@ -80,6 +80,13 @@ class WsGatewayClient implements IGatewayClient {
   /// second handler sees the key already present and skips.
   final Set<String> _finalizedSessions = {};
 
+  /// Tracks which event source serves streaming deltas per session.
+  /// Value is 'chat' or 'agent'. Prevents duplicate deltas when a Gateway
+  /// sends both `chat.delta` and `agent.assistant` events for the same
+  /// response — whichever arrives first locks in the source, and deltas
+  /// from the other source are dropped.
+  final Map<String, String> _deltaSource = {};
+
   /// Explicit mapping from sessionKey → remoteAgentId.
   ///
   /// Populated by [sendMessage] (chat.send) response handler.
@@ -205,6 +212,7 @@ class WsGatewayClient implements IGatewayClient {
     // 聚合文本污染新 session。Keys are scoped as '$instanceId:$sessionKey'.
     _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
     _finalizedSessions.removeWhere((key) => key.startsWith('$instanceId:'));
+    _deltaSource.removeWhere((key, _) => key.startsWith('$instanceId:'));
 
     if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
       conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
@@ -403,6 +411,7 @@ class WsGatewayClient implements IGatewayClient {
     _streamingBuffers.clear();
     _sessionToAgentId.clear();
     _finalizedSessions.clear();
+    _deltaSource.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -446,6 +455,10 @@ class WsGatewayClient implements IGatewayClient {
     switch (event.state) {
       case ChatState.delta:
         if (event.deltaText != null && event.deltaText!.isNotEmpty) {
+          // Dedup: if agent source already locked for this session, skip
+          final source = _deltaSource.putIfAbsent(bufferKey, () => 'chat');
+          if (source != 'chat') break;
+
           // Resolve agentId from sessionKey (explicit mapping → string parse)
           final agentId = _resolveAgentId(event.sessionKey, _sessionToAgentId);
           if (agentId == null) return; // unresolvable, drop event
@@ -582,6 +595,10 @@ class WsGatewayClient implements IGatewayClient {
         {
           final delta = event.data['delta'] as String?;
           if (delta != null && delta.isNotEmpty) {
+            // Dedup: if chat source already locked for this session, skip
+            final source = _deltaSource.putIfAbsent(bufferKey, () => 'agent');
+            if (source != 'agent') break;
+
             final agentId = _resolveAgentId(
               event.sessionKey,
               _sessionToAgentId,
@@ -614,6 +631,7 @@ class WsGatewayClient implements IGatewayClient {
             // this session to process normally.
             _finalizedSessions.remove(bufferKey);
             _streamingBuffers.remove(bufferKey);
+            _deltaSource.remove(bufferKey);
           } else if (phase == 'end') {
             // Coordinate with chat.final — only one handler per session
             // may finalize, preventing duplicate messages when a v3
@@ -728,7 +746,8 @@ class WsGatewayClient implements IGatewayClient {
           _extractTextContent(json['text']),
       type: _parseMessageType(json['type'] as String?),
       status: MessageStatus.delivered,
-      logicalClock: json['logicalClock'] as int? ?? 0,
+      logicalClock:
+          json['logicalClock'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       timestamp: json['timestamp'] as int?,
       metadata: json['metadata'] is Map<String, dynamic>
           ? json['metadata'] as Map<String, dynamic>

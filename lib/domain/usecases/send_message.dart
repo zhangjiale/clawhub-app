@@ -40,6 +40,19 @@ class SendMessageUseCase {
        _generatePreview = generatePreview ?? GeneratePreview(),
        _uuid = uuid ?? const Uuid();
 
+  /// Returns the next monotonically increasing logical clock value.
+  ///
+  /// Shared between [execute] (user messages) and callers like
+  /// [ChatViewModel] (incoming agent messages) to guarantee all
+  /// messages in a conversation receive strictly ordered logicalClock
+  /// values, regardless of whether they originate from the user or
+  /// the Gateway.
+  int nextLogicalClock() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now > _logicalClockCounter) _logicalClockCounter = now;
+    return _logicalClockCounter++;
+  }
+
   /// 发送消息
   /// 返回最终状态的消息实体
   Future<Message> execute({
@@ -57,7 +70,7 @@ class SendMessageUseCase {
     );
 
     // Get monotonic logical clock (increment counter for each message sent)
-    final logicalClock = _logicalClockCounter++;
+    final logicalClock = nextLogicalClock();
 
     var message = Message(
       clientId: clientId,
