@@ -352,6 +352,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
                     : msg.logicalClock,
               );
               await _messageRepo.insert(fixedMsg);
+              // 同步会话预览 —— 让消息中心展示「真正的最后一条消息」。
+              // 此前 updateLastMessage 仅在用户发送时被调用，导致预览永远
+              // 停留在「我」的最后一条消息，掩盖了 Agent 的最新回复。
+              // 这里用与 SendMessageUseCase 相同的预览规则，保证两侧一致。
+              await _updateConversationPreview(fixedMsg);
               // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
               if (!_highlightActive) {
                 await _loadMessages();
@@ -641,6 +646,59 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         '$error\n$stackTrace',
       );
       _updateState((s) => s.copyWith(messages: LoadError(error, stackTrace)));
+    }
+  }
+
+  /// 更新会话预览，使其反映「真正的最后一条消息」。
+  ///
+  /// [SendMessageUseCase.execute] 只在用户发送时更新预览；Agent 回复经
+  /// 消息流到达时，若不在此同步刷新 [Conversation.lastMessageRole/Preview/
+  /// Time/Id]，消息中心的列表会永远停留在用户最后一条消息上（缺陷：预览
+  /// 与实际聊天尾端不一致）。
+  ///
+  /// 预览文本与用户侧共用 [_sendMessageUseCase.generatePreview]，确保
+  /// 「你:」前缀、Markdown 去除、截断等规则两侧完全一致。
+  ///
+  /// 两道护栏（避免把预览写坏）：
+  /// - 仅对人类可读的消息类型生效。[MessageType.toolCall] 走专用 UI，
+  ///   其预览是字面量 `[工具调用]`，若覆盖会话预览会让消息中心列表显示
+  ///   无意义的「[工具调用]」而非真正的最后一句对话。
+  /// - 仅当新消息不早于当前会话尾端时才覆盖 [Conversation.lastMessageTime]。
+  ///   messageStream 是广播流，乱序/重发的旧事件会触发本方法；若无此护栏，
+  ///   一条迟到的旧消息会把会话在列表里「拉回过去」（lastMessageTime 驱动
+  ///   消息中心的 DESC 排序）。
+  Future<void> _updateConversationPreview(Message message) async {
+    // 护栏 1：toolCall 等非对话消息不更新预览。
+    if (message.type == MessageType.toolCall) return;
+
+    try {
+      // 护栏 2：乱序/重发旧消息不得回卷 lastMessageTime。
+      final current = await _conversationRepo.getById(_conversationId);
+      if (current != null &&
+          message.timestamp < current.lastMessageTime &&
+          message.clientId != current.lastMessageId) {
+        return;
+      }
+
+      final preview = _sendMessageUseCase.generatePreview.execute(
+        role: message.role,
+        type: message.type,
+        content: message.content,
+      );
+      await _conversationRepo.updateLastMessage(
+        conversationId: _conversationId,
+        messageId: message.clientId,
+        preview: preview,
+        timestamp: message.timestamp,
+        role: message.role,
+      );
+    } catch (error, stackTrace) {
+      // 预览更新失败不应影响消息渲染本身 —— 仅记日志，列表会在下次
+      // 用户发送或重载时自然刷新。
+      debugPrint(
+        '[ChatViewModel] updateLastMessage failed for $_conversationId: '
+        '$error\n$stackTrace',
+      );
     }
   }
 

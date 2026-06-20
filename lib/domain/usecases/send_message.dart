@@ -40,6 +40,13 @@ class SendMessageUseCase {
        _generatePreview = generatePreview ?? GeneratePreview(),
        _uuid = uuid ?? const Uuid();
 
+  /// Exposes the preview generator so other components (notably
+  /// [ChatViewModel], when an agent reply arrives over the stream) can
+  /// build the same canonical preview text the use case produces for
+  /// user-sent messages.  Sharing the single instance keeps the
+  /// preview rules (prefix, Markdown stripping, truncation) in one place.
+  GeneratePreview get generatePreview => _generatePreview;
+
   /// Returns the next monotonically increasing logical clock value.
   ///
   /// Shared between [execute] (user messages) and callers like

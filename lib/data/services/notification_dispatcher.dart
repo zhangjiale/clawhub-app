@@ -56,7 +56,7 @@ class NotificationDispatcher {
     String? Function(NotificationEvent)? routeFor,
     this.connectionDedupWindow = const Duration(seconds: 30),
   }) : routeFor = routeFor ?? _defaultRouteFor {
-    _nextNotificationId = clock().millisecondsSinceEpoch;
+    _nextNotificationId = clock().millisecondsSinceEpoch % _maxNotificationId;
   }
 
   StreamSubscription<NotificationEvent>? _subscription;
@@ -72,11 +72,18 @@ class NotificationDispatcher {
 
   /// 单调递增的通知 id (同一进程内)。回复/错误/连接共用一个 id 空间。
   ///
-  /// 起点取自注入 clock 的毫秒时间戳 —— 进程重启后起点随时间推进，不会
-  /// 回卷到固定值，避免新通知覆盖系统通知栏里上一进程残留的同 id 通知
-  /// (Android 按 id 去重，相同 id 的 show 会替换而非追加)。
+  /// 起点取自注入 clock 的毫秒时间戳对 [\_maxNotificationId] 取模 —— 进程
+  /// 重启后起点通常随时间推进，与上一进程残留通知 id 碰撞的概率极低。
+  /// (Android 按 id 去重，相同 id 的 show 会替换而非追加。)
   /// 用 clock 而非 DateTime.now() 以保证单测可注入固定时间。
+  ///
+  /// Android flutter_local_notifications 要求 id 在 32-bit signed int 范围内
+  /// ([-2^31, 2^31-1])，因此对 2^31 取模并在递增时回卷。
+  /// 回卷时跳过 [\_dndSummaryId]，避免与 DND 汇总通知碰撞。
   late int _nextNotificationId;
+
+  /// 通知 id 上限 (2^31 - 1)，Android 要求 id 必须 ≤ 此值。
+  static const _maxNotificationId = 0x7FFFFFFF;
 
   /// DND 汇总通知用的固定 id。
   static const _dndSummaryId = 999_001;
@@ -114,7 +121,7 @@ class NotificationDispatcher {
           if (event is ReplyEvent && _isReplyDuplicate(event)) return;
           _consumeReplyDedupSlot(event);
           await notificationService.show(
-            id: _nextNotificationId++,
+            id: _consumeNotificationId(),
             channel: _channelFor(event),
             title: title,
             body: body,
@@ -222,6 +229,21 @@ class NotificationDispatcher {
         messageServerId: event.messageServerId,
       ),
     );
+  }
+
+  /// 取出当前通知 id 并递增 (回卷保证不超 32-bit 上限)。
+  ///
+  /// 若当前 id 恰好等于 [\_dndSummaryId]，自动跳过下一个，避免与 DND
+  /// 汇总通知碰撞 (Android 按 id 去重，碰撞会导致汇总被替换或反之)。
+  int _consumeNotificationId() {
+    var id = _nextNotificationId;
+    _nextNotificationId = (_nextNotificationId + 1) % _maxNotificationId;
+    // 跳过 DND 汇总 id — 递推消耗下一个。
+    if (id == _dndSummaryId) {
+      id = _nextNotificationId;
+      _nextNotificationId = (_nextNotificationId + 1) % _maxNotificationId;
+    }
+    return id;
   }
 
   void _evictIfFull() {

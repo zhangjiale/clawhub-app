@@ -464,6 +464,167 @@ void main() {
       );
     });
 
+    test('message stream: agent reply updates conversation preview '
+        '(regression: message hub must show the actual last message, '
+        'not always the user\'s last message)', () async {
+      final vm = await setupAgentAndInit();
+      final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+
+      // User sends a message — preview becomes "你: <text>".
+      await vm.send('用户的问题');
+
+      var conv = await conversationRepo.getById(canonicalConvId);
+      expect(conv!.lastMessageRole, MessageRole.user);
+      expect(conv.lastMessagePreview, '你: 用户的问题');
+
+      // Agent replies — the conversation preview MUST be updated to the
+      // agent's reply so the Message Hub shows the true last message.
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'reply-preview-1',
+          serverId: 'srv-preview-1',
+          conversationId: 'raw-conv-id',
+          agentId: 'r-1',
+          role: MessageRole.agent,
+          content: 'Agent 的最终回答',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      conv = await conversationRepo.getById(canonicalConvId);
+      expect(conv, isNotNull);
+      expect(
+        conv!.lastMessageRole,
+        MessageRole.agent,
+        reason: 'Conversation preview role should reflect the agent reply',
+      );
+      expect(
+        conv.lastMessagePreview,
+        'Agent 的最终回答',
+        reason:
+            'Conversation preview should show the agent reply text '
+            '(no "你:" prefix since it is the agent)',
+      );
+      expect(
+        conv.lastMessageId,
+        'reply-preview-1',
+        reason: 'Conversation lastMessageId should point at the agent reply',
+      );
+    });
+
+    test('message stream: tool-call message does NOT pollute conversation '
+        'preview (GeneratePreview would otherwise emit "[工具调用]")', () async {
+      final vm = await setupAgentAndInit();
+      final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+
+      // Establish a real text preview first.
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'agent-text-1',
+          agentId: 'r-1',
+          conversationId: 'raw',
+          role: MessageRole.agent,
+          content: '真·最终回复',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // A tool-call message arrives afterwards — it must NOT overwrite the
+      // conversation preview with "[工具调用]".
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'tool-call-1',
+          agentId: 'r-1',
+          conversationId: 'raw',
+          role: MessageRole.agent,
+          content: 'some tool args',
+          type: MessageType.toolCall,
+          status: MessageStatus.delivered,
+          logicalClock: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final conv = await conversationRepo.getById(canonicalConvId);
+      expect(conv, isNotNull);
+      expect(
+        conv!.lastMessagePreview,
+        '真·最终回复',
+        reason: 'Tool-call messages must not overwrite the text preview',
+      );
+      expect(
+        conv.lastMessageId,
+        'agent-text-1',
+        reason: 'lastMessageId must still point at the last text message',
+      );
+    });
+
+    test('message stream: a late/out-of-order older message does NOT regress '
+        'conversation ordering (lastMessageTime must not rewind)', () async {
+      final vm = await setupAgentAndInit();
+      final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
+
+      // Newer agent reply lands first.
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'newer-1',
+          agentId: 'r-1',
+          conversationId: 'raw',
+          role: MessageRole.agent,
+          content: 'newer reply',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          timestamp: 2_000_000_000,
+          logicalClock: 10,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      var conv = await conversationRepo.getById(canonicalConvId);
+      final newerTime = conv!.lastMessageTime;
+
+      // An older duplicate/replayed event arrives later. It must NOT
+      // rewind lastMessageTime or overwrite the preview.
+      gateway.emitMessage(
+        'inst-1',
+        Message(
+          clientId: 'older-1',
+          agentId: 'r-1',
+          conversationId: 'raw',
+          role: MessageRole.agent,
+          content: 'older stale reply',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          timestamp: 1_000_000_000, // earlier than the newer message
+          logicalClock: 5,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      conv = await conversationRepo.getById(canonicalConvId);
+      expect(conv, isNotNull);
+      expect(
+        conv!.lastMessageTime,
+        newerTime,
+        reason: 'Stale older event must not rewind lastMessageTime',
+      );
+      expect(
+        conv.lastMessagePreview,
+        'newer reply',
+        reason: 'Preview must stay on the newest message, not the stale one',
+      );
+    });
+
     test('message stream: agent reply with small logicalClock '
         'sorts chronologically (not grouped by sender)', () async {
       final vm = await setupAgentAndInit();

@@ -562,4 +562,116 @@ void main() {
 
     expect(service.shown.first.routePath, '/claws/chat/a');
   });
+
+  // ==========================================================================
+  // notification id: Android 32-bit range, wrap, DND collision avoidance
+  // ==========================================================================
+  group('notification id range and collision', () {
+    test('emitted notification ids stay within 32-bit signed int range '
+        '(0..0x7FFFFFFF)', () async {
+      // Seed clock just before the 32-bit limit so wrap triggers immediately.
+      // _maxNotificationId = 0x7FFFFFFF = 2147483647.
+      // _nextNotificationId = 2147483646 % 2147483647 = 2147483646.
+      const limit = 0x7FFFFFFF; // 2147483647
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime.fromMillisecondsSinceEpoch(limit - 1),
+      )..start();
+
+      // Emit 5 notifications: one at the edge, four after wrap.
+      for (var i = 0; i < 5; i++) {
+        controller.add(_reply(serverId: 'wrap-$i', clientId: 'cw-$i'));
+      }
+      await Future<void>.delayed(Duration.zero);
+      d.dispose();
+
+      expect(service.shown.length, 5);
+
+      // All ids must be in [0, 0x7FFFFFFF] (32-bit signed int).
+      for (final s in service.shown) {
+        expect(s.id, greaterThanOrEqualTo(0), reason: 'id must be >= 0');
+        expect(
+          s.id,
+          lessThanOrEqualTo(limit),
+          reason: 'id must be <= 0x7FFFFFFF (32-bit signed int max)',
+        );
+      }
+
+      // First id is near the limit, subsequent ids wrap to small values.
+      expect(service.shown.first.id, limit - 1); // 2147483646
+      expect(service.shown[1].id, 0); // wrap to 0
+    });
+
+    test(
+      'emitted ids never equal _dndSummaryId (999_001) — '
+      'collision avoidance prevents Android notification replacement',
+      () async {
+        // _dndSummaryId = 999_001.  Seed clock to 999_000 so the very next
+        // id would be 999_001 (= DND summary) and must be skipped.
+        const dndId = 999_001;
+        final d = buildDispatcher(
+          prefs: _prefs(),
+          clock: () => DateTime.fromMillisecondsSinceEpoch(999_000),
+        )..start();
+
+        // Emit 6 notifications.  id 999_001 should be silently skipped.
+        for (var i = 0; i < 6; i++) {
+          controller.add(_reply(serverId: 'collision-$i', clientId: 'cc-$i'));
+        }
+        await Future<void>.delayed(Duration.zero);
+        d.dispose();
+
+        expect(service.shown.length, 6);
+
+        // No emitted id should ever equal the DND summary id.
+        for (final s in service.shown) {
+          expect(
+            s.id,
+            isNot(equals(dndId)),
+            reason: 'emitted id must never collide with _dndSummaryId',
+          );
+        }
+
+        // Spot-check: 999_000 is emitted, then 999_001 is skipped,
+        // then 999_002 follows.
+        expect(service.shown[0].id, 999_000);
+        expect(service.shown[1].id, 999_002); // skipped 999_001
+        expect(service.shown[2].id, 999_003);
+      },
+    );
+
+    test('high-volume emit (1000 notifications) all ids in range, '
+        'no DND collision', () async {
+      // Seed at an arbitrary value; emit 1000 unique replies.
+      const seed = 500_000;
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime.fromMillisecondsSinceEpoch(seed),
+      )..start();
+
+      for (var i = 0; i < 1000; i++) {
+        controller.add(_reply(serverId: 'bulk-$i', clientId: 'cb-$i'));
+      }
+      await Future<void>.delayed(Duration.zero);
+      d.dispose();
+
+      expect(service.shown.length, 1000);
+
+      // All in [0, 0x7FFFFFFF], none equals DND id.
+      const limit = 0x7FFFFFFF;
+      for (final s in service.shown) {
+        expect(s.id, inInclusiveRange(0, limit));
+        expect(s.id, isNot(equals(999_001)));
+      }
+
+      // Monotonic (within this process, sequential, no gaps except skip).
+      for (var i = 1; i < service.shown.length; i++) {
+        expect(
+          service.shown[i].id,
+          greaterThan(service.shown[i - 1].id),
+          reason: 'ids should be monotonically increasing within a process',
+        );
+      }
+    });
+  });
 }
