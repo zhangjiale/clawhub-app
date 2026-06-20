@@ -12,6 +12,7 @@ import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 
 /// The agent's thinking/waiting state — mutually exclusive states that
@@ -26,6 +27,10 @@ enum ThinkingState {
   /// Agent has been thinking for >60s without a reply.
   timeout,
 }
+
+// ============================================================
+// SECTION 1: State types (ChatSessionState + ThinkingState)
+// ============================================================
 
 /// Single immutable snapshot of the chat session, replacing the 5
 /// independent [ValueNotifier]s that previously scattered across the
@@ -153,6 +158,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
   final SendMessageUseCase _sendMessageUseCase;
+  final IAchievementChecker _achievementChecker;
   final String instanceId;
   final String agentId;
 
@@ -212,6 +218,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
 
+  // ============================================================
+  // SECTION 2: Constructor + field wiring
+  // ============================================================
+
   ChatViewModel({
     required IAgentRepo agentRepo,
     required IConversationRepo conversationRepo,
@@ -219,6 +229,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     required IInstanceRepo instanceRepo,
     required IGatewayClient gatewayClient,
     required SendMessageUseCase sendMessageUseCase,
+    required IAchievementChecker achievementChecker,
     required this.instanceId,
     required this.agentId,
     this.flushDelay = const Duration(milliseconds: 150),
@@ -228,6 +239,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
        _instanceRepo = instanceRepo,
        _gatewayClient = gatewayClient,
        _sendMessageUseCase = sendMessageUseCase,
+       _achievementChecker = achievementChecker,
        super(const ChatSessionState());
 
   /// The loaded agent (null until [init] completes).
@@ -336,6 +348,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
                 _updateState((s) => s.copyWith(streamingText: ''));
                 _stopThinking();
                 onStatsChanged?.call();
+                // Fire-and-forget achievement evaluation — deferred to
+                // agent reply arrival so stats include the latest message
+                // and don't contend with concurrent streaming inserts.
+                _achievementChecker.check(agentId);
               }
             },
             onError: (error, stackTrace) {
@@ -421,6 +437,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     }
   }
 
+  // ============================================================
+  // SECTION 3: Send + thinking state management
+  // ============================================================
+
   /// Send a text message.
   ///
   /// If [init] hasn't completed yet, awaits it first so the user's message
@@ -495,8 +515,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
     // outbox 计数由 _outboxCountSubscription 自动驱动，无需在此手动刷新。
     // 离线时新消息进入 PENDING，写库后 stream 自动推送新计数到 OutboxWarningBanner。
-
-    onStatsChanged?.call();
+    //
+    // onStatsChanged and achievement check are deferred to the message
+    // stream listener (agent reply arrival) — the user's own send doesn't
+    // change stats from the dashboard perspective, and deferring avoids
+    // DB contention with concurrent streaming message inserts.
   }
 
   /// Dismiss the timeout banner and cancel waiting.
@@ -616,6 +639,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   Future<void> reloadMessages() async {
     await _loadMessages();
   }
+
+  // ============================================================
+  // SECTION 4: Retry + highlight + connection recovery
+  // ============================================================
 
   /// 重试一条 FAILED 消息（US-015 AC2 手动重试入口）。
   ///
@@ -749,6 +776,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   }
 
   /// Release resources. Call when the chat room is permanently closed.
+  // ============================================================
+  // SECTION 5: Dispose / teardown
+  // ============================================================
+
   @override
   void dispose() {
     _teardownSubscriptions();

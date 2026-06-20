@@ -8,11 +8,15 @@ import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart'
     show GatewayConnectionState;
 import 'package:claw_hub/ui_kit/async_state.dart';
+import 'package:mocktail/mocktail.dart';
+
+class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
 /// Law 17: ChatViewModel 新增 highlight 方法的测试契约。
 void main() {
@@ -22,6 +26,7 @@ void main() {
     late InMemoryConversationRepo conversationRepo;
     late InMemoryInstanceRepo instanceRepo;
     late MockGatewayClient gateway;
+    late IAchievementChecker achievementChecker;
 
     setUp(() {
       agentRepo = InMemoryAgentRepo();
@@ -29,6 +34,7 @@ void main() {
       conversationRepo = InMemoryConversationRepo();
       instanceRepo = InMemoryInstanceRepo();
       gateway = MockGatewayClient();
+      achievementChecker = _MockAchievementChecker();
     });
 
     ChatViewModel createViewModel({
@@ -49,6 +55,7 @@ void main() {
         ),
         instanceId: instanceId,
         agentId: agentId,
+        achievementChecker: achievementChecker,
         flushDelay: Duration.zero,
       );
     }

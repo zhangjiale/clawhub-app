@@ -4,12 +4,16 @@ import 'dart:typed_data';
 import 'package:mocktail/mocktail.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/agent_stats.dart';
+import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
+import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
+import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
@@ -20,11 +24,15 @@ class MockInstanceRepo extends Mock implements IInstanceRepo {}
 
 class MockMessageRepo extends Mock implements IMessageRepo {}
 
+class MockAchievementRepo extends Mock implements IAchievementRepo {}
+
 class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
 void main() {
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
+    registerFallbackValue(AgentStats(agentId: 'fallback'));
+    registerFallbackValue(<String>{''});
   });
 
   group('AgentDetailData', () {
@@ -94,6 +102,7 @@ void main() {
     late MockAgentRepo agentRepo;
     late MockInstanceRepo instanceRepo;
     late MockMessageRepo messageRepo;
+    late MockAchievementRepo achievementRepo;
     late MockAvatarStorageService avatarStorageService;
 
     final testAgent = Agent(
@@ -109,7 +118,23 @@ void main() {
       agentRepo = MockAgentRepo();
       instanceRepo = MockInstanceRepo();
       messageRepo = MockMessageRepo();
+      achievementRepo = MockAchievementRepo();
       avatarStorageService = MockAvatarStorageService();
+
+      // Default stubs — achievement load is best-effort, return empty data
+      when(
+        () => achievementRepo.getStats(any()),
+      ).thenAnswer((_) async => null); // cache miss → computeStats
+      when(
+        () => achievementRepo.computeStats(any()),
+      ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
+      when(() => achievementRepo.saveStats(any())).thenAnswer((_) async {});
+      when(
+        () => achievementRepo.getUnlocks(any()),
+      ).thenAnswer((_) async => <Achievement>[]);
+      when(
+        () => achievementRepo.batchUnlock(any(), any()),
+      ).thenAnswer((_) async => <Achievement>[]);
     });
 
     AgentProfileViewModel createVM() {
@@ -118,6 +143,7 @@ void main() {
         instanceRepo: instanceRepo,
         messageRepo: messageRepo,
         avatarStorageService: avatarStorageService,
+        evaluateAchievements: EvaluateAchievementsUseCase(achievementRepo),
         agentId: 'local-1',
       );
     }

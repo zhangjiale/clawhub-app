@@ -18,8 +18,13 @@ import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
 import 'package:claw_hub/data/repositories/drift_message_repo.dart';
 import 'package:claw_hub/data/repositories/drift_conversation_repo.dart';
 import 'package:claw_hub/data/repositories/drift_settings_repo.dart';
+import 'package:claw_hub/data/repositories/drift_achievement_repo.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
+import 'package:claw_hub/data/services/achievement_checker.dart';
 import 'package:claw_hub/data/local/database/database.dart';
+import 'package:claw_hub/domain/models/stats_data.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
+import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/domain/usecases/save_instance.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
@@ -88,6 +93,46 @@ final reconnectExhaustedProvider = StateProvider<Set<String>>(
 final catchUpTruncatedProvider = StateProvider<Set<String>>(
   (ref) => <String>{},
 );
+
+// --- Shared Stats (used by agent_list and chat_room features) ---
+
+/// 全局统计 Provider — 从实例、Agent、消息仓库聚合统计快照。
+///
+/// 数据类 [StatsData] 已迁至 [package:claw_hub/domain/models/stats_data.dart]
+/// (Clean Architecture: 值对象属于 domain/models/，非 app/di/)。
+///
+/// [chat_room] 在消息发送/接收后通过 [ref.invalidate] 刷新此 provider，
+/// 使 agent_list 页的统计栏自动反映最新计数。
+final statsProvider = FutureProvider<StatsData>((ref) async {
+  final instances = await ref.watch(instanceRepoProvider).getAll();
+  final agents = await ref.watch(agentRepoProvider).getAll();
+  final messageRepo = ref.watch(messageRepoProvider);
+
+  final activeInstances = instances
+      .where((i) => i.healthStatus.isConnectable)
+      .length;
+
+  final onlineInstanceIds = instances
+      .where((i) => i.healthStatus.isConnectable)
+      .map((i) => i.id)
+      .toSet();
+
+  final onlineAgents = agents
+      .where((a) => onlineInstanceIds.contains(a.instanceId))
+      .length;
+
+  final agentIds = agents.map((a) => a.localId).toList();
+  final counts = await messageRepo.getMessageCountsByAgent(agentIds);
+  final totalMessages = counts.values.fold<int>(0, (sum, c) => sum + c);
+
+  return StatsData(
+    activeInstances: activeInstances,
+    totalInstances: instances.length,
+    onlineAgents: onlineAgents,
+    totalAgents: agents.length,
+    totalMessages: totalMessages,
+  );
+});
 
 // --- Connection Initialization State ---
 
@@ -341,6 +386,22 @@ final conversationRepoProvider = Provider<IConversationRepo>((ref) {
 
 final settingsRepoProvider = Provider<ISettingsRepo>((ref) {
   return DriftSettingsRepo(ref.watch(databaseProvider));
+});
+
+final achievementRepoProvider = Provider<IAchievementRepo>((ref) {
+  return DriftAchievementRepo(ref.watch(databaseProvider));
+});
+
+final evaluateAchievementsUseCaseProvider =
+    Provider<EvaluateAchievementsUseCase>(
+      (ref) => EvaluateAchievementsUseCase(ref.watch(achievementRepoProvider)),
+    );
+
+final achievementCheckerProvider = Provider<IAchievementChecker>((ref) {
+  return AchievementChecker(
+    ref.watch(evaluateAchievementsUseCaseProvider),
+    ref.watch(loggerProvider),
+  );
 });
 
 // --- Use Cases ---

@@ -10,6 +10,7 @@ import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
@@ -17,6 +18,8 @@ import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 
 class _MockOrchestrator extends Mock implements ConnectionOrchestrator {}
+
+class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
 const _key = (instanceId: 'inst-1', agentId: 'local-1');
 
@@ -66,6 +69,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
       );
       await vm.init();
       vm.state = const ChatSessionState(messages: LoadData(<Message>[]));
@@ -126,6 +130,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
       );
       // Don't call vm.init() — we set state directly to avoid triggering
       // stream subscriptions that would hang in the widget test environment.
@@ -180,6 +185,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
       );
       vm.state = const ChatSessionState(
         messages: LoadData(<Message>[]),
@@ -242,6 +248,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
       );
       vm.state = const ChatSessionState(
         messages: LoadData(<Message>[]),
@@ -299,6 +306,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
       );
       vm.state = const ChatSessionState(messages: LoadData(<Message>[]));
 

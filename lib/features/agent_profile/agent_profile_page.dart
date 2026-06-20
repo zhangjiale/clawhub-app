@@ -7,6 +7,8 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/widgets/profile_header.dart';
 import 'package:claw_hub/features/agent_profile/widgets/stats_grid.dart';
+import 'package:claw_hub/features/agent_profile/widgets/achievement_list.dart';
+import 'package:claw_hub/features/agent_profile/widgets/milestone_celebration.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
@@ -43,103 +45,76 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _handleBack();
       },
-      child: Scaffold(
-        appBar: AppBar(
-          leading: XiaBackButton(onPressed: _handleBack),
-          title: switch (state.detailLoadState) {
-            LoadData(:final value) => Text(value.agent.displayName),
-            _ => const Text('虾详情'),
-          },
-          actions: [
-            if (state.detailLoadState is LoadData<AgentDetailData>)
-              Padding(
-                padding: const EdgeInsets.only(right: XiaSpacing.s2),
-                child: HeaderButton(
-                  icon: Icons.edit,
-                  tooltip: '个性化配置',
-                  onPressed: () {
-                    context.push(
-                      AppRoutes.agentConfigWithParams(widget.agentId),
-                    );
-                  },
-                ),
+      child: Stack(
+        children: [
+          Scaffold(
+            appBar: AppBar(
+              leading: XiaBackButton(onPressed: _handleBack),
+              title: switch (state.detailLoadState) {
+                LoadData(:final value) => Text(value.agent.displayName),
+                _ => const Text('虾详情'),
+              },
+              actions: [
+                if (state.detailLoadState is LoadData<AgentDetailData>)
+                  Padding(
+                    padding: const EdgeInsets.only(right: XiaSpacing.s2),
+                    child: HeaderButton(
+                      icon: Icons.edit,
+                      tooltip: '个性化配置',
+                      onPressed: () {
+                        context.push(
+                          AppRoutes.agentConfigWithParams(widget.agentId),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+            body: switch (state.detailLoadState) {
+              LoadInProgress() => const LoadingSkeleton(count: 3),
+              LoadError(:final error) => LoadErrorView(
+                error: error,
+                title: '无法加载虾信息',
+                onRetry: () => vm.refresh(),
               ),
-          ],
-        ),
-        body: switch (state.detailLoadState) {
-          LoadInProgress() => const LoadingSkeleton(count: 3),
-          LoadError(:final error) => LoadErrorView(
-            error: error,
-            title: '无法加载虾信息',
-            onRetry: () => vm.refresh(),
-          ),
-          LoadData(:final value) => ListView(
-            children: [
-              ProfileHeader(agent: value.agent, instance: value.instance),
-              StatsGrid(messageCount: value.messageCount),
-              const SizedBox(height: XiaSpacing.s3),
-              // Future banner
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: XiaSpacing.s4,
-                    vertical: XiaSpacing.s3,
+              LoadData(:final value) => ListView(
+                children: [
+                  ProfileHeader(agent: value.agent, instance: value.instance),
+                  StatsGrid(
+                    stats: value.stats,
+                    fallbackMessageCount: value.messageCount,
                   ),
-                  decoration: BoxDecoration(
-                    color: XiaColors.accentMuted,
-                    borderRadius: BorderRadius.circular(XiaRadius.sm),
-                    border: Border.all(color: XiaColors.accent.withAlpha(80)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Text('📊'),
-                      const SizedBox(width: XiaSpacing.s2),
-                      Expanded(
-                        child: Text(
-                          '完整成长数据将在 V1.2 上线后可用',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: XiaColors.text3,
+                  const SizedBox(height: XiaSpacing.s5),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: XiaSpacing.s6,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '🏆 成就',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: XiaSpacing.s4),
+                        AchievementList(achievements: value.achievements),
+                      ],
+                    ),
                   ),
-                ),
+                  const SizedBox(height: XiaSpacing.s8),
+                ],
               ),
-              const SizedBox(height: XiaSpacing.s5),
-              // Achievements placeholder
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '🏆 成就',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: XiaSpacing.s4),
-                    Center(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: XiaSpacing.s6,
-                        ),
-                        child: Text(
-                          '更多数据积累后解锁成就系统…',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.outline,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            },
           ),
-        },
+          // Celebration overlay — shown when new achievements are unlocked
+          if (state.newUnlocks.isNotEmpty)
+            MilestoneCelebrationOverlay(
+              achievement: state.newUnlocks.first,
+              onDismiss: vm.clearNewUnlocks,
+            ),
+        ],
       ),
     );
   }

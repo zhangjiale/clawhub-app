@@ -15,7 +15,11 @@ import 'package:claw_hub/core/acl/gateway_protocol.dart'
     show GatewayConnectionState, StreamingDelta, StreamingDone, StreamingEvent;
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
+import 'package:mocktail/mocktail.dart';
+
+class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
 void main() {
   group('ChatViewModel.send', () {
@@ -24,6 +28,7 @@ void main() {
     late InMemoryConversationRepo conversationRepo;
     late InMemoryInstanceRepo instanceRepo;
     late MockGatewayClient gateway;
+    late IAchievementChecker achievementChecker;
 
     setUp(() {
       agentRepo = InMemoryAgentRepo();
@@ -31,6 +36,7 @@ void main() {
       conversationRepo = InMemoryConversationRepo();
       instanceRepo = InMemoryInstanceRepo();
       gateway = MockGatewayClient();
+      achievementChecker = _MockAchievementChecker();
     });
 
     ChatViewModel createViewModel({
@@ -51,6 +57,7 @@ void main() {
         ),
         instanceId: instanceId,
         agentId: agentId,
+        achievementChecker: achievementChecker,
         flushDelay: Duration.zero, // synchronous flush for tests
       );
     }
@@ -243,6 +250,7 @@ void main() {
         sendMessageUseCase: failingUseCase,
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: achievementChecker,
         flushDelay: Duration.zero, // synchronous flush for tests
       );
       await vm.init();
@@ -301,6 +309,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: achievementChecker,
         flushDelay: Duration.zero, // synchronous flush for tests
       );
       await vm.init();
@@ -332,6 +341,7 @@ void main() {
     late InMemoryConversationRepo conversationRepo;
     late InMemoryInstanceRepo instanceRepo;
     late _ControllableStreamsGateway gateway;
+    late IAchievementChecker achievementChecker;
 
     setUp(() {
       agentRepo = InMemoryAgentRepo();
@@ -339,6 +349,7 @@ void main() {
       conversationRepo = InMemoryConversationRepo();
       instanceRepo = InMemoryInstanceRepo();
       gateway = _ControllableStreamsGateway();
+      achievementChecker = _MockAchievementChecker();
     });
 
     ChatViewModel createViewModel({
@@ -359,6 +370,7 @@ void main() {
         ),
         instanceId: instanceId,
         agentId: agentId,
+        achievementChecker: achievementChecker,
         flushDelay: Duration.zero, // synchronous flush for tests
       );
     }
@@ -738,6 +750,7 @@ void main() {
             instanceRepo: instanceRepo,
             gatewayClient: gateway,
           ),
+          achievementChecker: _MockAchievementChecker(),
           instanceId: instanceId,
           agentId: agentId,
           flushDelay: Duration.zero,

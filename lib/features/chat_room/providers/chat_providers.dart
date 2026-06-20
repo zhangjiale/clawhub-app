@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
-import 'package:claw_hub/features/agent_list/providers/stats_providers.dart';
 
 /// ChatViewModel provider — owns the full lifecycle of a chat session.
 ///
@@ -23,6 +22,7 @@ final chatViewModelProvider =
         instanceRepo: ref.watch(instanceRepoProvider),
         gatewayClient: ref.watch(gatewayClientProvider),
         sendMessageUseCase: ref.watch(sendMessageUseCaseProvider),
+        achievementChecker: ref.watch(achievementCheckerProvider),
         instanceId: params.instanceId,
         agentId: params.agentId,
       );

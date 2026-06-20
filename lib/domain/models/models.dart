@@ -7,5 +7,8 @@ export 'conversation.dart';
 export 'message.dart';
 export 'tool_call.dart';
 export 'quick_command.dart';
+export 'agent_stats.dart';
+export 'achievement.dart';
+export 'stats_data.dart';
 export 'storage_info.dart';
 export 'user_preferences.dart';

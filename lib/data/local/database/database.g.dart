@@ -3768,6 +3768,844 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
   }
 }
 
+class AgentStats extends Table with TableInfo<AgentStats, AgentStat> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  AgentStats(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _agentIdMeta = const VerificationMeta(
+    'agentId',
+  );
+  late final GeneratedColumn<String> agentId = GeneratedColumn<String>(
+    'agent_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    $customConstraints: 'PRIMARY KEY',
+  );
+  static const VerificationMeta _totalDialogsMeta = const VerificationMeta(
+    'totalDialogs',
+  );
+  late final GeneratedColumn<int> totalDialogs = GeneratedColumn<int>(
+    'total_dialogs',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0 CHECK (total_dialogs >= 0)',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _totalMessagesMeta = const VerificationMeta(
+    'totalMessages',
+  );
+  late final GeneratedColumn<int> totalMessages = GeneratedColumn<int>(
+    'total_messages',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0 CHECK (total_messages >= 0)',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _totalToolCallsMeta = const VerificationMeta(
+    'totalToolCalls',
+  );
+  late final GeneratedColumn<int> totalToolCalls = GeneratedColumn<int>(
+    'total_tool_calls',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0 CHECK (total_tool_calls >= 0)',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _activeDaysMeta = const VerificationMeta(
+    'activeDays',
+  );
+  late final GeneratedColumn<int> activeDays = GeneratedColumn<int>(
+    'active_days',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0 CHECK (active_days >= 0)',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _currentStreakMeta = const VerificationMeta(
+    'currentStreak',
+  );
+  late final GeneratedColumn<int> currentStreak = GeneratedColumn<int>(
+    'current_streak',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0 CHECK (current_streak >= 0)',
+    defaultValue: const CustomExpression('0'),
+  );
+  static const VerificationMeta _firstDialogDateMeta = const VerificationMeta(
+    'firstDialogDate',
+  );
+  late final GeneratedColumn<int> firstDialogDate = GeneratedColumn<int>(
+    'first_dialog_date',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: '',
+  );
+  static const VerificationMeta _lastDialogDateMeta = const VerificationMeta(
+    'lastDialogDate',
+  );
+  late final GeneratedColumn<int> lastDialogDate = GeneratedColumn<int>(
+    'last_dialog_date',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: '',
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    agentId,
+    totalDialogs,
+    totalMessages,
+    totalToolCalls,
+    activeDays,
+    currentStreak,
+    firstDialogDate,
+    lastDialogDate,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'agent_stats';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AgentStat> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('agent_id')) {
+      context.handle(
+        _agentIdMeta,
+        agentId.isAcceptableOrUnknown(data['agent_id']!, _agentIdMeta),
+      );
+    }
+    if (data.containsKey('total_dialogs')) {
+      context.handle(
+        _totalDialogsMeta,
+        totalDialogs.isAcceptableOrUnknown(
+          data['total_dialogs']!,
+          _totalDialogsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('total_messages')) {
+      context.handle(
+        _totalMessagesMeta,
+        totalMessages.isAcceptableOrUnknown(
+          data['total_messages']!,
+          _totalMessagesMeta,
+        ),
+      );
+    }
+    if (data.containsKey('total_tool_calls')) {
+      context.handle(
+        _totalToolCallsMeta,
+        totalToolCalls.isAcceptableOrUnknown(
+          data['total_tool_calls']!,
+          _totalToolCallsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('active_days')) {
+      context.handle(
+        _activeDaysMeta,
+        activeDays.isAcceptableOrUnknown(data['active_days']!, _activeDaysMeta),
+      );
+    }
+    if (data.containsKey('current_streak')) {
+      context.handle(
+        _currentStreakMeta,
+        currentStreak.isAcceptableOrUnknown(
+          data['current_streak']!,
+          _currentStreakMeta,
+        ),
+      );
+    }
+    if (data.containsKey('first_dialog_date')) {
+      context.handle(
+        _firstDialogDateMeta,
+        firstDialogDate.isAcceptableOrUnknown(
+          data['first_dialog_date']!,
+          _firstDialogDateMeta,
+        ),
+      );
+    }
+    if (data.containsKey('last_dialog_date')) {
+      context.handle(
+        _lastDialogDateMeta,
+        lastDialogDate.isAcceptableOrUnknown(
+          data['last_dialog_date']!,
+          _lastDialogDateMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {agentId};
+  @override
+  AgentStat map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AgentStat(
+      agentId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_id'],
+      ),
+      totalDialogs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}total_dialogs'],
+      )!,
+      totalMessages: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}total_messages'],
+      )!,
+      totalToolCalls: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}total_tool_calls'],
+      )!,
+      activeDays: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}active_days'],
+      )!,
+      currentStreak: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}current_streak'],
+      )!,
+      firstDialogDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}first_dialog_date'],
+      ),
+      lastDialogDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}last_dialog_date'],
+      ),
+    );
+  }
+
+  @override
+  AgentStats createAlias(String alias) {
+    return AgentStats(attachedDatabase, alias);
+  }
+
+  @override
+  List<String> get customConstraints => const [
+    'FOREIGN KEY(agent_id)REFERENCES agents(local_id)ON DELETE CASCADE',
+  ];
+  @override
+  bool get dontWriteConstraints => true;
+}
+
+class AgentStat extends DataClass implements Insertable<AgentStat> {
+  final String? agentId;
+  final int totalDialogs;
+  final int totalMessages;
+  final int totalToolCalls;
+  final int activeDays;
+  final int currentStreak;
+  final int? firstDialogDate;
+  final int? lastDialogDate;
+  const AgentStat({
+    this.agentId,
+    required this.totalDialogs,
+    required this.totalMessages,
+    required this.totalToolCalls,
+    required this.activeDays,
+    required this.currentStreak,
+    this.firstDialogDate,
+    this.lastDialogDate,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (!nullToAbsent || agentId != null) {
+      map['agent_id'] = Variable<String>(agentId);
+    }
+    map['total_dialogs'] = Variable<int>(totalDialogs);
+    map['total_messages'] = Variable<int>(totalMessages);
+    map['total_tool_calls'] = Variable<int>(totalToolCalls);
+    map['active_days'] = Variable<int>(activeDays);
+    map['current_streak'] = Variable<int>(currentStreak);
+    if (!nullToAbsent || firstDialogDate != null) {
+      map['first_dialog_date'] = Variable<int>(firstDialogDate);
+    }
+    if (!nullToAbsent || lastDialogDate != null) {
+      map['last_dialog_date'] = Variable<int>(lastDialogDate);
+    }
+    return map;
+  }
+
+  AgentStatsCompanion toCompanion(bool nullToAbsent) {
+    return AgentStatsCompanion(
+      agentId: agentId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(agentId),
+      totalDialogs: Value(totalDialogs),
+      totalMessages: Value(totalMessages),
+      totalToolCalls: Value(totalToolCalls),
+      activeDays: Value(activeDays),
+      currentStreak: Value(currentStreak),
+      firstDialogDate: firstDialogDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(firstDialogDate),
+      lastDialogDate: lastDialogDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastDialogDate),
+    );
+  }
+
+  factory AgentStat.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AgentStat(
+      agentId: serializer.fromJson<String?>(json['agent_id']),
+      totalDialogs: serializer.fromJson<int>(json['total_dialogs']),
+      totalMessages: serializer.fromJson<int>(json['total_messages']),
+      totalToolCalls: serializer.fromJson<int>(json['total_tool_calls']),
+      activeDays: serializer.fromJson<int>(json['active_days']),
+      currentStreak: serializer.fromJson<int>(json['current_streak']),
+      firstDialogDate: serializer.fromJson<int?>(json['first_dialog_date']),
+      lastDialogDate: serializer.fromJson<int?>(json['last_dialog_date']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'agent_id': serializer.toJson<String?>(agentId),
+      'total_dialogs': serializer.toJson<int>(totalDialogs),
+      'total_messages': serializer.toJson<int>(totalMessages),
+      'total_tool_calls': serializer.toJson<int>(totalToolCalls),
+      'active_days': serializer.toJson<int>(activeDays),
+      'current_streak': serializer.toJson<int>(currentStreak),
+      'first_dialog_date': serializer.toJson<int?>(firstDialogDate),
+      'last_dialog_date': serializer.toJson<int?>(lastDialogDate),
+    };
+  }
+
+  AgentStat copyWith({
+    Value<String?> agentId = const Value.absent(),
+    int? totalDialogs,
+    int? totalMessages,
+    int? totalToolCalls,
+    int? activeDays,
+    int? currentStreak,
+    Value<int?> firstDialogDate = const Value.absent(),
+    Value<int?> lastDialogDate = const Value.absent(),
+  }) => AgentStat(
+    agentId: agentId.present ? agentId.value : this.agentId,
+    totalDialogs: totalDialogs ?? this.totalDialogs,
+    totalMessages: totalMessages ?? this.totalMessages,
+    totalToolCalls: totalToolCalls ?? this.totalToolCalls,
+    activeDays: activeDays ?? this.activeDays,
+    currentStreak: currentStreak ?? this.currentStreak,
+    firstDialogDate: firstDialogDate.present
+        ? firstDialogDate.value
+        : this.firstDialogDate,
+    lastDialogDate: lastDialogDate.present
+        ? lastDialogDate.value
+        : this.lastDialogDate,
+  );
+  AgentStat copyWithCompanion(AgentStatsCompanion data) {
+    return AgentStat(
+      agentId: data.agentId.present ? data.agentId.value : this.agentId,
+      totalDialogs: data.totalDialogs.present
+          ? data.totalDialogs.value
+          : this.totalDialogs,
+      totalMessages: data.totalMessages.present
+          ? data.totalMessages.value
+          : this.totalMessages,
+      totalToolCalls: data.totalToolCalls.present
+          ? data.totalToolCalls.value
+          : this.totalToolCalls,
+      activeDays: data.activeDays.present
+          ? data.activeDays.value
+          : this.activeDays,
+      currentStreak: data.currentStreak.present
+          ? data.currentStreak.value
+          : this.currentStreak,
+      firstDialogDate: data.firstDialogDate.present
+          ? data.firstDialogDate.value
+          : this.firstDialogDate,
+      lastDialogDate: data.lastDialogDate.present
+          ? data.lastDialogDate.value
+          : this.lastDialogDate,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AgentStat(')
+          ..write('agentId: $agentId, ')
+          ..write('totalDialogs: $totalDialogs, ')
+          ..write('totalMessages: $totalMessages, ')
+          ..write('totalToolCalls: $totalToolCalls, ')
+          ..write('activeDays: $activeDays, ')
+          ..write('currentStreak: $currentStreak, ')
+          ..write('firstDialogDate: $firstDialogDate, ')
+          ..write('lastDialogDate: $lastDialogDate')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    agentId,
+    totalDialogs,
+    totalMessages,
+    totalToolCalls,
+    activeDays,
+    currentStreak,
+    firstDialogDate,
+    lastDialogDate,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AgentStat &&
+          other.agentId == this.agentId &&
+          other.totalDialogs == this.totalDialogs &&
+          other.totalMessages == this.totalMessages &&
+          other.totalToolCalls == this.totalToolCalls &&
+          other.activeDays == this.activeDays &&
+          other.currentStreak == this.currentStreak &&
+          other.firstDialogDate == this.firstDialogDate &&
+          other.lastDialogDate == this.lastDialogDate);
+}
+
+class AgentStatsCompanion extends UpdateCompanion<AgentStat> {
+  final Value<String?> agentId;
+  final Value<int> totalDialogs;
+  final Value<int> totalMessages;
+  final Value<int> totalToolCalls;
+  final Value<int> activeDays;
+  final Value<int> currentStreak;
+  final Value<int?> firstDialogDate;
+  final Value<int?> lastDialogDate;
+  final Value<int> rowid;
+  const AgentStatsCompanion({
+    this.agentId = const Value.absent(),
+    this.totalDialogs = const Value.absent(),
+    this.totalMessages = const Value.absent(),
+    this.totalToolCalls = const Value.absent(),
+    this.activeDays = const Value.absent(),
+    this.currentStreak = const Value.absent(),
+    this.firstDialogDate = const Value.absent(),
+    this.lastDialogDate = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  AgentStatsCompanion.insert({
+    this.agentId = const Value.absent(),
+    this.totalDialogs = const Value.absent(),
+    this.totalMessages = const Value.absent(),
+    this.totalToolCalls = const Value.absent(),
+    this.activeDays = const Value.absent(),
+    this.currentStreak = const Value.absent(),
+    this.firstDialogDate = const Value.absent(),
+    this.lastDialogDate = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  static Insertable<AgentStat> custom({
+    Expression<String>? agentId,
+    Expression<int>? totalDialogs,
+    Expression<int>? totalMessages,
+    Expression<int>? totalToolCalls,
+    Expression<int>? activeDays,
+    Expression<int>? currentStreak,
+    Expression<int>? firstDialogDate,
+    Expression<int>? lastDialogDate,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (agentId != null) 'agent_id': agentId,
+      if (totalDialogs != null) 'total_dialogs': totalDialogs,
+      if (totalMessages != null) 'total_messages': totalMessages,
+      if (totalToolCalls != null) 'total_tool_calls': totalToolCalls,
+      if (activeDays != null) 'active_days': activeDays,
+      if (currentStreak != null) 'current_streak': currentStreak,
+      if (firstDialogDate != null) 'first_dialog_date': firstDialogDate,
+      if (lastDialogDate != null) 'last_dialog_date': lastDialogDate,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  AgentStatsCompanion copyWith({
+    Value<String?>? agentId,
+    Value<int>? totalDialogs,
+    Value<int>? totalMessages,
+    Value<int>? totalToolCalls,
+    Value<int>? activeDays,
+    Value<int>? currentStreak,
+    Value<int?>? firstDialogDate,
+    Value<int?>? lastDialogDate,
+    Value<int>? rowid,
+  }) {
+    return AgentStatsCompanion(
+      agentId: agentId ?? this.agentId,
+      totalDialogs: totalDialogs ?? this.totalDialogs,
+      totalMessages: totalMessages ?? this.totalMessages,
+      totalToolCalls: totalToolCalls ?? this.totalToolCalls,
+      activeDays: activeDays ?? this.activeDays,
+      currentStreak: currentStreak ?? this.currentStreak,
+      firstDialogDate: firstDialogDate ?? this.firstDialogDate,
+      lastDialogDate: lastDialogDate ?? this.lastDialogDate,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (agentId.present) {
+      map['agent_id'] = Variable<String>(agentId.value);
+    }
+    if (totalDialogs.present) {
+      map['total_dialogs'] = Variable<int>(totalDialogs.value);
+    }
+    if (totalMessages.present) {
+      map['total_messages'] = Variable<int>(totalMessages.value);
+    }
+    if (totalToolCalls.present) {
+      map['total_tool_calls'] = Variable<int>(totalToolCalls.value);
+    }
+    if (activeDays.present) {
+      map['active_days'] = Variable<int>(activeDays.value);
+    }
+    if (currentStreak.present) {
+      map['current_streak'] = Variable<int>(currentStreak.value);
+    }
+    if (firstDialogDate.present) {
+      map['first_dialog_date'] = Variable<int>(firstDialogDate.value);
+    }
+    if (lastDialogDate.present) {
+      map['last_dialog_date'] = Variable<int>(lastDialogDate.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AgentStatsCompanion(')
+          ..write('agentId: $agentId, ')
+          ..write('totalDialogs: $totalDialogs, ')
+          ..write('totalMessages: $totalMessages, ')
+          ..write('totalToolCalls: $totalToolCalls, ')
+          ..write('activeDays: $activeDays, ')
+          ..write('currentStreak: $currentStreak, ')
+          ..write('firstDialogDate: $firstDialogDate, ')
+          ..write('lastDialogDate: $lastDialogDate, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class AchievementUnlocks extends Table
+    with TableInfo<AchievementUnlocks, AchievementUnlock> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  AchievementUnlocks(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _achievementIdMeta = const VerificationMeta(
+    'achievementId',
+  );
+  late final GeneratedColumn<String> achievementId = GeneratedColumn<String>(
+    'achievement_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _agentIdMeta = const VerificationMeta(
+    'agentId',
+  );
+  late final GeneratedColumn<String> agentId = GeneratedColumn<String>(
+    'agent_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _unlockedAtMeta = const VerificationMeta(
+    'unlockedAt',
+  );
+  late final GeneratedColumn<int> unlockedAt = GeneratedColumn<int>(
+    'unlocked_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  @override
+  List<GeneratedColumn> get $columns => [achievementId, agentId, unlockedAt];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'achievement_unlocks';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AchievementUnlock> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('achievement_id')) {
+      context.handle(
+        _achievementIdMeta,
+        achievementId.isAcceptableOrUnknown(
+          data['achievement_id']!,
+          _achievementIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_achievementIdMeta);
+    }
+    if (data.containsKey('agent_id')) {
+      context.handle(
+        _agentIdMeta,
+        agentId.isAcceptableOrUnknown(data['agent_id']!, _agentIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_agentIdMeta);
+    }
+    if (data.containsKey('unlocked_at')) {
+      context.handle(
+        _unlockedAtMeta,
+        unlockedAt.isAcceptableOrUnknown(data['unlocked_at']!, _unlockedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_unlockedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {achievementId, agentId};
+  @override
+  AchievementUnlock map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AchievementUnlock(
+      achievementId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}achievement_id'],
+      )!,
+      agentId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_id'],
+      )!,
+      unlockedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}unlocked_at'],
+      )!,
+    );
+  }
+
+  @override
+  AchievementUnlocks createAlias(String alias) {
+    return AchievementUnlocks(attachedDatabase, alias);
+  }
+
+  @override
+  List<String> get customConstraints => const [
+    'PRIMARY KEY(achievement_id, agent_id)',
+    'FOREIGN KEY(agent_id)REFERENCES agents(local_id)ON DELETE CASCADE',
+  ];
+  @override
+  bool get dontWriteConstraints => true;
+}
+
+class AchievementUnlock extends DataClass
+    implements Insertable<AchievementUnlock> {
+  final String achievementId;
+  final String agentId;
+  final int unlockedAt;
+  const AchievementUnlock({
+    required this.achievementId,
+    required this.agentId,
+    required this.unlockedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['achievement_id'] = Variable<String>(achievementId);
+    map['agent_id'] = Variable<String>(agentId);
+    map['unlocked_at'] = Variable<int>(unlockedAt);
+    return map;
+  }
+
+  AchievementUnlocksCompanion toCompanion(bool nullToAbsent) {
+    return AchievementUnlocksCompanion(
+      achievementId: Value(achievementId),
+      agentId: Value(agentId),
+      unlockedAt: Value(unlockedAt),
+    );
+  }
+
+  factory AchievementUnlock.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AchievementUnlock(
+      achievementId: serializer.fromJson<String>(json['achievement_id']),
+      agentId: serializer.fromJson<String>(json['agent_id']),
+      unlockedAt: serializer.fromJson<int>(json['unlocked_at']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'achievement_id': serializer.toJson<String>(achievementId),
+      'agent_id': serializer.toJson<String>(agentId),
+      'unlocked_at': serializer.toJson<int>(unlockedAt),
+    };
+  }
+
+  AchievementUnlock copyWith({
+    String? achievementId,
+    String? agentId,
+    int? unlockedAt,
+  }) => AchievementUnlock(
+    achievementId: achievementId ?? this.achievementId,
+    agentId: agentId ?? this.agentId,
+    unlockedAt: unlockedAt ?? this.unlockedAt,
+  );
+  AchievementUnlock copyWithCompanion(AchievementUnlocksCompanion data) {
+    return AchievementUnlock(
+      achievementId: data.achievementId.present
+          ? data.achievementId.value
+          : this.achievementId,
+      agentId: data.agentId.present ? data.agentId.value : this.agentId,
+      unlockedAt: data.unlockedAt.present
+          ? data.unlockedAt.value
+          : this.unlockedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AchievementUnlock(')
+          ..write('achievementId: $achievementId, ')
+          ..write('agentId: $agentId, ')
+          ..write('unlockedAt: $unlockedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(achievementId, agentId, unlockedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AchievementUnlock &&
+          other.achievementId == this.achievementId &&
+          other.agentId == this.agentId &&
+          other.unlockedAt == this.unlockedAt);
+}
+
+class AchievementUnlocksCompanion extends UpdateCompanion<AchievementUnlock> {
+  final Value<String> achievementId;
+  final Value<String> agentId;
+  final Value<int> unlockedAt;
+  final Value<int> rowid;
+  const AchievementUnlocksCompanion({
+    this.achievementId = const Value.absent(),
+    this.agentId = const Value.absent(),
+    this.unlockedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  AchievementUnlocksCompanion.insert({
+    required String achievementId,
+    required String agentId,
+    required int unlockedAt,
+    this.rowid = const Value.absent(),
+  }) : achievementId = Value(achievementId),
+       agentId = Value(agentId),
+       unlockedAt = Value(unlockedAt);
+  static Insertable<AchievementUnlock> custom({
+    Expression<String>? achievementId,
+    Expression<String>? agentId,
+    Expression<int>? unlockedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (achievementId != null) 'achievement_id': achievementId,
+      if (agentId != null) 'agent_id': agentId,
+      if (unlockedAt != null) 'unlocked_at': unlockedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  AchievementUnlocksCompanion copyWith({
+    Value<String>? achievementId,
+    Value<String>? agentId,
+    Value<int>? unlockedAt,
+    Value<int>? rowid,
+  }) {
+    return AchievementUnlocksCompanion(
+      achievementId: achievementId ?? this.achievementId,
+      agentId: agentId ?? this.agentId,
+      unlockedAt: unlockedAt ?? this.unlockedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (achievementId.present) {
+      map['achievement_id'] = Variable<String>(achievementId.value);
+    }
+    if (agentId.present) {
+      map['agent_id'] = Variable<String>(agentId.value);
+    }
+    if (unlockedAt.present) {
+      map['unlocked_at'] = Variable<int>(unlockedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AchievementUnlocksCompanion(')
+          ..write('achievementId: $achievementId, ')
+          ..write('agentId: $agentId, ')
+          ..write('unlockedAt: $unlockedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -3825,6 +4663,8 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     'CREATE INDEX idx_tool_calls_msg ON tool_calls (message_id)',
   );
   late final UserPreferences userPreferences = UserPreferences(this);
+  late final AgentStats agentStats = AgentStats(this);
+  late final AchievementUnlocks achievementUnlocks = AchievementUnlocks(this);
   Selectable<Instance> getAllInstances() {
     return customSelect(
       'SELECT * FROM instances ORDER BY last_connected_at DESC',
@@ -4374,6 +5214,64 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Selectable<AgentStat> getAgentStats(String? agentId) {
+    return customSelect(
+      'SELECT * FROM agent_stats WHERE agent_id = ?1',
+      variables: [Variable<String>(agentId)],
+      readsFrom: {agentStats},
+    ).asyncMap(agentStats.mapFromRow);
+  }
+
+  Future<int> upsertAgentStats(
+    String? agentId,
+    int totalDialogs,
+    int totalMessages,
+    int totalToolCalls,
+    int activeDays,
+    int currentStreak,
+    int? firstDialogDate,
+    int? lastDialogDate,
+  ) {
+    return customInsert(
+      'INSERT OR REPLACE INTO agent_stats (agent_id, total_dialogs, total_messages, total_tool_calls, active_days, current_streak, first_dialog_date, last_dialog_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
+      variables: [
+        Variable<String>(agentId),
+        Variable<int>(totalDialogs),
+        Variable<int>(totalMessages),
+        Variable<int>(totalToolCalls),
+        Variable<int>(activeDays),
+        Variable<int>(currentStreak),
+        Variable<int>(firstDialogDate),
+        Variable<int>(lastDialogDate),
+      ],
+      updates: {agentStats},
+    );
+  }
+
+  Selectable<AchievementUnlock> getAchievementUnlocksForAgent(String agentId) {
+    return customSelect(
+      'SELECT * FROM achievement_unlocks WHERE agent_id = ?1',
+      variables: [Variable<String>(agentId)],
+      readsFrom: {achievementUnlocks},
+    ).asyncMap(achievementUnlocks.mapFromRow);
+  }
+
+  Future<int> insertAchievementUnlock(
+    String achievementId,
+    String agentId,
+    int unlockedAt,
+  ) {
+    return customInsert(
+      'INSERT OR IGNORE INTO achievement_unlocks (achievement_id, agent_id, unlocked_at) VALUES (?1, ?2, ?3)',
+      variables: [
+        Variable<String>(achievementId),
+        Variable<String>(agentId),
+        Variable<int>(unlockedAt),
+      ],
+      updates: {achievementUnlocks},
+    );
+  }
+
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -4397,6 +5295,8 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     idxMsgsConvClock,
     idxToolCallsMsg,
     userPreferences,
+    agentStats,
+    achievementUnlocks,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -4427,6 +5327,20 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         limitUpdateKind: UpdateKind.delete,
       ),
       result: [TableUpdate('tool_calls', kind: UpdateKind.delete)],
+    ),
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'agents',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('agent_stats', kind: UpdateKind.delete)],
+    ),
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'agents',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('achievement_unlocks', kind: UpdateKind.delete)],
     ),
   ]);
 }
@@ -6188,6 +7102,439 @@ typedef $UserPreferencesProcessedTableManager =
       UserPreference,
       PrefetchHooks Function()
     >;
+typedef $AgentStatsCreateCompanionBuilder =
+    AgentStatsCompanion Function({
+      Value<String?> agentId,
+      Value<int> totalDialogs,
+      Value<int> totalMessages,
+      Value<int> totalToolCalls,
+      Value<int> activeDays,
+      Value<int> currentStreak,
+      Value<int?> firstDialogDate,
+      Value<int?> lastDialogDate,
+      Value<int> rowid,
+    });
+typedef $AgentStatsUpdateCompanionBuilder =
+    AgentStatsCompanion Function({
+      Value<String?> agentId,
+      Value<int> totalDialogs,
+      Value<int> totalMessages,
+      Value<int> totalToolCalls,
+      Value<int> activeDays,
+      Value<int> currentStreak,
+      Value<int?> firstDialogDate,
+      Value<int?> lastDialogDate,
+      Value<int> rowid,
+    });
+
+class $AgentStatsFilterComposer extends Composer<_$AppDatabase, AgentStats> {
+  $AgentStatsFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get totalDialogs => $composableBuilder(
+    column: $table.totalDialogs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get totalMessages => $composableBuilder(
+    column: $table.totalMessages,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get totalToolCalls => $composableBuilder(
+    column: $table.totalToolCalls,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get activeDays => $composableBuilder(
+    column: $table.activeDays,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get currentStreak => $composableBuilder(
+    column: $table.currentStreak,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get firstDialogDate => $composableBuilder(
+    column: $table.firstDialogDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get lastDialogDate => $composableBuilder(
+    column: $table.lastDialogDate,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $AgentStatsOrderingComposer extends Composer<_$AppDatabase, AgentStats> {
+  $AgentStatsOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get totalDialogs => $composableBuilder(
+    column: $table.totalDialogs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get totalMessages => $composableBuilder(
+    column: $table.totalMessages,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get totalToolCalls => $composableBuilder(
+    column: $table.totalToolCalls,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get activeDays => $composableBuilder(
+    column: $table.activeDays,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get currentStreak => $composableBuilder(
+    column: $table.currentStreak,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get firstDialogDate => $composableBuilder(
+    column: $table.firstDialogDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get lastDialogDate => $composableBuilder(
+    column: $table.lastDialogDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $AgentStatsAnnotationComposer
+    extends Composer<_$AppDatabase, AgentStats> {
+  $AgentStatsAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get agentId =>
+      $composableBuilder(column: $table.agentId, builder: (column) => column);
+
+  GeneratedColumn<int> get totalDialogs => $composableBuilder(
+    column: $table.totalDialogs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get totalMessages => $composableBuilder(
+    column: $table.totalMessages,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get totalToolCalls => $composableBuilder(
+    column: $table.totalToolCalls,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get activeDays => $composableBuilder(
+    column: $table.activeDays,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get currentStreak => $composableBuilder(
+    column: $table.currentStreak,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get firstDialogDate => $composableBuilder(
+    column: $table.firstDialogDate,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get lastDialogDate => $composableBuilder(
+    column: $table.lastDialogDate,
+    builder: (column) => column,
+  );
+}
+
+class $AgentStatsTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          AgentStats,
+          AgentStat,
+          $AgentStatsFilterComposer,
+          $AgentStatsOrderingComposer,
+          $AgentStatsAnnotationComposer,
+          $AgentStatsCreateCompanionBuilder,
+          $AgentStatsUpdateCompanionBuilder,
+          (AgentStat, BaseReferences<_$AppDatabase, AgentStats, AgentStat>),
+          AgentStat,
+          PrefetchHooks Function()
+        > {
+  $AgentStatsTableManager(_$AppDatabase db, AgentStats table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $AgentStatsFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $AgentStatsOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $AgentStatsAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String?> agentId = const Value.absent(),
+                Value<int> totalDialogs = const Value.absent(),
+                Value<int> totalMessages = const Value.absent(),
+                Value<int> totalToolCalls = const Value.absent(),
+                Value<int> activeDays = const Value.absent(),
+                Value<int> currentStreak = const Value.absent(),
+                Value<int?> firstDialogDate = const Value.absent(),
+                Value<int?> lastDialogDate = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AgentStatsCompanion(
+                agentId: agentId,
+                totalDialogs: totalDialogs,
+                totalMessages: totalMessages,
+                totalToolCalls: totalToolCalls,
+                activeDays: activeDays,
+                currentStreak: currentStreak,
+                firstDialogDate: firstDialogDate,
+                lastDialogDate: lastDialogDate,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                Value<String?> agentId = const Value.absent(),
+                Value<int> totalDialogs = const Value.absent(),
+                Value<int> totalMessages = const Value.absent(),
+                Value<int> totalToolCalls = const Value.absent(),
+                Value<int> activeDays = const Value.absent(),
+                Value<int> currentStreak = const Value.absent(),
+                Value<int?> firstDialogDate = const Value.absent(),
+                Value<int?> lastDialogDate = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AgentStatsCompanion.insert(
+                agentId: agentId,
+                totalDialogs: totalDialogs,
+                totalMessages: totalMessages,
+                totalToolCalls: totalToolCalls,
+                activeDays: activeDays,
+                currentStreak: currentStreak,
+                firstDialogDate: firstDialogDate,
+                lastDialogDate: lastDialogDate,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $AgentStatsProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      AgentStats,
+      AgentStat,
+      $AgentStatsFilterComposer,
+      $AgentStatsOrderingComposer,
+      $AgentStatsAnnotationComposer,
+      $AgentStatsCreateCompanionBuilder,
+      $AgentStatsUpdateCompanionBuilder,
+      (AgentStat, BaseReferences<_$AppDatabase, AgentStats, AgentStat>),
+      AgentStat,
+      PrefetchHooks Function()
+    >;
+typedef $AchievementUnlocksCreateCompanionBuilder =
+    AchievementUnlocksCompanion Function({
+      required String achievementId,
+      required String agentId,
+      required int unlockedAt,
+      Value<int> rowid,
+    });
+typedef $AchievementUnlocksUpdateCompanionBuilder =
+    AchievementUnlocksCompanion Function({
+      Value<String> achievementId,
+      Value<String> agentId,
+      Value<int> unlockedAt,
+      Value<int> rowid,
+    });
+
+class $AchievementUnlocksFilterComposer
+    extends Composer<_$AppDatabase, AchievementUnlocks> {
+  $AchievementUnlocksFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get achievementId => $composableBuilder(
+    column: $table.achievementId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get unlockedAt => $composableBuilder(
+    column: $table.unlockedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $AchievementUnlocksOrderingComposer
+    extends Composer<_$AppDatabase, AchievementUnlocks> {
+  $AchievementUnlocksOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get achievementId => $composableBuilder(
+    column: $table.achievementId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get unlockedAt => $composableBuilder(
+    column: $table.unlockedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $AchievementUnlocksAnnotationComposer
+    extends Composer<_$AppDatabase, AchievementUnlocks> {
+  $AchievementUnlocksAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get achievementId => $composableBuilder(
+    column: $table.achievementId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get agentId =>
+      $composableBuilder(column: $table.agentId, builder: (column) => column);
+
+  GeneratedColumn<int> get unlockedAt => $composableBuilder(
+    column: $table.unlockedAt,
+    builder: (column) => column,
+  );
+}
+
+class $AchievementUnlocksTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          AchievementUnlocks,
+          AchievementUnlock,
+          $AchievementUnlocksFilterComposer,
+          $AchievementUnlocksOrderingComposer,
+          $AchievementUnlocksAnnotationComposer,
+          $AchievementUnlocksCreateCompanionBuilder,
+          $AchievementUnlocksUpdateCompanionBuilder,
+          (
+            AchievementUnlock,
+            BaseReferences<
+              _$AppDatabase,
+              AchievementUnlocks,
+              AchievementUnlock
+            >,
+          ),
+          AchievementUnlock,
+          PrefetchHooks Function()
+        > {
+  $AchievementUnlocksTableManager(_$AppDatabase db, AchievementUnlocks table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $AchievementUnlocksFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $AchievementUnlocksOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $AchievementUnlocksAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> achievementId = const Value.absent(),
+                Value<String> agentId = const Value.absent(),
+                Value<int> unlockedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AchievementUnlocksCompanion(
+                achievementId: achievementId,
+                agentId: agentId,
+                unlockedAt: unlockedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String achievementId,
+                required String agentId,
+                required int unlockedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => AchievementUnlocksCompanion.insert(
+                achievementId: achievementId,
+                agentId: agentId,
+                unlockedAt: unlockedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $AchievementUnlocksProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      AchievementUnlocks,
+      AchievementUnlock,
+      $AchievementUnlocksFilterComposer,
+      $AchievementUnlocksOrderingComposer,
+      $AchievementUnlocksAnnotationComposer,
+      $AchievementUnlocksCreateCompanionBuilder,
+      $AchievementUnlocksUpdateCompanionBuilder,
+      (
+        AchievementUnlock,
+        BaseReferences<_$AppDatabase, AchievementUnlocks, AchievementUnlock>,
+      ),
+      AchievementUnlock,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -6203,4 +7550,8 @@ class $AppDatabaseManager {
       $ToolCallsTableManager(_db, _db.toolCalls);
   $UserPreferencesTableManager get userPreferences =>
       $UserPreferencesTableManager(_db, _db.userPreferences);
+  $AgentStatsTableManager get agentStats =>
+      $AgentStatsTableManager(_db, _db.agentStats);
+  $AchievementUnlocksTableManager get achievementUnlocks =>
+      $AchievementUnlocksTableManager(_db, _db.achievementUnlocks);
 }

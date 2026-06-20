@@ -20,8 +20,16 @@ final agentProfileViewModelProvider =
         agentRepo: ref.watch(agentRepoProvider),
         instanceRepo: ref.watch(instanceRepoProvider),
         messageRepo: ref.watch(messageRepoProvider),
+        evaluateAchievements: ref.watch(evaluateAchievementsUseCaseProvider),
         avatarStorageService: ref.watch(avatarStorageServiceProvider),
         agentId: agentId,
+        // The callback deliberately imports dart:io and flutter/widgets here
+        // in the provider (DI/wiring) layer — NOT in the ViewModel. This keeps
+        // Flutter framework types out of AgentProfileViewModel so it remains
+        // testable and framework-agnostic. For 5 lines of best-effort cache
+        // eviction this is a pragmatic trade-off vs creating a full
+        // IAvatarCacheService abstraction. Revisit if more Flutter imports
+        // accumulate in this file.
         onAvatarChanged: (path) {
           // Best-effort cache eviction — non-fatal if unavailable
           try {

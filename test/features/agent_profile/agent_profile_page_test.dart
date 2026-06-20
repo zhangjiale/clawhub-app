@@ -3,11 +3,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/agent_stats.dart';
+import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
+import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
+import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
@@ -19,9 +23,16 @@ class MockInstanceRepo extends Mock implements IInstanceRepo {}
 
 class MockMessageRepo extends Mock implements IMessageRepo {}
 
+class MockAchievementRepo extends Mock implements IAchievementRepo {}
+
 class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(AgentStats(agentId: 'fallback'));
+    registerFallbackValue(<String>{''});
+  });
+
   group('AgentProfilePage', () {
     final testAgent = Agent(
       localId: 'local-1',
@@ -43,12 +54,14 @@ void main() {
     late MockAgentRepo agentRepo;
     late MockInstanceRepo instanceRepo;
     late MockMessageRepo messageRepo;
+    late MockAchievementRepo achievementRepo;
     late MockAvatarStorageService avatarStorageService;
 
     setUp(() {
       agentRepo = MockAgentRepo();
       instanceRepo = MockInstanceRepo();
       messageRepo = MockMessageRepo();
+      achievementRepo = MockAchievementRepo();
       avatarStorageService = MockAvatarStorageService();
 
       when(
@@ -60,6 +73,20 @@ void main() {
       when(
         () => messageRepo.getMessageCount('local-1'),
       ).thenAnswer((_) async => 1024);
+      // Achievement default stubs (best-effort, return empty data)
+      when(
+        () => achievementRepo.getStats(any()),
+      ).thenAnswer((_) async => null); // cache miss → computeStats
+      when(
+        () => achievementRepo.computeStats(any()),
+      ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
+      when(() => achievementRepo.saveStats(any())).thenAnswer((_) async {});
+      when(
+        () => achievementRepo.getUnlocks(any()),
+      ).thenAnswer((_) async => <Achievement>[]);
+      when(
+        () => achievementRepo.batchUnlock(any(), any()),
+      ).thenAnswer((_) async => <Achievement>[]);
     });
 
     Widget buildPage() {
@@ -70,6 +97,9 @@ void main() {
               agentRepo: agentRepo,
               instanceRepo: instanceRepo,
               messageRepo: messageRepo,
+              evaluateAchievements: EvaluateAchievementsUseCase(
+                achievementRepo,
+              ),
               avatarStorageService: avatarStorageService,
               agentId: 'local-1',
             )..init(),

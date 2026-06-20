@@ -168,6 +168,31 @@ Before any code change, verify compliance with `docs/engineering/iron-laws.md` (
 - **Law 14**: Every new widget needs ≥2 tests
 - **Law 17**: Layered TDD — Domain/ACL must write tests first; ViewModel should; Repository/Widget no later than same commit
 
+### TDD Enforcement Rule
+
+**For Domain-layer code (Law 17), the following sequence is MANDATORY and non-negotiable:**
+
+When creating a new domain model or repository interface:
+
+1. **RED (test first)** — Create the test file FIRST. Run it. Confirm it FAILS (compilation error = acceptable red).
+2. **GREEN (minimal code)** — Create the source file with just enough code to make the test pass. Run the test. Confirm it PASSES.
+3. **REFACTOR (if needed)** — Clean up. Run the test again.
+
+**Violation indicator**: If you have created a source file in `lib/domain/` whose corresponding test file in `test/domain/` does not yet exist or was created AFTER the source file, you have violated Law 17.
+
+**Per-file granularity**: This applies per-file, not per-phase. Creating `agent_stats.dart` + `achievement.dart` + `i_achievement_repo.dart` before writing any test is a violation. The correct sequence is:
+
+```
+test/domain/models/agent_stats_test.dart → RED
+lib/domain/models/agent_stats.dart       → GREEN
+test/domain/models/achievement_test.dart → RED
+lib/domain/models/achievement.dart       → GREEN
+test/domain/repositories/...             → RED
+lib/domain/repositories/...              → GREEN
+```
+
+**Checkpoint**: Before creating any new file in `lib/domain/`, pause and ask: "Does the test file for this already exist?" If the answer is no, STOP — create the test file first.
+
 See `docs/engineering/iron-laws.md` for the complete list and the Code Review gate checklist.
 
 #### Automated Enforcement (Pre-commit Hook)

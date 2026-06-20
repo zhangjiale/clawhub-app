@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration {
@@ -73,6 +73,10 @@ class AppDatabase extends _$AppDatabase {
       onUpgrade: (migrator, from, to) async {
         if (from < 2) {
           await migrator.createTable(userPreferences);
+        }
+        if (from < 3) {
+          await migrator.createTable(agentStats);
+          await migrator.createTable(achievementUnlocks);
         }
       },
     );
@@ -311,6 +315,90 @@ class AppDatabase extends _$AppDatabase {
     return customSelect(
       'SELECT last_insert_rowid() AS rowid',
     ).map((row) => row.read<int>('rowid')).getSingle();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agent Stats aggregation — single-query aggregates per agent (Iron Law 6)
+  // ---------------------------------------------------------------------------
+
+  /// Count distinct conversations for an agent.
+  Future<int> countDialogsForAgent(String agentId) {
+    return customSelect(
+      'SELECT COUNT(DISTINCT conversation_id) AS cnt FROM messages '
+      'WHERE agent_id = ?',
+      variables: [Variable.withString(agentId)],
+    ).map((row) => row.read<int>('cnt')).getSingle();
+  }
+
+  /// Count tool calls for an agent (via messages join).
+  Future<int> countToolCallsForAgent(String agentId) {
+    return customSelect(
+      'SELECT COUNT(*) AS cnt FROM tool_calls '
+      'WHERE message_id IN (SELECT client_id FROM messages WHERE agent_id = ?)',
+      variables: [Variable.withString(agentId)],
+    ).map((row) => row.read<int>('cnt')).getSingle();
+  }
+
+  /// Get sorted unique day buckets for an agent's messages.
+  ///
+  /// Returns Unix timestamps in ascending order, each representing
+  /// a unique calendar day on which at least one message was sent/received.
+  /// Caller computes activeDays (count) and currentStreak (consecutive-day
+  /// walk from today/lastActive backward) in Dart.
+  ///
+  /// `timestamp` is stored in milliseconds; dividing by 86400000 maps each
+  /// row to a UTC calendar day index (seconds since epoch ÷ 86400).
+  Future<List<int>> getActiveDayBucketsForAgent(String agentId) {
+    return customSelect(
+      'SELECT DISTINCT (timestamp / 86400000) AS day_bucket '
+      'FROM messages WHERE agent_id = ? '
+      'ORDER BY day_bucket ASC',
+      variables: [Variable.withString(agentId)],
+    ).map((row) => row.read<int>('day_bucket')).get();
+  }
+
+  /// Get min and max message timestamps for an agent.
+  ///
+  /// Returns (firstDialogDate, lastDialogDate) as Unix seconds, or null
+  /// if no messages exist.
+  Future<({int? firstMsg, int? lastMsg})?> getMessageTimestampRange(
+    String agentId,
+  ) async {
+    final row = await customSelect(
+      'SELECT MIN(timestamp) AS first_msg, MAX(timestamp) AS last_msg '
+      'FROM messages WHERE agent_id = ?',
+      variables: [Variable.withString(agentId)],
+    ).getSingleOrNull();
+    if (row == null) return null;
+    return (
+      firstMsg: row.read<int?>('first_msg'),
+      lastMsg: row.read<int?>('last_msg'),
+    );
+  }
+
+  /// Combined messages-stats query — one scan replaces [countDialogsForAgent],
+  /// [getMessageCountByAgent], and [getMessageTimestampRange].
+  ///
+  /// COUNT(*) always returns 0 when no rows match, so null means the
+  /// messages table has zero rows for this agent.
+  Future<({int dialogs, int messages, int? firstMsg, int? lastMsg})?>
+  getMessageStatsForAgent(String agentId) async {
+    final row = await customSelect(
+      'SELECT '
+      'COUNT(DISTINCT conversation_id) AS dialogs, '
+      'COUNT(*) AS messages, '
+      'MIN(timestamp) AS first_msg, '
+      'MAX(timestamp) AS last_msg '
+      'FROM messages WHERE agent_id = ?',
+      variables: [Variable.withString(agentId)],
+    ).getSingleOrNull();
+    if (row == null) return null;
+    return (
+      dialogs: row.read<int>('dialogs'),
+      messages: row.read<int>('messages'),
+      firstMsg: row.read<int?>('first_msg'),
+      lastMsg: row.read<int?>('last_msg'),
+    );
   }
 
   // ---------------------------------------------------------------------------

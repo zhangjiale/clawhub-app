@@ -8,8 +8,12 @@ import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
+import 'package:mocktail/mocktail.dart';
+
+class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
 /// Tests for [ChatViewModel.retryMessage] (US-015 AC2 manual retry path).
 class _FailingGateway extends MockGatewayClient {
@@ -39,6 +43,7 @@ void main() {
     late InMemoryConversationRepo conversationRepo;
     late InMemoryInstanceRepo instanceRepo;
     late _FailingGateway gateway;
+    late IAchievementChecker achievementChecker;
 
     setUp(() {
       agentRepo = InMemoryAgentRepo();
@@ -46,6 +51,7 @@ void main() {
       conversationRepo = InMemoryConversationRepo();
       instanceRepo = InMemoryInstanceRepo();
       gateway = _FailingGateway();
+      achievementChecker = _MockAchievementChecker();
     });
 
     ChatViewModel createViewModel() => ChatViewModel(
@@ -62,6 +68,7 @@ void main() {
       ),
       instanceId: 'inst-1',
       agentId: 'local-1',
+      achievementChecker: achievementChecker,
       flushDelay: Duration.zero,
     );
 
@@ -284,6 +291,7 @@ void main() {
     late InMemoryConversationRepo conversationRepo;
     late InMemoryInstanceRepo instanceRepo;
     late MockGatewayClient gateway;
+    late IAchievementChecker achievementChecker;
 
     setUp(() {
       agentRepo = InMemoryAgentRepo();
@@ -293,6 +301,7 @@ void main() {
       messageRepo = InMemoryMessageRepo(conversationRepo: conversationRepo);
       instanceRepo = InMemoryInstanceRepo();
       gateway = MockGatewayClient();
+      achievementChecker = _MockAchievementChecker();
     });
 
     Future<ChatViewModel> setupVm() async {
@@ -326,6 +335,7 @@ void main() {
         ),
         instanceId: 'inst-1',
         agentId: 'local-1',
+        achievementChecker: achievementChecker,
         flushDelay: Duration.zero,
       );
       await vm.init();

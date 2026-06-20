@@ -6,21 +6,28 @@ import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/agent_stats.dart';
+import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
+import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 
 /// Agent 详情聚合数据（不可变值对象）
 class AgentDetailData {
   final Agent agent;
   final Instance? instance;
   final int messageCount;
+  final AgentStats? stats;
+  final List<Achievement> achievements;
 
   const AgentDetailData({
     required this.agent,
     this.instance,
     required this.messageCount,
+    this.stats,
+    this.achievements = const [],
   });
 
   @override
@@ -29,10 +36,13 @@ class AgentDetailData {
       other is AgentDetailData &&
           agent == other.agent &&
           instance == other.instance &&
-          messageCount == other.messageCount;
+          messageCount == other.messageCount &&
+          stats == other.stats &&
+          achievements == other.achievements;
 
   @override
-  int get hashCode => Object.hash(agent, instance, messageCount);
+  int get hashCode =>
+      Object.hash(agent, instance, messageCount, stats, achievements);
 }
 
 /// Agent 资料页的不可变状态快照
@@ -44,12 +54,14 @@ class AgentProfileState {
   final bool isSaving;
   final String? saveError;
   final bool saveSuccess;
+  final List<Achievement> newUnlocks; // freshly unlocked this session
 
   const AgentProfileState({
     this.detailLoadState = const LoadInProgress(),
     this.isSaving = false,
     this.saveError,
     this.saveSuccess = false,
+    this.newUnlocks = const [],
   });
 
   /// copyWith 使用 [CopyWithSentinel] 区分 "未传参" 和 "显式传 null"，
@@ -59,12 +71,14 @@ class AgentProfileState {
     bool? isSaving,
     Object? saveError = CopyWithSentinel.instance,
     bool? saveSuccess,
+    List<Achievement>? newUnlocks,
   }) {
     return AgentProfileState(
       detailLoadState: detailLoadState ?? this.detailLoadState,
       isSaving: isSaving ?? this.isSaving,
       saveError: copyWithNullable(saveError, this.saveError),
       saveSuccess: saveSuccess ?? this.saveSuccess,
+      newUnlocks: newUnlocks ?? this.newUnlocks,
     );
   }
 
@@ -75,11 +89,17 @@ class AgentProfileState {
           detailLoadState == other.detailLoadState &&
           isSaving == other.isSaving &&
           saveError == other.saveError &&
-          saveSuccess == other.saveSuccess;
+          saveSuccess == other.saveSuccess &&
+          newUnlocks == other.newUnlocks;
 
   @override
-  int get hashCode =>
-      Object.hash(detailLoadState, isSaving, saveError, saveSuccess);
+  int get hashCode => Object.hash(
+    detailLoadState,
+    isSaving,
+    saveError,
+    saveSuccess,
+    newUnlocks,
+  );
 }
 
 /// Agent 资料页的 ViewModel
@@ -94,6 +114,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final IAgentRepo _agentRepo;
   final IInstanceRepo _instanceRepo;
   final IMessageRepo _messageRepo;
+  final EvaluateAchievementsUseCase _evaluateAchievements;
   final IAvatarStorageService _avatarStorageService;
   final String agentId;
 
@@ -108,12 +129,14 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     required IAgentRepo agentRepo,
     required IInstanceRepo instanceRepo,
     required IMessageRepo messageRepo,
+    required EvaluateAchievementsUseCase evaluateAchievements,
     required IAvatarStorageService avatarStorageService,
     required this.agentId,
     void Function(String path)? onAvatarChanged,
   }) : _agentRepo = agentRepo,
        _instanceRepo = instanceRepo,
        _messageRepo = messageRepo,
+       _evaluateAchievements = evaluateAchievements,
        _avatarStorageService = avatarStorageService,
        _onAvatarChanged = onAvatarChanged,
        super(const AgentProfileState());
@@ -143,6 +166,24 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
 
       final messageCount = await _messageRepo.getMessageCount(agentId);
 
+      // Load stats and achievements (best-effort — non-fatal on failure).
+      // Delegated to EvaluateAchievementsUseCase to avoid duplicating the
+      // cache-first → evaluate → batch-unlock pipeline with AchievementChecker.
+      AgentStats? stats;
+      List<Achievement> achievements = const [];
+      List<Achievement> freshUnlocks = const [];
+      try {
+        final result = await _evaluateAchievements.execute(agentId);
+        stats = result.stats;
+        achievements = result.achievements;
+        freshUnlocks = result.freshUnlocks;
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Stats/achievement load failed for $agentId: $error\n$stackTrace',
+        );
+        // Non-fatal — profile page still shows agent info + message count
+      }
+
       _updateState(
         (s) => s.copyWith(
           detailLoadState: LoadData(
@@ -150,8 +191,11 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
               agent: agent,
               instance: instance,
               messageCount: messageCount,
+              stats: stats,
+              achievements: achievements,
             ),
           ),
+          newUnlocks: freshUnlocks,
         ),
       );
     } catch (error, stackTrace) {
@@ -274,6 +318,11 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   /// 消费保存结果（Config 页 pop 后或 SnackBar 展示后调用）。
   void clearSaveResult() {
     _updateState((s) => s.copyWith(saveSuccess: false, saveError: null));
+  }
+
+  /// 消费新解锁成就（庆祝动画播放完毕后调用）。
+  void clearNewUnlocks() {
+    _updateState((s) => s.copyWith(newUnlocks: const []));
   }
 
   /// 更新状态并忽略 dispose 后的调用。
