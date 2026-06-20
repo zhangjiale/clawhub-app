@@ -425,3 +425,50 @@ insertAchievementUnlock:
 INSERT OR IGNORE INTO achievement_unlocks
     (achievement_id, agent_id, unlocked_at)
 VALUES (:achievementId, :agentId, :unlockedAt);
+
+-- ============================================================
+-- 10. Pending Notifications — DND silenced queue (US-018 AC-3)
+-- ============================================================
+-- 通知命中免打扰时段时静默入队，DND 结束后批量汇总推送。
+-- message_server_id 可空 (catch-up 场景部分消息无 serverId)。
+-- 去重靠部分唯一索引 (在 database.dart beforeOpen 中创建，
+-- WHERE message_server_id IS NOT NULL)，无 serverId 的消息不入 DB 约束。
+CREATE TABLE pending_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    message_server_id TEXT,
+    delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))
+);
+
+-- Named queries: Pending Notifications
+getPendingNotifications:
+SELECT * FROM pending_notifications
+WHERE delivered = 0
+ORDER BY created_at ASC;
+
+countPendingNotifications:
+SELECT COUNT(*) AS c FROM pending_notifications WHERE delivered = 0;
+
+markPendingDelivered:
+UPDATE pending_notifications SET delivered = 1 WHERE id = :id;
+
+-- Batch-mark a set of ids as delivered in a single statement (Law 6).
+-- Supports an arbitrary-length id list for DND summary flush without N+1.
+markPendingDeliveredBatch:
+UPDATE pending_notifications SET delivered = 1 WHERE id IN :ids;
+
+deleteDeliveredNotifications:
+DELETE FROM pending_notifications WHERE delivered = 1;
+
+-- Insert ignoring (instanceId, serverId) duplicates for non-null serverId.
+-- Rows with NULL message_server_id bypass the partial unique index and
+-- always insert (dedup falls back to in-memory LRU in the dispatcher).
+insertPendingNotification:
+INSERT INTO pending_notifications
+    (agent_id, instance_id, agent_name, summary, created_at, message_server_id, delivered)
+VALUES (:agentId, :instanceId, :agentName, :summary, :createdAt, :messageServerId, 0)
+ON CONFLICT DO NOTHING;

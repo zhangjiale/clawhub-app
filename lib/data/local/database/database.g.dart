@@ -4606,6 +4606,518 @@ class AchievementUnlocksCompanion extends UpdateCompanion<AchievementUnlock> {
   }
 }
 
+class PendingNotifications extends Table
+    with TableInfo<PendingNotifications, PendingNotification> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  PendingNotifications(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'PRIMARY KEY AUTOINCREMENT',
+  );
+  static const VerificationMeta _agentIdMeta = const VerificationMeta(
+    'agentId',
+  );
+  late final GeneratedColumn<String> agentId = GeneratedColumn<String>(
+    'agent_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _instanceIdMeta = const VerificationMeta(
+    'instanceId',
+  );
+  late final GeneratedColumn<String> instanceId = GeneratedColumn<String>(
+    'instance_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _agentNameMeta = const VerificationMeta(
+    'agentName',
+  );
+  late final GeneratedColumn<String> agentName = GeneratedColumn<String>(
+    'agent_name',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _summaryMeta = const VerificationMeta(
+    'summary',
+  );
+  late final GeneratedColumn<String> summary = GeneratedColumn<String>(
+    'summary',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  late final GeneratedColumn<int> createdAt = GeneratedColumn<int>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _messageServerIdMeta = const VerificationMeta(
+    'messageServerId',
+  );
+  late final GeneratedColumn<String> messageServerId = GeneratedColumn<String>(
+    'message_server_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    $customConstraints: '',
+  );
+  static const VerificationMeta _deliveredMeta = const VerificationMeta(
+    'delivered',
+  );
+  late final GeneratedColumn<int> delivered = GeneratedColumn<int>(
+    'delivered',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1))',
+    defaultValue: const CustomExpression('0'),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    agentId,
+    instanceId,
+    agentName,
+    summary,
+    createdAt,
+    messageServerId,
+    delivered,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'pending_notifications';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<PendingNotification> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('agent_id')) {
+      context.handle(
+        _agentIdMeta,
+        agentId.isAcceptableOrUnknown(data['agent_id']!, _agentIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_agentIdMeta);
+    }
+    if (data.containsKey('instance_id')) {
+      context.handle(
+        _instanceIdMeta,
+        instanceId.isAcceptableOrUnknown(data['instance_id']!, _instanceIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_instanceIdMeta);
+    }
+    if (data.containsKey('agent_name')) {
+      context.handle(
+        _agentNameMeta,
+        agentName.isAcceptableOrUnknown(data['agent_name']!, _agentNameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_agentNameMeta);
+    }
+    if (data.containsKey('summary')) {
+      context.handle(
+        _summaryMeta,
+        summary.isAcceptableOrUnknown(data['summary']!, _summaryMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_summaryMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('message_server_id')) {
+      context.handle(
+        _messageServerIdMeta,
+        messageServerId.isAcceptableOrUnknown(
+          data['message_server_id']!,
+          _messageServerIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('delivered')) {
+      context.handle(
+        _deliveredMeta,
+        delivered.isAcceptableOrUnknown(data['delivered']!, _deliveredMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  PendingNotification map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return PendingNotification(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      agentId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_id'],
+      )!,
+      instanceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}instance_id'],
+      )!,
+      agentName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_name'],
+      )!,
+      summary: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}summary'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at'],
+      )!,
+      messageServerId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}message_server_id'],
+      ),
+      delivered: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}delivered'],
+      )!,
+    );
+  }
+
+  @override
+  PendingNotifications createAlias(String alias) {
+    return PendingNotifications(attachedDatabase, alias);
+  }
+
+  @override
+  bool get dontWriteConstraints => true;
+}
+
+class PendingNotification extends DataClass
+    implements Insertable<PendingNotification> {
+  final int id;
+  final String agentId;
+  final String instanceId;
+  final String agentName;
+  final String summary;
+  final int createdAt;
+  final String? messageServerId;
+  final int delivered;
+  const PendingNotification({
+    required this.id,
+    required this.agentId,
+    required this.instanceId,
+    required this.agentName,
+    required this.summary,
+    required this.createdAt,
+    this.messageServerId,
+    required this.delivered,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['agent_id'] = Variable<String>(agentId);
+    map['instance_id'] = Variable<String>(instanceId);
+    map['agent_name'] = Variable<String>(agentName);
+    map['summary'] = Variable<String>(summary);
+    map['created_at'] = Variable<int>(createdAt);
+    if (!nullToAbsent || messageServerId != null) {
+      map['message_server_id'] = Variable<String>(messageServerId);
+    }
+    map['delivered'] = Variable<int>(delivered);
+    return map;
+  }
+
+  PendingNotificationsCompanion toCompanion(bool nullToAbsent) {
+    return PendingNotificationsCompanion(
+      id: Value(id),
+      agentId: Value(agentId),
+      instanceId: Value(instanceId),
+      agentName: Value(agentName),
+      summary: Value(summary),
+      createdAt: Value(createdAt),
+      messageServerId: messageServerId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(messageServerId),
+      delivered: Value(delivered),
+    );
+  }
+
+  factory PendingNotification.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return PendingNotification(
+      id: serializer.fromJson<int>(json['id']),
+      agentId: serializer.fromJson<String>(json['agent_id']),
+      instanceId: serializer.fromJson<String>(json['instance_id']),
+      agentName: serializer.fromJson<String>(json['agent_name']),
+      summary: serializer.fromJson<String>(json['summary']),
+      createdAt: serializer.fromJson<int>(json['created_at']),
+      messageServerId: serializer.fromJson<String?>(json['message_server_id']),
+      delivered: serializer.fromJson<int>(json['delivered']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'agent_id': serializer.toJson<String>(agentId),
+      'instance_id': serializer.toJson<String>(instanceId),
+      'agent_name': serializer.toJson<String>(agentName),
+      'summary': serializer.toJson<String>(summary),
+      'created_at': serializer.toJson<int>(createdAt),
+      'message_server_id': serializer.toJson<String?>(messageServerId),
+      'delivered': serializer.toJson<int>(delivered),
+    };
+  }
+
+  PendingNotification copyWith({
+    int? id,
+    String? agentId,
+    String? instanceId,
+    String? agentName,
+    String? summary,
+    int? createdAt,
+    Value<String?> messageServerId = const Value.absent(),
+    int? delivered,
+  }) => PendingNotification(
+    id: id ?? this.id,
+    agentId: agentId ?? this.agentId,
+    instanceId: instanceId ?? this.instanceId,
+    agentName: agentName ?? this.agentName,
+    summary: summary ?? this.summary,
+    createdAt: createdAt ?? this.createdAt,
+    messageServerId: messageServerId.present
+        ? messageServerId.value
+        : this.messageServerId,
+    delivered: delivered ?? this.delivered,
+  );
+  PendingNotification copyWithCompanion(PendingNotificationsCompanion data) {
+    return PendingNotification(
+      id: data.id.present ? data.id.value : this.id,
+      agentId: data.agentId.present ? data.agentId.value : this.agentId,
+      instanceId: data.instanceId.present
+          ? data.instanceId.value
+          : this.instanceId,
+      agentName: data.agentName.present ? data.agentName.value : this.agentName,
+      summary: data.summary.present ? data.summary.value : this.summary,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      messageServerId: data.messageServerId.present
+          ? data.messageServerId.value
+          : this.messageServerId,
+      delivered: data.delivered.present ? data.delivered.value : this.delivered,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PendingNotification(')
+          ..write('id: $id, ')
+          ..write('agentId: $agentId, ')
+          ..write('instanceId: $instanceId, ')
+          ..write('agentName: $agentName, ')
+          ..write('summary: $summary, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('messageServerId: $messageServerId, ')
+          ..write('delivered: $delivered')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    agentId,
+    instanceId,
+    agentName,
+    summary,
+    createdAt,
+    messageServerId,
+    delivered,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is PendingNotification &&
+          other.id == this.id &&
+          other.agentId == this.agentId &&
+          other.instanceId == this.instanceId &&
+          other.agentName == this.agentName &&
+          other.summary == this.summary &&
+          other.createdAt == this.createdAt &&
+          other.messageServerId == this.messageServerId &&
+          other.delivered == this.delivered);
+}
+
+class PendingNotificationsCompanion
+    extends UpdateCompanion<PendingNotification> {
+  final Value<int> id;
+  final Value<String> agentId;
+  final Value<String> instanceId;
+  final Value<String> agentName;
+  final Value<String> summary;
+  final Value<int> createdAt;
+  final Value<String?> messageServerId;
+  final Value<int> delivered;
+  const PendingNotificationsCompanion({
+    this.id = const Value.absent(),
+    this.agentId = const Value.absent(),
+    this.instanceId = const Value.absent(),
+    this.agentName = const Value.absent(),
+    this.summary = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.messageServerId = const Value.absent(),
+    this.delivered = const Value.absent(),
+  });
+  PendingNotificationsCompanion.insert({
+    this.id = const Value.absent(),
+    required String agentId,
+    required String instanceId,
+    required String agentName,
+    required String summary,
+    required int createdAt,
+    this.messageServerId = const Value.absent(),
+    this.delivered = const Value.absent(),
+  }) : agentId = Value(agentId),
+       instanceId = Value(instanceId),
+       agentName = Value(agentName),
+       summary = Value(summary),
+       createdAt = Value(createdAt);
+  static Insertable<PendingNotification> custom({
+    Expression<int>? id,
+    Expression<String>? agentId,
+    Expression<String>? instanceId,
+    Expression<String>? agentName,
+    Expression<String>? summary,
+    Expression<int>? createdAt,
+    Expression<String>? messageServerId,
+    Expression<int>? delivered,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (agentId != null) 'agent_id': agentId,
+      if (instanceId != null) 'instance_id': instanceId,
+      if (agentName != null) 'agent_name': agentName,
+      if (summary != null) 'summary': summary,
+      if (createdAt != null) 'created_at': createdAt,
+      if (messageServerId != null) 'message_server_id': messageServerId,
+      if (delivered != null) 'delivered': delivered,
+    });
+  }
+
+  PendingNotificationsCompanion copyWith({
+    Value<int>? id,
+    Value<String>? agentId,
+    Value<String>? instanceId,
+    Value<String>? agentName,
+    Value<String>? summary,
+    Value<int>? createdAt,
+    Value<String?>? messageServerId,
+    Value<int>? delivered,
+  }) {
+    return PendingNotificationsCompanion(
+      id: id ?? this.id,
+      agentId: agentId ?? this.agentId,
+      instanceId: instanceId ?? this.instanceId,
+      agentName: agentName ?? this.agentName,
+      summary: summary ?? this.summary,
+      createdAt: createdAt ?? this.createdAt,
+      messageServerId: messageServerId ?? this.messageServerId,
+      delivered: delivered ?? this.delivered,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (agentId.present) {
+      map['agent_id'] = Variable<String>(agentId.value);
+    }
+    if (instanceId.present) {
+      map['instance_id'] = Variable<String>(instanceId.value);
+    }
+    if (agentName.present) {
+      map['agent_name'] = Variable<String>(agentName.value);
+    }
+    if (summary.present) {
+      map['summary'] = Variable<String>(summary.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<int>(createdAt.value);
+    }
+    if (messageServerId.present) {
+      map['message_server_id'] = Variable<String>(messageServerId.value);
+    }
+    if (delivered.present) {
+      map['delivered'] = Variable<int>(delivered.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PendingNotificationsCompanion(')
+          ..write('id: $id, ')
+          ..write('agentId: $agentId, ')
+          ..write('instanceId: $instanceId, ')
+          ..write('agentName: $agentName, ')
+          ..write('summary: $summary, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('messageServerId: $messageServerId, ')
+          ..write('delivered: $delivered')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -4665,6 +5177,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final UserPreferences userPreferences = UserPreferences(this);
   late final AgentStats agentStats = AgentStats(this);
   late final AchievementUnlocks achievementUnlocks = AchievementUnlocks(this);
+  late final PendingNotifications pendingNotifications = PendingNotifications(
+    this,
+  );
   Selectable<Instance> getAllInstances() {
     return customSelect(
       'SELECT * FROM instances ORDER BY last_connected_at DESC',
@@ -5272,6 +5787,74 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Selectable<PendingNotification> getPendingNotifications() {
+    return customSelect(
+      'SELECT * FROM pending_notifications WHERE delivered = 0 ORDER BY created_at ASC',
+      variables: [],
+      readsFrom: {pendingNotifications},
+    ).asyncMap(pendingNotifications.mapFromRow);
+  }
+
+  Selectable<int> countPendingNotifications() {
+    return customSelect(
+      'SELECT COUNT(*) AS c FROM pending_notifications WHERE delivered = 0',
+      variables: [],
+      readsFrom: {pendingNotifications},
+    ).map((QueryRow row) => row.read<int>('c'));
+  }
+
+  Future<int> markPendingDelivered(int id) {
+    return customUpdate(
+      'UPDATE pending_notifications SET delivered = 1 WHERE id = ?1',
+      variables: [Variable<int>(id)],
+      updates: {pendingNotifications},
+      updateKind: UpdateKind.update,
+    );
+  }
+
+  Future<int> markPendingDeliveredBatch(List<int> ids) {
+    var $arrayStartIndex = 1;
+    final expandedids = $expandVar($arrayStartIndex, ids.length);
+    $arrayStartIndex += ids.length;
+    return customUpdate(
+      'UPDATE pending_notifications SET delivered = 1 WHERE id IN ($expandedids)',
+      variables: [for (var $ in ids) Variable<int>($)],
+      updates: {pendingNotifications},
+      updateKind: UpdateKind.update,
+    );
+  }
+
+  Future<int> deleteDeliveredNotifications() {
+    return customUpdate(
+      'DELETE FROM pending_notifications WHERE delivered = 1',
+      variables: [],
+      updates: {pendingNotifications},
+      updateKind: UpdateKind.delete,
+    );
+  }
+
+  Future<int> insertPendingNotification(
+    String agentId,
+    String instanceId,
+    String agentName,
+    String summary,
+    int createdAt,
+    String? messageServerId,
+  ) {
+    return customInsert(
+      'INSERT INTO pending_notifications (agent_id, instance_id, agent_name, summary, created_at, message_server_id, delivered) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0) ON CONFLICT DO NOTHING',
+      variables: [
+        Variable<String>(agentId),
+        Variable<String>(instanceId),
+        Variable<String>(agentName),
+        Variable<String>(summary),
+        Variable<int>(createdAt),
+        Variable<String>(messageServerId),
+      ],
+      updates: {pendingNotifications},
+    );
+  }
+
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -5297,6 +5880,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     userPreferences,
     agentStats,
     achievementUnlocks,
+    pendingNotifications,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -7535,6 +8119,271 @@ typedef $AchievementUnlocksProcessedTableManager =
       AchievementUnlock,
       PrefetchHooks Function()
     >;
+typedef $PendingNotificationsCreateCompanionBuilder =
+    PendingNotificationsCompanion Function({
+      Value<int> id,
+      required String agentId,
+      required String instanceId,
+      required String agentName,
+      required String summary,
+      required int createdAt,
+      Value<String?> messageServerId,
+      Value<int> delivered,
+    });
+typedef $PendingNotificationsUpdateCompanionBuilder =
+    PendingNotificationsCompanion Function({
+      Value<int> id,
+      Value<String> agentId,
+      Value<String> instanceId,
+      Value<String> agentName,
+      Value<String> summary,
+      Value<int> createdAt,
+      Value<String?> messageServerId,
+      Value<int> delivered,
+    });
+
+class $PendingNotificationsFilterComposer
+    extends Composer<_$AppDatabase, PendingNotifications> {
+  $PendingNotificationsFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get instanceId => $composableBuilder(
+    column: $table.instanceId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get agentName => $composableBuilder(
+    column: $table.agentName,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get summary => $composableBuilder(
+    column: $table.summary,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get messageServerId => $composableBuilder(
+    column: $table.messageServerId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get delivered => $composableBuilder(
+    column: $table.delivered,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $PendingNotificationsOrderingComposer
+    extends Composer<_$AppDatabase, PendingNotifications> {
+  $PendingNotificationsOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get instanceId => $composableBuilder(
+    column: $table.instanceId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get agentName => $composableBuilder(
+    column: $table.agentName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get summary => $composableBuilder(
+    column: $table.summary,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get messageServerId => $composableBuilder(
+    column: $table.messageServerId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get delivered => $composableBuilder(
+    column: $table.delivered,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $PendingNotificationsAnnotationComposer
+    extends Composer<_$AppDatabase, PendingNotifications> {
+  $PendingNotificationsAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get agentId =>
+      $composableBuilder(column: $table.agentId, builder: (column) => column);
+
+  GeneratedColumn<String> get instanceId => $composableBuilder(
+    column: $table.instanceId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get agentName =>
+      $composableBuilder(column: $table.agentName, builder: (column) => column);
+
+  GeneratedColumn<String> get summary =>
+      $composableBuilder(column: $table.summary, builder: (column) => column);
+
+  GeneratedColumn<int> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<String> get messageServerId => $composableBuilder(
+    column: $table.messageServerId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get delivered =>
+      $composableBuilder(column: $table.delivered, builder: (column) => column);
+}
+
+class $PendingNotificationsTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          PendingNotifications,
+          PendingNotification,
+          $PendingNotificationsFilterComposer,
+          $PendingNotificationsOrderingComposer,
+          $PendingNotificationsAnnotationComposer,
+          $PendingNotificationsCreateCompanionBuilder,
+          $PendingNotificationsUpdateCompanionBuilder,
+          (
+            PendingNotification,
+            BaseReferences<
+              _$AppDatabase,
+              PendingNotifications,
+              PendingNotification
+            >,
+          ),
+          PendingNotification,
+          PrefetchHooks Function()
+        > {
+  $PendingNotificationsTableManager(
+    _$AppDatabase db,
+    PendingNotifications table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $PendingNotificationsFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $PendingNotificationsOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $PendingNotificationsAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<String> agentId = const Value.absent(),
+                Value<String> instanceId = const Value.absent(),
+                Value<String> agentName = const Value.absent(),
+                Value<String> summary = const Value.absent(),
+                Value<int> createdAt = const Value.absent(),
+                Value<String?> messageServerId = const Value.absent(),
+                Value<int> delivered = const Value.absent(),
+              }) => PendingNotificationsCompanion(
+                id: id,
+                agentId: agentId,
+                instanceId: instanceId,
+                agentName: agentName,
+                summary: summary,
+                createdAt: createdAt,
+                messageServerId: messageServerId,
+                delivered: delivered,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required String agentId,
+                required String instanceId,
+                required String agentName,
+                required String summary,
+                required int createdAt,
+                Value<String?> messageServerId = const Value.absent(),
+                Value<int> delivered = const Value.absent(),
+              }) => PendingNotificationsCompanion.insert(
+                id: id,
+                agentId: agentId,
+                instanceId: instanceId,
+                agentName: agentName,
+                summary: summary,
+                createdAt: createdAt,
+                messageServerId: messageServerId,
+                delivered: delivered,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $PendingNotificationsProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      PendingNotifications,
+      PendingNotification,
+      $PendingNotificationsFilterComposer,
+      $PendingNotificationsOrderingComposer,
+      $PendingNotificationsAnnotationComposer,
+      $PendingNotificationsCreateCompanionBuilder,
+      $PendingNotificationsUpdateCompanionBuilder,
+      (
+        PendingNotification,
+        BaseReferences<
+          _$AppDatabase,
+          PendingNotifications,
+          PendingNotification
+        >,
+      ),
+      PendingNotification,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -7554,4 +8403,6 @@ class $AppDatabaseManager {
       $AgentStatsTableManager(_db, _db.agentStats);
   $AchievementUnlocksTableManager get achievementUnlocks =>
       $AchievementUnlocksTableManager(_db, _db.achievementUnlocks);
+  $PendingNotificationsTableManager get pendingNotifications =>
+      $PendingNotificationsTableManager(_db, _db.pendingNotifications);
 }

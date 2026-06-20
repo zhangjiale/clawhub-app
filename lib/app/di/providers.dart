@@ -21,10 +21,13 @@ import 'package:claw_hub/data/repositories/drift_settings_repo.dart';
 import 'package:claw_hub/data/repositories/drift_achievement_repo.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/data/services/achievement_checker.dart';
-import 'package:claw_hub/data/local/database/database.dart';
+import 'package:claw_hub/data/local/database/database.dart'
+    hide UserPreferences;
 import 'package:claw_hub/domain/models/stats_data.dart';
+import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
+import 'package:claw_hub/domain/usecases/evaluate_notification.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/domain/usecases/save_instance.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
@@ -35,6 +38,10 @@ import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/connection/instance_event.dart';
 import 'package:claw_hub/app/config/app_config.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
+import 'package:claw_hub/app/notifications/notification_coordinator.dart';
+import 'package:claw_hub/core/i_local_notification_service.dart';
+import 'package:claw_hub/data/repositories/drift_notification_repo.dart';
+import 'package:claw_hub/data/services/local_notification_service.dart';
 
 /// ============================================================
 /// ClawHub 依赖注入容器 (Riverpod)
@@ -402,6 +409,55 @@ final achievementCheckerProvider = Provider<IAchievementChecker>((ref) {
     ref.watch(evaluateAchievementsUseCaseProvider),
     ref.watch(loggerProvider),
   );
+});
+
+// --- Notifications (US-018) ---
+
+/// 平台本地通知服务 (ACL) — 封装 flutter_local_notifications。
+final iLocalNotificationServiceProvider = Provider<ILocalNotificationService>((
+  ref,
+) {
+  final service = LocalNotificationService();
+  ref.onDispose(service.dispose);
+  return service;
+});
+
+/// DND 静默队列仓库。
+final notificationRepoProvider = Provider<INotificationRepo>((ref) {
+  return DriftNotificationRepo(ref.watch(databaseProvider));
+});
+
+/// 通知评估 UseCase (纯 domain，无状态)。
+final evaluateNotificationUseCaseProvider =
+    Provider<EvaluateNotificationUseCase>(
+      (_) => const EvaluateNotificationUseCase(),
+    );
+
+/// 持有最新 UserPreferences 快照，供 dispatcher/coordinator 同步读取。
+/// 由 [NotificationBootstrap] 通过 watchPreferences() 流更新。
+final notificationPrefsHolderProvider = StateProvider<UserPreferences>(
+  (_) => UserPreferences.defaults(),
+);
+
+/// 通知协调器 (app 层) — 桥接 Gateway 流到 dispatcher，并拥有 dispatcher。
+/// 生命周期由 [NotificationBootstrap] 管理 (start/dispose)。
+final notificationCoordinatorProvider = Provider<NotificationCoordinator>((
+  ref,
+) {
+  final coordinator = NotificationCoordinator(
+    orchestratorEvents: ref.watch(connectionOrchestratorProvider).events,
+    gatewayClient: ref.watch(gatewayClientProvider),
+    instanceRepo: ref.watch(instanceRepoProvider),
+    agentRepo: ref.watch(agentRepoProvider),
+    notificationRepo: ref.watch(notificationRepoProvider),
+    notificationService: ref.watch(iLocalNotificationServiceProvider),
+    evaluator: ref.watch(evaluateNotificationUseCaseProvider),
+    prefsProvider: () => ref.read(notificationPrefsHolderProvider),
+    clock: DateTime.now,
+    logger: ref.watch(loggerProvider),
+  );
+  ref.onDispose(coordinator.dispose);
+  return coordinator;
 });
 
 // --- Use Cases ---

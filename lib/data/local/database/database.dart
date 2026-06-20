@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
@@ -69,6 +69,18 @@ class AppDatabase extends _$AppDatabase {
               SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid
             )
         ''');
+
+        // US-018: partial unique index for pending_notifications dedup.
+        // Only rows with a non-null message_server_id participate in the
+        // (instance_id, message_server_id) uniqueness constraint. Rows with
+        // NULL serverId always insert (dedup falls back to in-memory LRU in
+        // NotificationDispatcher). IF NOT EXISTS makes this idempotent across
+        // fresh installs (onCreate) and upgrades alike.
+        await customStatement('''
+          CREATE UNIQUE INDEX IF NOT EXISTS pending_notifications_by_server
+          ON pending_notifications(instance_id, message_server_id)
+          WHERE message_server_id IS NOT NULL
+        ''');
       },
       onUpgrade: (migrator, from, to) async {
         if (from < 2) {
@@ -77,6 +89,9 @@ class AppDatabase extends _$AppDatabase {
         if (from < 3) {
           await migrator.createTable(agentStats);
           await migrator.createTable(achievementUnlocks);
+        }
+        if (from < 4) {
+          await migrator.createTable(pendingNotifications);
         }
       },
     );

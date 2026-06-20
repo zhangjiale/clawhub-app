@@ -12,3 +12,5 @@ export 'achievement.dart';
 export 'stats_data.dart';
 export 'storage_info.dart';
 export 'user_preferences.dart';
+export 'notification_event.dart';
+export 'pending_notification.dart';

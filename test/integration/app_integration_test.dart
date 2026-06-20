@@ -5,8 +5,40 @@ import 'package:drift/native.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/router/router.dart';
+import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/main.dart';
+
+/// Headless 测试用的 [ILocalNotificationService] 替身。
+///
+/// 集成测试在无平台通道环境运行，真实 [LocalNotificationService] 会触发
+/// flutter_local_notifications 插件的 LateInitializationError 并可能残留
+/// 平台侧定时器导致 "A Timer is still pending" 断言失败。本 fake 让通知
+/// 子系统 (coordinator/dispatcher) 正常接线但不触碰任何平台 API。
+class _FakeLocalNotificationService implements ILocalNotificationService {
+  @override
+  Future<void> initialize() async {}
+  @override
+  Future<bool> requestPermissions() async => true;
+  @override
+  Future<void> show({
+    required int id,
+    required NotificationChannelId channel,
+    required String title,
+    required String body,
+    String? routePath,
+  }) async {}
+  @override
+  Future<void> cancel(int id) async {}
+  @override
+  void setupOnTap(void Function(String? routePath) onTap) {}
+  @override
+  Future<void> dispose() async {}
+}
+
+/// 通知服务 override —— appTestHarness 与 inline ProviderContainer 共用。
+final _notificationServiceOverride = iLocalNotificationServiceProvider
+    .overrideWith((_) => _FakeLocalNotificationService());
 
 /// Test helper — creates a fully wired app with in-memory SQLite and
 /// MockGatewayClient, matching the production ProviderScope setup but
@@ -22,6 +54,7 @@ ProviderScope appTestHarness({required Widget child}) {
       gatewayClientProvider.overrideWith(
         (ref) => ref.watch(mockGatewayClientProvider),
       ),
+      _notificationServiceOverride,
     ],
     child: child,
   );
@@ -60,6 +93,7 @@ void main() {
           gatewayClientProvider.overrideWith(
             (ref) => ref.watch(mockGatewayClientProvider),
           ),
+          _notificationServiceOverride,
         ],
       );
       addTearDown(container.dispose);
