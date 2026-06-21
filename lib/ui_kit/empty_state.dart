@@ -1,16 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 
-/// Global empty state component matching design spec (Section 10.6).
+/// Global empty state component — V2 §10.6.
 ///
-/// Icon: 48px, text4 color, opacity 0.7 (when [icon] is an IconData).
-/// For emoji, pass a [Text] widget directly.
-/// Title: 17px, weight 600, text2 color.
-/// Description: 14px, text3 color, line-height 1.6.
-/// Padding: 48 vertical / 24 horizontal (s9/s6).
+/// Icon: 48px, opacity 0.6.
+/// Title: 15px / w600 / text2.
+/// Description: 12px / text3 / line-height 1.5.
+/// Padding: 48 vertical / 32 horizontal.
 ///
-/// **C5**: [icon] parameter changed from IconData to Widget to support
-/// emoji text (🦐) as specified in the design spec.
+/// **V2 (was V1 §2.6)**: 17→15 title, 14→12 description, opacity 0.7→0.6.
 class EmptyState extends StatelessWidget {
   final Widget icon;
   final String title;
@@ -31,38 +29,35 @@ class EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          vertical: XiaSpacing.s9,
-          horizontal: XiaSpacing.s6,
-        ),
+        padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Opacity(opacity: 0.7, child: _buildIcon()),
-            const SizedBox(height: XiaSpacing.s5),
+            Opacity(opacity: 0.6, child: _buildIcon()),
+            const SizedBox(height: XiaSpacing.s3),
             Text(
               title,
               style: const TextStyle(
-                fontSize: 17,
+                fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: XiaColors.text2,
               ),
               textAlign: TextAlign.center,
             ),
             if (subtitle != null) ...[
-              const SizedBox(height: XiaSpacing.s2),
+              const SizedBox(height: 6),
               Text(
                 subtitle!,
                 style: const TextStyle(
-                  fontSize: 14,
+                  fontSize: 12,
                   color: XiaColors.text3,
-                  height: 1.6,
+                  height: 1.5,
                 ),
                 textAlign: TextAlign.center,
               ),
             ],
             if (onAction != null && actionLabel != null) ...[
-              const SizedBox(height: XiaSpacing.s6),
+              const SizedBox(height: XiaSpacing.s5),
               ElevatedButton(onPressed: onAction, child: Text(actionLabel!)),
             ],
           ],
@@ -72,9 +67,6 @@ class EmptyState extends StatelessWidget {
   }
 
   Widget _buildIcon() {
-    // icon is typed Widget; all callers pass either Icon(IconData) or Text.
-    // The IconData switch branch was removed — it was unreachable because
-    // IconData is not a Widget subtype.
     return icon;
   }
 }

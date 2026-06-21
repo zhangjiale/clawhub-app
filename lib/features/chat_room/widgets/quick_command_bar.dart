@@ -5,7 +5,10 @@ import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Quick command bar — horizontally scrollable capsule pills.
-/// Matching ComponentSpec Section 4.4.
+/// Matching V2 ComponentSpec Section 4.4.
+///
+/// V2: accent-muted bg + border-accent (30% accent) border, accent text,
+/// scale(0.93) on press, 150ms ease.
 class QuickCommandBar extends StatelessWidget {
   final List<QuickCommand> commands;
   final ValueChanged<String> onCommandTap;
@@ -23,12 +26,12 @@ class QuickCommandBar extends StatelessWidget {
     final themeColor = AgentTheme.of(context).primary;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: XiaSpacing.s3),
+      padding: const EdgeInsets.symmetric(vertical: XiaSpacing.s2),
       child: SizedBox(
-        height: 44,
+        height: 32,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s6),
+          padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s5),
           itemCount: commands.length,
           separatorBuilder: (_, __) => const SizedBox(width: XiaSpacing.s2),
           itemBuilder: (context, index) {
@@ -46,7 +49,8 @@ class QuickCommandBar extends StatelessWidget {
 }
 
 /// Single quick-command pill with press feedback.
-/// Spec: scale(0.95) + bg surface2→accentMuted, 200ms ease.
+/// V2: bg `accent-muted` + 1px `border-accent`, accent text,
+/// scale(0.93) + bg `rgba(79,131,255,0.18)` on press.
 class _QuickCmdPill extends StatelessWidget {
   final String label;
   final Color themeColor;
@@ -61,23 +65,27 @@ class _QuickCmdPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PressFeedback(
-      scale: 0.95,
-      pressedColor: themeColor.withAlpha(31),
-      normalColor: XiaColors.surface2,
+      scale: 0.93,
+      pressedColor: themeColor.withAlpha(46), // ~18% V2 spec
+      normalColor: XiaColors.accentMuted,
       borderRadius: BorderRadius.circular(XiaRadius.full),
       onTap: onTap,
-      child: Padding(
+      child: Container(
+        decoration: BoxDecoration(
+          color: XiaColors.accentMuted,
+          borderRadius: BorderRadius.circular(XiaRadius.full),
+          border: Border.all(color: XiaColors.borderAccent, width: 1),
+        ),
         padding: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s4,
-          vertical: XiaSpacing.s2,
+          horizontal: XiaSpacing.s4, // 12
+          vertical: 5,
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 13,
+            fontSize: 12,
             fontWeight: FontWeight.w500,
             color: themeColor,
-            letterSpacing: -0.1,
           ),
         ),
       ),

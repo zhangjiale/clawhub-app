@@ -36,7 +36,7 @@ class StatusBanner extends StatelessWidget {
     final banner = Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
+        horizontal: XiaSpacing.pagePaddingH,
         vertical: XiaSpacing.s2,
       ),
       color: backgroundColor,

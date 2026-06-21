@@ -111,7 +111,7 @@ class _ToastOverlayState extends State<_ToastOverlay>
                 ),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: XiaSpacing.s6,
+                    horizontal: XiaSpacing.pagePaddingH,
                     vertical: XiaSpacing.s3,
                   ),
                   decoration: BoxDecoration(

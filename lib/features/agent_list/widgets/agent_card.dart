@@ -6,14 +6,15 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
-/// Agent card — matching ComponentSpec Section 2.4.
+/// Agent card — V2 ComponentSpec Section 2.4.
 ///
-/// Layout: [48×48 avatar + status dot] [name + desc info] [time + chevron]
-/// Card: 16px radius, surface background, no left border strip.
-/// Press feedback: scale(0.98) + bg surface→surface2, 200ms ease.
+/// V2: [36×36 avatar + status dot] [name + desc info]
+/// Card: 10px radius, surface bg + 1px hairline border.
+/// Press feedback: scale(0.97) + bg surface2, 150ms ease.
+/// Status dot uses 2px bg-color border (V2 §2.4.1).
 ///
-/// **Animation (B5)**: 350ms slideUp opacity enter via [StaggeredEnterItem],
-/// with 40ms incremental delay based on [index] (max 200ms).
+/// **Animation (B5)**: 250ms slideUp opacity enter via [StaggeredEnterItem],
+/// with 30ms incremental delay based on [index] (max 210ms).
 class AgentCard extends StatelessWidget {
   final Agent agent;
   final VoidCallback onTap;
@@ -35,20 +36,24 @@ class AgentCard extends StatelessWidget {
     return StaggeredEnterItem(
       index: index,
       child: PressFeedback(
-        scale: 0.98,
+        scale: 0.97,
         pressedColor: XiaColors.surface2,
         normalColor: XiaColors.surface,
         borderRadius: BorderRadius.circular(XiaRadius.lg),
         margin: const EdgeInsets.only(
-          left: XiaSpacing.s6,
-          right: XiaSpacing.s6,
-          bottom: XiaSpacing.s3,
+          left: XiaSpacing.pagePaddingH,
+          right: XiaSpacing.pagePaddingH,
+          bottom: XiaSpacing.s2, // V2: 6px
         ),
         onTap: onTap,
-        child: Padding(
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: XiaColors.border),
+            borderRadius: BorderRadius.circular(XiaRadius.lg),
+          ),
           padding: const EdgeInsets.symmetric(
-            horizontal: XiaSpacing.s5,
-            vertical: XiaSpacing.s4,
+            horizontal: XiaSpacing.s4, // V2: 12px
+            vertical: 10, // V2: 10px
           ),
           child: Row(
             children: [
@@ -61,44 +66,59 @@ class AgentCard extends StatelessWidget {
                     avatarImage: agent.avatarUrl != null
                         ? FileImage(File(agent.avatarUrl!))
                         : null,
-                    radius: 24, // 48×48
+                    radius: 18, // V2: 36×36
                     borderRadius: XiaRadius.md,
-                    fontSize: 24,
+                    fontSize: 16,
                   ),
-                  // Status dot (8×8, 2px border matching surface)
+                  // Status dot (V2 §2.4.1: 10×10, 2px bg border, green glow)
                   Positioned(
-                    right: 0,
-                    bottom: 0,
+                    right: -1,
+                    bottom: -1,
                     child: Container(
-                      width: 8,
-                      height: 8,
+                      width: 10,
+                      height: 10,
                       decoration: BoxDecoration(
                         color: isOnline ? XiaColors.green : XiaColors.text4,
                         shape: BoxShape.circle,
-                        border: Border.all(color: XiaColors.surface, width: 2),
+                        border: Border.all(color: XiaColors.bg, width: 2),
                         boxShadow: isOnline ? XiaShadow.onlineGlow : null,
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(width: XiaSpacing.s4),
-              // Name + description
+              const SizedBox(width: 10), // V2: 10
+              // Name + description (name row + time inline per V2 §2.4.2)
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      agent.displayName,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -0.2,
-                        height: 1.3,
-                        color: XiaColors.text1,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            agent.displayName,
+                            style: const TextStyle(
+                              fontSize: XiaTypography.agentName, // 15
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: -0.2,
+                              height: 1.3,
+                              color: XiaColors.text1,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: XiaSpacing.s3),
+                        Text(
+                          _lastActiveText(lastActiveAt),
+                          style: const TextStyle(
+                            fontSize: XiaTypography.timestamp, // 10
+                            color: XiaColors.text3,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -107,7 +127,7 @@ class AgentCard extends StatelessWidget {
                           ? agent.description!
                           : '暂无简介',
                       style: const TextStyle(
-                        fontSize: 13,
+                        fontSize: 12, // V2: 12
                         color: XiaColors.text3,
                         height: 1.4,
                       ),
@@ -117,24 +137,7 @@ class AgentCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: XiaSpacing.s1),
-              // Time + chevron
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _lastActiveText(lastActiveAt),
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: XiaColors.text4,
-                      letterSpacing: 0.2,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                ],
-              ),
-              const Icon(Icons.chevron_right, color: XiaColors.text4, size: 20),
+              // V2: chevron removed (spec §2.4 — only press feedback)
             ],
           ),
         ),

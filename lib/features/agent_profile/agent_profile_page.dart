@@ -11,14 +11,18 @@ import 'package:claw_hub/features/agent_profile/widgets/achievement_list.dart';
 import 'package:claw_hub/features/agent_profile/widgets/milestone_celebration.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
+import 'package:claw_hub/ui_kit/detail_tabs.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
-/// Agent 详情页 — 展示 Agent 信息、统计、成就占位
+/// Agent 详情页 — V2 §5.
 ///
-/// 与 AgentConfigPage 共享同一个 AgentProfileViewModel。
-/// 从 ChatRoomPage AppBar 或 AgentListPage 进入。
+/// V2: Adds DetailTabs switcher (成长面板 / 成就).
+/// 成长面板 tab: profile header + stats grid + timeline + actions.
+/// 成就 tab: achievement list.
+enum _ProfileTab { growth, achievements }
+
 class AgentProfilePage extends ConsumerStatefulWidget {
   final String agentId;
   final String? source;
@@ -30,6 +34,8 @@ class AgentProfilePage extends ConsumerStatefulWidget {
 }
 
 class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
+  _ProfileTab _currentTab = _ProfileTab.growth;
+
   void _handleBack() {
     if (mounted) smartBack(context, source: widget.source);
   }
@@ -50,6 +56,7 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
           Scaffold(
             appBar: AppBar(
               leading: XiaBackButton(onPressed: _handleBack),
+              toolbarHeight: 52, // V2: 52px compact chat-header-like
               title: switch (state.detailLoadState) {
                 LoadData(:final value) => Text(value.agent.displayName),
                 _ => const Text('虾详情'),
@@ -57,15 +64,16 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
               actions: [
                 if (state.detailLoadState is LoadData<AgentDetailData>)
                   Padding(
-                    padding: const EdgeInsets.only(right: XiaSpacing.s2),
+                    padding: const EdgeInsets.only(right: XiaSpacing.s4),
                     child: HeaderButton(
-                      icon: Icons.edit,
-                      tooltip: '个性化配置',
+                      size: 32,
+                      tooltip: '编辑',
                       onPressed: () {
                         context.push(
                           AppRoutes.agentConfigWithParams(widget.agentId),
                         );
                       },
+                      child: const Icon(Icons.edit_outlined, size: 16),
                     ),
                   ),
               ],
@@ -77,38 +85,27 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
                 title: '无法加载虾信息',
                 onRetry: () => vm.refresh(),
               ),
-              LoadData(:final value) => ListView(
+              LoadData(:final value) => Column(
                 children: [
-                  ProfileHeader(agent: value.agent, instance: value.instance),
-                  StatsGrid(
-                    stats: value.stats,
-                    fallbackMessageCount: value.messageCount,
+                  // V2: detail tab switcher
+                  DetailTabs(
+                    tabs: const ['成长面板', '成就'],
+                    selectedIndex: _currentTab.index,
+                    onTabSelected: (i) =>
+                        setState(() => _currentTab = _ProfileTab.values[i]),
                   ),
-                  const SizedBox(height: XiaSpacing.s5),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: XiaSpacing.s6,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '🏆 成就',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: XiaSpacing.s4),
-                        AchievementList(achievements: value.achievements),
-                      ],
-                    ),
+                  Expanded(
+                    child: switch (_currentTab) {
+                      _ProfileTab.growth => _buildGrowthTab(value),
+                      _ProfileTab.achievements => AchievementList(
+                        achievements: value.achievements,
+                      ),
+                    },
                   ),
-                  const SizedBox(height: XiaSpacing.s8),
                 ],
               ),
             },
           ),
-          // Celebration overlay — shown when new achievements are unlocked
           if (state.newUnlocks.isNotEmpty)
             MilestoneCelebrationOverlay(
               achievement: state.newUnlocks.first,
@@ -116,6 +113,18 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
             ),
         ],
       ),
+    );
+  }
+
+  /// V2 成长面板 tab — header + stats grid + timeline + actions.
+  Widget _buildGrowthTab(AgentDetailData value) {
+    return ListView(
+      padding: const EdgeInsets.only(bottom: XiaSpacing.s7),
+      children: [
+        ProfileHeader(agent: value.agent, instance: value.instance),
+        StatsGrid(stats: value.stats, fallbackMessageCount: value.messageCount),
+        const SizedBox(height: XiaSpacing.s5),
+      ],
     );
   }
 }

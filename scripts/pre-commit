@@ -1,14 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# ClawHub Iron Laws — Pre-commit Hook v0.1
+# ClawHub Iron Laws — Pre-commit Hook v0.2
 # =============================================================================
-# Enforces 4 mechanically-verifiable Iron Laws on staged .dart files.
+# Enforces 4 mechanically-verifiable Iron Laws + trailing-newline style
+# check on staged .dart files.
 #
 # Laws checked:
 #   Law 1  — domain/ must have zero Flutter/Riverpod/Drift/WebSocket imports
 #   Law 6  — No N+1 queries (for + await repo. patterns)
 #   Law 8  — No empty catch blocks
 #   Law 11 — ListView.builder required for dynamic/long lists
+#
+# Style checks:
+#   trailing-newline — POSIX requires final newline; auto-fixes like
+#                       `dart format` (re-stages after append).
 #
 # Suppression:
 #   Per-line:  // iron-law-allow: LawN -- justification
@@ -128,6 +133,29 @@ echo "$FORMAT_OUT" | { grep "^Formatted .*\.dart" || true; } | while IFS= read -
   echo -e "  ${YELLOW}↻${NC} Reformatted: $formatted (re-staged)"
   git add "$formatted"
 done
+
+# --- Trailing newline (POSIX requires final newline) ---
+# Auto-fixes like dart format: appends the file's existing line ending
+# (CRLF preserved) and re-stages. Empty files are skipped (no-op).
+echo -e "${BOLD}trailing newline${NC}"
+NEWLINE_FIXED=()
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  if [ -n "$(tail -c 1 "$file" 2>/dev/null)" ]; then
+    if grep -l $'\r' "$file" >/dev/null 2>&1; then
+      printf '\r\n' >> "$file"
+    else
+      printf '\n' >> "$file"
+    fi
+    git add "$file"
+    NEWLINE_FIXED+=("$file")
+  fi
+done <<< "$STAGED_DART"
+if [ ${#NEWLINE_FIXED[@]} -gt 0 ]; then
+  for f in "${NEWLINE_FIXED[@]}"; do
+    echo -e "  ${YELLOW}↻${NC} $f — trailing newline added (re-staged)"
+  done
+fi
 
 # --- Law 1: domain/ zero external dependencies ---
 echo -e "${BOLD}Law 1${NC} — domain/ zero external dependencies"

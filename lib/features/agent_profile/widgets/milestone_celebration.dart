@@ -6,8 +6,9 @@ import 'package:claw_hub/domain/models/achievement.dart';
 
 /// Full-screen celebration overlay shown when a new achievement is unlocked.
 ///
-/// Uses standard Flutter [AnimationController] (no external package).
-/// Auto-dismisses after 3 seconds or on tap.
+/// V2: uses [XiaMotion.ease] (no elastic spring per V2 spec — more restrained),
+/// 250ms duration (was 600ms), [XiaColors.scrim] (54% black) instead of
+/// `Colors.black54` (Law 8 — no hardcoded literals).
 class MilestoneCelebrationOverlay extends StatefulWidget {
   final Achievement achievement;
   final VoidCallback onDismiss;
@@ -35,16 +36,17 @@ class _MilestoneCelebrationOverlayState
   void initState() {
     super.initState();
     _controller = AnimationController(
-      duration: const Duration(milliseconds: 600),
+      duration: XiaMotion.durationMid, // V2: 250ms (was 600ms)
       vsync: this,
     );
     _scaleAnimation = CurvedAnimation(
       parent: _controller,
-      curve: Curves.elasticOut,
+      // V2: replace elasticOut with ease (V2 §8 removes spring easing)
+      curve: XiaMotion.ease,
     );
     _fadeAnimation = CurvedAnimation(
       parent: _controller,
-      curve: const Interval(0.3, 1.0, curve: Curves.easeIn),
+      curve: const Interval(0.3, 1.0, curve: XiaMotion.ease),
     );
 
     _controller.forward();
@@ -73,7 +75,7 @@ class _MilestoneCelebrationOverlayState
     return GestureDetector(
       onTap: _dismiss,
       child: Container(
-        color: Colors.black54,
+        color: XiaColors.scrim, // V2: 54% black (was Colors.black54)
         alignment: Alignment.center,
         child: SafeArea(
           child: Column(
@@ -87,7 +89,7 @@ class _MilestoneCelebrationOverlayState
                   height: 80,
                   decoration: BoxDecoration(
                     color: _tierColor(widget.achievement.tier),
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(XiaRadius.xl), // 14
                   ),
                   alignment: Alignment.center,
                   child: Text(
@@ -124,7 +126,7 @@ class _MilestoneCelebrationOverlayState
                       widget.achievement.description,
                       style: TextStyle(
                         fontSize: 14,
-                        color: Colors.white.withOpacity(0.7),
+                        color: Colors.white.withAlpha(178), // 70% V2
                       ),
                     ),
                   ],
@@ -137,14 +139,15 @@ class _MilestoneCelebrationOverlayState
     );
   }
 
+  /// V2 tier colors — alpha 20% (51/255) using V2 palette tokens.
   Color _tierColor(AchievementTier tier) {
     switch (tier) {
       case AchievementTier.gold:
-        return XiaColors.yellow.withOpacity(0.2);
+        return XiaColors.gold.withAlpha(51);
       case AchievementTier.silver:
-        return const Color(0xFFC0C0C0).withOpacity(0.2);
+        return XiaColors.silver.withAlpha(51);
       case AchievementTier.bronze:
-        return XiaColors.accentMuted.withOpacity(0.2);
+        return XiaColors.accent.withAlpha(51); // 20% sapphire
     }
   }
 }

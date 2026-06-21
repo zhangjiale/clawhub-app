@@ -43,7 +43,7 @@ class NotificationSettingsPage extends ConsumerWidget {
       ),
       body: ListView(
         padding: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
+          horizontal: XiaSpacing.pagePaddingH,
           vertical: XiaSpacing.s2,
         ),
         children: [

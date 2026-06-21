@@ -41,7 +41,7 @@ class SettingsDivider extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Divider(
       height: 1,
-      color: XiaColors.divider,
+      color: XiaColors.border,
       indent: XiaSpacing.s5,
       endIndent: XiaSpacing.s5,
     );

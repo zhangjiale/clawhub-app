@@ -8,11 +8,10 @@ import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
-/// Instance card — matching ComponentSpec Section 7.2.
+/// Instance card — V2 ComponentSpec Section 7.2.
 ///
-/// Layout: [44×44 icon] [name + url + status] [action buttons]
-/// When [HealthStatus.pairingRequired], shows approval guidance inline.
-/// Press: scale(0.98), 200ms ease.
+/// V2: 36×36 icon (was 44), padding 12/14 (was 16/16), hairline border,
+/// status pill r-full 2/8 padding, scale 0.97 press.
 class InstanceCard extends ConsumerWidget {
   final Instance instance;
   final VoidCallback onTap;
@@ -70,28 +69,32 @@ class InstanceCard extends ConsumerWidget {
               : instance.healthStatus);
 
     return PressFeedback(
-      scale: 0.98,
+      scale: 0.97, // V2: 0.98 → 0.97
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
-          vertical: 6,
+          horizontal: XiaSpacing.pagePaddingH,
+          vertical: 4, // V2: 6 → 8px then ÷2 → 4px gap
         ),
         decoration: BoxDecoration(
           color: XiaColors.surface,
           borderRadius: BorderRadius.circular(XiaRadius.lg),
+          border: Border.all(color: XiaColors.border),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(XiaSpacing.s5),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 12, // V2: 12px
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
-                  // Instance icon
+                  // V2: 36×36 icon (was 44)
                   Container(
-                    width: 44,
-                    height: 44,
+                    width: 36,
+                    height: 36,
                     decoration: BoxDecoration(
                       color: XiaColors.surface2,
                       borderRadius: BorderRadius.circular(XiaRadius.md),
@@ -262,7 +265,7 @@ class _PairingGuidanceBanner extends StatelessWidget {
       decoration: BoxDecoration(
         color: XiaColors.yellowMuted,
         borderRadius: BorderRadius.circular(XiaRadius.sm),
-        border: Border.all(color: XiaColors.yellow.withAlpha(80)),
+        border: Border.all(color: XiaColors.yellow.withAlpha(64)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

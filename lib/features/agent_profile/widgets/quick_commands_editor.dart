@@ -177,7 +177,7 @@ class _QuickCommandRow extends StatelessWidget {
         vertical: XiaSpacing.s2,
       ),
       decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: XiaColors.divider, width: 1)),
+        border: Border(bottom: BorderSide(color: XiaColors.border, width: 1)),
       ),
       child: Row(
         children: [

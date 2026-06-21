@@ -35,7 +35,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
+        horizontal: XiaSpacing.pagePaddingH,
         vertical: 4,
       ),
       child: Row(
@@ -59,19 +59,16 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.7,
             ),
-            padding: const EdgeInsets.symmetric(
-              horizontal: XiaSpacing.s5,
-              vertical: XiaSpacing.s4,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: XiaColors.surface,
+              color: XiaColors.surface2,
               borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(XiaRadius.xl),
                 topRight: Radius.circular(XiaRadius.xl),
                 bottomRight: Radius.circular(XiaRadius.xl),
-                bottomLeft: Radius.circular(XiaRadius.sm),
+                bottomLeft: Radius.circular(XiaRadius.xs),
               ),
-              boxShadow: XiaShadow.s,
+              border: Border.all(color: XiaColors.border),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -94,10 +91,7 @@ class _BouncingDot extends StatelessWidget {
   final AnimationController controller;
   final double delay; // seconds
 
-  const _BouncingDot({
-    required this.controller,
-    required this.delay,
-  });
+  const _BouncingDot({required this.controller, required this.delay});
 
   @override
   Widget build(BuildContext context) {
@@ -106,19 +100,20 @@ class _BouncingDot extends StatelessWidget {
       animation: controller,
       builder: (context, child) {
         final t = (controller.value + delayFraction) % 1.0;
-        // 0-40%: translateY(-8px), 40-80%: back, 80-100%: rest
+        // V2: 0-40%: translateY(-6px), 40-80%: back, 80-100%: rest
         final y = t < 0.4
-            ? -8.0 * (t / 0.4)
+            ? -6.0 * (t / 0.4)
             : t < 0.8
-                ? -8.0 + 8.0 * ((t - 0.4) / 0.4)
-                : 0.0;
+            ? -6.0 + 6.0 * ((t - 0.4) / 0.4)
+            : 0.0;
         return Transform.translate(
           offset: Offset(0, y),
           child: Container(
             width: 6,
             height: 6,
             decoration: const BoxDecoration(
-              color: XiaColors.text3,
+              // V2: violet (accent2) dots per ComponentSpec §4.3
+              color: XiaColors.accent2,
               shape: BoxShape.circle,
             ),
           ),

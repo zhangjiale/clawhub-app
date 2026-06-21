@@ -26,12 +26,12 @@ class AboutPage extends StatelessWidget {
       ),
       body: ListView(
         padding: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
-          vertical: XiaSpacing.s6,
+          horizontal: XiaSpacing.pagePaddingH,
+          vertical: XiaSpacing.pagePaddingH,
         ),
         children: [
           // App icon + name
-          const SizedBox(height: XiaSpacing.s6),
+          const SizedBox(height: XiaSpacing.pagePaddingH),
           Center(
             child: Container(
               width: 80,

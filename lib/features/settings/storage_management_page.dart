@@ -41,7 +41,7 @@ class StorageManagementPage extends ConsumerWidget {
   Widget _buildBody(StorageInfo info) {
     return ListView(
       padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
+        horizontal: XiaSpacing.pagePaddingH,
         vertical: XiaSpacing.s2,
       ),
       children: [
@@ -73,7 +73,7 @@ class StorageManagementPage extends ConsumerWidget {
             ],
           ),
         ),
-        const SizedBox(height: XiaSpacing.s6),
+        const SizedBox(height: XiaSpacing.pagePaddingH),
         const Text(
           '消息记录存储在设备本地，删除后将无法恢复。\n'
           '头像和图片缓存会在存储空间不足时自动清理。',
@@ -86,7 +86,7 @@ class StorageManagementPage extends ConsumerWidget {
   Widget _buildLoading() {
     return ListView(
       padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
+        horizontal: XiaSpacing.pagePaddingH,
         vertical: XiaSpacing.s2,
       ),
       children: [
@@ -107,7 +107,7 @@ class StorageManagementPage extends ConsumerWidget {
   Widget _buildError(Object error) {
     return ListView(
       padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
+        horizontal: XiaSpacing.pagePaddingH,
         vertical: XiaSpacing.s2,
       ),
       children: [
@@ -117,7 +117,7 @@ class StorageManagementPage extends ConsumerWidget {
             borderRadius: BorderRadius.circular(XiaRadius.lg),
           ),
           child: Padding(
-            padding: const EdgeInsets.all(XiaSpacing.s6),
+            padding: const EdgeInsets.all(XiaSpacing.pagePaddingH),
             child: Column(
               children: [
                 const Icon(

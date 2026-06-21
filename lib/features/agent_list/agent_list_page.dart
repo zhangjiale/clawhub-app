@@ -8,17 +8,18 @@ import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
 import 'package:claw_hub/features/agent_list/providers/stats_providers.dart';
 import 'package:claw_hub/features/agent_list/widgets/agent_card.dart';
-import 'package:claw_hub/features/agent_list/widgets/stats_bar.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/ui_kit/empty_state.dart';
+import 'package:claw_hub/ui_kit/inline_stats.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/status_banner.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 
-/// Agent 列表页 — 按实例分组展示所有 Agent，支持折叠分组、在线状态。
+/// Agent 列表页 — V2 ComponentSpec §2.
 ///
-/// 设计稿对齐：无搜索框，仅保留设置按钮。
+/// Header: title 24px + InlineStats row (2/3 ● 5/8 ● 142 消息) + 2 actions
+/// (search, settings). Body: instance groups → agent cards.
 class AgentListPage extends ConsumerStatefulWidget {
   const AgentListPage({super.key});
 
@@ -26,12 +27,7 @@ class AgentListPage extends ConsumerStatefulWidget {
   ConsumerState<AgentListPage> createState() => _AgentListPageState();
 }
 
-// ---------------------------------------------------------------------------
-// State — local UI-only state (collapse) per Law 5 exception
-// ---------------------------------------------------------------------------
-
 class _AgentListPageState extends ConsumerState<AgentListPage> {
-  /// 已折叠的分组 header（按 instanceName 标识）
   final Set<String> _collapsedGroups = {};
 
   void _toggleGroup(String key) {
@@ -44,10 +40,6 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Build
-  // -------------------------------------------------------------------------
-
   @override
   Widget build(BuildContext context) {
     final dataAsync = ref.watch(agentListProvider);
@@ -57,30 +49,23 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('虾Hub'),
+        toolbarHeight: 56,
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: XiaSpacing.s2),
             child: HeaderButton(
-              icon: Icons.search,
-              tooltip: '搜索消息',
+              tooltip: '搜索',
               onPressed: () =>
                   context.push(AppRoutes.searchWithParams(source: 'claws')),
+              child: const Icon(Icons.search, size: 18),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.only(right: XiaSpacing.s2),
+            padding: const EdgeInsets.only(right: XiaSpacing.s4),
             child: HeaderButton(
-              icon: Icons.dns_outlined,
-              tooltip: '实例管理',
-              onPressed: () => context.go(AppRoutes.instances),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: XiaSpacing.s2),
-            child: HeaderButton(
-              icon: Icons.settings_outlined,
               tooltip: '设置',
               onPressed: () => context.push(AppRoutes.settings),
+              child: const Icon(Icons.settings_outlined, size: 18),
             ),
           ),
         ],
@@ -109,7 +94,6 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
     );
   }
 
-  /// Route to the correct content view based on data.
   Widget _buildDataView(AgentListData data, AsyncValue<StatsData> statsAsync) {
     if (data.agents.isEmpty) {
       final hasSyncErrors = data.syncErrors.isNotEmpty;
@@ -149,10 +133,6 @@ class _AgentListPageState extends ConsumerState<AgentListPage> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Lightweight list-item descriptors (Law 11 — true lazy building)
-// ---------------------------------------------------------------------------
-
 sealed class _AgentListItem {
   const _AgentListItem();
 }
@@ -180,8 +160,8 @@ final class _GroupHeaderItem extends _AgentListItem {
 final class _AgentCardItem extends _AgentListItem {
   final Agent agent;
   final bool isOnline;
-  final int cardIndex; // B5: staggered enter delay index
-  final bool isCollapsed; // C3: for AnimatedSize collapse
+  final int cardIndex;
+  final bool isCollapsed;
   const _AgentCardItem({
     required this.agent,
     required this.isOnline,
@@ -189,10 +169,6 @@ final class _AgentCardItem extends _AgentListItem {
     required this.isCollapsed,
   });
 }
-
-// ---------------------------------------------------------------------------
-// Content widget — owns the list rendering
-// ---------------------------------------------------------------------------
 
 class _AgentListContent extends StatelessWidget {
   final AgentListData data;
@@ -215,7 +191,6 @@ class _AgentListContent extends StatelessWidget {
 
     return Column(
       children: [
-        // Stale-data banner
         if (data.syncErrors.isNotEmpty)
           const StatusBanner(
             message: '无法获取最新列表',
@@ -223,7 +198,6 @@ class _AgentListContent extends StatelessWidget {
             backgroundColor: XiaColors.yellowMuted,
             icon: Icons.cloud_off,
           ),
-        // List fills remaining space and supports pull-to-refresh.
         Expanded(
           child: Consumer(
             builder: (context, ref, _) {
@@ -235,7 +209,7 @@ class _AgentListContent extends StatelessWidget {
                   await ref.read(statsProvider.future);
                 },
                 child: ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  padding: const EdgeInsets.only(top: 4, bottom: 8),
                   itemCount: sections.length,
                   itemBuilder: (context, index) {
                     return _buildItem(context, sections[index]);
@@ -252,10 +226,8 @@ class _AgentListContent extends StatelessWidget {
   List<_AgentListItem> _buildSections() {
     final sections = <_AgentListItem>[];
 
-    // 1. Stats bar
     sections.add(_StatsItem(statsAsync));
 
-    // 2. Group by instance name
     final groups = <String?, List<Agent>>{};
     for (final agent in agents) {
       final name = data.instanceNames[agent.instanceId];
@@ -287,7 +259,6 @@ class _AgentListContent extends StatelessWidget {
         ),
       );
 
-      // Agent cards (C3: always included, collapsed via AnimatedSize)
       var cardIndex = 0;
       for (final agent in groupAgents) {
         final agentOnline =
@@ -312,12 +283,20 @@ class _AgentListContent extends StatelessWidget {
       _StatsItem(:final statsAsync) => statsAsync.when(
         loading: () => const SizedBox.shrink(),
         error: (_, _) => const SizedBox.shrink(),
-        data: (stats) => StatsBar(
-          activeInstances: stats.activeInstances,
-          totalInstances: stats.totalInstances,
-          onlineAgents: stats.onlineAgents,
-          totalAgents: stats.totalAgents,
-          totalMessages: stats.totalMessages,
+        data: (stats) => InlineStats(
+          items: [
+            InlineStatItem(
+              value: '${stats.activeInstances}',
+              unit: '/${stats.totalInstances}',
+              showStatusDot: true,
+              isOnline: stats.activeInstances > 0,
+            ),
+            InlineStatItem(
+              value: '${stats.onlineAgents}',
+              unit: '/${stats.totalAgents} 在线',
+            ),
+            InlineStatItem(value: '${stats.totalMessages}', unit: '消息'),
+          ],
         ),
       ),
       _GroupHeaderItem(
@@ -363,14 +342,10 @@ class _AgentListContent extends StatelessWidget {
                     );
                   },
                 ),
-        ), // AnimatedSize
+        ),
     };
   }
 }
-
-// ---------------------------------------------------------------------------
-// Group header tile (extracted — Law 10 composition)
-// ---------------------------------------------------------------------------
 
 class _GroupHeaderTile extends StatelessWidget {
   final String header;
@@ -390,27 +365,19 @@ class _GroupHeaderTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        XiaSpacing.s4,
-        XiaSpacing.s3,
-        XiaSpacing.s4,
-        XiaSpacing.s1,
-      ),
-      child: PressFeedback(
-        onTap: onToggle,
-        builder: (child, isPressed) => AnimatedOpacity(
-          opacity: isPressed ? 0.5 : 1.0,
-          duration: XiaMotion.durationFast,
-          curve: XiaMotion.ease,
-          child: child,
+    return PressFeedback(
+      onTap: onToggle,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: XiaSpacing.pagePaddingH,
+          vertical: XiaSpacing.s3,
         ),
         child: Row(
           children: [
-            // Online status dot for the instance
             Container(
-              width: 8,
-              height: 8,
+              width: 6,
+              height: 6,
               decoration: BoxDecoration(
                 color: isInstanceOnline ? XiaColors.green : XiaColors.text4,
                 shape: BoxShape.circle,
@@ -418,10 +385,9 @@ class _GroupHeaderTile extends StatelessWidget {
               ),
             ),
             const SizedBox(width: XiaSpacing.s2),
-            // Instance name with emoji
             Expanded(
               child: Text(
-                '🖥️ $header',
+                header,
                 style: theme.textTheme.labelLarge?.copyWith(
                   color: isInstanceOnline ? XiaColors.accent : XiaColors.text3,
                   fontWeight: FontWeight.w600,
@@ -430,22 +396,22 @@ class _GroupHeaderTile extends StatelessWidget {
                 ),
               ),
             ),
-            // Agent count badge with "只虾"
             Text(
-              '$agentCount 只虾',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: XiaColors.text4,
+              '$agentCount 只',
+              style: const TextStyle(
+                fontSize: 11,
+                color: XiaColors.text3,
+                fontFeatures: [FontFeature.tabularFigures()],
               ),
             ),
-            const SizedBox(width: XiaSpacing.s1),
-            // Collapse/expand icon
+            const SizedBox(width: 4),
             AnimatedRotation(
               turns: isCollapsed ? -0.25 : 0.0,
               duration: XiaMotion.durationFast,
               curve: XiaMotion.ease,
               child: const Icon(
                 Icons.expand_more,
-                size: 20,
+                size: 14,
                 color: XiaColors.text4,
               ),
             ),

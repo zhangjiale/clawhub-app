@@ -62,7 +62,7 @@ class AgentConfigPage extends ConsumerStatefulWidget {
 
 class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
   final _nicknameController = TextEditingController();
-  String _themeColor = '#007AFF'; // Agent 默认主题色，始终为有效 hex
+  String _themeColor = '#4F83FF'; // Agent 默认主题色，始终为有效 hex
   List<QuickCommand> _quickCommands = const [];
   bool _formReady = false;
 
@@ -337,7 +337,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
             ),
             Container(
               margin: const EdgeInsets.symmetric(
-                horizontal: XiaSpacing.s6,
+                horizontal: XiaSpacing.pagePaddingH,
                 vertical: XiaSpacing.s2,
               ),
               padding: const EdgeInsets.all(XiaSpacing.s5),
@@ -421,7 +421,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
             ),
             Container(
               margin: const EdgeInsets.symmetric(
-                horizontal: XiaSpacing.s6,
+                horizontal: XiaSpacing.pagePaddingH,
                 vertical: XiaSpacing.s2,
               ),
               padding: const EdgeInsets.all(XiaSpacing.s5),
@@ -458,7 +458,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
             ),
             Container(
               margin: const EdgeInsets.symmetric(
-                horizontal: XiaSpacing.s6,
+                horizontal: XiaSpacing.pagePaddingH,
                 vertical: XiaSpacing.s2,
               ),
               padding: const EdgeInsets.all(XiaSpacing.s5),
@@ -477,7 +477,7 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
 
             // Save button
             Padding(
-              padding: const EdgeInsets.all(XiaSpacing.s6),
+              padding: const EdgeInsets.all(XiaSpacing.pagePaddingH),
               child: PrimaryButton(
                 label: '💾 保存配置',
                 isLoading: state.isSaving,

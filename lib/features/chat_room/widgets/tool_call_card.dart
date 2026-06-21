@@ -3,9 +3,9 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 
-/// Tool call card — matching ComponentSpec Section 4.2.3.
+/// Tool call card — matching V2 ComponentSpec Section 4.2.3.
 ///
-/// 3px accent left border, surface2 bg, 12px radius.
+/// V2: 2px accent2 (violet) left border, surface bg, 8px radius.
 class ToolCallCard extends StatelessWidget {
   final ToolCall toolCall;
 
@@ -15,7 +15,7 @@ class ToolCallCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(
-        horizontal: XiaSpacing.s6,
+        horizontal: XiaSpacing.pagePaddingH,
         vertical: 4,
       ),
       child: Row(
@@ -31,10 +31,10 @@ class ToolCallCard extends StatelessWidget {
                 vertical: XiaSpacing.s3,
               ),
               decoration: BoxDecoration(
-                color: XiaColors.surface2,
+                color: XiaColors.surface,
                 borderRadius: BorderRadius.circular(XiaRadius.md),
                 border: const Border(
-                  left: BorderSide(color: XiaColors.accent, width: 3),
+                  left: BorderSide(color: XiaColors.accent2, width: 2),
                 ),
               ),
               child: Row(
@@ -50,7 +50,7 @@ class ToolCallCard extends StatelessWidget {
                           toolCall.toolName,
                           style: const TextStyle(
                             fontWeight: FontWeight.w600,
-                            color: XiaColors.accent,
+                            color: XiaColors.accent2,
                             fontSize: 12,
                           ),
                         ),
@@ -99,23 +99,23 @@ class ToolCallCard extends StatelessWidget {
   Widget _buildStatusIcon() {
     return switch (toolCall.status) {
       ToolCallStatus.pending || ToolCallStatus.running => const SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: XiaColors.yellow,
-          ),
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: XiaColors.yellow,
         ),
+      ),
       ToolCallStatus.success => const Icon(
-          Icons.check_circle,
-          size: 20,
-          color: XiaColors.green,
-        ),
+        Icons.check_circle,
+        size: 20,
+        color: XiaColors.green,
+      ),
       ToolCallStatus.failed => const Icon(
-          Icons.error,
-          size: 20,
-          color: XiaColors.red,
-        ),
+        Icons.error,
+        size: 20,
+        color: XiaColors.red,
+      ),
     };
   }
 

@@ -201,7 +201,7 @@ class _AddInstanceCard extends StatelessWidget {
         duration: XiaMotion.durationFast,
         curve: XiaMotion.ease,
         margin: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
+          horizontal: XiaSpacing.pagePaddingH,
           vertical: XiaSpacing.s3,
         ),
         padding: const EdgeInsets.all(XiaSpacing.s5),

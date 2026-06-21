@@ -9,14 +9,14 @@ import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/xia_markdown_styles.dart';
 
-/// Message bubble — matching ComponentSpec Section 4.2.2.
+/// Message bubble — matching V2 ComponentSpec Section 4.2.2.
 ///
-/// User: coral bg (#C27C68), white text, right-aligned, 20px radius with
-///       8px bottom-right corner (speech tail).
-/// Agent: surface bg, text1, left-aligned, 20px radius with
-///        8px bottom-left corner, shadow-s.
+/// User: sapphire bg (#4F83FF), white text, right-aligned, 14px radius with
+///       4px bottom-right corner (speech tail).
+/// Agent: surface2 bg, text1, left-aligned, 14px radius with
+///        4px bottom-left corner, hairline border (no shadow).
 ///
-/// **Animation (B3)**: 350ms opacity(0→1) + translateY(12px→0) enter
+/// **Animation (B3)**: 250ms opacity(0→1) + translateY(10px→0) enter
 /// animation via [StaggeredEnterItem] based on [index].
 class MessageBubble extends StatelessWidget {
   final Message message;
@@ -68,7 +68,7 @@ class MessageBubble extends StatelessWidget {
       index: index,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
+          horizontal: XiaSpacing.pagePaddingH,
           vertical: 4,
         ),
         child: Row(
@@ -88,49 +88,43 @@ class MessageBubble extends StatelessWidget {
                       maxWidth: MediaQuery.of(context).size.width * 0.78,
                     ),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: XiaSpacing.s5,
-                      vertical: XiaSpacing.s3,
+                      horizontal: 13,
+                      vertical: 9,
                     ),
                     decoration: BoxDecoration(
                       color: _isUser
                           ? AgentTheme.of(context).primary
                           : isHighlighted
-                          ? XiaColors.accent.withAlpha(23)
-                          : XiaColors.surface,
+                          ? XiaColors.accent.withAlpha(38)
+                          : XiaColors.surface2,
                       borderRadius: BorderRadius.only(
                         topLeft: const Radius.circular(XiaRadius.xl),
                         topRight: const Radius.circular(XiaRadius.xl),
                         bottomLeft: Radius.circular(
-                          _isUser ? XiaRadius.xl : XiaRadius.sm,
+                          _isUser ? XiaRadius.xl : XiaRadius.xs,
                         ),
                         bottomRight: Radius.circular(
-                          _isUser ? XiaRadius.sm : XiaRadius.xl,
+                          _isUser ? XiaRadius.xs : XiaRadius.xl,
                         ),
                       ),
-                      boxShadow: isHighlighted
-                          ? [
-                              BoxShadow(
-                                color: XiaColors.accent.withAlpha(77),
-                                blurRadius: 8,
-                                spreadRadius: 1,
-                              ),
-                            ]
-                          : (_isUser ? null : XiaShadow.s),
+                      // V2: removed boxShadow (replaced by hairline border).
                       // 高亮边框优先于失败边框 —— 搜索结果高亮是用户主动导航的目标，
                       // 即使消息发送失败，用户仍需看到"这就是你搜的那条"的视觉反馈。
                       border: isHighlighted
                           ? Border.all(color: XiaColors.accent, width: 2)
                           : message.status == MessageStatus.failed
-                          ? Border.all(color: XiaColors.red, width: 1.5)
-                          : null,
+                          ? Border.all(color: XiaColors.red, width: 1)
+                          : _isUser
+                          ? null
+                          : Border.all(color: XiaColors.border),
                     ),
                     child: _isUser
                         ? Text(
                             _displayContent(message),
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 15,
-                              height: 1.6,
+                              fontSize: 14,
+                              height: 1.5,
                             ),
                           )
                         : _buildMarkdownContent(_displayContent(message)),
@@ -138,14 +132,14 @@ class MessageBubble extends StatelessWidget {
                   // Message time
                   Padding(
                     padding: const EdgeInsets.only(
-                      top: XiaSpacing.s1,
+                      top: 3,
                       left: XiaSpacing.s1,
                       right: XiaSpacing.s1,
                     ),
                     child: Text(
                       _formatTime(message.timestamp),
                       style: const TextStyle(
-                        fontSize: 11,
+                        fontSize: XiaTypography.timestamp, // V2: 10
                         color: XiaColors.text4,
                         fontFeatures: [FontFeature.tabularFigures()],
                       ),

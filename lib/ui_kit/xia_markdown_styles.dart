@@ -13,20 +13,20 @@ class XiaMarkdownStyles {
   /// Full-featured stylesheet for rendered message bubbles (headings, links,
   /// code blocks, blockquotes, tables).
   static final MarkdownStyleSheet message = MarkdownStyleSheet(
-    p: const TextStyle(color: XiaColors.text1, fontSize: 15, height: 1.6),
+    p: const TextStyle(color: XiaColors.text1, fontSize: 14, height: 1.5),
     h1: const TextStyle(
-      color: XiaColors.text1,
-      fontSize: 20,
-      fontWeight: FontWeight.bold,
-    ),
-    h2: const TextStyle(
       color: XiaColors.text1,
       fontSize: 18,
       fontWeight: FontWeight.bold,
     ),
-    h3: const TextStyle(
+    h2: const TextStyle(
       color: XiaColors.text1,
       fontSize: 16,
+      fontWeight: FontWeight.bold,
+    ),
+    h3: const TextStyle(
+      color: XiaColors.text1,
+      fontSize: 15,
       fontWeight: FontWeight.bold,
     ),
     strong: const TextStyle(
@@ -41,8 +41,8 @@ class XiaMarkdownStyles {
     code: const TextStyle(
       backgroundColor: XiaColors.codeBlockBg,
       color: XiaColors.accent,
-      fontSize: 13,
-      fontFamily: 'monospace',
+      fontSize: 12,
+      fontFamily: XiaTypography.monoFontFamily,
     ),
     codeblockDecoration: BoxDecoration(
       color: XiaColors.surface2,
@@ -50,10 +50,11 @@ class XiaMarkdownStyles {
     ),
     codeblockPadding: const EdgeInsets.all(XiaSpacing.s4),
     blockquoteDecoration: const BoxDecoration(
-      border: Border(left: BorderSide(color: XiaColors.accent, width: 3)),
+      // V2: 2px accent2 left border (was 3px accent in V1)
+      border: Border(left: BorderSide(color: XiaColors.accent2, width: 2)),
     ),
     blockquotePadding: const EdgeInsets.only(left: XiaSpacing.s3),
-    tableBorder: TableBorder.all(color: XiaColors.divider),
+    tableBorder: TableBorder.all(color: XiaColors.border),
     tableHead: const TextStyle(
       color: XiaColors.text1,
       fontWeight: FontWeight.bold,
@@ -66,12 +67,12 @@ class XiaMarkdownStyles {
   /// The streaming bubble renders incrementally and doesn't need full
   /// block-level formatting.
   static final MarkdownStyleSheet streaming = MarkdownStyleSheet(
-    p: const TextStyle(color: XiaColors.text1, fontSize: 15, height: 1.6),
+    p: const TextStyle(color: XiaColors.text1, fontSize: 14, height: 1.5),
     code: const TextStyle(
       backgroundColor: XiaColors.codeBlockBg,
       color: XiaColors.accent,
-      fontSize: 13,
-      fontFamily: 'monospace',
+      fontSize: 12,
+      fontFamily: XiaTypography.monoFontFamily,
     ),
     strong: const TextStyle(fontWeight: FontWeight.bold),
   );

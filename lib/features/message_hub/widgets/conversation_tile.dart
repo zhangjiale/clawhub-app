@@ -9,10 +9,10 @@ import 'package:claw_hub/features/message_hub/providers/message_hub_providers.da
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 
-/// Conversation list row — matching ComponentSpec Section 3.2.
+/// Conversation list row — V2 ComponentSpec Section 3.2.
 ///
-/// Layout: [48×48 avatar + status dot] [name + preview] [time + unread badge]
-/// Press: bg→surface2, 200ms ease.
+/// V2: 36×36 avatar (was 48×48), hairline border-bottom separator (V2 §3.2),
+/// padding 10/16, red unread badge (#F87171), time text4, name 14/w600.
 class ConversationTile extends StatelessWidget {
   final ConversationPreview preview;
   final VoidCallback? onTap;
@@ -31,16 +31,19 @@ class ConversationTile extends StatelessWidget {
     final previewText = _truncate(isUser ? '你: $rawPreview' : rawPreview);
 
     return PressFeedback(
-      pressedColor: XiaColors.surface2,
+      pressedColor: XiaColors.surface,
       onTap: onTap,
-      child: Padding(
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: XiaColors.border)),
+        ),
         padding: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
-          vertical: XiaSpacing.s5,
+          horizontal: XiaSpacing.pagePaddingH, // V2: 16
+          vertical: 10, // V2: 10
         ),
         child: Row(
           children: [
-            // Avatar
+            // V2: 36×36 avatar
             Stack(
               children: [
                 EmojiAvatar(
@@ -50,16 +53,16 @@ class ConversationTile extends StatelessWidget {
                       ? FileImage(File(agent.avatarUrl!))
                       : null,
                   backgroundColor: conv.isMuted ? XiaColors.surface2 : null,
-                  radius: 24,
+                  radius: 18, // V2: 36×36
                   borderRadius: XiaRadius.md,
-                  fontSize: 22,
+                  fontSize: 16,
                 ),
                 Positioned(
-                  right: 0,
-                  bottom: 0,
+                  right: -1,
+                  bottom: -1,
                   child: Container(
-                    width: 8,
-                    height: 8,
+                    width: 10,
+                    height: 10,
                     decoration: BoxDecoration(
                       color:
                           preview.healthStatus == HealthStatus.online ||
@@ -67,7 +70,7 @@ class ConversationTile extends StatelessWidget {
                           ? XiaColors.green
                           : XiaColors.text4,
                       shape: BoxShape.circle,
-                      border: Border.all(color: XiaColors.surface, width: 2),
+                      border: Border.all(color: XiaColors.bg, width: 2),
                       boxShadow: preview.healthStatus == HealthStatus.online
                           ? XiaShadow.onlineGlow
                           : null,
@@ -76,7 +79,7 @@ class ConversationTile extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(width: XiaSpacing.s4),
+            const SizedBox(width: 10), // V2: 10
             // Name + preview
             Expanded(
               child: Column(
@@ -88,17 +91,19 @@ class ConversationTile extends StatelessWidget {
                       Expanded(
                         child: Text(
                           agent.displayName,
-                          style: theme.textTheme.titleSmall?.copyWith(
+                          style: TextStyle(
+                            fontSize: 14, // V2: 14
                             fontWeight: hasUnread
                                 ? FontWeight.bold
                                 : FontWeight.w600,
+                            color: XiaColors.text1,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       if (conv.isMuted)
-                        Icon(
+                        const Icon(
                           Icons.volume_off,
                           size: 14,
                           color: XiaColors.text3,
@@ -107,8 +112,9 @@ class ConversationTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    previewText.isEmpty ? '开始对话吧' : previewText,
-                    style: theme.textTheme.bodySmall?.copyWith(
+                    previewText.isEmpty ? '暂无消息' : previewText,
+                    style: TextStyle(
+                      fontSize: 12, // V2: 12
                       color: hasUnread ? XiaColors.text1 : XiaColors.text3,
                       fontWeight: hasUnread
                           ? FontWeight.w500
@@ -129,7 +135,7 @@ class ConversationTile extends StatelessWidget {
                 Text(
                   _formatRelativeTime(conv.lastMessageTime),
                   style: const TextStyle(
-                    fontSize: 12,
+                    fontSize: XiaTypography.timestamp, // V2: 10
                     color: XiaColors.text4,
                     fontFeatures: [FontFeature.tabularFigures()],
                   ),
@@ -146,7 +152,7 @@ class ConversationTile extends StatelessWidget {
     );
   }
 
-  /// Truncate preview to 38 characters.
+  /// Truncate preview to 38 characters per V2 §3.2.2.
   static String _truncate(String text) {
     if (text.length <= 38) return text;
     return '${text.substring(0, 38)}…';
@@ -171,7 +177,7 @@ class ConversationTile extends StatelessWidget {
   }
 }
 
-/// Unread badge — capsule with accent background.
+/// V2 unread badge — red (#F87171) capsule, min 16×16, padding 0/5.
 class _UnreadBadge extends StatelessWidget {
   final int count;
 
@@ -181,17 +187,19 @@ class _UnreadBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = count > 99 ? '99+' : count.toString();
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
       decoration: const BoxDecoration(
-        color: XiaColors.accent,
+        color: AppColors.unreadBadge, // V2: red #F87171
         borderRadius: BorderRadius.all(Radius.circular(XiaRadius.full)),
       ),
+      alignment: Alignment.center,
       child: Text(
         label,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );

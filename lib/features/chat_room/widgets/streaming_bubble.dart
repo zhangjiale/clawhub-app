@@ -91,7 +91,7 @@ class _StreamingBubbleState extends State<StreamingBubble>
       index: 0,
       child: Padding(
         padding: const EdgeInsets.symmetric(
-          horizontal: XiaSpacing.s6,
+          horizontal: XiaSpacing.pagePaddingH,
           vertical: 4,
         ),
         child: Row(
@@ -105,18 +105,18 @@ class _StreamingBubbleState extends State<StreamingBubble>
                     maxWidth: MediaQuery.of(context).size.width * 0.78,
                   ),
                   padding: const EdgeInsets.symmetric(
-                    horizontal: XiaSpacing.s5,
-                    vertical: XiaSpacing.s3,
+                    horizontal: 13,
+                    vertical: 9,
                   ),
                   decoration: BoxDecoration(
-                    color: XiaColors.surface,
+                    color: XiaColors.surface2,
                     borderRadius: const BorderRadius.only(
                       topLeft: Radius.circular(XiaRadius.xl),
                       topRight: Radius.circular(XiaRadius.xl),
                       bottomRight: Radius.circular(XiaRadius.xl),
-                      bottomLeft: Radius.circular(XiaRadius.sm),
+                      bottomLeft: Radius.circular(XiaRadius.xs),
                     ),
-                    boxShadow: XiaShadow.s,
+                    border: Border.all(color: XiaColors.border),
                   ),
                   child: SingleChildScrollView(
                     reverse: true,
