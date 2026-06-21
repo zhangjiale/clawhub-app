@@ -342,10 +342,13 @@ class _TabScaffold extends StatelessWidget {
                   sigmaY: XiaGlass.navBlur,
                 ),
                 child: Container(
-                  height: 72,
+                  height: 56, // V2: 72 → 56
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.of(context).padding.bottom,
+                  ),
                   decoration: const BoxDecoration(
                     color: XiaGlass.navBackground,
-                    border: Border(top: BorderSide(color: XiaColors.divider)),
+                    border: Border(top: BorderSide(color: XiaColors.border)),
                   ),
                   child: Row(
                     children: [
@@ -396,32 +399,44 @@ class _NavTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = isActive ? XiaColors.accent : XiaColors.text4;
+    final color = isActive ? XiaColors.accent : XiaColors.text3;
 
+    // Press feedback mirrors XiaBackButton (surface2 on press, transparent
+    // normally) so the tab feels responsive on a glassmorphism nav bar.
+    // No scale — Expanded children would shift the Row layout on press.
     return Expanded(
       child: PressFeedback(
-        scale: 0.95,
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: XiaSpacing.s6,
-            vertical: XiaSpacing.s2,
+        pressedColor: XiaColors.surface2,
+        normalColor: Colors.transparent,
+        borderRadius: const BorderRadius.all(Radius.circular(XiaRadius.md)),
+        child: Container(
+          // V2: 2px accent top-line indicator (replaces V1 filled pill)
+          decoration: BoxDecoration(
+            border: Border(
+              top: BorderSide(
+                color: isActive ? XiaColors.accent : Colors.transparent,
+                width: 2,
+              ),
+            ),
           ),
+          padding: const EdgeInsets.symmetric(vertical: 6),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // V2: 20px icon (was 22)
               Icon(
                 isActive ? (activeIcon ?? icon) : icon,
-                size: 22,
+                size: 20,
                 color: color,
               ),
-              const SizedBox(height: 3),
+              const SizedBox(height: 2),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 10,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
                   color: color,
                   letterSpacing: 0.2,
                 ),

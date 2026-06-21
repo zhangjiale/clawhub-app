@@ -7,11 +7,11 @@ import 'package:claw_hub/app/theme/tokens.dart';
 /// outgoing page shifts left -30% with opacity fade.
 /// Back navigation: reverse of forward.
 ///
-/// **Timing (B6)**: Transform uses the full route transition duration (500ms)
+/// **Timing (B6)**: Transform uses the full route transition duration (400ms)
 /// with XiaMotion.ease. Opacity uses Interval(0.0, 0.7) so the fade completes
-/// in ~350ms of the 500ms total — matching the spec's "先快后慢" rhythm.
+/// in ~280ms of the 400ms total — matching the spec's "先快后慢" rhythm.
 ///
-/// Use [XiaTransitionPage] in GoRouter pageBuilder to set the 500ms
+/// Use [XiaTransitionPage] in GoRouter pageBuilder to set the 400ms
 /// transition duration on individual routes.
 class XiaTransitionPage<T> extends Page<T> {
   final Widget child;
@@ -24,7 +24,7 @@ class XiaTransitionPage<T> extends Page<T> {
   }
 }
 
-/// Internal [MaterialPageRoute] with 500ms transition duration (B6).
+/// Internal [MaterialPageRoute] with 400ms transition duration (V2).
 class _XiaPageRoute<T> extends MaterialPageRoute<T> {
   _XiaPageRoute({
     required super.builder,
@@ -34,7 +34,7 @@ class _XiaPageRoute<T> extends MaterialPageRoute<T> {
   });
 
   @override
-  Duration get transitionDuration => XiaMotion.durationSlow; // 500ms
+  Duration get transitionDuration => XiaMotion.durationSlow; // 400ms (V2)
 }
 
 class XiaPageTransitionsBuilder extends PageTransitionsBuilder {
@@ -48,13 +48,13 @@ class XiaPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    // Slide: uses full animation duration (should be 500ms from route)
+    // Slide: uses full animation duration (should be 400ms from route)
     final slideAnimation = CurvedAnimation(
       parent: animation,
       curve: XiaMotion.ease,
     );
 
-    // Fade: completes in 70% of total duration via Interval (350ms of 500ms)
+    // Fade: completes in 70% of total duration via Interval (280ms of 400ms)
     final fadeAnimation = CurvedAnimation(
       parent: animation,
       curve: const Interval(0.0, 0.7, curve: XiaMotion.ease),
