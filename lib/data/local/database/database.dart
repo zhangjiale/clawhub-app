@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration {
@@ -92,6 +92,22 @@ class AppDatabase extends _$AppDatabase {
         }
         if (from < 4) {
           await migrator.createTable(pendingNotifications);
+        }
+        if (from < 5) {
+          // V1 → V2 default theme_color migration (issue #1).
+          //
+          // Pre-V2 installs used '#007AFF' as the default for the agents
+          // table. The schema default was changed to '#4F83FF' (V2 sapphire)
+          // but existing rows still carry the old color value, causing a
+          // visible color mismatch between old and new agents. Rewrite those
+          // rows in place so all agents display the V2 color.
+          //
+          // Only '#007AFF' is touched — agents with user-chosen colors are
+          // preserved (they never had the V1 default).
+          await customStatement(
+            "UPDATE agents SET theme_color = '#4F83FF' "
+            "WHERE theme_color = '#007AFF'",
+          );
         }
       },
     );
