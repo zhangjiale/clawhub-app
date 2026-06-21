@@ -85,7 +85,7 @@ class _ColorGridState extends State<ColorGrid> {
                 border: isSelected
                     ? Border.all(color: XiaColors.text1, width: 3)
                     : Border.all(color: Colors.transparent, width: 3),
-                boxShadow: isSelected ? XiaShadow.selectedGlow : null,
+                boxShadow: isSelected ? XiaShadow.accentRing : null,
               ),
               child: isSelected
                   ? const Center(

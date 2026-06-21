@@ -51,14 +51,14 @@ void main() {
             message: message(role: MessageRole.user, content: 'user-blue'),
             agentName: '产品虾',
           ),
-          agentTheme: const AgentTheme(primary: Color(0xFF6C8AAF)),
+          agentTheme: const AgentTheme(primary: Color(0xFF9B7AFF)), // V2 violet
         ),
       );
 
-      expect(bubbleColor(tester, 'user-blue'), const Color(0xFF6C8AAF));
+      expect(bubbleColor(tester, 'user-blue'), const Color(0xFF9B7AFF));
     });
 
-    testWidgets('user bubble falls back to coral when no AgentTheme', (
+    testWidgets('user bubble falls back to sapphire when no AgentTheme', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -70,10 +70,11 @@ void main() {
         ),
       );
 
-      expect(bubbleColor(tester, 'user-default'), const Color(0xFFC27C68));
+      // V2: default AgentTheme.primary = sapphire #4F83FF
+      expect(bubbleColor(tester, 'user-default'), const Color(0xFF4F83FF));
     });
 
-    testWidgets('agent bubble stays surface regardless of AgentTheme', (
+    testWidgets('agent bubble stays surface2 regardless of AgentTheme', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -82,10 +83,11 @@ void main() {
             message: message(role: MessageRole.agent, content: 'agent-themed'),
             agentName: '产品虾',
           ),
-          agentTheme: const AgentTheme(primary: Color(0xFFAA6E82)),
+          agentTheme: const AgentTheme(primary: Color(0xFFF472B6)), // V2 pink
         ),
       );
-      expect(bubbleColor(tester, 'agent-themed'), XiaColors.surface);
+      // V2: agent bubble bg = surface2 (was surface in V1)
+      expect(bubbleColor(tester, 'agent-themed'), XiaColors.surface2);
 
       await tester.pumpWidget(
         wrap(
@@ -95,7 +97,7 @@ void main() {
           ),
         ),
       );
-      expect(bubbleColor(tester, 'agent-default'), XiaColors.surface);
+      expect(bubbleColor(tester, 'agent-default'), XiaColors.surface2);
     });
 
     testWidgets('user bubble text is white', (tester) async {
@@ -105,7 +107,7 @@ void main() {
             message: message(role: MessageRole.user, content: 'white-text'),
             agentName: '产品虾',
           ),
-          agentTheme: const AgentTheme(primary: Color(0xFF5F9B96)),
+          agentTheme: const AgentTheme(primary: Color(0xFF22D3EE)), // V2 cyan
         ),
       );
 
@@ -130,14 +132,14 @@ void main() {
               agentName: '产品虾',
               isHighlighted: true,
             ),
-            agentTheme: const AgentTheme(primary: Color(0xFF007AFF)),
+            agentTheme: const AgentTheme(primary: Color(0xFF4F83FF)),
           ),
         );
 
-        // Highlighted agent bubble uses accent.withAlpha(23), not surface
+        // V2: highlighted agent bubble uses accent.withAlpha(38), not surface
         expect(
           bubbleColor(tester, 'agent-highlighted'),
-          XiaColors.accent.withAlpha(23),
+          XiaColors.accent.withAlpha(38),
         );
       });
 
@@ -154,14 +156,14 @@ void main() {
               agentName: '产品虾',
               isHighlighted: true,
             ),
-            agentTheme: const AgentTheme(primary: Color(0xFF6C8AAF)),
+            agentTheme: const AgentTheme(primary: Color(0xFF9B7AFF)),
           ),
         );
 
         // Highlighted user bubble keeps AgentTheme.primary (not accent)
         expect(
           bubbleColor(tester, 'user-highlighted'),
-          const Color(0xFF6C8AAF),
+          const Color(0xFF9B7AFF),
         );
       });
 
@@ -209,6 +211,9 @@ void main() {
           ),
         );
 
+        // V2: agent bubbles now have a hairline border (XiaColors.border) for
+        // depth. The test verifies there is NO accent-colored border on a
+        // non-highlighted agent bubble.
         final containers = find.ancestor(
           of: find.text('no-border-test'),
           matching: find.byType(Container),
@@ -217,10 +222,15 @@ void main() {
           final widget = element.widget as Container;
           final d = widget.decoration;
           if (d is BoxDecoration && d.border != null) {
-            fail('Non-highlighted bubble should not have accent border');
+            // Ensure no accent-colored border on non-highlighted agent bubble
+            final border = d.border!;
+            final top = border.top;
+            if (top.color == XiaColors.accent) {
+              fail('Non-highlighted bubble should not have accent border');
+            }
           }
         }
-        // Test passes if no decorated container with border found
+        // Test passes if no decorated container with accent border found
       });
 
       testWidgets('short message still shrink-wraps', (tester) async {

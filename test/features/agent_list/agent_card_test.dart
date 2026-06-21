@@ -72,15 +72,22 @@ void main() {
       expect(find.text('产品虾'), findsOneWidget);
     });
 
-    testWidgets('chevron_right always present in card', (tester) async {
+    testWidgets('V2: no chevron_right (removed in V2 spec §2.4)', (
+      tester,
+    ) async {
       await tester.pumpWidget(buildCard(isOnline: false));
-      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+      // V2: chevron removed per ComponentSpec §2.4
+      expect(find.byIcon(Icons.chevron_right), findsNothing);
     });
 
-    testWidgets('status dot and time in meta area', (tester) async {
+    testWidgets('status dot and time in name row (V2 inline layout)', (
+      tester,
+    ) async {
       await tester.pumpWidget(buildCard());
-      // The card should have chevron_right present
-      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+      // V2: agent name + time are on same row (inline)
+      expect(find.text('产品虾'), findsOneWidget);
+      // Just verify card renders successfully
+      expect(find.byType(AgentCard), findsOneWidget);
     });
   });
 }

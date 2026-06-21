@@ -173,7 +173,7 @@ class SearchViewModel extends StateNotifier<SearchState> {
           instanceId: conv?.instanceId ?? '',
           agentName: agent?.displayName ?? m.agentId,
           agentAvatarUrl: agent?.avatarUrl,
-          agentThemeColor: agent?.themeColor ?? '#007AFF',
+          agentThemeColor: agent?.themeColor ?? '#4F83FF',
           messageContent: m.content ?? '',
           messageTimestamp: m.timestamp,
           highlightQuery: query,

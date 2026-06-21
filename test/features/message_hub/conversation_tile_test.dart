@@ -20,7 +20,8 @@ void main() {
     agentId: 'local-1',
     instanceId: 'inst-1',
     lastMessagePreview: '你好，有什么可以帮你的？',
-    lastMessageTime: DateTime.now().millisecondsSinceEpoch - 300000, // 5 min ago
+    lastMessageTime:
+        DateTime.now().millisecondsSinceEpoch - 300000, // 5 min ago
     unreadCount: 0,
   );
 
@@ -42,10 +43,7 @@ void main() {
       );
 
       expect(find.text('产品虾'), findsOneWidget);
-      expect(
-        find.text('你好，有什么可以帮你的？'),
-        findsOneWidget,
-      );
+      expect(find.text('你好，有什么可以帮你的？'), findsOneWidget);
     });
 
     testWidgets('truncates long previews to 40 chars', (tester) async {
@@ -72,8 +70,7 @@ void main() {
         ),
       );
 
-      final displayed =
-          tester.widget<Text>(find.textContaining('这是一条')).data;
+      final displayed = tester.widget<Text>(find.textContaining('这是一条')).data;
       expect(displayed!.length, lessThanOrEqualTo(41)); // 40 chars + … = 41
     });
 
@@ -201,7 +198,7 @@ void main() {
         ),
       );
 
-      expect(find.text('开始对话吧'), findsOneWidget);
+      expect(find.text('暂无消息'), findsOneWidget);
     });
 
     testWidgets('tapping tile calls onTap', (tester) async {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -63,12 +64,25 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ScrollController? _scrollController;
   // C4: Swipe-back tracking
   bool _swipeFromLeft = false;
+  // Cancellable timers — replaced Future.delayed so back navigation
+  // immediately releases the State (no closure-captured retention).
+  Timer? _retryFeedbackTimer;
+  Timer? _highlightFadeTimer;
+
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
     // C2: Auto-scroll on page open
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  @override
+  void dispose() {
+    _retryFeedbackTimer?.cancel();
+    _highlightFadeTimer?.cancel();
+    _scrollController?.dispose();
+    super.dispose();
   }
 
   void _scrollToBottom() {
@@ -100,14 +114,6 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     if (instance != null && mounted) {
       await ref.read(connectionOrchestratorProvider).reconnect(instance);
     }
-  }
-
-  @override
-  void dispose() {
-    _scrollController?.dispose();
-    _scrollController =
-        null; // Prevent post-frame callback from accessing disposed controller
-    super.dispose();
   }
 
   @override
@@ -150,11 +156,13 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     });
 
     // Auto-dismiss retryFeedback after 3 seconds so the banner doesn't
-    // persist indefinitely.  Only fires on new (non-null) feedback values.
+    // persist indefinitely. Uses a cancellable Timer so back navigation
+    // releases State immediately.
     ref.listen(chatViewModelProvider(params), (prev, next) {
       if (next.retryFeedback != null &&
           prev?.retryFeedback != next.retryFeedback) {
-        Future.delayed(const Duration(seconds: 3), () {
+        _retryFeedbackTimer?.cancel();
+        _retryFeedbackTimer = Timer(const Duration(seconds: 3), () {
           if (mounted) {
             ref
                 .read(chatViewModelProvider(params).notifier)
@@ -178,8 +186,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
           ref
               .read(chatViewModelProvider(params).notifier)
               .loadHighlightWindow(highlightId, highlightQ);
-          // Auto-fade highlight after 2 seconds.
-          Future.delayed(const Duration(seconds: 2), () {
+          _highlightFadeTimer?.cancel();
+          _highlightFadeTimer = Timer(const Duration(seconds: 2), () {
             if (mounted) {
               ref.read(chatViewModelProvider(params).notifier).clearHighlight();
             }
@@ -194,7 +202,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final agentPrimaryColor = agent != null
         ? ColorExtension.fromHex(agent.themeColor)
         : null;
-    final agentPrimaryMuted = agentPrimaryColor?.withAlpha(31);
+    final agentPrimaryMuted = agentPrimaryColor?.withAlpha(26);
 
     return PopScope(
       canPop: false,
@@ -213,7 +221,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         child: Scaffold(
           appBar: AppBar(
             backgroundColor:
-                agentPrimaryMuted ?? XiaColors.accent.withAlpha(31),
+                agentPrimaryMuted ?? XiaColors.accent.withAlpha(26),
             leading: XiaBackButton(onPressed: _handleBack),
             title: agent != null
                 ? PressFeedback(
@@ -355,7 +363,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                 if (session.thinkingState == ThinkingState.timeout)
                   MaterialBanner(
                     content: const Text('虾思考时间较长，可能正在处理复杂任务。'),
-                    backgroundColor: AppColors.statusConnecting.withAlpha(30),
+                    backgroundColor: AppColors.statusConnecting.withAlpha(26),
                     leading: const Icon(
                       Icons.hourglass_top,
                       color: AppColors.statusConnecting,

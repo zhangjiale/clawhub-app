@@ -172,33 +172,54 @@ class _PressFeedbackState extends State<PressFeedback> {
 
 /// Press-feedback wrapper for AppBar action buttons (header-btn).
 ///
-/// Spec: 40×40, r-md, bg surface2→surface3, scale(0.95), icon text2,
-/// 200ms XiaMotion.ease.
+/// AppBar action button — V2 §2.1 / §4.1.1.
+///
+/// V2 spec: 36×36, surface bg + 1px hairline border, r-md,
+/// scale 0.93 on press, surface3 on press.
+/// Backwards compatible with V1: accepts `icon: IconData` OR `child: Widget`.
+/// When `child` is provided, renders it; otherwise renders an [Icon].
 class HeaderButton extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
+  final Widget? child;
   final VoidCallback? onPressed;
   final String? tooltip;
+  final double size;
 
   const HeaderButton({
     super.key,
-    required this.icon,
+    this.icon,
+    this.child,
     this.onPressed,
     this.tooltip,
-  });
+    this.size = 36,
+  }) : assert(
+         icon != null || child != null,
+         'HeaderButton requires either icon or child',
+       );
 
   @override
   Widget build(BuildContext context) {
+    final body = icon != null
+        ? Icon(icon, size: 18, color: XiaColors.text2)
+        : child!;
     final button = PressFeedback(
-      scale: 0.95,
+      scale: 0.93,
       pressedColor: XiaColors.surface3,
-      normalColor: XiaColors.surface2,
+      normalColor: XiaColors.surface,
       borderRadius: BorderRadius.circular(XiaRadius.md),
       onTap: onPressed,
-      child: SizedBox(
-        width: 40,
-        height: 40,
-        child: Icon(icon, size: 20, color: XiaColors.text2),
+      builder: (child, _) => Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: XiaColors.surface,
+          borderRadius: BorderRadius.circular(XiaRadius.md),
+          border: Border.all(color: XiaColors.border),
+        ),
+        alignment: Alignment.center,
+        child: child,
       ),
+      child: body,
     );
     if (tooltip != null) {
       return Tooltip(message: tooltip!, child: button);
@@ -353,15 +374,19 @@ class PrimaryButton extends StatelessWidget {
           duration: XiaMotion.durationFast,
           curve: XiaMotion.ease,
           width: double.infinity,
-          height: 52,
+          height: 48, // V2: 52 → 48 (tighter)
           decoration: BoxDecoration(
             color: !enabled
                 ? XiaColors.surface2
                 : isPressed
                 ? Color.lerp(XiaColors.accent, Colors.black, 0.08)!
                 : XiaColors.accent,
-            borderRadius: BorderRadius.circular(XiaRadius.md),
-            boxShadow: enabled ? XiaShadow.accentGlow : null,
+            borderRadius: BorderRadius.circular(
+              XiaRadius.lg,
+            ), // V2: md 8 → lg 10
+            boxShadow: enabled
+                ? XiaShadow.glow
+                : null, // V2: glow uses sapphire
           ),
           alignment: Alignment.center,
           child: child,

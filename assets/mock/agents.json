@@ -25,7 +25,7 @@
       "instanceId": "inst-mock-001",
       "name": "产品虾",
       "description": "产品规划、需求分析、PRD撰写",
-      "themeColor": "#6c5ce7",
+      "themeColor": "#4F83FF",
       "quickCommands": [
         {"label": "📊 分析需求", "payload": "/analyze"},
         {"label": "📝 写PRD", "payload": "/prd"},
@@ -37,7 +37,7 @@
       "instanceId": "inst-mock-001",
       "name": "代码虾",
       "description": "编程助手、代码审查、Bug修复",
-      "themeColor": "#0984e3",
+      "themeColor": "#9B7AFF",
       "quickCommands": [
         {"label": "🔍 代码审查", "payload": "/review"},
         {"label": "🐛 调试帮助", "payload": "/debug"},
@@ -49,7 +49,7 @@
       "instanceId": "inst-mock-001",
       "name": "设计虾",
       "description": "UI/UX设计、配色方案、原型建议",
-      "themeColor": "#fd79a8",
+      "themeColor": "#FB7185",
       "quickCommands": [
         {"label": "🎨 配色建议", "payload": "/palette"},
         {"label": "📐 布局审查", "payload": "/layout"}
@@ -60,7 +60,7 @@
       "instanceId": "inst-mock-002",
       "name": "英语虾",
       "description": "英语口语练习、写作润色、翻译",
-      "themeColor": "#00b894",
+      "themeColor": "#34D399",
       "quickCommands": [
         {"label": "🗣️ 口语练习", "payload": "/speak"},
         {"label": "✍️ 写作润色", "payload": "/polish"},
@@ -72,7 +72,7 @@
       "instanceId": "inst-mock-002",
       "name": "写作虾",
       "description": "文案创作、文章润色、内容策划",
-      "themeColor": "#e17055",
+      "themeColor": "#FBBF24",
       "quickCommands": [
         {"label": "📝 写文案", "payload": "/copy"},
         {"label": "✨ 润色", "payload": "/refine"}
@@ -83,7 +83,7 @@
       "instanceId": "inst-mock-003",
       "name": "数据虾",
       "description": "数据分析、可视化、报表生成",
-      "themeColor": "#00cec9",
+      "themeColor": "#22D3EE",
       "quickCommands": [
         {"label": "📈 数据分析", "payload": "/analyze"},
         {"label": "📉 生成图表", "payload": "/chart"}
@@ -94,7 +94,7 @@
       "instanceId": "inst-mock-003",
       "name": "运维虾",
       "description": "服务器运维、部署、监控告警",
-      "themeColor": "#fdcb6e",
+      "themeColor": "#FB923C",
       "quickCommands": [
         {"label": "🖥️ 检查服务", "payload": "/check"},
         {"label": "📋 查看日志", "payload": "/logs"}

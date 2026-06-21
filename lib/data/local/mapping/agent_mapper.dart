@@ -20,7 +20,7 @@ class AgentMapper {
       name: row.name,
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
-      themeColor: row.themeColor ?? '#007AFF',
+      themeColor: row.themeColor ?? '#4F83FF',
       description: row.description,
       isPinned: row.isPinned == 1,
       quickCommands: _safeDeserializeQuickCommands(row.quickCommandsJson),

@@ -12,7 +12,7 @@ class Agent {
   final String name; // Gateway 同步的名称
   final String? nickname; // 用户自定义本地昵称，最多20字符
   final String? avatarUrl; // 本地沙盒路径或远程URL
-  final String themeColor; // 动态主题色 Hex，默认 #007AFF
+  final String themeColor; // 动态主题色 Hex，默认 #4F83FF (V2 sapphire)
   final String? description; // Gateway 同步的描述，如"产品规划、需求分析"
   final bool isPinned; // 是否置顶
   final List<QuickCommand> quickCommands; // 预设快捷指令（MVP 从 mock 数据读取）
@@ -25,7 +25,7 @@ class Agent {
     required this.name,
     this.nickname,
     this.avatarUrl,
-    this.themeColor = '#007AFF',
+    this.themeColor = '#4F83FF', // V2 sapphire (was V1 #007AFF iOS blue)
     this.description,
     this.isPinned = false,
     this.quickCommands = const [],
@@ -42,7 +42,7 @@ class Agent {
       throw ArgumentError('昵称最多20个字符');
     }
     if (!_isValidHexColor(themeColor)) {
-      throw ArgumentError('主题色必须是有效的 Hex 颜色格式（如 #007AFF）');
+      throw ArgumentError('主题色必须是有效的 Hex 颜色格式（如 #4F83FF）');
     }
   }
 

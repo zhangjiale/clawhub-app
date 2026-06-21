@@ -726,7 +726,7 @@ class WsGatewayClient implements IGatewayClient {
       name: name,
       nickname: json['nickname'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
-      themeColor: json['themeColor'] as String? ?? '#007AFF',
+      themeColor: json['themeColor'] as String? ?? '#4F83FF',
       description: description,
       isPinned: json['isPinned'] == true,
       quickCommands: quickCommands,

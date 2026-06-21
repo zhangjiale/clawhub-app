@@ -219,7 +219,7 @@ class MockGatewayClient implements IGatewayClient {
       remoteId: a['remoteId'] as String,
       instanceId: a['instanceId'] as String,
       name: a['name'] as String,
-      themeColor: a['themeColor'] as String? ?? '#007AFF',
+      themeColor: a['themeColor'] as String? ?? '#4F83FF',
       description: a['description'] as String?,
       quickCommands: qcList,
     );
@@ -231,7 +231,7 @@ class MockGatewayClient implements IGatewayClient {
   /// a manually created instance, so the UI isn't left empty.
   List<Agent> _generateDefaultAgents(String instanceId) {
     final defaults = [
-      (name: '默认助手', desc: '通用 AI 助手，可处理各类任务', color: '#007AFF'),
+      (name: '默认助手', desc: '通用 AI 助手，可处理各类任务', color: '#4F83FF'),
       (name: '代码助手', desc: '编程辅助、代码审查与调试', color: '#34C759'),
     ];
 

@@ -618,8 +618,8 @@ class Agents extends Table with TableInfo<Agents, Agent> {
     true,
     type: DriftSqlType.string,
     requiredDuringInsert: false,
-    $customConstraints: 'DEFAULT \'#007AFF\'',
-    defaultValue: const CustomExpression('\'#007AFF\''),
+    $customConstraints: 'DEFAULT \'#4F83FF\'',
+    defaultValue: const CustomExpression('\'#4F83FF\''),
   );
   static const VerificationMeta _quickCommandsJsonMeta = const VerificationMeta(
     'quickCommandsJson',
@@ -855,6 +855,8 @@ class Agent extends DataClass implements Insertable<Agent> {
   final String? nickname;
   final String? avatarUrl;
   final String? themeColor;
+
+  /// V2 sapphire (was V1 #007AFF)
   final String? quickCommandsJson;
   final String? description;
   final int? isPinned;

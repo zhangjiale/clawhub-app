@@ -29,15 +29,15 @@ class StatsGrid extends StatelessWidget {
     ];
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s6),
+      padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s5),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 3,
           childAspectRatio: 1.6,
-          crossAxisSpacing: XiaSpacing.s3,
-          mainAxisSpacing: XiaSpacing.s3,
+          crossAxisSpacing: XiaSpacing.s2, // V2: 8 → 6
+          mainAxisSpacing: XiaSpacing.s2,
         ),
         itemCount: items.length,
         itemBuilder: (context, index) {
@@ -45,7 +45,8 @@ class StatsGrid extends StatelessWidget {
           return Container(
             decoration: BoxDecoration(
               color: XiaColors.surface,
-              borderRadius: BorderRadius.circular(XiaRadius.md),
+              borderRadius: BorderRadius.circular(XiaRadius.md), // V2: 8
+              border: Border.all(color: XiaColors.border),
             ),
             child: Center(
               child: Column(
@@ -54,20 +55,18 @@ class StatsGrid extends StatelessWidget {
                   Text(
                     item.value,
                     style: const TextStyle(
-                      fontSize: 24,
+                      fontSize: XiaTypography.statValue, // V2: 18
                       fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5,
                       color: XiaColors.text1,
                       fontFeatures: [FontFeature.tabularFigures()],
                     ),
                   ),
-                  const SizedBox(height: XiaSpacing.s1),
+                  const SizedBox(height: 2),
                   Text(
                     item.label,
                     style: const TextStyle(
-                      fontSize: 11,
+                      fontSize: 10,
                       color: XiaColors.text3,
-                      letterSpacing: 0.3,
                       fontWeight: FontWeight.w500,
                     ),
                   ),

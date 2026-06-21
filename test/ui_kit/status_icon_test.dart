@@ -48,7 +48,7 @@ void main() {
         ),
       );
       final icon = tester.widget<Icon>(find.byType(Icon));
-      expect(icon.color, const Color(0xFFC26464)); // XiaColors.red
+      expect(icon.color, const Color(0xFFF87171)); // V2 XiaColors.red #F87171
       expect(icon.icon, Icons.error);
     });
 

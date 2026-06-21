@@ -125,7 +125,7 @@ void main() {
     testWidgets('shows edit button in AppBar', (tester) async {
       await tester.pumpWidget(buildPage());
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.edit), findsOneWidget);
+      expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
     });
   });
 }

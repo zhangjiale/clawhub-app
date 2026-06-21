@@ -42,22 +42,23 @@ class _MessageHubPageState extends ConsumerState<MessageHubPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('消息'),
+        toolbarHeight: 56,
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: XiaSpacing.s2),
             child: HeaderButton(
-              icon: Icons.search,
-              tooltip: '搜索消息',
+              tooltip: '搜索',
               onPressed: () =>
                   context.push(AppRoutes.searchWithParams(source: 'messages')),
+              child: const Icon(Icons.search, size: 18),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.only(right: XiaSpacing.s2),
+            padding: const EdgeInsets.only(right: XiaSpacing.s4),
             child: HeaderButton(
-              icon: Icons.settings_outlined,
               tooltip: '设置',
               onPressed: () => context.push(AppRoutes.settings),
+              child: const Icon(Icons.settings_outlined, size: 18),
             ),
           ),
         ],

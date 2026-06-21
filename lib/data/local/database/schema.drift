@@ -30,7 +30,7 @@ CREATE TABLE agents (
     name TEXT NOT NULL,
     nickname TEXT,
     avatar_url TEXT,
-    theme_color TEXT DEFAULT '#007AFF',
+    theme_color TEXT DEFAULT '#4F83FF', -- V2 sapphire (was V1 #007AFF)
     quick_commands_json TEXT,
     description TEXT,
     is_pinned INTEGER DEFAULT 0,

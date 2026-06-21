@@ -40,7 +40,7 @@ void main() {
       );
 
       final text = tester.widget<Text>(find.text('状态'));
-      expect(text.style!.color, const Color(0xFFC27C68));
+      expect(text.style!.color, const Color(0xFF4F83FF)); // V2 sapphire
     });
 
     testWidgets('tap invokes onCommandTap with payload', (tester) async {

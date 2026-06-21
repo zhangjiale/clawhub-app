@@ -17,7 +17,7 @@ void main() {
       expect(agent.name, '产品虾');
       expect(agent.nickname, isNull); // 可选字段
       expect(agent.avatarUrl, isNull);
-      expect(agent.themeColor, '#007AFF'); // 默认蓝色
+      expect(agent.themeColor, '#4F83FF'); // V2 sapphire 默认色
       expect(agent.isPinned, isFalse);
     });
 

@@ -86,7 +86,9 @@ void main() {
             body: EmojiAvatar(
               displayName: '虾',
               themeColor: '#F4D03F', // warm yellow
-              backgroundColor: const Color(0xFF232220), // dark gray (muted)
+              backgroundColor: const Color(
+                0xFF15171E,
+              ), // V2 surface2 (dark gray, muted)
             ),
           ),
         ),

@@ -25,8 +25,8 @@ class AgentTheme extends ThemeExtension<AgentTheme> {
   /// The agent's brand color (parsed from hex like '#6C8AAF').
   final Color primary;
 
-  /// Primary color at ~12% opacity — used for AppBar tint, pill pressed bg, etc.
-  Color get primaryMuted => primary.withAlpha(31);
+  /// Primary color at ~10% opacity — used for AppBar tint, pill pressed bg, etc.
+  Color get primaryMuted => primary.withAlpha(26);
 
   const AgentTheme({required this.primary});
 

@@ -85,7 +85,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('🖥️ My MacBook'), findsOneWidget);
+      expect(find.text('My MacBook'), findsOneWidget);
     });
 
     testWidgets('shows stale data banner when sync has errors', (tester) async {
