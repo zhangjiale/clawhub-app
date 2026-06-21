@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:claw_hub/domain/models/storage_info.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/domain/repositories/i_settings_repo.dart';
 import 'package:claw_hub/features/settings/settings_page.dart';
@@ -30,9 +31,18 @@ void main() {
     await vm.init();
   });
 
-  Widget buildTestWidget() {
+  /// Default test harness: returns 2.0 MB so the cache row shows a
+  /// realistic, non-empty label. Override [storageSize] for variation.
+  Widget buildTestWidget({StorageInfo? storageSize}) {
     return ProviderScope(
-      overrides: [settingsViewModelProvider.overrideWith((ref) => vm)],
+      overrides: [
+        settingsViewModelProvider.overrideWith((ref) => vm),
+        storageInfoProvider.overrideWith(
+          (ref) async =>
+              storageSize ??
+              const StorageInfo(databaseSizeBytes: 1024 * 1024 * 2),
+        ),
+      ],
       child: const MaterialApp(home: SettingsPage()),
     );
   }
@@ -42,12 +52,11 @@ void main() {
       await tester.pumpWidget(buildTestWidget());
       await tester.pumpAndSettle();
 
-      expect(find.text('🔔  通知设置'), findsOneWidget);
-      expect(find.text('🌙  免打扰时段'), findsOneWidget);
-      expect(find.text('🔐  生物识别解锁'), findsOneWidget);
-      expect(find.text('🌐  网络设置'), findsOneWidget);
-      expect(find.text('💾  存储管理'), findsOneWidget);
-      expect(find.text('ℹ️  关于虾Hub'), findsOneWidget);
+      expect(find.text('通知设置'), findsOneWidget);
+      expect(find.text('免打扰时段'), findsOneWidget);
+      expect(find.text('生物识别锁'), findsOneWidget);
+      expect(find.text('本地缓存'), findsOneWidget);
+      expect(find.text('关于'), findsOneWidget); // V2 section title uppercase
     });
 
     testWidgets('shows notification status based on ViewModel state', (
@@ -90,7 +99,14 @@ void main() {
       await tester.pumpWidget(buildTestWidget());
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('虾Hub — 你的 AI 虾群移动管理中心'), findsOneWidget);
+      // V2: SettingsPage has more sections, so footer may be off-screen —
+      // scroll until visible.
+      await tester.scrollUntilVisible(
+        find.textContaining('Powered by OpenClaw Gateway Protocol'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+
       expect(
         find.textContaining('Powered by OpenClaw Gateway Protocol'),
         findsOneWidget,
@@ -102,6 +118,37 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('设置'), findsOneWidget);
+    });
+
+    // -------------------------------------------------------------------------
+    // Cache size row — must reflect storageInfoProvider (regression #7)
+    // -------------------------------------------------------------------------
+    group('cache size row', () {
+      testWidgets('shows human-readable size from storageInfoProvider', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          buildTestWidget(
+            storageSize: const StorageInfo(
+              databaseSizeBytes: 1024 * 1024 * 12 + 1024 * 400, // 12.4 MB
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('12.4 MB'), findsOneWidget);
+      });
+
+      testWidgets('formats small sizes in KB', (tester) async {
+        await tester.pumpWidget(
+          buildTestWidget(
+            storageSize: const StorageInfo(databaseSizeBytes: 1024 * 256),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('256.0 KB'), findsOneWidget);
+      });
     });
   });
 }
