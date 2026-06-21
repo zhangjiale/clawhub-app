@@ -9,8 +9,8 @@ docs/
 │   ├── prd.md                   # 产品需求文档 (PRD)
 │   └── user-stories.md          # 用户故事地图与 Sprint 规划
 ├── design/                      # 设计规范
-│   ├── design-tokens.md         # Design Token 规范 (色彩/字体/间距/圆角/阴影/动效)
-│   ├── component-spec.md        # 组件标注与交互规范
+│   ├── design-tokens-v2.md      # Design Token 规范 (V2 当前版本, 色彩/字体/间距/圆角/阴影/动效)
+│   ├── component-spec-v2.md     # 组件标注与交互规范 (V2 当前版本)
 │   └── assets/                  # 设计资源 (App 图标 / 启动屏 / 虾状态图)
 ├── technical/                   # 技术文档
 │   ├── api-protocol.md          # OpenClaw Gateway WebSocket 协议规格书
@@ -32,8 +32,8 @@ docs/
 |---------|--------|
 | 理解产品要做什么 | `product/prd.md` |
 | 了解开发排期和 Story 拆分 | `product/user-stories.md` |
-| 查看 UI 颜色/字体/间距定义 | `design/design-tokens.md` |
-| 查看每个页面的组件标注 | `design/component-spec.md` |
+| 查看 UI 颜色/字体/间距定义 | `design/design-tokens-v2.md` |
+| 查看每个页面的组件标注 | `design/component-spec-v2.md` |
 | 理解 WebSocket 协议和认证流程 | `technical/api-protocol.md` |
 | 了解技术选型和项目结构 | `technical/architecture.md` |
 | 查看数据库表结构 | `technical/database-schema.sql` |

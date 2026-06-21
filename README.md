@@ -134,8 +134,8 @@ lib/
 |---|---|
 | [PRD](docs/product/prd.md) | Product requirements — features, acceptance criteria, roadmap |
 | [User Stories](docs/product/user-stories.md) | Story map, sprint planning, INVEST validation |
-| [Design Tokens](docs/design/design-tokens.md) | Color system, typography, spacing, shadows, motion |
-| [Component Spec](docs/design/component-spec.md) | Per-page component annotations and interaction specs |
+| [Design Tokens](docs/design/design-tokens-v2.md) | Color system, typography, spacing, shadows, motion |
+| [Component Spec](docs/design/component-spec-v2.md) | Per-page component annotations and interaction specs |
 | [API Protocol](docs/technical/api-protocol.md) | OpenClaw Gateway WebSocket protocol reference |
 | [Architecture](docs/technical/architecture.md) | Technical architecture, data models, provider inventory |
 | [Database Schema](docs/technical/database-schema.sql) | SQLite schema with zero-trigger design |
