@@ -1,0 +1,2279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>虾Hub V2 — 交互原型</title>
+<style>
+/* ========================================
+   虾Hub V2 Design Tokens
+   ======================================== */
+:root {
+  --bg: #08090D;
+  --surface: #0E1016;
+  --surface2: #15171E;
+  --surface3: #1C1F28;
+  --surface-elevated: #12141B;
+
+  --border: rgba(255,255,255,0.06);
+  --border-accent: rgba(79,131,255,0.30);
+
+  --text-1: #EBEFFA;
+  --text-2: rgba(235,239,250,0.55);
+  --text-3: rgba(235,239,250,0.30);
+  --text-4: rgba(235,239,250,0.14);
+
+  --accent: #4F83FF;
+  --accent-hover: #6B9AFF;
+  --accent-muted: rgba(79,131,255,0.10);
+  --accent-glow: rgba(79,131,255,0.20);
+
+  --accent2: #9B7AFF;
+  --accent2-muted: rgba(155,122,255,0.10);
+
+  --gold: #E8C574;
+
+  --green: #4ADE80;
+  --green-muted: rgba(74,222,128,0.10);
+  --red: #F87171;
+  --red-muted: rgba(248,113,113,0.08);
+  --yellow: #FBBF24;
+
+  --s1: 2px; --s2: 6px; --s3: 8px; --s4: 12px;
+  --s5: 16px; --s6: 16px; --s7: 24px; --s8: 32px;
+
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --r-xl: 14px; --r-full: 999px;
+
+  --shadow-m: 0 4px 12px rgba(0,0,0,0.25);
+  --shadow-l: 0 8px 24px rgba(0,0,0,0.30);
+  --shadow-glow: 0 0 20px rgba(79,131,255,0.15);
+
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0.0, 0.0, 0.2, 1);
+  --dur-fast: 150ms;
+  --dur-mid: 250ms;
+  --dur-slow: 400ms;
+
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Reset */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "PingFang SC", sans-serif;
+  background: #1a1a2e;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Phone Frame */
+.phone-frame {
+  width: 393px; height: 852px;
+  background: var(--bg);
+  border-radius: 48px;
+  border: 3px solid rgba(255,255,255,0.08);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.4), 0 0 60px rgba(79,131,255,0.04);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Status Bar */
+.status-bar {
+  height: 54px;
+  padding: 14px 28px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  z-index: 10;
+}
+.status-bar .time { font-size: 14px; font-weight: 600; color: var(--text-1); letter-spacing: 0.2px; }
+.status-bar .icons { display: flex; gap: 6px; align-items: center; }
+.status-bar .icons svg { width: 16px; height: 16px; fill: var(--text-1); }
+
+/* Notch */
+.notch {
+  position: absolute;
+  top: 0; left: 50%; transform: translateX(-50%);
+  width: 126px; height: 34px;
+  background: #000;
+  border-radius: 0 0 20px 20px;
+  z-index: 20;
+}
+
+/* ===== PAGE SYSTEM ===== */
+.pages-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+.page {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-mid) var(--ease);
+  will-change: transform, opacity;
+}
+.page.hidden { transform: translateX(100%); opacity: 0; pointer-events: none; }
+.page.hidden-left { transform: translateX(-30%); opacity: 0; pointer-events: none; }
+.page.hidden-right { transform: translateX(100%); opacity: 0; pointer-events: none; }
+
+/* ===== HEADER ===== */
+.page-header {
+  padding: 8px var(--s6) 10px;
+  flex-shrink: 0;
+}
+.page-header .header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.page-header h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-1);
+  letter-spacing: -0.5px;
+  line-height: 1.15;
+}
+.header-actions { display: flex; gap: 6px; align-items: center; }
+.header-btn {
+  width: 36px; height: 36px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.header-btn:active { transform: scale(0.93); background: var(--surface3); }
+.header-btn svg { width: 18px; height: 18px; stroke: var(--text-2); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Inline Stats Row */
+.stats-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 0 2px;
+}
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.stat-item .stat-val { color: var(--text-1); font-weight: 600; }
+.stat-dot { width: 5px; height: 5px; border-radius: 999px; flex-shrink: 0; }
+.stat-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.stat-dot.offline { background: var(--text-4); }
+.stat-sep { color: var(--text-4); font-size: 12px; }
+
+/* ===== SCROLL CONTENT ===== */
+.scroll-content {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ===== GROUP HEADER ===== */
+.group-header {
+  display: flex;
+  align-items: center;
+  padding: 10px var(--s6);
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  min-height: 44px;
+  transition: opacity var(--dur-fast) var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.group-header:active { opacity: 0.5; }
+.group-header:active .chevron { color: var(--text-3); }
+.group-dot { width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; }
+.group-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.group-dot.offline { background: var(--text-4); }
+.group-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  flex: 1;
+}
+.group-count {
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  margin-right: 2px;
+}
+.chevron {
+  width: 14px; height: 14px;
+  color: var(--text-4);
+  transition: transform var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.chevron.collapsed { transform: rotate(-90deg); }
+
+/* ===== AGENT CARD ===== */
+.agent-list {
+  padding: 0 var(--s6);
+  transition: max-height var(--dur-mid) var(--ease);
+  overflow: hidden;
+}
+.agent-card {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  margin-bottom: 6px;
+  cursor: pointer;
+  gap: 10px;
+  transition: all var(--dur-fast) var(--ease);
+}
+.agent-card:active { transform: scale(0.97); background: var(--surface2); }
+
+.agent-avatar {
+  width: 36px; height: 36px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+  position: relative;
+}
+.agent-avatar .online-pulse {
+  position: absolute;
+  bottom: -1px; right: -1px;
+  width: 10px; height: 10px;
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+.agent-avatar .online-pulse.on { background: var(--green); }
+.agent-avatar .online-pulse.off { background: var(--text-4); }
+
+.agent-info { flex: 1; min-width: 0; }
+.agent-info .name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.agent-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: -0.2px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-time {
+  font-size: 10px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.agent-desc {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.4;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== CHAT PAGE ===== */
+.chat-header {
+  display: flex;
+  align-items: center;
+  padding: 6px var(--s5);
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  height: 52px;
+}
+.back-btn {
+  width: 32px; height: 32px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--dur-fast) var(--ease);
+}
+.back-btn:active { background: var(--surface2); transform: scale(0.93); }
+.back-btn svg { width: 20px; height: 20px; stroke: var(--text-2); fill: none; stroke-width: 2; stroke-linecap: round; }
+.chat-header-info { flex: 1; min-width: 0; }
+.chat-header-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: -0.2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-header-name .mini-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--green); box-shadow: 0 0 5px var(--green); }
+.chat-header-sub { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.chat-header-actions { display: flex; gap: 4px; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px var(--s6);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.msg {
+  max-width: 78%;
+  padding: 9px 13px;
+  font-size: 14px;
+  line-height: 1.5;
+  animation: msgIn var(--dur-mid) var(--ease) both;
+}
+.msg.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r-xl);
+  border-bottom-right-radius: 4px;
+}
+.msg.agent {
+  align-self: flex-start;
+  background: var(--surface2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  border-bottom-left-radius: 4px;
+}
+.msg code {
+  background: rgba(255,255,255,0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12px;
+}
+.msg-time {
+  font-size: 10px;
+  color: var(--text-4);
+  margin-top: 3px;
+  text-align: right;
+}
+.msg.agent .msg-time { text-align: left; }
+
+/* Tool call card */
+.tool-card {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent2);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  max-width: 78%;
+}
+.tool-card .tool-name { font-weight: 600; color: var(--accent2); }
+.tool-card .tool-status { margin-top: 3px; }
+.tool-card .tool-status.done { color: var(--green); }
+
+/* Typing indicator */
+.typing-indicator {
+  align-self: flex-start;
+  display: flex;
+  gap: 4px;
+  padding: 12px 16px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  border-bottom-left-radius: 4px;
+}
+.typing-indicator span {
+  width: 6px; height: 6px;
+  border-radius: 999px;
+  background: var(--accent2);
+  animation: typingBounce 800ms ease infinite;
+}
+.typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
+
+/* Quick commands */
+.quick-cmds {
+  display: flex;
+  gap: 6px;
+  padding: 6px var(--s6);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.quick-cmds::-webkit-scrollbar { display: none; }
+.quick-cmd {
+  padding: 5px 12px;
+  background: var(--accent-muted);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--r-full);
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.quick-cmd:active { transform: scale(0.93); background: rgba(79,131,255,0.18); }
+
+/* Input bar */
+.input-bar {
+  display: flex;
+  align-items: flex-end;
+  padding: 6px var(--s5) calc(6px + var(--safe-bottom));
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg);
+}
+.input-bar textarea {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 9px 14px;
+  font-size: 14px;
+  color: var(--text-1);
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  line-height: 1.4;
+  max-height: 100px;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.input-bar textarea:focus { border-color: var(--accent); }
+.input-bar textarea::placeholder { color: var(--text-4); }
+.send-btn {
+  width: 36px; height: 36px;
+  border-radius: 999px;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--dur-fast) var(--ease);
+  box-shadow: var(--shadow-glow);
+}
+.send-btn:active { transform: scale(0.88); filter: brightness(0.88); }
+.send-btn svg { width: 18px; height: 18px; fill: #fff; }
+
+/* ===== MESSAGES PAGE ===== */
+.msg-list { padding: 0; }
+.msg-item {
+  display: flex;
+  align-items: center;
+  padding: 10px var(--s6);
+  gap: 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: all var(--dur-fast) var(--ease);
+}
+.msg-item:active { background: var(--surface); }
+.msg-item-avatar {
+  width: 36px; height: 36px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+  position: relative;
+}
+.msg-item-avatar .mini-dot-sm {
+  position: absolute;
+  bottom: -1px; right: -1px;
+  width: 8px; height: 8px;
+  border-radius: 999px;
+  border: 1.5px solid var(--bg);
+}
+.msg-item-info { flex: 1; min-width: 0; }
+.msg-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.msg-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-item-time {
+  font-size: 10px;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.msg-item-preview {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.4;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ===== INSTANCES PAGE ===== */
+.inst-card {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  margin: 0 var(--s6) 8px;
+  gap: 10px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.inst-card:active { transform: scale(0.97); background: var(--surface2); }
+.inst-icon {
+  width: 36px; height: 36px;
+  border-radius: var(--r-md);
+  background: var(--surface3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.inst-icon svg { width: 20px; height: 20px; stroke: var(--text-2); fill: none; stroke-width: 1.5; }
+.inst-info { flex: 1; min-width: 0; }
+.inst-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.inst-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.inst-status {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.inst-status.online { background: var(--green-muted); color: var(--green); }
+.inst-status.offline { background: rgba(255,255,255,0.04); color: var(--text-4); }
+.inst-url {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: "SF Mono", monospace;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inst-meta {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.add-inst-btn {
+  margin: 8px var(--s6) 16px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-lg);
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.add-inst-btn:active { border-color: var(--accent); color: var(--accent); background: var(--accent-muted); }
+
+/* ===== BOTTOM NAV ===== */
+.bottom-nav {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  background: rgba(8,9,13,0.92);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  z-index: 10;
+}
+.nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  padding: 6px 0;
+  position: relative;
+  transition: all var(--dur-fast) var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.nav-item svg { width: 20px; height: 20px; stroke: var(--text-3); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: all var(--dur-fast) var(--ease); }
+.nav-item span { font-size: 10px; color: var(--text-3); font-weight: 500; letter-spacing: 0.2px; transition: color var(--dur-fast) var(--ease); }
+.nav-item.active svg { stroke: var(--accent); }
+.nav-item.active span { color: var(--accent); font-weight: 600; }
+.nav-item.active::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 50%; transform: translateX(-50%);
+  width: 20px; height: 2px;
+  background: var(--accent);
+  border-radius: 0 0 2px 2px;
+}
+.nav-item:active { opacity: 0.6; }
+.nav-badge {
+  position: absolute;
+  top: 2px;
+  right: calc(50% - 18px);
+  min-width: 14px; height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== CONNECTION BANNER ===== */
+.conn-banner {
+  padding: 6px var(--s6);
+  font-size: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.conn-banner.warning { background: rgba(251,191,36,0.08); color: var(--yellow); }
+.conn-banner.info { background: var(--accent-muted); color: var(--accent); }
+
+/* ===== ANIMATIONS ===== */
+@keyframes msgIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes typingBounce { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-6px); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.animate-in { animation: slideUp var(--dur-mid) var(--ease) both; }
+.delay-1 { animation-delay: 0.03s; }
+.delay-2 { animation-delay: 0.06s; }
+.delay-3 { animation-delay: 0.09s; }
+.delay-4 { animation-delay: 0.12s; }
+.delay-5 { animation-delay: 0.15s; }
+.delay-6 { animation-delay: 0.18s; }
+.delay-7 { animation-delay: 0.21s; }
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+  text-align: center;
+}
+.empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.6; }
+.empty-state .empty-title { font-size: 15px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+.empty-state .empty-desc { font-size: 12px; color: var(--text-3); line-height: 1.5; }
+
+/* Quote block (accent2 usage) */
+.quote-block {
+  border-left: 2px solid var(--accent2);
+  padding: 6px 10px;
+  margin: 6px 0;
+  background: var(--accent2-muted);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* ===== SEARCH PAGE ===== */
+.search-bar {
+  display: flex;
+  align-items: center;
+  padding: 6px var(--s5);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.search-bar input {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  padding: 9px 14px;
+  font-size: 14px;
+  color: var(--text-1);
+  outline: none;
+  font-family: inherit;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.search-bar input:focus { border-color: var(--accent); }
+.search-bar input::placeholder { color: var(--text-4); }
+.search-cancel {
+  font-size: 14px;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.search-cancel:active { opacity: 0.5; }
+
+.filter-tabs {
+  display: flex;
+  padding: 4px var(--s5) 8px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.filter-tab {
+  padding: 4px 12px;
+  border-radius: var(--r-full);
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--dur-fast) var(--ease);
+}
+.filter-tab.active { background: var(--accent-muted); color: var(--accent); border-color: var(--border-accent); }
+.filter-tab:active { transform: scale(0.95); }
+
+.search-result-item {
+  padding: 10px var(--s6);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--dur-fast) var(--ease);
+}
+.search-result-item:active { background: var(--surface); }
+.search-result-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.search-result-agent { font-size: 12px; font-weight: 600; color: var(--accent); }
+.search-result-time { font-size: 10px; color: var(--text-4); margin-left: auto; }
+.search-result-text { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+.search-result-text mark { background: rgba(79,131,255,0.25); color: var(--text-1); border-radius: 2px; padding: 0 2px; }
+
+/* ===== FORM ELEMENTS ===== */
+.form-group { padding: 0 var(--s5); margin-bottom: 14px; }
+.form-label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 5px; font-weight: 500; }
+.form-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--text-1);
+  outline: none;
+  font-family: inherit;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.form-input:focus { border-color: var(--accent); }
+.form-input::placeholder { color: var(--text-4); }
+.form-input.mono { font-family: "SF Mono", monospace; font-size: 13px; }
+.form-hint { font-size: 11px; color: var(--text-4); margin-top: 4px; }
+.form-hint.error { color: var(--red); }
+
+.primary-btn {
+  margin: 16px var(--s5) 0;
+  padding: 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-lg);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  width: calc(100% - 32px);
+  transition: all var(--dur-fast) var(--ease);
+  box-shadow: var(--shadow-glow);
+  display: block;
+}
+.primary-btn:active { transform: scale(0.97); filter: brightness(0.9); }
+.primary-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+.primary-btn:disabled:active { transform: none; filter: none; }
+
+.secondary-btn {
+  margin: 8px var(--s5) 0;
+  padding: 11px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--r-lg);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  width: calc(100% - 32px);
+  transition: all var(--dur-fast) var(--ease);
+  display: block;
+}
+.secondary-btn:active { transform: scale(0.97); background: var(--accent-muted); }
+
+.conn-result {
+  margin: 10px var(--s5) 0;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  display: none;
+}
+.conn-result.success { background: var(--green-muted); color: var(--green); display: block; }
+.conn-result.error { background: var(--red-muted); color: var(--red); display: block; }
+
+/* ===== SETTINGS ===== */
+.settings-section { margin-bottom: 20px; }
+.settings-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 0 var(--s5) 6px;
+}
+.settings-item {
+  display: flex;
+  align-items: center;
+  padding: 11px var(--s5);
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.settings-item:active { background: var(--surface); }
+.settings-item-label { flex: 1; font-size: 14px; color: var(--text-1); }
+.settings-item-value { font-size: 13px; color: var(--text-3); }
+.settings-item .chevron-right { width: 14px; height: 14px; color: var(--text-4); flex-shrink: 0; }
+
+.toggle {
+  width: 40px; height: 22px;
+  border-radius: 11px;
+  background: var(--surface3);
+  position: relative;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.toggle.on { background: var(--accent); }
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform var(--dur-fast) var(--ease);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle.on::after { transform: translateX(18px); }
+
+/* ===== AGENT DETAIL (Growth Panel) ===== */
+.detail-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px var(--s5) 12px;
+}
+.detail-avatar {
+  width: 56px; height: 56px;
+  border-radius: var(--r-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  margin-bottom: 8px;
+  position: relative;
+}
+.detail-name { font-size: 18px; font-weight: 700; color: var(--text-1); }
+.detail-desc { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+.detail-instance { font-size: 11px; color: var(--text-4); margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+
+.detail-tabs {
+  display: flex;
+  padding: 0 var(--s5);
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.detail-tab {
+  flex: 1;
+  text-align: center;
+  padding: 8px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  position: relative;
+  transition: color var(--dur-fast) var(--ease);
+}
+.detail-tab.active { color: var(--accent); font-weight: 600; }
+.detail-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px; left: 30%; right: 30%;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+.detail-tab:active { opacity: 0.6; }
+
+.detail-tab-content { display: none; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.detail-tab-content.active { display: block; }
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 10px var(--s5);
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 6px;
+  text-align: center;
+}
+.stat-card .stat-value { font-size: 18px; font-weight: 700; color: var(--text-1); font-variant-numeric: tabular-nums; }
+.stat-card .stat-label { font-size: 10px; color: var(--text-3); margin-top: 2px; }
+
+.timeline { padding: 8px var(--s5); }
+.timeline-item {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.timeline-date { color: var(--text-4); width: 48px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.timeline-text { color: var(--text-2); line-height: 1.5; }
+
+.achievement-list { padding: 8px var(--s5); }
+.achievement-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.achievement-icon {
+  width: 32px; height: 32px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.achievement-item.unlocked .achievement-icon { background: var(--accent2-muted); border: 1px solid rgba(155,122,255,0.25); }
+.achievement-item.locked .achievement-icon { background: var(--surface3); opacity: 0.4; }
+.achievement-info { flex: 1; }
+.achievement-name { font-size: 13px; font-weight: 600; color: var(--text-1); }
+.achievement-desc { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.achievement-item.locked .achievement-name { color: var(--text-3); }
+
+.detail-actions { padding: 12px var(--s5); display: flex; flex-direction: column; gap: 6px; }
+
+/* ===== AGENT EDIT ===== */
+.edit-avatar-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px var(--s5) 12px;
+  gap: 6px;
+}
+.edit-avatar {
+  width: 64px; height: 64px;
+  border-radius: var(--r-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+  position: relative;
+}
+.edit-avatar:active { transform: scale(0.95); }
+.edit-avatar-hint { font-size: 11px; color: var(--text-4); }
+
+.color-picker {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  padding: 4px var(--s5);
+}
+.color-swatch {
+  width: 100%; aspect-ratio: 1;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all var(--dur-fast) var(--ease);
+  max-width: 40px;
+  margin: 0 auto;
+}
+.color-swatch:active { transform: scale(0.9); }
+.color-swatch.selected { border-color: #fff; box-shadow: 0 0 0 2px var(--accent); }
+
+.cmd-list { padding: 0 var(--s5); }
+.cmd-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  margin-bottom: 5px;
+  gap: 8px;
+}
+.cmd-text { font-size: 13px; color: var(--accent); font-family: "SF Mono", monospace; }
+.cmd-name { font-size: 12px; color: var(--text-3); margin-left: auto; }
+.cmd-del {
+  width: 18px; height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-4);
+  cursor: pointer;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.cmd-del:active { color: var(--red); }
+.cmd-add {
+  padding: 7px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-4);
+  cursor: pointer;
+  margin: 4px var(--s5) 0;
+  transition: all var(--dur-fast) var(--ease);
+}
+.cmd-add:active { border-color: var(--accent); color: var(--accent); }
+
+/* ===== SECTION DIVIDER ===== */
+.section-divider {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 12px var(--s5) 6px;
+}
+
+/* ===== RESPONSIVE (outside phone frame for mobile preview) ===== */
+@media (max-width: 420px) {
+  body { background: var(--bg); }
+  .phone-frame {
+    width: 100vw; height: 100vh; height: 100dvh;
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+  }
+  .notch { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="phone-frame">
+  <div class="notch"></div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span class="time" id="statusTime">15:42</span>
+    <div class="icons">
+      <svg viewBox="0 0 24 24"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.34C7 21.4 7.6 22 8.33 22h7.34c.73 0 1.33-.6 1.33-1.33V5.33C17 4.6 16.4 4 15.67 4z"/></svg>
+    </div>
+  </div>
+
+  <!-- Pages Container -->
+  <div class="pages-container">
+
+    <!-- PAGE: HOME (虾列表) -->
+    <div class="page" id="page-home">
+      <div class="page-header">
+        <div class="header-row">
+          <h1>虾Hub</h1>
+          <div class="header-actions">
+            <div class="header-btn" onclick="openSearch()">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div class="header-btn" onclick="switchTab('instances',document.querySelectorAll('.nav-item')[2]);setTimeout(()=>openAddInstance(),300)">
+              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </div>
+          </div>
+        </div>
+        <div class="stats-inline">
+          <div class="stat-item"><span class="stat-dot online"></span><span class="stat-val">2</span><span>/3</span></div>
+          <span class="stat-sep">·</span>
+          <div class="stat-item"><span class="stat-val">5</span><span>/8 在线</span></div>
+          <span class="stat-sep">·</span>
+          <div class="stat-item"><span class="stat-val">142</span><span>消息</span></div>
+        </div>
+      </div>
+
+      <div class="scroll-content" id="homeScroll">
+        <!-- Group 1: 我的云服务器 -->
+        <div class="group-header animate-in delay-1" onclick="toggleGroup(this)">
+          <div class="group-dot online"></div>
+          <span class="group-name">我的云服务器</span>
+          <span class="group-count">4 只</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="agent-list">
+          <div class="agent-card animate-in delay-2" onclick="openChat('main','产品虾','需求分析与产品规划')">
+            <div class="agent-avatar" style="background:rgba(79,131,255,0.12);color:var(--accent)">🦐
+              <div class="online-pulse on"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">产品虾</span><span class="agent-time">2m</span></div>
+              <div class="agent-desc">需求分析与产品规划</div>
+            </div>
+          </div>
+          <div class="agent-card animate-in delay-3" onclick="openChat('code','代码虾','全栈开发与代码审查')">
+            <div class="agent-avatar" style="background:rgba(34,211,238,0.12);color:#22D3EE">🧑‍💻
+              <div class="online-pulse on"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">代码虾</span><span class="agent-time">5m</span></div>
+              <div class="agent-desc">全栈开发与代码审查</div>
+            </div>
+          </div>
+          <div class="agent-card animate-in delay-4" onclick="openChat('travel','旅行规划师','行程规划与旅行建议')">
+            <div class="agent-avatar" style="background:rgba(251,191,36,0.12);color:#FBBF24">✈️
+              <div class="online-pulse on"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">旅行规划师</span><span class="agent-time">1h</span></div>
+              <div class="agent-desc">行程规划与旅行建议</div>
+            </div>
+          </div>
+          <div class="agent-card animate-in delay-5" onclick="openChat('english','英语陪练老师','英语口语练习与语法辅导')">
+            <div class="agent-avatar" style="background:rgba(52,211,153,0.12);color:#34D399">📚
+              <div class="online-pulse on"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">英语陪练老师</span><span class="agent-time">3h</span></div>
+              <div class="agent-desc">英语口语练习与语法辅导</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 2: MacBook -->
+        <div class="group-header animate-in delay-5" onclick="toggleGroup(this)">
+          <div class="group-dot online"></div>
+          <span class="group-name">MacBook Pro</span>
+          <span class="group-count">2 只</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="agent-list">
+          <div class="agent-card animate-in delay-6" onclick="openChat('writer','写作虾','文案创作与内容优化')">
+            <div class="agent-avatar" style="background:rgba(251,146,60,0.12);color:#FB923C">✍️
+              <div class="online-pulse on"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">写作虾</span><span class="agent-time">30m</span></div>
+              <div class="agent-desc">文案创作与内容优化</div>
+            </div>
+          </div>
+          <div class="agent-card animate-in delay-7" onclick="openChat('data','数据虾','数据分析与可视化')">
+            <div class="agent-avatar" style="background:rgba(45,212,191,0.12);color:#2DD4BF">📊
+              <div class="online-pulse on"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">数据虾</span><span class="agent-time">2h</span></div>
+              <div class="agent-desc">数据分析与可视化</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 3: 办公室 (offline) -->
+        <div class="group-header animate-in delay-7" onclick="toggleGroup(this)">
+          <div class="group-dot offline"></div>
+          <span class="group-name">办公室工作站</span>
+          <span class="group-count">2 只</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="agent-list">
+          <div class="agent-card animate-in delay-7" style="opacity:0.5" onclick="openChat('design','设计虾','UI/UX 设计与视觉创意')">
+            <div class="agent-avatar" style="background:rgba(244,114,182,0.12);color:#F472B6">🎨
+              <div class="online-pulse off"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">设计虾</span><span class="agent-time">离线</span></div>
+              <div class="agent-desc">UI/UX 设计与视觉创意</div>
+            </div>
+          </div>
+          <div class="agent-card animate-in delay-7" style="opacity:0.5" onclick="openChat('ops','运维虾','服务器运维与部署管理')">
+            <div class="agent-avatar" style="background:rgba(148,163,184,0.12);color:#94A3B8">⚙️
+              <div class="online-pulse off"></div>
+            </div>
+            <div class="agent-info">
+              <div class="name-row"><span class="agent-name">运维虾</span><span class="agent-time">离线</span></div>
+              <div class="agent-desc">服务器运维与部署管理</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="height:16px"></div>
+      </div>
+    </div>
+
+    <!-- PAGE: MESSAGES (消息) -->
+    <div class="page hidden" id="page-messages">
+      <div class="page-header">
+        <div class="header-row">
+          <h1>消息</h1>
+        </div>
+      </div>
+      <div class="scroll-content">
+        <div class="msg-list">
+          <div class="msg-item" onclick="openChat('main','产品虾','需求分析与产品规划')">
+            <div class="msg-item-avatar" style="background:rgba(79,131,255,0.12);color:var(--accent)">🦐
+              <div class="mini-dot-sm online" style="background:var(--green)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">产品虾</span><span class="msg-item-time">15:38</span></div>
+              <div class="msg-item-preview">你: 帮我分析一下这个需求的优先级</div>
+            </div>
+            <div class="msg-badge">2</div>
+          </div>
+          <div class="msg-item" onclick="openChat('code','代码虾','全栈开发与代码审查')">
+            <div class="msg-item-avatar" style="background:rgba(34,211,238,0.12);color:#22D3EE">🧑‍💻
+              <div class="mini-dot-sm online" style="background:var(--green)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">代码虾</span><span class="msg-item-time">14:20</span></div>
+              <div class="msg-item-preview">代码审查完成，发现3个潜在问题，建议修复后合并</div>
+            </div>
+            <div class="msg-badge">1</div>
+          </div>
+          <div class="msg-item" onclick="openChat('writer','写作虾','文案创作与内容优化')">
+            <div class="msg-item-avatar" style="background:rgba(251,146,60,0.12);color:#FB923C">✍️
+              <div class="mini-dot-sm online" style="background:var(--green)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">写作虾</span><span class="msg-item-time">12:05</span></div>
+              <div class="msg-item-preview">文章已优化完成，主要修改了开头段落和结尾总结</div>
+            </div>
+          </div>
+          <div class="msg-item" onclick="openChat('english','英语陪练老师','英语口语练习与语法辅导')">
+            <div class="msg-item-avatar" style="background:rgba(52,211,153,0.12);color:#34D399">📚
+              <div class="mini-dot-sm online" style="background:var(--green)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">英语陪练老师</span><span class="msg-item-time">昨天</span></div>
+              <div class="msg-item-preview">Great job! Your grammar has improved a lot. Let's try...</div>
+            </div>
+          </div>
+          <div class="msg-item" onclick="openChat('travel','旅行规划师','行程规划与旅行建议')">
+            <div class="msg-item-avatar" style="background:rgba(251,191,36,0.12);color:#FBBF24">✈️
+              <div class="mini-dot-sm online" style="background:var(--green)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">旅行规划师</span><span class="msg-item-time">昨天</span></div>
+              <div class="msg-item-preview">日本7日游行程已规划好，第一天建议从浅草寺开始...</div>
+            </div>
+          </div>
+          <div class="msg-item" onclick="openChat('data','数据虾','数据分析与可视化')">
+            <div class="msg-item-avatar" style="background:rgba(45,212,191,0.12);color:#2DD4BF">📊
+              <div class="mini-dot-sm online" style="background:var(--green)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">数据虾</span><span class="msg-item-time">周三</span></div>
+              <div class="msg-item-preview">数据可视化报告已生成，用户活跃度环比增长 15%</div>
+            </div>
+          </div>
+          <div class="msg-item" style="opacity:0.5" onclick="openChat('design','设计虾','UI/UX 设计与视觉创意')">
+            <div class="msg-item-avatar" style="background:rgba(244,114,182,0.12);color:#F472B6">🎨
+              <div class="mini-dot-sm offline" style="background:var(--text-4)"></div>
+            </div>
+            <div class="msg-item-info">
+              <div class="msg-item-top"><span class="msg-item-name">设计虾</span><span class="msg-item-time">周一</span></div>
+              <div class="msg-item-preview">配色方案已出，建议用冷色调搭配科技感</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: INSTANCES (实例) -->
+    <div class="page hidden" id="page-instances">
+      <div class="page-header">
+        <div class="header-row">
+          <h1>实例</h1>
+          <div class="header-actions">
+            <div class="header-btn" onclick="openSettings()">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-content" style="padding-top:4px">
+        <div class="inst-card animate-in delay-1" onclick="alert('实例: 我的云服务器\nws://39.106.209.180:18789\n4 只虾 · 延迟 42ms\n\n可操作: 测试连接 / 编辑 / 删除')">
+          <div class="inst-icon">
+            <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <div class="inst-info">
+            <div class="inst-name-row"><span class="inst-name">我的云服务器</span><span class="inst-status online">在线</span></div>
+            <div class="inst-url">ws://39.106.209.180:18789</div>
+            <div class="inst-meta">4 只虾 · 延迟 42ms</div>
+          </div>
+        </div>
+        <div class="inst-card animate-in delay-2" onclick="alert('实例: MacBook Pro\nws://192.168.1.100:18789\n2 只虾 · 延迟 3ms\n\n可操作: 测试连接 / 编辑 / 删除')">
+          <div class="inst-icon">
+            <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <div class="inst-info">
+            <div class="inst-name-row"><span class="inst-name">MacBook Pro</span><span class="inst-status online">在线</span></div>
+            <div class="inst-url">ws://192.168.1.100:18789</div>
+            <div class="inst-meta">2 只虾 · 延迟 3ms</div>
+          </div>
+        </div>
+        <div class="inst-card animate-in delay-3" onclick="alert('实例: 办公室工作站\nws://10.0.0.50:18789\n2 只虾 · 离线\n最后在线: 周一 18:30\n\n可操作: 测试连接 / 编辑 / 删除')">
+          <div class="inst-icon">
+            <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <div class="inst-info">
+            <div class="inst-name-row"><span class="inst-name">办公室工作站</span><span class="inst-status offline">离线</span></div>
+            <div class="inst-url">ws://10.0.0.50:18789</div>
+            <div class="inst-meta">2 只虾 · 最后在线: 周一 18:30</div>
+          </div>
+        </div>
+
+        <div class="add-inst-btn" onclick="openAddInstance()">+ 添加新实例</div>
+      </div>
+    </div>
+
+    <!-- PAGE: CHAT (聊天) -->
+    <div class="page hidden" id="page-chat">
+      <div class="chat-header">
+        <div class="back-btn" onclick="goBack()">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>
+        <div class="agent-avatar" style="width:32px;height:32px;font-size:14px;border-radius:8px" id="chatAvatar">🦐</div>
+        <div class="chat-header-info">
+          <div class="chat-header-name"><span id="chatName">产品虾</span><span class="mini-dot"></span></div>
+          <div class="chat-header-sub" id="chatSub">我的云服务器 · 在线</div>
+        </div>
+        <div class="chat-header-actions">
+          <div class="header-btn" style="width:32px;height:32px" onclick="openAgentDetail(currentAgentId)">
+            <svg viewBox="0 0 24 24" style="width:16px;height:16px"><circle cx="12" cy="5" r="1.5" fill="var(--text-2)" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="var(--text-2)" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="var(--text-2)" stroke="none"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chatMessages">
+        <!-- Messages will be populated dynamically -->
+      </div>
+
+      <div class="quick-cmds" id="quickCmds">
+        <div class="quick-cmd" onclick="sendQuickCmd('/status')">📊 状态</div>
+        <div class="quick-cmd" onclick="sendQuickCmd('/memory')">🧠 记忆</div>
+        <div class="quick-cmd" onclick="sendQuickCmd('/reset')">🔄 重置</div>
+        <div class="quick-cmd" onclick="sendQuickCmd('/model')">🤖 模型</div>
+        <div class="quick-cmd" onclick="sendQuickCmd('/tools')">🔧 工具</div>
+      </div>
+
+      <div class="input-bar">
+        <textarea id="chatInput" rows="1" placeholder="发消息..." onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+        <div class="send-btn" onclick="sendMessage()">
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: SEARCH (搜索) -->
+    <div class="page hidden" id="page-search">
+      <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="搜索虾、消息、实例..." oninput="handleSearch(this.value)">
+        <span class="search-cancel" onclick="goBackFromSub()">取消</span>
+      </div>
+      <div class="filter-tabs" id="searchFilterTabs">
+        <div class="filter-tab active" onclick="setSearchFilter(this,'all')">全部</div>
+        <div class="filter-tab" onclick="setSearchFilter(this,'agent')">虾</div>
+        <div class="filter-tab" onclick="setSearchFilter(this,'message')">消息</div>
+        <div class="filter-tab" onclick="setSearchFilter(this,'instance')">实例</div>
+      </div>
+      <div class="scroll-content" id="searchResults">
+        <div class="empty-state" id="searchEmpty">
+          <div class="empty-icon">🔍</div>
+          <div class="empty-title">搜索全部虾的对话</div>
+          <div class="empty-desc">输入关键词，在所有对话历史中查找</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: ADD INSTANCE (添加实例) -->
+    <div class="page hidden" id="page-add-instance">
+      <div class="chat-header">
+        <div class="back-btn" onclick="goBackFromSub()">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>
+        <div class="chat-header-info">
+          <div class="chat-header-name">添加实例</div>
+          <div class="chat-header-sub">连接 OpenClaw Gateway</div>
+        </div>
+      </div>
+      <div class="scroll-content" style="padding-top:12px">
+        <!-- Two method tabs -->
+        <div class="filter-tabs" style="padding-top:0">
+          <div class="filter-tab active" onclick="switchAddMethod(this,'manual')">手动添加</div>
+          <div class="filter-tab" onclick="switchAddMethod(this,'scan')">扫码添加</div>
+        </div>
+
+        <div id="addMethodManual">
+          <div class="form-group">
+            <label class="form-label">实例名称</label>
+            <input class="form-input" id="instNameInput" placeholder="例如：我的 MacBook" value="">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Gateway 地址</label>
+            <input class="form-input mono" id="instUrlInput" placeholder="ws://192.168.1.100:18789" value="">
+            <div class="form-hint" id="urlHint">以 ws:// 或 wss:// 开头，包含端口号</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">访问令牌</label>
+            <input class="form-input mono" id="instTokenInput" type="password" placeholder="粘贴 Token..." value="">
+            <div class="form-hint">Token 将加密存储在设备安全区域</div>
+          </div>
+          <div class="conn-result" id="connResult"></div>
+          <button class="primary-btn" onclick="testConnection()">连接测试</button>
+          <button class="secondary-btn" id="addInstSaveBtn" onclick="saveInstance()" disabled>添加到列表</button>
+        </div>
+
+        <div id="addMethodScan" style="display:none">
+          <div style="display:flex;flex-direction:column;align-items:center;padding:40px 32px;text-align:center">
+            <div style="width:180px;height:180px;border:2px dashed var(--border-accent);border-radius:var(--r-lg);display:flex;align-items:center;justify-content:center;background:var(--surface);margin-bottom:16px">
+              <div style="text-align:center">
+                <div style="font-size:40px;margin-bottom:8px;opacity:0.5">📷</div>
+                <div style="font-size:12px;color:var(--text-3)">原型演示<br>摄像头扫码不可用</div>
+              </div>
+            </div>
+            <div style="font-size:13px;color:var(--text-2);line-height:1.5">扫描 OpenClaw 实例生成的配置二维码<br>自动解析 Gateway 地址和令牌</div>
+            <button class="secondary-btn" style="margin-top:16px;width:auto;padding:10px 24px" onclick="alert('模拟扫码成功！已自动填充表单');switchAddMethod(document.querySelector('#page-add-instance .filter-tab'),'manual');document.getElementById('instNameInput').value='新扫描的实例';document.getElementById('instUrlInput').value='ws://10.0.0.88:18789';">模拟扫码</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: SETTINGS (设置) -->
+    <div class="page hidden" id="page-settings">
+      <div class="chat-header">
+        <div class="back-btn" onclick="goBackFromSub()">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>
+        <div class="chat-header-info">
+          <div class="chat-header-name">设置</div>
+        </div>
+      </div>
+      <div class="scroll-content" style="padding-top:8px">
+        <div class="settings-section">
+          <div class="settings-section-title">通知</div>
+          <div class="settings-item">
+            <span class="settings-item-label">通知总开关</span>
+            <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="settings-item" onclick="alert('设置免打扰时段')">
+            <span class="settings-item-label">免打扰时段</span>
+            <span class="settings-item-value">22:00 – 08:00</span>
+            <svg class="chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div class="settings-item">
+            <span class="settings-item-label">任务完成通知</span>
+            <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="settings-item">
+            <span class="settings-item-label">错误告警通知</span>
+            <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="settings-item">
+            <span class="settings-item-label">实例状态变更</span>
+            <div class="toggle" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">隐私与安全</div>
+          <div class="settings-item">
+            <span class="settings-item-label">生物识别锁</span>
+            <div class="toggle" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="settings-item" onclick="alert('数据与统计设置')">
+            <span class="settings-item-label">数据统计</span>
+            <span class="settings-item-value">仅本地</span>
+            <svg class="chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">存储</div>
+          <div class="settings-item" onclick="alert('缓存管理：总占用 12.4 MB')">
+            <span class="settings-item-label">本地缓存</span>
+            <span class="settings-item-value">12.4 MB</span>
+            <svg class="chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div class="settings-item" onclick="if(confirm('确定清除所有本地缓存？对话记录将无法恢复。'))alert('缓存已清除')">
+            <span class="settings-item-label" style="color:var(--red)">清除全部缓存</span>
+            <svg class="chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">关于</div>
+          <div class="settings-item" style="cursor:default">
+            <span class="settings-item-label">版本</span>
+            <span class="settings-item-value">0.1.0-beta</span>
+          </div>
+          <div class="settings-item" onclick="alert('https://github.com/nicholaschenai/shrimp-hub')">
+            <span class="settings-item-label">源代码</span>
+            <svg class="chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div class="settings-item" onclick="alert('检查更新中...')">
+            <span class="settings-item-label">检查更新</span>
+            <svg class="chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </div>
+        <div style="height:24px"></div>
+      </div>
+    </div>
+
+    <!-- PAGE: AGENT DETAIL (虾详情 / 成长面板) -->
+    <div class="page hidden" id="page-agent-detail">
+      <div class="chat-header">
+        <div class="back-btn" onclick="goBackFromSub()">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>
+        <div class="chat-header-info">
+          <div class="chat-header-name" id="detailName">虾详情</div>
+        </div>
+        <div class="chat-header-actions">
+          <div class="header-btn" style="width:32px;height:32px" onclick="openAgentEdit()">
+            <svg viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" fill="none" stroke="var(--text-2)" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" fill="none" stroke="var(--text-2)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-hero">
+        <div class="detail-avatar" id="detailAvatar" style="background:rgba(79,131,255,0.12);color:var(--accent)">🦐
+          <div class="online-pulse on" style="position:absolute;bottom:-1px;right:-1px;width:12px;height:12px;border-radius:999px;border:2px solid var(--bg);background:var(--green)"></div>
+        </div>
+        <div class="detail-name" id="detailFullName">产品虾</div>
+        <div class="detail-desc" id="detailFullDesc">需求分析与产品规划</div>
+        <div class="detail-instance" id="detailInstance"><span style="width:5px;height:5px;border-radius:999px;background:var(--green);display:inline-block"></span> 我的云服务器 · 在线</div>
+      </div>
+
+      <div class="detail-tabs" id="detailTabs">
+        <div class="detail-tab active" onclick="switchDetailTab(this,'dashboard')">成长面板</div>
+        <div class="detail-tab" onclick="switchDetailTab(this,'achievements')">成就</div>
+      </div>
+
+      <!-- Dashboard Tab -->
+      <div class="detail-tab-content active" id="detailDashboard" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column">
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-value">42</div><div class="stat-label">对话</div></div>
+          <div class="stat-card"><div class="stat-value">186</div><div class="stat-label">消息</div></div>
+          <div class="stat-card"><div class="stat-value">12</div><div class="stat-label">工具调用</div></div>
+          <div class="stat-card"><div class="stat-value">15</div><div class="stat-label">活跃天数</div></div>
+          <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">连续活跃</div></div>
+          <div class="stat-card"><div class="stat-value" style="font-size:13px">05-28</div><div class="stat-label">初次对话</div></div>
+        </div>
+
+        <div class="section-divider">近期活动</div>
+        <div class="timeline">
+          <div class="timeline-item"><span class="timeline-date">今天</span><span class="timeline-text">发送了 4 条消息，讨论了需求优先级分析</span></div>
+          <div class="timeline-item"><span class="timeline-date">昨天</span><span class="timeline-text">生成了 MVP 功能清单，使用 search_clawhub 工具</span></div>
+          <div class="timeline-item"><span class="timeline-date">06-13</span><span class="timeline-text">讨论了产品定位和用户画像</span></div>
+          <div class="timeline-item"><span class="timeline-date">06-12</span><span class="timeline-text">进行了竞品分析，对比了 5 款同类产品</span></div>
+          <div class="timeline-item"><span class="timeline-date">06-11</span><span class="timeline-text">完成首次对话，建立了基本沟通模式</span></div>
+        </div>
+
+        <div class="detail-actions">
+          <button class="secondary-btn" style="margin:0;width:100%" onclick="openChatFromDetail()">进入对话</button>
+          <button class="secondary-btn" style="margin:4px 0 0;width:100%;color:var(--red);border-color:rgba(248,113,113,0.2)" onclick="if(confirm('确定清除该虾的本地缓存？统计数据将重置。'))alert('缓存已清除')">清除本地缓存</button>
+        </div>
+        <div style="height:16px"></div>
+      </div>
+
+      <!-- Achievements Tab -->
+      <div class="detail-tab-content" id="detailAchievements" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch">
+        <div class="achievement-list">
+          <div class="achievement-item unlocked">
+            <div class="achievement-icon">🎉</div>
+            <div class="achievement-info">
+              <div class="achievement-name">初次见面</div>
+              <div class="achievement-desc">完成第一次对话</div>
+            </div>
+          </div>
+          <div class="achievement-item unlocked">
+            <div class="achievement-icon">💬</div>
+            <div class="achievement-info">
+              <div class="achievement-name">百话达人</div>
+              <div class="achievement-desc">累计发送 100 条消息</div>
+            </div>
+          </div>
+          <div class="achievement-item unlocked">
+            <div class="achievement-icon">🔥</div>
+            <div class="achievement-info">
+              <div class="achievement-name">三日连击</div>
+              <div class="achievement-desc">连续活跃 3 天</div>
+            </div>
+          </div>
+          <div class="achievement-item locked">
+            <div class="achievement-icon">🔧</div>
+            <div class="achievement-info">
+              <div class="achievement-name">工具大师</div>
+              <div class="achievement-desc">累计调用 50 次工具（当前 12/50）</div>
+            </div>
+          </div>
+          <div class="achievement-item locked">
+            <div class="achievement-icon">⭐</div>
+            <div class="achievement-info">
+              <div class="achievement-name">七日坚守</div>
+              <div class="achievement-desc">连续活跃 7 天（当前 3/7）</div>
+            </div>
+          </div>
+          <div class="achievement-item locked">
+            <div class="achievement-icon">🏆</div>
+            <div class="achievement-info">
+              <div class="achievement-name">千言万语</div>
+              <div class="achievement-desc">累计发送 1000 条消息（当前 186/1000）</div>
+            </div>
+          </div>
+          <div class="achievement-item locked">
+            <div class="achievement-icon">💎</div>
+            <div class="achievement-info">
+              <div class="achievement-name">深度用户</div>
+              <div class="achievement-desc">累计对话 100 次（当前 42/100）</div>
+            </div>
+          </div>
+          <div class="achievement-item locked">
+            <div class="achievement-icon">🌟</div>
+            <div class="achievement-info">
+              <div class="achievement-name">月度之星</div>
+              <div class="achievement-desc">累计活跃 30 天（当前 15/30）</div>
+            </div>
+          </div>
+        </div>
+        <div style="height:16px"></div>
+      </div>
+    </div>
+
+    <!-- PAGE: AGENT EDIT (虾编辑 / 个性化配置) -->
+    <div class="page hidden" id="page-agent-edit">
+      <div class="chat-header">
+        <div class="back-btn" onclick="goBackFromSub()">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>
+        <div class="chat-header-info">
+          <div class="chat-header-name">编辑虾</div>
+        </div>
+        <div class="chat-header-actions">
+          <span style="font-size:14px;color:var(--accent);font-weight:600;cursor:pointer" onclick="saveAgentEdit()">保存</span>
+        </div>
+      </div>
+      <div class="scroll-content" style="padding-top:4px">
+        <div class="edit-avatar-area">
+          <div class="edit-avatar" id="editAvatar" style="background:rgba(79,131,255,0.12);color:var(--accent)" onclick="alert('选择头像：拍照或从相册选择')">🦐</div>
+          <div class="edit-avatar-hint">点击更换头像</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">昵称</label>
+          <input class="form-input" id="editNickname" placeholder="给虾起个名字" value="产品虾" maxlength="20">
+          <div class="form-hint">最多 20 个字符，仅本地显示</div>
+        </div>
+
+        <div class="section-divider">主题色</div>
+        <div class="color-picker" id="colorPicker">
+          <div class="color-swatch selected" style="background:#4F83FF" data-color="#4F83FF" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#9B7AFF" data-color="#9B7AFF" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#22D3EE" data-color="#22D3EE" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#34D399" data-color="#34D399" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#FBBF24" data-color="#FBBF24" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#FB7185" data-color="#FB7185" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#2DD4BF" data-color="#2DD4BF" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#FB923C" data-color="#FB923C" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#818CF8" data-color="#818CF8" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#F472B6" data-color="#F472B6" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#A3E635" data-color="#A3E635" onclick="selectColor(this)"></div>
+          <div class="color-swatch" style="background:#94A3B8" data-color="#94A3B8" onclick="selectColor(this)"></div>
+        </div>
+
+        <div class="section-divider">快捷指令</div>
+        <div class="cmd-list" id="cmdList">
+          <div class="cmd-item">
+            <span class="cmd-text">/status</span>
+            <span class="cmd-name">状态</span>
+            <span class="cmd-del" onclick="this.parentElement.remove()">✕</span>
+          </div>
+          <div class="cmd-item">
+            <span class="cmd-text">/memory</span>
+            <span class="cmd-name">记忆</span>
+            <span class="cmd-del" onclick="this.parentElement.remove()">✕</span>
+          </div>
+          <div class="cmd-item">
+            <span class="cmd-text">/reset</span>
+            <span class="cmd-name">重置</span>
+            <span class="cmd-del" onclick="this.parentElement.remove()">✕</span>
+          </div>
+          <div class="cmd-item">
+            <span class="cmd-text">/model</span>
+            <span class="cmd-name">模型</span>
+            <span class="cmd-del" onclick="this.parentElement.remove()">✕</span>
+          </div>
+          <div class="cmd-item">
+            <span class="cmd-text">/tools</span>
+            <span class="cmd-name">工具</span>
+            <span class="cmd-del" onclick="this.parentElement.remove()">✕</span>
+          </div>
+        </div>
+        <div class="cmd-add" id="cmdAddBtn" onclick="addQuickCmd()">+ 添加指令</div>
+
+        <div style="height:24px"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom Navigation -->
+  <div class="bottom-nav">
+    <div class="nav-item active" onclick="switchTab('home', this)">
+      <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      <span>虾列表</span>
+    </div>
+    <div class="nav-item" onclick="switchTab('messages', this)">
+      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      <span>消息</span>
+      <div class="nav-badge">3</div>
+    </div>
+    <div class="nav-item" onclick="switchTab('instances', this)">
+      <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      <span>实例</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== STATE =====
+let currentTab = 'home';
+let previousTab = 'home';
+let chatOriginTab = 'home';
+let currentAgentId = 'main';
+let subPageOrigin = 'home';
+
+// ===== CHAT DATA =====
+const agentMeta = {
+  main:    { emoji: '🦐', bg: 'rgba(79,131,255,0.12)',  instance: '我的云服务器', online: true },
+  code:    { emoji: '🧑‍💻', bg: 'rgba(34,211,238,0.12)',  instance: '我的云服务器', online: true },
+  travel:  { emoji: '✈️', bg: 'rgba(251,191,36,0.12)',  instance: '我的云服务器', online: true },
+  english: { emoji: '📚', bg: 'rgba(52,211,153,0.12)',  instance: '我的云服务器', online: true },
+  writer:  { emoji: '✍️', bg: 'rgba(251,146,60,0.12)',  instance: 'MacBook Pro',  online: true },
+  data:    { emoji: '📊', bg: 'rgba(45,212,191,0.12)',  instance: 'MacBook Pro',  online: true },
+  design:  { emoji: '🎨', bg: 'rgba(244,114,182,0.12)', instance: '办公室工作站',   online: false },
+  ops:     { emoji: '⚙️', bg: 'rgba(148,163,184,0.12)', instance: '办公室工作站',   online: false }
+};
+const chatData = {
+  main: {
+    messages: [
+      { role: 'agent', text: '你好！我是产品虾，专注于需求分析和产品规划。有什么我可以帮你的吗？', time: '14:30' },
+      { role: 'user', text: '我想做一个移动端的多Agent管理工具，你觉得核心需求是什么？', time: '14:32' },
+      { role: 'agent', text: '基于你的描述，我认为核心需求有三个方面：\n\n**1. 多实例连接管理**\n用户需要能方便地添加和管理多个 OpenClaw 实例，支持扫码快速添加。\n\n**2. 统一的对话体验**\n所有 Agent 的对话应该在一个界面里管理，支持快速切换，体验要像微信一样流畅。\n\n**3. 状态感知**\n用户需要随时知道每个实例和 Agent 的在线状态，离线时消息不丢失。', time: '14:33' },
+      { role: 'user', text: '分析得很到位！帮我列一下 MVP 的功能清单', time: '14:35' },
+      { type: 'tool', name: 'search_clawhub', status: 'done', detail: '已搜索到 3 个相关项目' },
+      { role: 'agent', text: 'MVP 功能清单：\n\n- 实例管理（添加/编辑/删除）\n- Agent 分组列表展示\n- 实时对话（支持 Markdown）\n- 消息列表页\n- 离线消息暂存\n- 底部三 Tab 导航\n\n建议先做这四个核心模块，预计 4 周可以完成。', time: '14:36' },
+      { role: 'user', text: '帮我分析一下这个需求的优先级', time: '15:38' },
+    ]
+  },
+  code: {
+    messages: [
+      { role: 'agent', text: '代码虾就绪！我可以帮你做代码审查、Bug 排查、架构设计等技术工作。', time: '10:00' },
+      { role: 'user', text: '帮我 review 一下最新的 PR', time: '14:10' },
+      { type: 'tool', name: 'read_file', status: 'done', detail: 'src/components/ChatView.tsx (248 lines)' },
+      { type: 'tool', name: 'analyze_code', status: 'done', detail: '分析完成，发现 3 个问题' },
+      { role: 'agent', text: '代码审查完成，发现 **3 个潜在问题**：\n\n1. `useEffect` 缺少依赖项 `sessionId`，可能导致状态不同步\n2. WebSocket 重连逻辑没有指数退避，高频重连可能影响服务端\n3. 消息列表没有做虚拟滚动，超过 50 条可能卡顿\n\n建议修复后再合并。', time: '14:20' },
+    ]
+  },
+  travel: {
+    messages: [
+      { role: 'agent', text: '嗨！我是你的旅行规划师 ✈️ 告诉我你想去哪里，我来帮你规划！', time: '昨天' },
+      { role: 'user', text: '我想去日本玩 7 天，预算 1 万', time: '昨天' },
+      { role: 'agent', text: '日本 7 日游已为你规划好！\n\n**Day 1-2 东京**：浅草寺 → 上野公园 → 秋叶原 → 涩谷十字路口\n**Day 3 镰仓**：大佛 → 江之岛 → 灌篮高手取景地\n**Day 4-5 京都**：伏见稻荷 → 金阁寺 → 岚山竹林\n**Day 6 大阪**：道顿堀 → 大阪城\n**Day 7**：购物 + 返程\n\n预算分配：机票 3000 + 住宿 3500 + 交通 1500 + 餐饮 1500 + 购物 500', time: '昨天' },
+    ]
+  },
+  english: {
+    messages: [
+      { role: 'agent', text: 'Hello! Ready to practice English today? 🎯 Let\'s start with some conversation!', time: '昨天' },
+      { role: 'user', text: 'I want to practice past tense', time: '昨天' },
+      { role: 'agent', text: 'Great choice! Let me give you some exercises.\n\nFill in the blanks with the correct past tense:\n\n1. She ___ (go) to the store yesterday.\n2. They ___ (eat) dinner at 7pm.\n3. I ___ (write) a letter to my friend.\n\nTry your best! 💪', time: '昨天' },
+    ]
+  },
+  writer: {
+    messages: [
+      { role: 'agent', text: '你好，我是写作虾 ✍️ 文案创作、内容优化、润色校对，都可以找我！', time: '12:00' },
+      { role: 'user', text: '帮我优化一下这篇产品介绍', time: '12:03' },
+      { role: 'agent', text: '文章已优化完成！主要修改：\n\n1. **开头段落**：用场景化描写替代直接介绍，增强代入感\n2. **中间段落**：将功能罗列改为用户故事，更有说服力\n3. **结尾总结**：加入 CTA 引导语，提升转化率\n\n修改后的版本已保存，需要我再调整哪个部分吗？', time: '12:05' },
+    ]
+  },
+  data: {
+    messages: [
+      { role: 'agent', text: '数据虾在线 📊 数据分析、报表生成、可视化，随时待命。', time: '周三' },
+      { role: 'user', text: '帮我分析一下上个月的用户活跃数据', time: '周三' },
+      { type: 'tool', name: 'query_database', status: 'done', detail: '已查询 2847 条记录' },
+      { role: 'agent', text: '数据分析完成！\n\n**关键发现：**\n- DAU 环比增长 **15.3%**\n- 用户平均会话时长 **8.2 分钟**（+2.1 分钟）\n- 次日留存率 **42.7%**（行业平均 35%）\n- 最活跃时段：20:00-22:00\n\n可视化报告已生成，需要我导出 PDF 吗？', time: '周三' },
+    ]
+  },
+  design: {
+    messages: [
+      { role: 'agent', text: '设计虾来啦 🎨 UI/UX 设计、视觉创意、交互原型，统统交给我！', time: '周一' },
+      { role: 'user', text: '给新版本出一个配色方案', time: '周一' },
+      { role: 'agent', text: '配色方案已出！推荐冷色调科技风：\n\n- 主色：**宝石蓝** `#4F83FF`\n- 辅色：**紫罗兰** `#9B7AFF`\n- 点缀：**琥珀金** `#E8C574`\n\n这个搭配既有科技感又不失高级感，你觉得怎么样？', time: '周一' },
+    ]
+  },
+  ops: {
+    messages: [
+      { role: 'agent', text: '运维虾已就位 ⚙️ 服务器运维、部署管理、监控告警，使命必达。', time: '周一' },
+    ]
+  }
+};
+
+// ===== NAVIGATION =====
+function switchTab(tab, el) {
+  if (tab === currentTab) return;
+  previousTab = currentTab;
+  currentTab = tab;
+
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.id === 'page-' + tab) {
+      p.classList.remove('hidden', 'hidden-left', 'hidden-right');
+    } else if (p.id !== 'page-chat') {
+      p.classList.add('hidden');
+      p.classList.remove('hidden-left', 'hidden-right');
+    }
+  });
+
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+}
+
+function openChat(agentId, name, desc) {
+  chatOriginTab = currentTab;
+  currentAgentId = agentId;
+  const chat = chatData[agentId] || { messages: [{ role: 'agent', text: '你好！我是' + name + '，有什么可以帮你的？', time: '刚刚' }] };
+  const meta = agentMeta[agentId] || { emoji: '🦐', bg: 'rgba(79,131,255,0.12)', instance: '未知实例', online: true };
+
+  document.getElementById('chatName').textContent = name;
+  document.getElementById('chatSub').textContent = meta.instance + ' · ' + (meta.online ? '在线' : '离线');
+
+  const avatarEl = document.getElementById('chatAvatar');
+  avatarEl.textContent = meta.emoji;
+  avatarEl.style.background = meta.bg;
+
+  // Update online dot in chat header
+  const dotEl = avatarEl.parentElement.querySelector('.mini-dot');
+  if (dotEl) {
+    dotEl.style.background = meta.online ? 'var(--green)' : 'var(--text-4)';
+    dotEl.style.boxShadow = meta.online ? '0 0 5px var(--green)' : 'none';
+  }
+
+  const msgsEl = document.getElementById('chatMessages');
+  msgsEl.innerHTML = '';
+
+  chat.messages.forEach((msg, i) => {
+    if (msg.type === 'tool') {
+      const div = document.createElement('div');
+      div.className = 'tool-card animate-in';
+      div.style.animationDelay = (i * 0.05) + 's';
+      div.innerHTML = '<div class="tool-name">🔧 ' + msg.name + '</div><div class="tool-status ' + msg.status + '">✓ ' + msg.detail + '</div>';
+      msgsEl.appendChild(div);
+    } else if (msg.type === 'type') {
+      // skip
+    } else {
+      const div = document.createElement('div');
+      div.className = 'msg ' + msg.role + ' animate-in';
+      div.style.animationDelay = (i * 0.05) + 's';
+      const text = msg.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>');
+      div.innerHTML = text + '<div class="msg-time">' + msg.time + '</div>';
+      msgsEl.appendChild(div);
+    }
+  });
+
+  // Show all main pages as hidden, show chat
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.id === 'page-chat') {
+      p.classList.remove('hidden', 'hidden-left', 'hidden-right');
+    } else {
+      p.classList.add('hidden');
+    }
+  });
+
+  // Scroll to bottom
+  setTimeout(() => { msgsEl.scrollTop = msgsEl.scrollHeight; }, 100);
+}
+
+function goBack() {
+  document.getElementById('page-chat').classList.add('hidden');
+  const targetTab = chatOriginTab;
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.id === 'page-' + targetTab) {
+      p.classList.remove('hidden', 'hidden-left', 'hidden-right');
+    }
+  });
+  switchTab(targetTab, document.querySelectorAll('.nav-item')[targetTab === 'home' ? 0 : targetTab === 'messages' ? 1 : 2]);
+}
+
+// ===== GROUP TOGGLE =====
+function toggleGroup(header) {
+  const list = header.nextElementSibling;
+  const chevron = header.querySelector('.chevron');
+  if (list.style.maxHeight === '0px') {
+    list.style.maxHeight = list.scrollHeight + 'px';
+    list.style.opacity = '1';
+    chevron.classList.remove('collapsed');
+  } else {
+    list.style.maxHeight = '0px';
+    list.style.opacity = '0';
+    chevron.classList.add('collapsed');
+  }
+}
+
+// ===== CHAT INPUT =====
+function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+
+  const msgsEl = document.getElementById('chatMessages');
+
+  // Add user message
+  const userDiv = document.createElement('div');
+  userDiv.className = 'msg user animate-in';
+  userDiv.textContent = text;
+  userDiv.innerHTML += '<div class="msg-time">' + formatTime() + '</div>';
+  msgsEl.appendChild(userDiv);
+
+  input.value = '';
+  input.style.height = 'auto';
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+
+  // Show typing
+  const typingDiv = document.createElement('div');
+  typingDiv.className = 'typing-indicator animate-in';
+  typingDiv.id = 'typingIndicator';
+  typingDiv.innerHTML = '<span></span><span></span><span></span>';
+  msgsEl.appendChild(typingDiv);
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+
+  // Simulate reply
+  setTimeout(() => {
+    const typing = document.getElementById('typingIndicator');
+    if (typing) typing.remove();
+
+    const agentDiv = document.createElement('div');
+    agentDiv.className = 'msg agent animate-in';
+    agentDiv.innerHTML = '收到你的消息了！我来分析一下...<div class="msg-time">' + formatTime() + '</div>';
+    msgsEl.appendChild(agentDiv);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  }, 1500);
+}
+
+function sendQuickCmd(cmd) {
+  document.getElementById('chatInput').value = cmd;
+  sendMessage();
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+}
+
+function formatTime() {
+  const d = new Date();
+  return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+}
+
+// ===== STATUS BAR TIME =====
+function updateTime() {
+  const d = new Date();
+  document.getElementById('statusTime').textContent = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+}
+updateTime();
+setInterval(updateTime, 30000);
+
+// ===== SUB-PAGE NAVIGATION =====
+function openSubPage(pageId) {
+  subPageOrigin = currentTab === 'chat' ? chatOriginTab : currentTab;
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.id === pageId) {
+      p.classList.remove('hidden', 'hidden-left', 'hidden-right');
+    } else {
+      p.classList.add('hidden');
+    }
+  });
+}
+
+function goBackFromSub() {
+  const targetTab = subPageOrigin || chatOriginTab || currentTab;
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.id === 'page-' + targetTab) {
+      p.classList.remove('hidden', 'hidden-left', 'hidden-right');
+    } else if (p.id !== 'page-chat' || targetTab !== 'chat') {
+      p.classList.add('hidden');
+    }
+  });
+  const idx = targetTab === 'home' ? 0 : targetTab === 'messages' ? 1 : targetTab === 'instances' ? 2 : -1;
+  if (idx >= 0) switchTab(targetTab, document.querySelectorAll('.nav-item')[idx]);
+}
+
+function openSearch() {
+  openSubPage('page-search');
+  setTimeout(() => document.getElementById('searchInput').focus(), 350);
+}
+
+function openSettings() {
+  openSubPage('page-settings');
+}
+
+function openAddInstance() {
+  openSubPage('page-add-instance');
+  // Reset form
+  document.getElementById('connResult').className = 'conn-result';
+  document.getElementById('connResult').textContent = '';
+  document.getElementById('addInstSaveBtn').disabled = true;
+}
+
+function openAgentDetail(agentId) {
+  const meta = agentMeta[agentId] || { emoji: '🦐', bg: 'rgba(79,131,255,0.12)', instance: '未知', online: true };
+  const chat = chatData[agentId];
+  const name = agentId === 'main' ? '产品虾' : agentId === 'code' ? '代码虾' : agentId === 'travel' ? '旅行规划师' : agentId === 'english' ? '英语陪练老师' : agentId === 'writer' ? '写作虾' : agentId === 'data' ? '数据虾' : agentId === 'design' ? '设计虾' : agentId === 'ops' ? '运维虾' : '未知';
+  const desc = agentId === 'main' ? '需求分析与产品规划' : agentId === 'code' ? '全栈开发与代码审查' : agentId === 'travel' ? '行程规划与旅行建议' : agentId === 'english' ? '英语口语练习与语法辅导' : agentId === 'writer' ? '文案创作与内容优化' : agentId === 'data' ? '数据分析与可视化' : agentId === 'design' ? 'UI/UX 设计与视觉创意' : agentId === 'ops' ? '服务器运维与部署管理' : '';
+
+  document.getElementById('detailName').textContent = name;
+  document.getElementById('detailFullName').textContent = name;
+  document.getElementById('detailFullDesc').textContent = desc;
+  document.getElementById('detailInstance').innerHTML = '<span style="width:5px;height:5px;border-radius:999px;background:' + (meta.online ? 'var(--green)' : 'var(--text-4)') + ';display:inline-block"></span> ' + meta.instance + ' · ' + (meta.online ? '在线' : '离线');
+
+  const av = document.getElementById('detailAvatar');
+  av.style.background = meta.bg;
+  av.childNodes[0].textContent = meta.emoji;
+
+  // Reset tabs to dashboard
+  document.querySelectorAll('#detailTabs .detail-tab')[0].click();
+
+  openSubPage('page-agent-detail');
+}
+
+function openAgentEdit() {
+  openSubPage('page-agent-edit');
+}
+
+function openChatFromDetail() {
+  const agentId = currentAgentId;
+  const meta = agentMeta[agentId] || {};
+  const name = document.getElementById('detailFullName').textContent;
+  const desc = document.getElementById('detailFullDesc').textContent;
+  goBackFromSub();
+  setTimeout(() => openChat(agentId, name, desc), 100);
+}
+
+// ===== SEARCH =====
+const searchData = [
+  { agent: '产品虾', agentId: 'main', text: '核心需求有三个方面：多实例连接管理、统一的对话体验、状态感知', time: '今天 14:33' },
+  { agent: '产品虾', agentId: 'main', text: 'MVP 功能清单：实例管理、Agent 分组列表、实时对话、消息列表页', time: '今天 14:36' },
+  { agent: '代码虾', agentId: 'code', text: '代码审查完成，发现 3 个潜在问题：useEffect 缺少依赖、WebSocket 重连逻辑、消息列表虚拟滚动', time: '今天 14:20' },
+  { agent: '写作虾', agentId: 'writer', text: '文章已优化完成，主要修改了开头段落和结尾总结', time: '今天 12:05' },
+  { agent: '旅行规划师', agentId: 'travel', text: '日本7日游行程已规划好，第一天建议从浅草寺开始', time: '昨天' },
+  { agent: '数据虾', agentId: 'data', text: 'DAU 环比增长 15.3%，用户平均会话时长 8.2 分钟', time: '周三' },
+  { agent: '设计虾', agentId: 'design', text: '配色方案已出，主色宝石蓝 #4F83FF，辅色紫罗兰', time: '周一' },
+  { agent: '英语陪练老师', agentId: 'english', text: 'Great job! Your grammar has improved a lot', time: '昨天' },
+  { agent: '代码虾', agentId: 'code', text: 'read_file 工具调用完成：src/components/ChatView.tsx (248 lines)', time: '今天 14:10' },
+];
+let currentSearchFilter = 'all';
+
+function handleSearch(query) {
+  const resultsEl = document.getElementById('searchResults');
+  const emptyEl = document.getElementById('searchEmpty');
+  const q = query.trim().toLowerCase();
+
+  if (!q) {
+    resultsEl.innerHTML = '';
+    resultsEl.appendChild(emptyEl);
+    emptyEl.querySelector('.empty-title').textContent = '搜索全部虾的对话';
+    emptyEl.querySelector('.empty-desc').textContent = '输入关键词，在所有对话历史中查找';
+    emptyEl.querySelector('.empty-icon').textContent = '🔍';
+    emptyEl.style.display = '';
+    return;
+  }
+
+  emptyEl.style.display = 'none';
+  let results = searchData.filter(r => r.text.toLowerCase().includes(q) || r.agent.toLowerCase().includes(q));
+
+  if (currentSearchFilter === 'agent') {
+    const seen = new Set();
+    results = results.filter(r => { if (seen.has(r.agentId)) return false; seen.add(r.agentId); return true; });
+  }
+
+  if (results.length === 0) {
+    resultsEl.innerHTML = '<div class="empty-state" style="display:flex"><div class="empty-icon">🔍</div><div class="empty-title">没有找到包含「' + query + '」的消息</div><div class="empty-desc">换个关键词试试？</div></div>';
+    return;
+  }
+
+  let html = '';
+  results.forEach(r => {
+    const highlighted = r.text.replace(new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'), '<mark>$1</mark>');
+    html += '<div class="search-result-item" onclick="openChat(\'' + r.agentId + '\',\'' + r.agent + '\',\'\')">';
+    html += '<div class="search-result-top"><span class="search-result-agent">' + r.agent + '</span><span class="search-result-time">' + r.time + '</span></div>';
+    html += '<div class="search-result-text">' + highlighted + '</div></div>';
+  });
+  resultsEl.innerHTML = html;
+}
+
+function setSearchFilter(el, filter) {
+  document.querySelectorAll('#searchFilterTabs .filter-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  currentSearchFilter = filter;
+  handleSearch(document.getElementById('searchInput').value);
+}
+
+// ===== ADD INSTANCE =====
+function switchAddMethod(el, method) {
+  el.parentElement.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('addMethodManual').style.display = method === 'manual' ? '' : 'none';
+  document.getElementById('addMethodScan').style.display = method === 'scan' ? '' : 'none';
+}
+
+function testConnection() {
+  const url = document.getElementById('instUrlInput').value.trim();
+  const name = document.getElementById('instNameInput').value.trim();
+  const token = document.getElementById('instTokenInput').value.trim();
+  const resultEl = document.getElementById('connResult');
+  const saveBtn = document.getElementById('addInstSaveBtn');
+
+  if (!name) { resultEl.className = 'conn-result error'; resultEl.textContent = '请输入实例名称'; return; }
+  if (!url.match(/^wss?:\/\/.+/)) { resultEl.className = 'conn-result error'; resultEl.textContent = '地址格式错误，需以 ws:// 或 wss:// 开头'; return; }
+  if (!token) { resultEl.className = 'conn-result error'; resultEl.textContent = '请输入访问令牌'; return; }
+
+  resultEl.className = 'conn-result';
+  resultEl.style.display = 'block';
+  resultEl.style.background = 'var(--accent-muted)';
+  resultEl.style.color = 'var(--accent)';
+  resultEl.textContent = '连接测试中...';
+  saveBtn.disabled = true;
+
+  setTimeout(() => {
+    resultEl.className = 'conn-result success';
+    resultEl.textContent = '✓ 连接成功！延迟 42ms，发现 3 个 Agent';
+    saveBtn.disabled = false;
+  }, 1200);
+}
+
+function saveInstance() {
+  const name = document.getElementById('instNameInput').value.trim();
+  alert('实例「' + name + '」已添加！');
+  goBackFromSub();
+}
+
+// ===== AGENT DETAIL =====
+function switchDetailTab(el, tab) {
+  document.querySelectorAll('#detailTabs .detail-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('detailDashboard').classList.toggle('active', tab === 'dashboard');
+  document.getElementById('detailDashboard').style.display = tab === 'dashboard' ? 'flex' : 'none';
+  document.getElementById('detailDashboard').style.flexDirection = tab === 'dashboard' ? 'column' : '';
+  document.getElementById('detailAchievements').classList.toggle('active', tab === 'achievements');
+  document.getElementById('detailAchievements').style.display = tab === 'achievements' ? 'block' : 'none';
+}
+
+// ===== AGENT EDIT =====
+function selectColor(el) {
+  document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+function addQuickCmd() {
+  const cmdList = document.getElementById('cmdList');
+  const count = cmdList.querySelectorAll('.cmd-item').length;
+  if (count >= 10) { alert('每个虾最多 10 个快捷指令'); return; }
+  const cmd = prompt('指令文本（如 /help）：');
+  if (!cmd) return;
+  const name = prompt('显示名称（如 帮助）：');
+  if (!name) return;
+  const div = document.createElement('div');
+  div.className = 'cmd-item';
+  div.innerHTML = '<span class="cmd-text">' + cmd + '</span><span class="cmd-name">' + name + '</span><span class="cmd-del" onclick="this.parentElement.remove()">✕</span>';
+  cmdList.appendChild(div);
+}
+
+function saveAgentEdit() {
+  const nick = document.getElementById('editNickname').value.trim();
+  const color = document.querySelector('.color-swatch.selected')?.dataset.color || '#4F83FF';
+  alert('已保存！昵称: ' + nick + '，主题色: ' + color);
+  goBackFromSub();
+}
+
+// ===== TOUCH SWIPE FOR CHAT =====
+let touchStartX = 0;
+document.getElementById('page-chat').addEventListener('touchstart', e => {
+  touchStartX = e.touches[0].clientX;
+});
+document.getElementById('page-chat').addEventListener('touchend', e => {
+  const diff = e.changedTouches[0].clientX - touchStartX;
+  if (diff > 80 && touchStartX < 40) { goBack(); }
+});
+</script>
+</body>
+</html>
