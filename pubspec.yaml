@@ -25,6 +25,9 @@ dependencies:
   # 网络通信
   web_socket_channel: ^3.0.2
   connectivity_plus: ^6.1.4
+  # 设备型号读取(用于 Gateway 握手上报 client.modelIdentifier)
+  # iOS 需 `cd ios && pod install`;Android 要求 minSdkVersion >= 21
+  device_info_plus: ^11.0.0
 
   # 路由导航
   go_router: ^14.8.1

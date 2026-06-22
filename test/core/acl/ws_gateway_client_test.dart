@@ -1179,4 +1179,85 @@ void main() {
       },
     );
   });
+
+  // ==========================================================================
+  // modelIdentifierLoader (US-XXX — protocol handshake device reporting)
+  // ==========================================================================
+  group('modelIdentifierLoader', () {
+    test('loader return value flows to config.modelIdentifier', () async {
+      final identityProvider = FakeDeviceIdentityProvider();
+      final client = WsGatewayClient(
+        identityProvider: identityProvider,
+        modelIdentifierLoader: () async => 'Pixel 8',
+      );
+
+      final identity = await identityProvider.ensureDeviceIdentity();
+      final config = await WsGatewayClient.resolveConfigForTesting(
+        client,
+        identity,
+      );
+
+      expect(config.modelIdentifier, 'Pixel 8');
+
+      await client.dispose();
+    });
+
+    test('loader returns null → config.modelIdentifier is null', () async {
+      final identityProvider = FakeDeviceIdentityProvider();
+      final client = WsGatewayClient(
+        identityProvider: identityProvider,
+        modelIdentifierLoader: () async => null,
+      );
+
+      final identity = await identityProvider.ensureDeviceIdentity();
+      final config = await WsGatewayClient.resolveConfigForTesting(
+        client,
+        identity,
+      );
+
+      expect(config.modelIdentifier, isNull);
+
+      await client.dispose();
+    });
+
+    test(
+      'loader throws → config.modelIdentifier is null (Law 8 best-effort)',
+      () async {
+        final identityProvider = FakeDeviceIdentityProvider();
+        final client = WsGatewayClient(
+          identityProvider: identityProvider,
+          modelIdentifierLoader: () async {
+            throw StateError('device_info_plus blew up');
+          },
+        );
+
+        final identity = await identityProvider.ensureDeviceIdentity();
+        // Must not throw — loader exceptions are swallowed.
+        final config = await WsGatewayClient.resolveConfigForTesting(
+          client,
+          identity,
+        );
+
+        expect(config.modelIdentifier, isNull);
+
+        await client.dispose();
+      },
+    );
+
+    test('no loader injected → config.modelIdentifier is null '
+        '(backward compat)', () async {
+      final identityProvider = FakeDeviceIdentityProvider();
+      final client = WsGatewayClient(identityProvider: identityProvider);
+
+      final identity = await identityProvider.ensureDeviceIdentity();
+      final config = await WsGatewayClient.resolveConfigForTesting(
+        client,
+        identity,
+      );
+
+      expect(config.modelIdentifier, isNull);
+
+      await client.dispose();
+    });
+  });
 }

@@ -211,6 +211,20 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// reply already arrived.
   bool _awaitingReply = false;
 
+  /// 是否正在接收流式回复增量（首个 [StreamingDelta] 到达后置 true，
+  /// [StreamingDone]/回复到达/流错误后置 false）。
+  ///
+  /// 用途：clear-cache tick 触发的 [reloadMessages] 在此期间跳过——
+  /// 清缓存后 DB 已空，若流式中重载会让 `state.messages` 闪空；
+  /// 流式文本累积在独立的 `_streamBuffer`/`streamingText`，不受影响。
+  /// 流式结束（最终回复落库）后，messageStream 监听器会调
+  /// [_loadMessages] 自然刷新到含新回复的列表。
+  bool _isStreaming = false;
+
+  /// 是否正在流式接收回复。供 [chatViewModelProvider] 的 tick 监听器
+  /// 决定是否触发温和刷新（流式中跳过）。
+  bool get isStreaming => _isStreaming;
+
   /// 激活时，实时消息监听器跳过 `_loadMessages()` 以避免覆盖高亮锚定窗口。
   /// 由 [loadHighlightWindow] 设置，在 [clearHighlight] 或 2 秒后清除。
   bool _highlightActive = false;
@@ -282,6 +296,26 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           .connectionStateStream(instanceId)
           .listen((state) {
             _updateState((s) => s.copyWith(connectionState: state));
+            // 连接断开/恢复路径必须重置 _isStreaming —— 否则一次中途
+            // 网关掉线（无 StreamingDone）会让 reloadMessages 在
+            // `if (_isStreaming) return;` 处永远早退，导致
+            // cacheClearedTickProvider++ 后聊天列表保留旧的（清理前）快照。
+            // Streaming 终态（StreamingDone / agent Message / send / onError
+            // / dispose）已经在各自路径处理；这里只覆盖「连接层异常」
+            // 这个原本没被任何路径覆盖的边界。
+            if (state != GatewayConnectionState.connected &&
+                state != GatewayConnectionState.connecting &&
+                state != GatewayConnectionState.authenticating &&
+                _isStreaming) {
+              _isStreaming = false;
+              _streamBuffer.clear();
+              _lastPublishedLength = 0;
+              _stallTimer?.cancel();
+              _stallTimer = null;
+              _timeoutTimer?.cancel();
+              _timeoutTimer = null;
+              _updateState((s) => s.copyWith(streamingText: ''));
+            }
             // 连接状态变化时刷新消息列表 —
             // OutboxProcessor 可能在后台冲刷，将 PENDING 推进到 SENT；
             // 这些状态变更通过 messageStream 不会传达（DB 直接更新），
@@ -351,7 +385,19 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
                     ? _sendMessageUseCase.nextLogicalClock()
                     : msg.logicalClock,
               );
-              await _messageRepo.insert(fixedMsg);
+              try {
+                await _messageRepo.insert(fixedMsg);
+              } catch (error, stackTrace) {
+                // iron-law-allow: Law8 — 兜底:即使 clearAll 保留骨架,任何
+                // FK/约束冲突也不应静默吞掉后续逻辑。旧实现异常会中断
+                // _updateConversationPreview 与 _loadMessages,使消息列表
+                // 卡在空状态。记日志后 return,等下一条消息正常处理。
+                debugPrint(
+                  '[ChatViewModel] message insert failed for '
+                  '${fixedMsg.clientId}: $error\n$stackTrace',
+                );
+                return;
+              }
               // 同步会话预览 —— 让消息中心展示「真正的最后一条消息」。
               // 此前 updateLastMessage 仅在用户发送时被调用，导致预览永远
               // 停留在「我」的最后一条消息，掩盖了 Agent 的最新回复。
@@ -366,6 +412,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
                 // eliminates the race window between StreamingDone and
                 // Message arrival on independent broadcast controllers.
                 _awaitingReply = false;
+                _isStreaming = false;
                 _updateState((s) => s.copyWith(streamingText: ''));
                 _stopThinking();
                 onStatsChanged?.call();
@@ -411,14 +458,25 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           instanceId: instanceId,
           agentId: remoteId,
         );
+        // per-insert try/catch: 与 messageStream 路径(line 368-379)对称,
+        // 防止 clearAll 保留骨架后,任何一条历史消息的 FK/约束冲突中断整
+        // 个循环,导致 _loadMessages 永不调用,后续消息(N+1..end)静默跳过。
         for (final msg in history.messages) {
           // Normalise to canonical SHA-256 conversationId, matching
           // the live stream listener at line ~247.  _parseMessage
           // defaults to '' when the Gateway omits the field, which
           // violates the FK constraint on messages.conversation_id.
-          await _messageRepo.insert(
-            msg.copyWith(conversationId: _conversationId),
-          );
+          final fixedMsg = msg.copyWith(conversationId: _conversationId);
+          try {
+            await _messageRepo.insert(fixedMsg);
+          } catch (error, stackTrace) {
+            // iron-law-allow: Law8 — 历史拉取的逐条兜底,与 messageStream
+            // 路径一致,单条 FK 冲突不应中断整批导入。
+            debugPrint(
+              '[ChatViewModel] history insert failed for '
+              '${fixedMsg.clientId}: $error\n$stackTrace',
+            );
+          }
         }
         await _loadMessages();
       } catch (error, stackTrace) {
@@ -473,6 +531,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     // A fresh subscription is created below after init() succeeds.
     _streamingSubscription?.cancel();
     _streamingSubscription = null;
+    _isStreaming = false;
     _flushTimer?.cancel();
     _streamBuffer.clear();
     _lastPublishedLength = 0;
@@ -568,6 +627,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         .listen(
           (event) {
             if (event is StreamingDelta && event.agentId == agentRemoteId) {
+              _isStreaming = true;
               if (_streamBuffer.length < 50 * 1024) {
                 _streamBuffer.write(event.text);
                 _scheduleFlush();
@@ -584,12 +644,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               });
             } else if (event is StreamingDone &&
                 event.agentId == agentRemoteId) {
+              _isStreaming = false;
               _flushImmediately();
               _stallTimer?.cancel();
               _updateState((s) => s.copyWith(streamingText: ''));
             }
           },
           onError: (error, stackTrace) {
+            _isStreaming = false;
             _flushImmediately();
             _stallTimer?.cancel();
             _timeoutTimer?.cancel();
@@ -710,7 +772,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// 冲刷产生的状态变更（PENDING → SENDING → SENT）不经 messageStream，
   /// 故需要这个 fire-once 信号触发重载以反映最终 SENT 状态。
   /// （完整移除此信号需方案 A 全量的 watchByConversation，留待后续迭代。）
+  ///
+  /// **流式期间跳过**：clear-cache tick 在流式进行中触发时，若重载会读到
+  /// 已清空的 DB 让 `state.messages` 闪空。流式文本在独立缓冲区不受影响；
+  /// 流式结束（最终回复落库）后 messageStream 监听器会调 [_loadMessages]
+  /// 自然刷新。[_isStreaming] 由首个 delta 置 true、StreamingDone/回复到达
+  /// 置 false。
   Future<void> reloadMessages() async {
+    if (_isStreaming) return;
     await _loadMessages();
   }
 
@@ -871,6 +940,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _toolCallSubscription = null;
     _streamingSubscription?.cancel();
     _streamingSubscription = null;
+    _isStreaming = false;
     _outboxCountSubscription?.cancel();
     _outboxCountSubscription = null;
     _timeoutTimer?.cancel();

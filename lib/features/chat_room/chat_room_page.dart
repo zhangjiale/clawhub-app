@@ -15,6 +15,7 @@ import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
+import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/chat_input_bar.dart';
 import 'package:claw_hub/features/chat_room/widgets/outbox_warning_banner.dart';
@@ -122,7 +123,20 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final params = (instanceId: widget.instanceId, agentId: widget.agentId);
     // ref.watch triggers rebuild whenever ChatSessionState changes —
     // no manual addListener / setState bridge needed.
-    final session = ref.watch(chatViewModelProvider(params));
+    //
+    // Major #1 修复: clearAll 进行中 family builder 抛 [ClearedDuringClearError]
+    // (由 clearCacheActionProvider 设置的 guard 触发)。捕获取消本次导航，
+    // 提示用户并回到上一个 tab。
+    final ChatSessionState session;
+    try {
+      session = ref.watch(chatViewModelProvider(params));
+    } on ClearedDuringClearError {
+      // 必须转发 source —— 否则 smartBack 在无 back stack 时会落回默认
+      // AppRoutes.claws tab，破坏 Smart Back Stack 不变量。对比
+      // agent_profile_page.dart:54 的处理（已正确转发）。
+      handleClearedDuringClear(context, source: widget.source);
+      return const Scaffold(body: SizedBox.shrink());
+    }
     // .notifier gives us the ChatViewModel for calling action methods.
     final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;

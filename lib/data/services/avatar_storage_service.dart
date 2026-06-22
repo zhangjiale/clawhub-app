@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
+import 'package:claw_hub/core/i_logger.dart';
 
 /// [IAvatarStorageService] 的生产实现 — 将头像文件存储在应用文档目录下。
 ///
@@ -26,8 +27,13 @@ class AvatarStorageService implements IAvatarStorageService {
   /// 测试可传入临时目录。
   final Future<Directory> Function()? _baseDirFactory;
 
-  AvatarStorageService({Future<Directory> Function()? baseDirFactory})
-    : _baseDirFactory = baseDirFactory;
+  final ILogger _logger;
+
+  AvatarStorageService({
+    Future<Directory> Function()? baseDirFactory,
+    required ILogger logger,
+  }) : _baseDirFactory = baseDirFactory,
+       _logger = logger;
 
   Future<Directory> get _baseDir async {
     if (_baseDirFactory != null) return _baseDirFactory!();
@@ -42,7 +48,7 @@ class AvatarStorageService implements IAvatarStorageService {
     if (_avatarDir != null) return _avatarDir!;
     final base = await _baseDir;
     final dir = Directory(p.join(base.path, 'avatars'));
-    if (!dir.existsSync()) {
+    if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
     _avatarDir = dir;
@@ -87,7 +93,7 @@ class AvatarStorageService implements IAvatarStorageService {
     final dir = await _getAvatarDir;
     _appDocDirPath ??= dir.parent.path;
     final file = File(p.join(dir.path, '$localId.jpg'));
-    if (file.existsSync()) {
+    if (await file.exists()) {
       await file.delete();
     }
   }
@@ -96,5 +102,40 @@ class AvatarStorageService implements IAvatarStorageService {
   bool avatarExists(String localId) {
     final path = getAvatarPath(localId);
     return File(path).existsSync();
+  }
+
+  @override
+  Future<void> clearAll() async {
+    final dir = await _getAvatarDir;
+    if (!await dir.exists()) return;
+    // Materialize the entity list first so independent deletes can run
+    // concurrently via Future.wait — sequential awaits on disk I/O can
+    // take hundreds of ms for large avatar sets, blocking the UI spinner.
+    final entities = await dir.list().toList();
+    await Future.wait(
+      entities.map(
+        (entity) => () async {
+          try {
+            // **Major #4 修复**：原实现仅删除 File，Directory 实例被静默跳过。
+            // 这意味着任何未来放入 avatar 目录的子目录（thumbnail 缓存、
+            // `.DS_Store`、OS 产物等）都会成为磁盘泄漏——用户点"清除缓存"
+            // 但占用未真正清空。递归删除子目录彻底清理。
+            if (entity is Directory) {
+              await entity.delete(recursive: true);
+            } else {
+              await entity.delete();
+            }
+          } catch (error, stackTrace) {
+            // iron-law-allow: Law8 — best-effort, skip files we can't delete
+            // (e.g. permission denied). Cross-storage cleanup should not
+            // block the rest of the cache clear.
+            _logger.error(
+              '[AvatarStorage] Failed to delete ${entity.path}: $error',
+              stackTrace,
+            );
+          }
+        }(),
+      ),
+    );
   }
 }

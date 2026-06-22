@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:claw_hub/domain/models/clear_all_result.dart';
 import 'package:claw_hub/domain/models/storage_info.dart';
 import 'package:claw_hub/features/settings/providers/settings_providers.dart';
 import 'package:claw_hub/features/settings/storage_management_page.dart';
@@ -99,5 +100,106 @@ void main() {
 
       expect(find.textContaining('消息记录存储在设备本地'), findsOneWidget);
     });
+
+    testWidgets('清除全部缓存 button is visible on the page', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            storageInfoProvider.overrideWith(
+              (ref) async =>
+                  const StorageInfo(databaseSizeBytes: 1024, messageCount: 5),
+            ),
+          ],
+          child: const MaterialApp(home: StorageManagementPage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('清除全部缓存'), findsOneWidget);
+    });
+
+    testWidgets('tapping 清除全部缓存 shows confirmation dialog, '
+        'cancelling does NOT invoke action', (tester) async {
+      var actionInvoked = false;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            storageInfoProvider.overrideWith(
+              (ref) async =>
+                  const StorageInfo(databaseSizeBytes: 1024, messageCount: 5),
+            ),
+            clearCacheActionProvider.overrideWith(
+              (ref) => () async {
+                actionInvoked = true;
+                return const ClearAllResult(
+                  dbCleared: true,
+                  avatarsCleared: true,
+                );
+              },
+            ),
+          ],
+          child: const MaterialApp(home: StorageManagementPage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Tap the clear button
+      await tester.tap(find.text('清除全部缓存'));
+      await tester.pumpAndSettle();
+
+      // Dialog should appear
+      expect(find.text('清除全部缓存?'), findsOneWidget);
+      expect(find.text('取消'), findsOneWidget);
+      expect(find.text('确认清除'), findsOneWidget);
+
+      // Tap cancel — action NOT invoked
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+
+      expect(actionInvoked, isFalse);
+      // Dialog dismissed
+      expect(find.text('清除全部缓存?'), findsNothing);
+    });
+
+    testWidgets(
+      'confirming dialog invokes clearCacheActionProvider and shows SnackBar',
+      (tester) async {
+        var actionInvoked = false;
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              storageInfoProvider.overrideWith(
+                (ref) async =>
+                    const StorageInfo(databaseSizeBytes: 1024, messageCount: 5),
+              ),
+              clearCacheActionProvider.overrideWith(
+                (ref) => () async {
+                  actionInvoked = true;
+                  return const ClearAllResult(
+                    dbCleared: true,
+                    avatarsCleared: true,
+                  );
+                },
+              ),
+            ],
+            child: const MaterialApp(home: StorageManagementPage()),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Tap the clear button → dialog appears
+        await tester.tap(find.text('清除全部缓存'));
+        await tester.pumpAndSettle();
+        expect(find.text('确认清除'), findsOneWidget);
+
+        // Tap confirm
+        await tester.tap(find.text('确认清除'));
+        await tester.pumpAndSettle();
+
+        expect(actionInvoked, isTrue);
+        // Success SnackBar visible
+        expect(find.text('已清除全部缓存'), findsOneWidget);
+      },
+    );
   });
 }

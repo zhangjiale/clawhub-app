@@ -221,6 +221,25 @@ class SearchViewModel extends StateNotifier<SearchState> {
     state = transform(state);
   }
 
+  /// 清除内部状态（Major #1 修复: clearCacheActionProvider 调用）。
+  ///
+  /// 保留 VM 实例本身（不 dispose），只清空 results/query/hasMore，
+  /// 让 UI 立即回到"无搜索结果"的初始视图。`_searchGeneration` 自增
+  /// 是为了取消任何 in-flight `_executeSearch`（虽然已 clearAll 的 DB
+  /// 已空，但防止并发回填污染状态）。
+  void clear() {
+    _debounceTimer?.cancel();
+    _searchGeneration++;
+    _updateState(
+      (s) => s.copyWith(
+        results: const LoadData([]),
+        query: '',
+        isLoadingMore: false,
+        hasMore: false,
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _debounceTimer?.cancel();

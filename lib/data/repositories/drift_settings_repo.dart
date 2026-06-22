@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:claw_hub/core/i_avatar_storage_service.dart';
+import 'package:claw_hub/core/i_logger.dart';
+import 'package:claw_hub/domain/models/clear_all_result.dart';
 import 'package:claw_hub/domain/models/storage_info.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/domain/repositories/i_settings_repo.dart';
@@ -13,8 +16,15 @@ import '../local/database/database.dart' as db;
 /// (and persisted on first write via INSERT OR REPLACE).
 class DriftSettingsRepo implements ISettingsRepo {
   final db.AppDatabase _database;
+  final IAvatarStorageService? _avatarStorageService;
+  final ILogger _logger;
 
-  DriftSettingsRepo(this._database);
+  DriftSettingsRepo(
+    this._database, {
+    IAvatarStorageService? avatarStorageService,
+    required ILogger logger,
+  }) : _avatarStorageService = avatarStorageService,
+       _logger = logger;
 
   // ---------------------------------------------------------------------------
   // Storage info cache — avoids full COUNT(*) scan on every settings open
@@ -90,6 +100,45 @@ class DriftSettingsRepo implements ISettingsRepo {
   void invalidateStorageCache() {
     _cachedStorageInfo = null;
     _cacheTimestamp = null;
+  }
+
+  @override
+  Future<ClearAllResult> clearAll() async {
+    // 1) 事务内:清 FTS5 + 清空聊天内容(保留 agents/conversations 骨架)。
+    //
+    // 顺序不能调换:`purgeAllMessagesFts` 必须先于 `clearAllContent` 的
+    // `DELETE FROM messages`,否则 contentless FTS5 表在 content 表为空后
+    // 执行 'delete-all' 会报 integrity error。
+    //
+    // 保留骨架的原因:进行中的流式会话在 clearAll 后仍会收到 `StreamingDone`,
+    // 最终消息 INSERT 依赖 conversation_id 外键存在;删 agents 会 CASCADE 删
+    // conversations,导致 INSERT 抛 FK 异常、回复丢失。
+    await _database.transaction(() async {
+      await _database.purgeAllMessagesFts();
+      await _database.clearAllContent();
+    });
+
+    // 2) 事务外:清头像文件(best-effort,跨存储介质,失败不抛)
+    //    DB 已经清空,但 UI 层必须知道头像清理失败,否则会误以为磁盘上
+    //    没有残留头像文件。返回的 ClearAllResult.avatarsCleared 反映这一点。
+    var avatarsCleared = true;
+    if (_avatarStorageService != null) {
+      try {
+        await _avatarStorageService.clearAll();
+      } catch (error, stackTrace) {
+        // iron-law-allow: Law8 — best-effort filesystem cleanup
+        _logger.error(
+          '[DriftSettingsRepo] Avatar clear failed: $error',
+          stackTrace,
+        );
+        avatarsCleared = false;
+      }
+    }
+
+    // 3) 失效存储信息缓存,下次 getStorageInfo() 会重新计算
+    invalidateStorageCache();
+
+    return ClearAllResult(dbCleared: true, avatarsCleared: avatarsCleared);
   }
 
   // ---------------------------------------------------------------------------

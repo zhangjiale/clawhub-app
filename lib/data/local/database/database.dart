@@ -142,41 +142,97 @@ class AppDatabase extends _$AppDatabase {
   ///
   /// Must be called inside the same transaction that performs the cascade
   /// delete (callers wrap both in `_database.transaction(...)`).
-  Future<void> purgeMessagesFtsForInstance(String instanceId) async {
-    final rows = await customSelect(
-      'SELECT m.rowid, m.content FROM messages m '
+  ///
+  /// Implemented as a single FTS5 `'delete'` command with a `SELECT`
+  /// subquery over the messages table — replaces an N+1 per-row loop
+  /// (1 round-trip per message) with one round-trip total.
+  Future<void> purgeMessagesFtsForInstance(String instanceId) {
+    return customStatement(
+      "INSERT INTO messages_fts(messages_fts, rowid, content) "
+      "SELECT 'delete', m.rowid, m.content "
+      'FROM messages m '
       'JOIN conversations c ON m.conversation_id = c.id '
       'WHERE c.instance_id = ?',
-      variables: [Variable.withString(instanceId)],
-      readsFrom: {messages},
-    ).get();
-    for (final row in rows) {
-      await syncFtsDelete(row.read<int>('rowid'), row.read<String?>('content'));
-    }
+      [instanceId],
+    );
+  }
+
+  /// Purge ALL FTS5 entries at once (US-030 清除缓存路径).
+  ///
+  /// FTS5 is a separate virtual table — `DELETE FROM messages` does NOT
+  /// cascade into `messages_fts`. We must explicitly clear it before
+  /// the bulk agent delete that triggers the message cascade, or search
+  /// results will be left pointing at non-existent rowids.
+  ///
+  /// Uses FTS5's `'delete-all'` special command (vs. plain `DELETE FROM
+  /// messages_fts`). The special command is required for **contentless**
+  /// FTS5 tables (`content='messages'` in our schema) — plain `DELETE`
+  /// would trigger FTS5's integrity check and raise "database disk image
+  /// is malformed" when the content table is empty.
+  ///
+  /// Single-statement is also ~100× faster than row-by-row `syncFtsDelete`
+  /// loops for large datasets (10k+ messages).
+  Future<void> purgeAllMessagesFts() {
+    return customStatement(
+      "INSERT INTO messages_fts(messages_fts) VALUES('delete-all')",
+    );
+  }
+
+  /// 清空所有聊天内容,但**保留 agents/conversations 骨架**(US-030 清除缓存路径)。
+  ///
+  /// 删除:messages / tool_calls / agent_stats / achievement_unlocks /
+  ///      pending_notifications
+  /// 保留:agents / conversations / instances / user_preferences
+  ///
+  /// **为什么不删 agents(改自旧 `deleteAllAgents`)**:旧实现 `DELETE FROM
+  /// agents` 触发 CASCADE 删掉 conversations,会导致**进行中的流式会话**在
+  /// `StreamingDone` 到达时,最终消息 INSERT 因 `conversation_id` 外键不存在
+  /// 而抛 `FOREIGN KEY constraint failed`,Agent 回复永久丢失。
+  ///
+  /// 保留骨架后,clearAll 期间仍在流式的会话能正常落库;Agent 列表页也仍
+  /// 显示这些 agent(仅无消息历史),对用户更友好。
+  ///
+  /// **为什么清 pending_notifications**:该表用 `message_server_id` 做跨重启
+  /// 去重。消息删后若残留旧条目,dispatcher 会把同一 serverId 的新通知误判
+  /// 为「已通知」而跳过(去重误杀),DND 汇总通知也会引用已清空对话。该表是
+  /// 派生缓存(可由新消息重建),一并清理以保持 clearAll 语义完整。
+  ///
+  /// **顺序约束**:本方法内部的 `DELETE FROM messages` 必须在
+  /// `purgeAllMessagesFts`(由 [DriftSettingsRepo.clearAll] 在本方法之前、
+  /// 同一事务内调用)之后执行——contentless FTS5 表要求 content 表非空时
+  /// 才能执行 'delete-all'。本方法不调用 purge,顺序由调用方保证。
+  Future<void> clearAllContent() async {
+    await customStatement('DELETE FROM tool_calls');
+    await customStatement('DELETE FROM agent_stats');
+    await customStatement('DELETE FROM achievement_unlocks');
+    await customStatement('DELETE FROM messages');
+    await customStatement('DELETE FROM pending_notifications');
+    // 不删 agents / conversations —— 保留骨架,保证流式会话的最终消息
+    // 落库时 conversation_id 外键仍存在(见方法文档)。
   }
 
   /// Purge FTS5 entries for all messages belonging to a given agent.
-  Future<void> purgeMessagesFtsForAgent(String agentId) async {
-    final rows = await customSelect(
-      'SELECT rowid, content FROM messages WHERE agent_id = ?',
-      variables: [Variable.withString(agentId)],
-      readsFrom: {messages},
-    ).get();
-    for (final row in rows) {
-      await syncFtsDelete(row.read<int>('rowid'), row.read<String?>('content'));
-    }
+  ///
+  /// Single round-trip FTS5 `'delete'` over a subquery — replaces the
+  /// prior per-row SELECT + DELETE loop.
+  Future<void> purgeMessagesFtsForAgent(String agentId) {
+    return customStatement(
+      "INSERT INTO messages_fts(messages_fts, rowid, content) "
+      "SELECT 'delete', rowid, content FROM messages WHERE agent_id = ?",
+      [agentId],
+    );
   }
 
   /// Purge FTS5 entries for all messages in a given conversation.
-  Future<void> purgeMessagesFtsForConversation(String conversationId) async {
-    final rows = await customSelect(
-      'SELECT rowid, content FROM messages WHERE conversation_id = ?',
-      variables: [Variable.withString(conversationId)],
-      readsFrom: {messages},
-    ).get();
-    for (final row in rows) {
-      await syncFtsDelete(row.read<int>('rowid'), row.read<String?>('content'));
-    }
+  ///
+  /// Single round-trip FTS5 `'delete'` over a subquery.
+  Future<void> purgeMessagesFtsForConversation(String conversationId) {
+    return customStatement(
+      "INSERT INTO messages_fts(messages_fts, rowid, content) "
+      "SELECT 'delete', rowid, content FROM messages "
+      'WHERE conversation_id = ?',
+      [conversationId],
+    );
   }
 
   /// Update FTS5 index when message content changes.

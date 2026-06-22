@@ -11,6 +11,7 @@ import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
 import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
+import 'package:claw_hub/domain/repositories/i_activity_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
@@ -24,6 +25,8 @@ class MockInstanceRepo extends Mock implements IInstanceRepo {}
 class MockMessageRepo extends Mock implements IMessageRepo {}
 
 class MockAchievementRepo extends Mock implements IAchievementRepo {}
+
+class MockActivityRepo extends Mock implements IActivityRepo {}
 
 class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
@@ -55,6 +58,7 @@ void main() {
     late MockInstanceRepo instanceRepo;
     late MockMessageRepo messageRepo;
     late MockAchievementRepo achievementRepo;
+    late MockActivityRepo activityRepo;
     late MockAvatarStorageService avatarStorageService;
 
     setUp(() {
@@ -62,6 +66,7 @@ void main() {
       instanceRepo = MockInstanceRepo();
       messageRepo = MockMessageRepo();
       achievementRepo = MockAchievementRepo();
+      activityRepo = MockActivityRepo();
       avatarStorageService = MockAvatarStorageService();
 
       when(
@@ -87,6 +92,14 @@ void main() {
       when(
         () => achievementRepo.batchUnlock(any(), any()),
       ).thenAnswer((_) async => <Achievement>[]);
+      // Default: activity repo returns empty list (timeline shows placeholder)
+      when(
+        () => activityRepo.getDailyActivity(
+          any(),
+          days: any(named: 'days'),
+          now: any(named: 'now'),
+        ),
+      ).thenAnswer((_) async => const []);
     });
 
     Widget buildPage() {
@@ -97,6 +110,7 @@ void main() {
               agentRepo: agentRepo,
               instanceRepo: instanceRepo,
               messageRepo: messageRepo,
+              activityRepo: activityRepo,
               evaluateAchievements: EvaluateAchievementsUseCase(
                 achievementRepo,
               ),

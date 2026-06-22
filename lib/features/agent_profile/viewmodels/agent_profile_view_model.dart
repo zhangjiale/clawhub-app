@@ -8,11 +8,21 @@ import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
+import 'package:claw_hub/domain/models/daily_activity.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
+
+/// Result bundle for [AgentProfileViewModel._safeEvaluateAchievements],
+/// separated from the public state class so the best-effort helper can
+/// return it without crossing the ViewModel boundary.
+typedef _AchievementResult = ({
+  AgentStats? stats,
+  List<Achievement> achievements,
+  List<Achievement> freshUnlocks,
+});
 
 /// Agent 详情聚合数据（不可变值对象）
 class AgentDetailData {
@@ -22,12 +32,18 @@ class AgentDetailData {
   final AgentStats? stats;
   final List<Achievement> achievements;
 
+  /// 30 天每日活动序列(US-019 成长面板时间线),按 dayBucket 升序。
+  ///
+  /// 长度为 30(含无消息空日)。加载失败时为 `const []`,UI 退化为空状态。
+  final List<DailyActivity> dailyActivity;
+
   const AgentDetailData({
     required this.agent,
     this.instance,
     required this.messageCount,
     this.stats,
     this.achievements = const [],
+    this.dailyActivity = const [],
   });
 
   @override
@@ -38,11 +54,18 @@ class AgentDetailData {
           instance == other.instance &&
           messageCount == other.messageCount &&
           stats == other.stats &&
-          achievements == other.achievements;
+          achievements == other.achievements &&
+          dailyActivity == other.dailyActivity;
 
   @override
-  int get hashCode =>
-      Object.hash(agent, instance, messageCount, stats, achievements);
+  int get hashCode => Object.hash(
+    agent,
+    instance,
+    messageCount,
+    stats,
+    achievements,
+    dailyActivity,
+  );
 }
 
 /// Agent 资料页的不可变状态快照
@@ -114,6 +137,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final IAgentRepo _agentRepo;
   final IInstanceRepo _instanceRepo;
   final IMessageRepo _messageRepo;
+  final IActivityRepo _activityRepo;
   final EvaluateAchievementsUseCase _evaluateAchievements;
   final IAvatarStorageService _avatarStorageService;
   final String agentId;
@@ -129,6 +153,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     required IAgentRepo agentRepo,
     required IInstanceRepo instanceRepo,
     required IMessageRepo messageRepo,
+    required IActivityRepo activityRepo,
     required EvaluateAchievementsUseCase evaluateAchievements,
     required IAvatarStorageService avatarStorageService,
     required this.agentId,
@@ -136,6 +161,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   }) : _agentRepo = agentRepo,
        _instanceRepo = instanceRepo,
        _messageRepo = messageRepo,
+       _activityRepo = activityRepo,
        _evaluateAchievements = evaluateAchievements,
        _avatarStorageService = avatarStorageService,
        _onAvatarChanged = onAvatarChanged,
@@ -154,35 +180,22 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
       final agent = await _agentRepo.getById(agentId);
       if (agent == null) throw AgentNotFoundError(agentId);
 
-      Instance? instance;
-      try {
-        instance = await _instanceRepo.getById(agent.instanceId);
-      } catch (error, stackTrace) {
-        debugPrint(
-          'Instance lookup failed for ${agent.instanceId}: $error\n$stackTrace',
-        );
-        // instance 不存在是非致命错误
-      }
-
-      final messageCount = await _messageRepo.getMessageCount(agentId);
-
-      // Load stats and achievements (best-effort — non-fatal on failure).
-      // Delegated to EvaluateAchievementsUseCase to avoid duplicating the
-      // cache-first → evaluate → batch-unlock pipeline with AchievementChecker.
-      AgentStats? stats;
-      List<Achievement> achievements = const [];
-      List<Achievement> freshUnlocks = const [];
-      try {
-        final result = await _evaluateAchievements.execute(agentId);
-        stats = result.stats;
-        achievements = result.achievements;
-        freshUnlocks = result.freshUnlocks;
-      } catch (error, stackTrace) {
-        debugPrint(
-          'Stats/achievement load failed for $agentId: $error\n$stackTrace',
-        );
-        // Non-fatal — profile page still shows agent info + message count
-      }
+      // The four detail-loads below are independent (instance + counts +
+      // stats + activity) and only need the already-resolved agent. Run
+      // them concurrently to halve TTI of the profile page; per-call
+      // try/catch keeps best-effort semantics (a single failure doesn't
+      // collapse the others).
+      //
+      // 使用 typed record 并行模式 (FutureRecord.wait) 而非
+      // Future.wait<dynamic>([...]) + 位置强转:每个字段类型在编译期就绑
+      // 定,后续增删字段时不存在错位风险(旧实现 results[N] as T 的位置
+      // 强转会让"插入第 5 个 loader"成为静默回归源)。
+      final (instance, messageCount, achievementResult, dailyActivity) = await (
+        _safeGetInstance(agent.instanceId),
+        _safeGetMessageCount(agentId),
+        _safeEvaluateAchievements(agentId),
+        _safeGetDailyActivity(agentId),
+      ).wait;
 
       _updateState(
         (s) => s.copyWith(
@@ -191,17 +204,62 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
               agent: agent,
               instance: instance,
               messageCount: messageCount,
-              stats: stats,
-              achievements: achievements,
+              stats: achievementResult?.stats,
+              achievements: achievementResult?.achievements ?? const [],
+              dailyActivity: dailyActivity,
             ),
           ),
-          newUnlocks: freshUnlocks,
+          newUnlocks: achievementResult?.freshUnlocks ?? const [],
         ),
       );
     } catch (error, stackTrace) {
       _updateState(
         (s) => s.copyWith(detailLoadState: LoadError(error, stackTrace)),
       );
+    }
+  }
+
+  /// Best-effort loaders used by [refresh]. Each returns a sentinel value
+  /// on failure (null / 0 / const []) so the parent can proceed without
+  /// the dependent state but still surface the partial data.
+  Future<Instance?> _safeGetInstance(String instanceId) async {
+    try {
+      return await _instanceRepo.getById(instanceId);
+    } catch (error, stackTrace) {
+      debugPrint('Instance lookup failed for $instanceId: $error\n$stackTrace');
+      return null;
+    }
+  }
+
+  Future<int> _safeGetMessageCount(String id) async {
+    try {
+      return await _messageRepo.getMessageCount(id);
+    } catch (error, stackTrace) {
+      debugPrint('Message count lookup failed for $id: $error\n$stackTrace');
+      return 0;
+    }
+  }
+
+  Future<_AchievementResult?> _safeEvaluateAchievements(String id) async {
+    try {
+      final result = await _evaluateAchievements.execute(id);
+      return (
+        stats: result.stats,
+        achievements: result.achievements,
+        freshUnlocks: result.freshUnlocks,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Stats/achievement load failed for $id: $error\n$stackTrace');
+      return null;
+    }
+  }
+
+  Future<List<DailyActivity>> _safeGetDailyActivity(String id) async {
+    try {
+      return await _activityRepo.getDailyActivity(id);
+    } catch (error, stackTrace) {
+      debugPrint('Daily activity load failed for $id: $error\n$stackTrace');
+      return const [];
     }
   }
 
@@ -240,78 +298,93 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   /// [imageBytes] 应为已压缩的 JPEG 字节（由 [ImagePicker] 的
   /// maxWidth/maxHeight/imageQuality 参数在选取时完成压缩）。
   Future<void> updateAvatar(Uint8List imageBytes) async {
-    if (state.isSaving) return;
-    _updateState(
-      (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
+    return _runAvatarOp(
+      opTag: 'save',
+      errLabel: '头像保存失败，请重试',
+      body: () async {
+        // 1) Save image to disk
+        final savedPath = await _avatarStorageService.saveAvatar(
+          agentId,
+          imageBytes,
+        );
+
+        // 2) Persist path in database
+        await _agentRepo.updateLocalProfile(agentId, avatarUrl: savedPath);
+
+        // 3) Notify UI layer to evict stale Flutter image cache
+        // (same path → new content). Best-effort via callback —
+        // non-fatal if unavailable (e.g. in unit tests).
+        _onAvatarChanged?.call(savedPath);
+      },
+      onErrorRollback: () async {
+        // 回滚：删除已写入的孤儿文件（best-effort，不覆盖原始错误）。
+        try {
+          await _avatarStorageService.deleteAvatar(agentId);
+        } catch (_) {
+          /* iron-law-allow: Law8 — best-effort cleanup */
+        }
+      },
     );
-    try {
-      // 1) Save image to disk
-      final savedPath = await _avatarStorageService.saveAvatar(
-        agentId,
-        imageBytes,
-      );
-
-      // 2) Persist path in database
-      await _agentRepo.updateLocalProfile(agentId, avatarUrl: savedPath);
-
-      // 3) Notify UI layer to evict stale Flutter image cache
-      // (same path → new content). Best-effort via callback —
-      // non-fatal if unavailable (e.g. in unit tests).
-      _onAvatarChanged?.call(savedPath);
-
-      // 4) Reload agent data so UI picks up new avatarUrl
-      await refresh();
-      // 注意：不设置 saveSuccess=true，避免触发 AgentConfigPage 的 pop 监听器。
-      // 头像变更是即时操作，不需要退出配置页。
-      _updateState((s) => s.copyWith(isSaving: false));
-    } catch (error, stackTrace) {
-      debugPrint('Avatar save failed: $error\n$stackTrace');
-      // 回滚：删除已写入的孤儿文件（best-effort，不覆盖原始错误）。
-      try {
-        await _avatarStorageService.deleteAvatar(agentId);
-      } catch (_) {
-        /* iron-law-allow: Law8 — best-effort cleanup */
-      }
-      _updateState((s) => s.copyWith(isSaving: false, saveError: '头像保存失败，请重试'));
-    }
   }
 
   /// 移除头像 — 删除文件 + 清空 DB 中的 avatarUrl + 清除缓存。
   Future<void> removeAvatar() async {
+    return _runAvatarOp(
+      opTag: 'remove',
+      errLabel: '头像移除失败，请重试',
+      body: () async {
+        // Capture current avatarUrl from loaded agent data for cache eviction.
+        // Using the known path avoids relying on getAvatarPath's implicit
+        // dependency on _appDocDirPath being initialized by a prior async call.
+        final currentAvatarUrl = switch (state.detailLoadState) {
+          LoadData<AgentDetailData>(:final value) => value.agent.avatarUrl,
+          _ => null,
+        };
+
+        // 1) Delete file from disk (no-op if already deleted)
+        await _avatarStorageService.deleteAvatar(agentId);
+
+        // 2) Clear avatarUrl in database — 使用 clearAvatar() 而非
+        //    updateLocalProfile(avatarUrl: null)，因为后者在 Drift 仓库中
+        //    使用 Value.absent() 语义（跳过该列），无法真正清除已有值。
+        await _agentRepo.clearAvatar(agentId);
+
+        // 3) Notify UI layer to evict stale cache — best-effort via callback.
+        // Uses the known avatarUrl rather than recomputing via getAvatarPath.
+        if (currentAvatarUrl != null) {
+          _onAvatarChanged?.call(currentAvatarUrl);
+        }
+      },
+    );
+  }
+
+  /// 头像变更操作的公共骨架 —— 共享 isSaving 守卫、状态更新、刷新、
+  /// 错误处理与日志。两个公开方法（[updateAvatar] / [removeAvatar]）
+  /// 各自只负责自己的差异步骤（save vs delete、updateLocalProfile vs
+  /// clearAvatar），并通过 [onErrorRollback] 提供回滚钩子。
+  Future<void> _runAvatarOp({
+    required String opTag,
+    required String errLabel,
+    required Future<void> Function() body,
+    Future<void> Function()? onErrorRollback,
+  }) async {
     if (state.isSaving) return;
     _updateState(
       (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
     );
     try {
-      // Capture current avatarUrl from loaded agent data for cache eviction.
-      // Using the known path avoids relying on getAvatarPath's implicit
-      // dependency on _appDocDirPath being initialized by a prior async call.
-      final currentAvatarUrl = switch (state.detailLoadState) {
-        LoadData<AgentDetailData>(:final value) => value.agent.avatarUrl,
-        _ => null,
-      };
-
-      // 1) Delete file from disk (no-op if already deleted)
-      await _avatarStorageService.deleteAvatar(agentId);
-
-      // 2) Clear avatarUrl in database — 使用 clearAvatar() 而非
-      //    updateLocalProfile(avatarUrl: null)，因为后者在 Drift 仓库中
-      //    使用 Value.absent() 语义（跳过该列），无法真正清除已有值。
-      await _agentRepo.clearAvatar(agentId);
-
-      // 3) Notify UI layer to evict stale cache — best-effort via callback.
-      // Uses the known avatarUrl rather than recomputing via getAvatarPath.
-      if (currentAvatarUrl != null) {
-        _onAvatarChanged?.call(currentAvatarUrl);
-      }
-
-      // 4) Reload
+      await body();
+      // 4) Reload agent data so UI picks up new avatarUrl.
       await refresh();
-      // 注意：不设置 saveSuccess=true，避免触发 AgentConfigPage 的 pop 监听器。
+      // 注意：不设置 saveSuccess=true，避免触发 AgentConfigPage 的 pop
+      // 监听器。头像变更是即时操作，不需要退出配置页。
       _updateState((s) => s.copyWith(isSaving: false));
     } catch (error, stackTrace) {
-      debugPrint('Avatar remove failed: $error\n$stackTrace');
-      _updateState((s) => s.copyWith(isSaving: false, saveError: '头像移除失败，请重试'));
+      debugPrint('Avatar $opTag failed: $error\n$stackTrace');
+      if (onErrorRollback != null) {
+        await onErrorRollback();
+      }
+      _updateState((s) => s.copyWith(isSaving: false, saveError: errLabel));
     }
   }
 

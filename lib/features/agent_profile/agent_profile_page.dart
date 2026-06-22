@@ -5,8 +5,10 @@ import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
+import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 import 'package:claw_hub/features/agent_profile/widgets/profile_header.dart';
 import 'package:claw_hub/features/agent_profile/widgets/stats_grid.dart';
+import 'package:claw_hub/features/agent_profile/widgets/activity_timeline.dart';
 import 'package:claw_hub/features/agent_profile/widgets/achievement_list.dart';
 import 'package:claw_hub/features/agent_profile/widgets/milestone_celebration.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
@@ -42,7 +44,16 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(agentProfileViewModelProvider(widget.agentId));
+    // Major #1 修复: clearAll 进行中 family builder 抛 [ClearedDuringClearError]
+    // (由 clearCacheActionProvider 设置的 guard 触发)。捕获取消本次导航，
+    // 提示用户并回到上一个 tab。
+    final AgentProfileState state;
+    try {
+      state = ref.watch(agentProfileViewModelProvider(widget.agentId));
+    } on ClearedDuringClearError {
+      handleClearedDuringClear(context, source: widget.source);
+      return const Scaffold(body: SizedBox.shrink());
+    }
     final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
     final theme = Theme.of(context);
 
@@ -123,6 +134,8 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
       children: [
         ProfileHeader(agent: value.agent, instance: value.instance),
         StatsGrid(stats: value.stats, fallbackMessageCount: value.messageCount),
+        const SizedBox(height: XiaSpacing.s4),
+        ActivityTimeline(activities: value.dailyActivity),
         const SizedBox(height: XiaSpacing.s5),
       ],
     );

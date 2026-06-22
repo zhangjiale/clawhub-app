@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
+import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 
 /// Agent 资料页 ViewModel Provider
 ///
@@ -16,10 +17,22 @@ final agentProfileViewModelProvider =
       AgentProfileState,
       String
     >((ref, agentId) {
+      // Major #1 修复: 缓存清理期间禁止打开新 VM，避免竞态窗口。
+      // 由 agent_profile_page 用 try/catch 捕获 [ClearedDuringClearError]
+      // → SnackBar + pop。
+      if (ref.read(clearCacheInProgressProvider)) {
+        throw const ClearedDuringClearError();
+      }
+
+      // Push 模型:watch 清理完成 tick。clearAll 成功后 tick++ → 本 family
+      // 自动销毁重建（agentProfileVM 无流/连接等长生命周期副作用，重建安全）。
+      ref.watch(cacheClearedTickProvider);
+
       final vm = AgentProfileViewModel(
         agentRepo: ref.watch(agentRepoProvider),
         instanceRepo: ref.watch(instanceRepoProvider),
         messageRepo: ref.watch(messageRepoProvider),
+        activityRepo: ref.watch(activityRepoProvider),
         evaluateAchievements: ref.watch(evaluateAchievementsUseCaseProvider),
         avatarStorageService: ref.watch(avatarStorageServiceProvider),
         agentId: agentId,

@@ -26,4 +26,14 @@ abstract interface class IAvatarStorageService {
   ///
   /// 路径格式：`{appDocDir}/avatars/{localId}.jpg`
   String getAvatarPath(String localId);
+
+  /// 清空所有头像文件(US-030 清除缓存)。
+  ///
+  /// 行为:
+  /// - 列出 `{baseDir}/avatars/` 下所有文件并逐个删除
+  /// - **best-effort**:单个文件删除失败不抛出,记录并继续
+  ///   (Law 8 — 跨存储介质清理不应被局部失败阻塞)
+  /// - 目录不存在时为 no-op
+  /// - 不会删除目录本身,只清内容(下次 saveAvatar 可继续写)
+  Future<void> clearAll();
 }

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
+import 'package:claw_hub/domain/models/daily_activity.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
@@ -13,6 +14,7 @@ import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
 import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
+import 'package:claw_hub/domain/repositories/i_activity_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
@@ -25,6 +27,8 @@ class MockInstanceRepo extends Mock implements IInstanceRepo {}
 class MockMessageRepo extends Mock implements IMessageRepo {}
 
 class MockAchievementRepo extends Mock implements IAchievementRepo {}
+
+class MockActivityRepo extends Mock implements IActivityRepo {}
 
 class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
@@ -103,6 +107,7 @@ void main() {
     late MockInstanceRepo instanceRepo;
     late MockMessageRepo messageRepo;
     late MockAchievementRepo achievementRepo;
+    late MockActivityRepo activityRepo;
     late MockAvatarStorageService avatarStorageService;
 
     final testAgent = Agent(
@@ -119,6 +124,7 @@ void main() {
       instanceRepo = MockInstanceRepo();
       messageRepo = MockMessageRepo();
       achievementRepo = MockAchievementRepo();
+      activityRepo = MockActivityRepo();
       avatarStorageService = MockAvatarStorageService();
 
       // Default stubs — achievement load is best-effort, return empty data
@@ -135,6 +141,14 @@ void main() {
       when(
         () => achievementRepo.batchUnlock(any(), any()),
       ).thenAnswer((_) async => <Achievement>[]);
+      // Default: activity repo returns empty 30-day series
+      when(
+        () => activityRepo.getDailyActivity(
+          any(),
+          days: any(named: 'days'),
+          now: any(named: 'now'),
+        ),
+      ).thenAnswer((_) async => const []);
     });
 
     AgentProfileViewModel createVM() {
@@ -142,6 +156,7 @@ void main() {
         agentRepo: agentRepo,
         instanceRepo: instanceRepo,
         messageRepo: messageRepo,
+        activityRepo: activityRepo,
         avatarStorageService: avatarStorageService,
         evaluateAchievements: EvaluateAchievementsUseCase(achievementRepo),
         agentId: 'local-1',
@@ -381,6 +396,63 @@ void main() {
       final vm = createVM();
       await vm.init();
       vm.dispose();
+    });
+
+    test('init() loads dailyActivity from IActivityRepo', () async {
+      // Override default empty stub with a real 30-day series
+      final fakeActivity = List.generate(
+        30,
+        (i) => DailyActivity(agentId: 'local-1', dayBucket: i, messageCount: i),
+      );
+      when(
+        () => activityRepo.getDailyActivity(
+          'local-1',
+          days: any(named: 'days'),
+          now: any(named: 'now'),
+        ),
+      ).thenAnswer((_) async => fakeActivity);
+
+      when(
+        () => agentRepo.getById('local-1'),
+      ).thenAnswer((_) async => testAgent);
+      when(() => instanceRepo.getById('inst-1')).thenAnswer((_) async => null);
+      when(
+        () => messageRepo.getMessageCount('local-1'),
+      ).thenAnswer((_) async => 0);
+
+      final vm = createVM();
+      await vm.init();
+
+      final data =
+          (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+      expect(data.dailyActivity, equals(fakeActivity));
+      expect(data.dailyActivity.length, 30);
+    });
+
+    test('init() still succeeds when activityRepo throws '
+        '(best-effort, empty timeline)', () async {
+      when(
+        () => activityRepo.getDailyActivity(
+          any(),
+          days: any(named: 'days'),
+          now: any(named: 'now'),
+        ),
+      ).thenThrow(Exception('DB down'));
+
+      when(
+        () => agentRepo.getById('local-1'),
+      ).thenAnswer((_) async => testAgent);
+      when(() => instanceRepo.getById('inst-1')).thenAnswer((_) async => null);
+      when(
+        () => messageRepo.getMessageCount('local-1'),
+      ).thenAnswer((_) async => 0);
+
+      final vm = createVM();
+      await vm.init();
+
+      final data =
+          (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+      expect(data.dailyActivity, isEmpty);
     });
 
     group('updateAvatar', () {

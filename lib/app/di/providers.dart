@@ -19,6 +19,7 @@ import 'package:claw_hub/data/repositories/drift_message_repo.dart';
 import 'package:claw_hub/data/repositories/drift_conversation_repo.dart';
 import 'package:claw_hub/data/repositories/drift_settings_repo.dart';
 import 'package:claw_hub/data/repositories/drift_achievement_repo.dart';
+import 'package:claw_hub/data/repositories/drift_activity_repo.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/data/services/achievement_checker.dart';
 import 'package:claw_hub/data/local/database/database.dart'
@@ -37,6 +38,7 @@ import 'package:claw_hub/domain/usecases/message_catch_up_service.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/connection/instance_event.dart';
 import 'package:claw_hub/app/config/app_config.dart';
+import 'package:claw_hub/app/config/device_model_loader.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
 import 'package:claw_hub/app/notifications/notification_coordinator.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
@@ -172,6 +174,13 @@ final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
   );
 });
 
+/// Cached device model identifier — the platform channel call only needs
+/// to happen once per app lifetime. Injecting a FutureProvider keeps the
+/// loader's expensive call (10–50ms iOS/Android) out of every reconnect.
+final deviceModelIdentifierProvider = FutureProvider<String?>((ref) {
+  return loadDeviceModelIdentifier();
+});
+
 /// 真实 WebSocket Gateway 客户端（当前生产默认实现）。
 ///
 /// 开发/调试时如需使用 Mock 数据，将 [gatewayClientProvider] 的返回值
@@ -186,8 +195,6 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
 
   // TODO: read locale from PlatformDispatcher.instance.locale when
   // i18n is implemented.
-  // TODO: read modelIdentifier from device_info_plus for accurate
-  // device reporting (e.g. "iPhone 15", "Pixel 8").
   final client = WsGatewayClient(
     identityProvider: ref.watch(deviceIdentityProvider),
     config: ConnectionConfig(
@@ -198,6 +205,9 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
       clientDisplayName: '虾Hub',
       clientVersion: AppClientInfo.version,
     ),
+    // 设备型号在 DI 容器启动时解析一次并缓存,connect 时只读取缓存值,
+    // 避免每次 reconnect 都重新走 platform channel(10-50ms 阻塞)。
+    modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
   );
   ref.onDispose(() => client.dispose());
   return client;
@@ -233,7 +243,7 @@ final connectivityProvider = Provider<IConnectivity>(
 /// 头像文件存储在 `{appDocDir}/avatars/{agentLocalId}.jpg`。
 /// [AgentProfileViewModel] 通过此接口保存/删除/检查头像文件。
 final avatarStorageServiceProvider = Provider<IAvatarStorageService>((ref) {
-  return AvatarStorageService();
+  return AvatarStorageService(logger: ref.watch(loggerProvider));
 });
 
 // --- Connection Orchestrator ---
@@ -392,11 +402,19 @@ final conversationRepoProvider = Provider<IConversationRepo>((ref) {
 });
 
 final settingsRepoProvider = Provider<ISettingsRepo>((ref) {
-  return DriftSettingsRepo(ref.watch(databaseProvider));
+  return DriftSettingsRepo(
+    ref.watch(databaseProvider),
+    avatarStorageService: ref.watch(avatarStorageServiceProvider),
+    logger: ref.watch(loggerProvider),
+  );
 });
 
 final achievementRepoProvider = Provider<IAchievementRepo>((ref) {
   return DriftAchievementRepo(ref.watch(databaseProvider));
+});
+
+final activityRepoProvider = Provider<IActivityRepo>((ref) {
+  return DriftActivityRepo(ref.watch(databaseProvider));
 });
 
 final evaluateAchievementsUseCaseProvider =

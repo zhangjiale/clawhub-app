@@ -38,6 +38,18 @@ class WsGatewayClient implements IGatewayClient {
   /// [Timer].
   final TimerFactory? _timerFactory;
 
+  /// Optional: load device model identifier for protocol handshake.
+  /// If null (production default when DI hasn't injected a loader), no
+  /// `modelIdentifier` is sent in connect params — backward compatible.
+  ///
+  /// Injected by DI (`loadDeviceModelIdentifier` from
+  /// `app/config/device_model_loader.dart`) so production code stays
+  /// platform-agnostic and tests can substitute deterministic loaders.
+  ///
+  /// Loader exceptions are swallowed (Law 8 best-effort) — connect must
+  /// never be blocked by device-info read failures.
+  final Future<String?> Function()? _modelIdentifierLoader;
+
   /// 创建 WebSocket Gateway 客户端。
   ///
   /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
@@ -53,10 +65,12 @@ class WsGatewayClient implements IGatewayClient {
     ConnectionConfig? config,
     WebSocketChannel Function(Uri)? webSocketFactory,
     TimerFactory? timerFactory,
+    Future<String?> Function()? modelIdentifierLoader,
   }) : _identityProvider = identityProvider,
        _config = config ?? ConnectionConfig(),
        _webSocketFactory = webSocketFactory,
-       _timerFactory = timerFactory;
+       _timerFactory = timerFactory,
+       _modelIdentifierLoader = modelIdentifierLoader;
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -106,6 +120,42 @@ class WsGatewayClient implements IGatewayClient {
     signPayload: _identityProvider.signPayload,
   );
 
+  /// 解析本次连接尝试的 [ConnectionConfig],可选地调用
+  /// [_modelIdentifierLoader] 填充 [ConnectionConfig.modelIdentifier]。
+  ///
+  /// **Major #3 修复**：原为 `@visibleForTesting` 实例方法,会扩大
+  /// WsGatewayClient 的公共 API 表面（外部可合法访问）。改为私有方法
+  /// + static seam `resolveConfigForTesting` 暴露给测试,与项目其他
+  /// `@visibleForTesting` static seam 模式对齐（`extractTextContent`
+  /// / `isTestTerminalState` / `setTestState` / `setTestChannel`）。
+  ///
+  /// Loader 抛异常或返回 null 都被吞掉:connect 路径始终拿到有效
+  /// config,协议层在 `modelIdentifier` 为 null 时自动跳过该字段。
+  Future<ConnectionConfig> _resolveEffectiveConfig(
+    DeviceIdentity identity,
+  ) async {
+    final base = _buildConfig(identity);
+    final loader = _modelIdentifierLoader;
+    if (loader == null) return base;
+    try {
+      final modelId = await loader();
+      return base.copyWith(modelIdentifier: modelId);
+    } catch (_) {
+      // iron-law-allow: Law8 -- loader 失败不能阻塞 connect
+      return base;
+    }
+  }
+
+  /// 测试缝隙 — 直接调用私有 [_resolveEffectiveConfig] 而不触发 WebSocket。
+  ///
+  /// 命名与项目惯例对齐（`extractXxx` / `isXxx` / `setXxx`）,无 `debug`
+  /// 前缀。仅供 `test/core/acl/ws_gateway_client_test.dart` 使用。
+  @visibleForTesting
+  static Future<ConnectionConfig> resolveConfigForTesting(
+    WsGatewayClient client,
+    DeviceIdentity identity,
+  ) => client._resolveEffectiveConfig(identity);
+
   // ---------------------------------------------------------------------------
   // IGatewayClient 实现
   // ---------------------------------------------------------------------------
@@ -125,7 +175,11 @@ class WsGatewayClient implements IGatewayClient {
 
       final identity = await _identityProvider.ensureDeviceIdentity();
       if (_isDisposed) return;
-      final config = _buildConfig(identity);
+      final config = await _resolveEffectiveConfig(identity);
+      // **Minor #3 修复（Step 6 扩展）**：原代码在 L179 后直接构造 ConnectionManager
+      // 没有 dispose 守门。用户在 await _resolveEffectiveConfig 期间 dispose client
+      // 会导致 manager 被创建但永远不会加入 _connections，泄漏。
+      if (_isDisposed) return;
 
       final manager = ConnectionManager(
         instanceId: instance.id,
@@ -171,6 +225,10 @@ class WsGatewayClient implements IGatewayClient {
       });
 
       await manager.connect();
+      // **Minor #3 修复（Step 6 扩展）**：await manager.connect() 是长操作，
+      // 用户可能在期间 dispose。manager 已注册到 conn，由 dispose() 清理，
+      // 但提前退出可避免对已 dispose client 的流添加事件。
+      if (_isDisposed) return;
     } finally {
       _connecting.remove(instance.id);
     }
@@ -308,7 +366,13 @@ class WsGatewayClient implements IGatewayClient {
   Future<bool> testConnection(Instance instance) async {
     final testId = '__test_${instance.id}';
     final identity = await _identityProvider.ensureDeviceIdentity();
-    final config = _buildConfig(identity);
+    // **Minor #3 修复（Step 6 扩展）**：用户在 identity 加载期间 dispose client
+    // 会导致 _resolveEffectiveConfig 在 disposed client 上执行（虽然纯函数
+    // 安全，但后续构造 ConnectionManager 仍会泄漏）。提前返回。
+    if (_isDisposed) return false;
+    final config = await _resolveEffectiveConfig(identity);
+    // **Minor #3 修复（Step 6 扩展）**：同上，await 期间可能 dispose。
+    if (_isDisposed) return false;
     final testManager = ConnectionManager(
       instanceId: testId,
       gatewayUrl: instance.gatewayUrl,
@@ -328,17 +392,24 @@ class WsGatewayClient implements IGatewayClient {
         const Duration(seconds: 15),
         onTimeout: () => throw TimeoutException('Connection test timed out'),
       );
+      // **Minor #3 修复（Step 6 扩展）**：await testManager.connect() 是长操作。
+      // 如果用户在期间 dispose client，后续 stateFuture 等待无意义。
+      if (_isDisposed) return false;
 
       final finalState = await stateFuture.timeout(
         const Duration(seconds: 15),
         onTimeout: () => throw TimeoutException('State wait timed out'),
       );
+      // **Minor #3 修复（Step 6 扩展）**：stateFuture 等待期间 dispose。
+      if (_isDisposed) return false;
 
       return finalState == GatewayConnectionState.connected;
     } catch (error, stackTrace) {
       debugPrint('[WsGateway] Connection test failed: $error\n$stackTrace');
       return false;
     } finally {
+      // testManager 是函数本地变量，无论 _isDisposed 都必须 dispose —
+      // 它不属于 _connections，外部 dispose() 不会清理它。
       await testManager.dispose();
     }
   }

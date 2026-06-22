@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' show InsertMode;
 import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
+import 'package:claw_hub/domain/utils/streak_calculator.dart';
 
 import '../local/database/database.dart' as db;
 
@@ -129,55 +130,16 @@ class DriftAchievementRepo implements IAchievementRepo {
         totalMessages: msgStats?.messages ?? 0,
         totalToolCalls: totalToolCalls,
         activeDays: dayBuckets.length,
-        currentStreak: _computeStreak(dayBuckets),
+        // Fix: previous code used `now ~/ 86400` (seconds) while SQL
+        // uses `timestamp / 86400000` (ms), causing currentStreak to
+        // always be 0. Both sides now use millisecond day-indexes.
+        currentStreak: computeCurrentStreak(
+          dayBuckets,
+          todayBucket: DateTime.now().millisecondsSinceEpoch ~/ 86400000,
+        ),
         firstDialogDate: msgStats?.firstMsg,
         lastDialogDate: msgStats?.lastMsg,
       );
     });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Streak computation (pure, Dart-side)
-  // ---------------------------------------------------------------------------
-
-  /// Compute consecutive days from the most recent day bucket backward.
-  ///
-  /// [dayBuckets] are Unix day-indexes (timestamp / 86400) in ascending
-  /// order. Returns the count of consecutive days ending at the most recent
-  /// bucket (or ending today if the most recent bucket is today).
-  static int _computeStreak(List<int> dayBuckets) {
-    if (dayBuckets.isEmpty) return 0;
-
-    // Today's bucket (UTC calendar date converted to day index)
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final todayBucket = now ~/ 86400;
-
-    // Walk backward from today. If today has messages, start from today;
-    // otherwise start from the most recent day bucket (even if it's
-    // yesterday — that's still a streak starting from yesterday).
-    int expectedBucket;
-    if (dayBuckets.last == todayBucket) {
-      expectedBucket = todayBucket;
-    } else if (dayBuckets.last == todayBucket - 1) {
-      // Most recent message was yesterday — valid streak anchor
-      expectedBucket = todayBucket - 1;
-    } else {
-      // Gap >1 day from today — streak is broken, just count the
-      // single most-recent day
-      return 1;
-    }
-
-    int streak = 0;
-    for (var i = dayBuckets.length - 1; i >= 0; i--) {
-      if (dayBuckets[i] == expectedBucket) {
-        streak++;
-        expectedBucket--;
-      } else if (dayBuckets[i] < expectedBucket) {
-        // Gap found — streak broken
-        break;
-      }
-    }
-
-    return streak;
   }
 }

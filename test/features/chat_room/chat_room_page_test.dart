@@ -12,9 +12,12 @@ import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
+import 'package:go_router/go_router.dart';
+
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
+import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 
 class _MockOrchestrator extends Mock implements ConnectionOrchestrator {}
@@ -327,5 +330,57 @@ void main() {
       expect(find.text('历史消息较多，仅同步了最近部分'), findsOneWidget);
       expect(find.byIcon(Icons.history), findsOneWidget);
     });
+
+    // ---------------------------------------------------------------
+    // Regression: clearCache 期间打开 chat_room 必须走 catch 分支，
+    // 显示 SnackBar 并交还导航控制权。
+    //
+    // chatViewModelProvider 自己会读 clearCacheInProgressProvider；为 true
+    // 时直接抛 ClearedDuringClearError。chat_room_page 用 try/catch 包裹
+    // ref.watch，捕获后调用 handleClearedDuringClear(context, source:
+    // widget.source) —— source 必须转发，否则 smartBack 在无 back stack 时
+    // 落回默认 AppRoutes.claws tab，破坏 Smart Back Stack 不变量。
+    // ---------------------------------------------------------------
+    testWidgets(
+      'shows SnackBar and returns SizedBox.shrink when guard is active '
+      '(source forwarded to smartBack)',
+      (tester) async {
+        // Minimal GoRouter required for smartBack's context.canPop() check.
+        final router = GoRouter(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (_, __) => const ChatRoomPage(
+                agentId: 'local-1',
+                instanceId: 'inst-1',
+                source: 'messages',
+              ),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              // 触发 chatViewModelProvider 抛 ClearedDuringClearError
+              clearCacheInProgressProvider.overrideWith((ref) => true),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        // Pump twice: once for the throw to propagate, once for the
+        // post-frame callback scheduled by handleClearedDuringClear.
+        await tester.pump();
+        await tester.pump();
+
+        // The catch path runs — SnackBar is shown with the guard message
+        expect(find.text('缓存清理中，无法打开页面'), findsOneWidget);
+
+        // The page body is a SizedBox.shrink (not the chat UI)
+        expect(find.text('产品虾'), findsNothing);
+        expect(find.byType(TextField), findsNothing);
+      },
+    );
   });
 }
