@@ -1,7 +1,7 @@
 #!/bin/bash
 # 同步 skill 到独立 Gitee 仓库 (skills.git)
 # 用法: bash scripts/sync-skill-to-gitee.sh <skill-name> ["更新说明"]
-#   skill-name: coding-advisor | arch-review | all
+#   skill-name: coding-advisor | architecture-review-board | all
 set -e
 
 SKILL_REPO="$HOME/coding-advisor-skill"
@@ -10,7 +10,7 @@ SKILL="${1:-}"
 MSG="${2:-update}"
 
 if [ -z "$SKILL" ]; then
-  echo "用法: bash scripts/sync-skill-to-gitee.sh <coding-advisor|arch-review|all> [更新说明]"
+  echo "用法: bash scripts/sync-skill-to-gitee.sh <coding-advisor|architecture-review-board|all> [更新说明]"
   exit 1
 fi
 
@@ -28,15 +28,22 @@ sync_coding_advisor() {
 }
 
 sync_arch_review() {
-  echo "==> [arch-review] 复制 skill 文件..."
-  mkdir -p "$SKILL_REPO/arch-review/scripts" "$SKILL_REPO/arch-review/references" "$SKILL_REPO/arch-review/examples"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/SKILL.md" "$SKILL_REPO/arch-review/"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/README.md" "$SKILL_REPO/arch-review/"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/scripts/review-board.js" "$SKILL_REPO/arch-review/scripts/"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/references/lightweight-mode.md" "$SKILL_REPO/arch-review/references/"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/references/dimension-rubrics.md" "$SKILL_REPO/arch-review/references/"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/examples/example-lightweight.md" "$SKILL_REPO/arch-review/examples/"
-  cp "$PROJECT_ROOT/.claude/skills/arch-review/examples/example-full.md" "$SKILL_REPO/arch-review/examples/"
+  # 一次性迁移：仓库里如果还存在旧的 arch-review/ 目录，用 git mv 改名为
+  # architecture-review-board/（保留历史）。之后本次及后续运行都使用新目录名。
+  if [ -d "$SKILL_REPO/arch-review" ] && [ ! -d "$SKILL_REPO/architecture-review-board" ]; then
+    echo "==> [architecture-review-board] 检测到旧目录 arch-review/，执行 git mv 迁移..."
+    (cd "$SKILL_REPO" && git mv arch-review architecture-review-board)
+  fi
+
+  echo "==> [architecture-review-board] 复制 skill 文件..."
+  mkdir -p "$SKILL_REPO/architecture-review-board/scripts" "$SKILL_REPO/architecture-review-board/references" "$SKILL_REPO/architecture-review-board/examples"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/SKILL.md" "$SKILL_REPO/architecture-review-board/"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/README.md" "$SKILL_REPO/architecture-review-board/"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/scripts/review-board.js" "$SKILL_REPO/architecture-review-board/scripts/"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/references/lightweight-mode.md" "$SKILL_REPO/architecture-review-board/references/"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/references/dimension-rubrics.md" "$SKILL_REPO/architecture-review-board/references/"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/examples/example-lightweight.md" "$SKILL_REPO/architecture-review-board/examples/"
+  cp "$PROJECT_ROOT/.claude/skills/architecture-review-board/examples/example-full.md" "$SKILL_REPO/architecture-review-board/examples/"
 }
 
 case "$SKILL" in
@@ -44,17 +51,17 @@ case "$SKILL" in
     sync_coding_advisor
     LABEL="coding-advisor"
     ;;
-  arch-review)
+  architecture-review-board)
     sync_arch_review
-    LABEL="arch-review"
+    LABEL="architecture-review-board"
     ;;
   all)
     sync_coding_advisor
     sync_arch_review
-    LABEL="coding-advisor + arch-review"
+    LABEL="coding-advisor + architecture-review-board"
     ;;
   *)
-    echo "未知 skill: $SKILL (可用: coding-advisor, arch-review, all)"
+    echo "未知 skill: $SKILL (可用: coding-advisor, architecture-review-board, all)"
     exit 1
     ;;
 esac

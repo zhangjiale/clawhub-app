@@ -403,6 +403,41 @@
 
 ---
 
+### US-021：Gateway 端 Agent 删除的本地处理（Tombstone）
+
+**角色**：作为养虾用户
+**需求**：当我在 OpenClaw Gateway 端删除了某个 Agent 后，App 端应能自动检测并把它从虾列表和消息页中移除，同时**保留历史聊天记录**，以便该 Agent 在 Gateway 上被重建（同 `remoteId`）时无缝复活
+**价值**：以便避免出现"幽灵虾"——发消息只会失败、长期占用列表、还误导我以为虾还在工作
+**优先级**：P1
+**Story Points**：3
+**Epic**：V1.3 — 数据一致性
+
+**背景**：
+当前 `DriftAgentRepo.syncFromGateway` 是纯 Upsert（只插入/更新远端有的 Agent，从不清理远端缺失的）。后果：Gateway 删除 Agent 后，本地 Agent 行永久残留 → 用户进入 ChatRoom 发消息 → Gateway 返回 `agent_not_found` → 消息变 FAILED → OutboxProcessor 重试到 24h 过期，循环不息。详见 [docs/product/specs/us-021-agent-removal-handling.md](specs/us-021-agent-removal-handling.md)。
+
+**Acceptance Criteria（v1，本 Story 范围）**：
+- [ ] **AC1（差集 + tombstone）**：Given Gateway 上原有 Agent A/B/C 且本地已同步，When 用户在 Gateway 端删除 C 并触发下一次 `agents.list`，Then `agents.removed_at` 列为该 Agent 写入当前时间戳，且**不修改** `hidden_at` 列
+- [ ] **AC2（列表过滤）**：Given Agent C 被 tombstone，When 用户打开虾列表（`getAll`）、消息页（`getByInstanceId`）或全局搜索，Then C 不出现在结果中（历史消息行仍保留在 messages 表中）
+- [ ] **AC3（OutboxProcessor 跳过）**：Given Agent C 被 tombstone 且其 PENDING/FAILED 消息仍在 outbox 中，When OutboxProcessor 下次 flush，Then 这些消息被跳过（不再调用 `chat.send`），无新 FAILED 产生
+- [ ] **AC4（复活）**：Given Agent C 被 tombstone，When Gateway 端重建同 `remoteId` 的 Agent 并再次同步，Then `removed_at` 被清空、Agent C 重新出现在所有列表中，**历史消息/会话/统计完整可见**
+- [ ] **AC5（FK 不级联）**：Given Agent C 被 tombstone，When 查询 conversations / messages / agent_stats，Then 相关数据完整保留（tombstone 是软删，不触发 FK CASCADE）
+- [ ] **AC6（实例硬删保持原状）**：Given 用户从实例管理页删除整个 Instance，When `deleteByInstanceId` 执行，Then **行为不变**——所有 Agent（含 tombstoned）及其级联数据被硬删（FK CASCADE）
+- [ ] **AC7（空列表合法）**：Given 远端 `agents.list` 返回 `agents: []`，When syncFromGateway 接收到该响应，Then **正常走 tombstone 流程把本地全部打标**——协议保证 scope 不足时 `fetchAgents` 抛错（不走到本步），`agents: []` 在协议下唯一含义为"Gateway 现已无 Agent"，不应跳过
+- [ ] **AC8（ChatRoom 路由 guard）**：Given Agent C 被 tombstone，When 用户通过任何路径（AgentList 残留入口、深度链接、通知、历史路由、Back Stack 恢复）打开 C 的 ChatRoom，Then 页面在首帧完成前关闭并 toast 提示"该 Agent 已从 Gateway 移除"，**不进入聊天界面**
+- [ ] **AC9（send 兜底重查）**：Given 用户进入 ChatRoom 时 Agent C 仍 active，但停留期间发生 sync 将 C tombstone，When 用户尝试发送消息，Then `send()` 入 outbox 前重查 `agentRepo.getById(agentId).isRemoved`，是则不入 outbox、toast 提示"该 Agent 已从 Gateway 移除"，并触发 AC8 的页面关闭
+
+**v1 不做（明确延后到 US-022）**：
+- 用户主动"隐藏 Agent"功能（`hidden_at` 列**会预留**但不写入路径）
+- "显示已移除" UI 开关、彻底删除按钮、MessageHub 已移除 Agent 的底部 sheet 历史预览
+- `IAgentRepo` **不新增**公共方法（`hide`/`unhide`/`hardDelete`），所有逻辑封装在 `DriftAgentRepo` 内部
+- 50%/70% 的部分列表保护阈值（仅空列表跳过；待生产观察到误杀再加）
+
+**依赖**：US-004（Agent 列表）、US-015（OutboxProcessor 已存在）、US-016（断线重连触发 sync）
+**前置条件**：协议侧 `agents.list` 无分页字段已验证（`docs/technical/api-protocol.md:1442-1480`）
+**技术备注**：详细设计见 `docs/product/specs/us-021-agent-removal-handling.md`；TDD 顺序为 schema → domain getter → repo diff → outbox guard，每步独立可测；遵守 Iron Laws 1/6/8/17
+
+---
+
 ## Sprint规划建议
 
 ### Sprint 1（第1-2周）：技术基础 + 实例管理 — 合计 16 Points
@@ -451,6 +486,12 @@
 | US-019 | 虾成长面板 | 3 | US-015/016完成后 |
 | US-020 | 成就系统 | 3 | US-019完成后 |
 
+### Sprint 7（第10周）：V1.3 — 数据一致性补丁 — 合计 3 Points
+
+| Story | 标题 | Points | 可并行 |
+|-------|------|--------|--------|
+| US-021 | Gateway Agent 删除处理 | 3 | — |
+
 ---
 
 ## 依赖关系图
@@ -467,6 +508,7 @@ US-012(技术验证)
   │                       │                                                              └── US-017(搜索)
   │                       │                                                              └── US-018(通知)
   │                       │                                                              └── US-019(成长面板) ── US-020(成就)
+  │                       │                                                              └── US-021(Agent 删除处理) ◄── 需 US-015(outbox)
   │                       └──────────────────────────────────────── US-013(个性化) ── US-014(指令管理)
 ```
 
@@ -502,6 +544,7 @@ US-012(技术验证)
 | US-018 | ⚠️ 依赖US-015/016 | ✅ | ✅ | ✅ | ✅ | ⚠️ iOS保活不确定 | 需技术预研 |
 | US-019 | ⚠️ 依赖US-015/016 | ✅ | ✅ | ✅ | ✅ | ✅ | 通过 |
 | US-020 | ⚠️ 依赖US-019 | ✅ | ✅ | ✅ | ✅ | ✅ | 通过 |
+| US-021 | ⚠️ 依赖US-004/015/016 | ✅ | ✅ | ✅ | ✅ | ✅ | 通过（数据一致性补丁） |
 
 **US-007注意事项**：8 Points为本PRD中最大的单Story，涵盖了消息收发、Markdown渲染、输入框、加载状态等核心交互。如果开发中感觉粒度仍大，可进一步拆为：US-007a（消息发送+基础展示，5点）+ US-007b（Markdown渲染+代码高亮，3点）。
 
@@ -533,4 +576,5 @@ US-012(技术验证)
 | US-018 | 推送通知 | V1.2 | P2 | 5 | 工作流步骤 |
 | US-019 | 虾成长面板 | V1.2 | P2 | 3 | 复杂度递进 |
 | US-020 | 成就系统 | V1.2 | P2 | 3 | 复杂度递进 |
-| **合计** | **20个Story** | | | **72 Points** | |
+| US-021 | Gateway Agent 删除处理 | V1.3 | P1 | 3 | 数据一致性 |
+| **合计** | **21个Story** | | | **75 Points** | |
