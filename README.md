@@ -8,7 +8,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/platform-iOS%20%7C%20Android-blue" alt="Platform">
   <img src="https://img.shields.io/badge/framework-Flutter%203.x-02569B?logo=flutter" alt="Flutter">
-  <img src="https://img.shields.io/badge/tests-360%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
@@ -16,7 +15,7 @@
 
 ## What is ClawHub?
 
-ClawHub (虾Hub) is a mobile app that connects to multiple [OpenClaw](https://github.com/anthropics/openclaw) Gateway instances via WebSocket, giving you a unified chat interface to talk to all your AI agents ("Claws" / 虾) across all your servers — from a single app.
+ClawHub (虾Hub) is a mobile app that connects to multiple OpenClaw Gateway instances via WebSocket, giving you a unified chat interface to talk to all your AI agents ("Claws" / 虾) across all your servers — from a single app.
 
 **The problem**: OpenClaw users often run multiple instances on different machines (home server, cloud VPS, work machine), each with specialized agents. Managing them through WeChat or multiple browser tabs is cumbersome.
 
@@ -78,7 +77,8 @@ ClawHub follows **Clean Architecture** with strict layer separation. All busines
 # Install dependencies
 flutter pub get
 
-# Generate code (required after first clone)
+# Generate code — REQUIRED on fresh clone, otherwise the build will fail
+# (freezed / drift / riverpod / json_serializable codegen)
 dart run build_runner build --delete-conflicting-outputs
 
 # Run the app
@@ -124,7 +124,9 @@ lib/
 │   ├── agent_list/       # Agent list with stats bar
 │   ├── chat_room/        # Chat with bubbles, thinking indicator, tool cards
 │   ├── message_hub/      # Cross-instance conversation aggregation
-│   └── agent_profile/    # Agent profile, stats, achievements, config
+│   ├── agent_profile/    # Agent profile, stats, achievements, config
+│   ├── settings/         # Settings page + 6 sub-pages (notification, DND, biometric, network, storage, about)
+│   └── search/           # Cross-instance FTS5 search
 └── ui_kit/               # Reusable UI components
 ```
 
@@ -178,14 +180,12 @@ dart run build_runner watch --delete-conflicting-outputs
 
 ## Contributing
 
-Issues and pull requests are welcome. Before submitting code:
+Issues and pull requests are welcome. Before submitting, please read:
 
-1. Read the [Iron Laws](docs/engineering/iron-laws.md)
-2. Domain/ACL changes require tests first (see Law 17)
-3. New widgets need ≥2 tests (see Law 14)
-4. `flutter analyze` must report zero errors
-5. `flutter test` must pass all 360+ tests
-6. Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(scope):`, `fix(scope):`, etc.
+- [Iron Laws](docs/engineering/iron-laws.md) — the 17 coding rules (TDD for domain/ACL, ≥2 tests per widget, etc.)
+- [CLAUDE.md](CLAUDE.md) — architecture overview and layer boundaries
+
+`flutter analyze` and `flutter test` must both pass. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/): `feat(scope):`, `fix(scope):`, etc.
 
 ## License
 

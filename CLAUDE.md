@@ -82,10 +82,10 @@ lib/
 │   ├── message_hub/      # Cross-instance conversation aggregation
 │   ├── agent_profile/    # Agent profile & config
 │   ├── settings/         # Settings with sub-pages (notification, DND, biometric, etc.)
-│   └── shrimp_profile/   # Empty directory
-└── ui_kit/               # Reusable UI components (no domain/business coupling)
-    ├── a11y/, empty_states/, theme/   # Sub-kits (some WIP / empty)
-    └── *.dart                          # Press feedback buttons, toast, banners, etc.
+│   └── search/           # Cross-instance search (FTS5-backed)
+└── ui_kit/               # Reusable UI components, flat layout (no domain/business coupling)
+                          # — press feedback buttons, toast, banners, status icons,
+                          #   markdown styles, settings section/toggle, etc.
 ```
 
 ### Layer Dependency Rules (Enforced in Code Review)
@@ -134,7 +134,7 @@ The app uses **Drift/SQLite** for persistence (all 4 repositories: Instance, Age
 
 `gatewayClientProvider` points to `wsGatewayClientProvider` (real WebSocket, OpenClaw v4 protocol, v2026.6.6). `MockGatewayClient` (3 instances, 7 agents from `assets/mock/agents.json`) is implemented as an offline-development / unit-test fallback — switch by changing one line in `lib/app/di/providers.dart` from `wsGatewayClientProvider` to `mockGatewayClientProvider`.
 
-Five feature pages are fully implemented: InstanceManager, AgentList, ChatRoom, MessageHub, AgentProfile. `settings/` is in active development with SettingsPage, 6 sub-pages (Notification, DND, Biometric, Network, Storage Management, About), a ViewModel, `ISettingsRepo`/`DriftSettingsRepo`, and tests. `shrimp_profile/` is an empty directory.
+Core feature pages implemented: InstanceManager, AgentList, ChatRoom, MessageHub, AgentProfile, Search. `settings/` is in active development with SettingsPage, 6 sub-pages (Notification, DND, Biometric, Network, Storage Management, About), a ViewModel, `ISettingsRepo`/`DriftSettingsRepo`, and tests.
 
 ### Commit Convention
 
