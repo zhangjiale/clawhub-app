@@ -221,6 +221,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// [_loadMessages] 自然刷新到含新回复的列表。
   bool _isStreaming = false;
 
+  /// 标记连接状态订阅收到的「首个事件」。
+  ///
+  /// `_init()` 在订阅前已执行 `_loadMessages()`。对已处于 connected 的实例，
+  /// [ReplayableConnectionState] 会向新订阅者同步下沉一个合成的 connected
+  /// seed —— 若不抑制，该 seed 会在每次冷启动已连接聊天时触发一次冗余的
+  /// `reloadMessages()`（重复 Drift `getByConversation` 查询），正是种子层想
+  /// 避免的回归。真实的 `connecting → connected` 转换首个事件是 connecting，
+  /// 会先消费本标记，故其后的 connected 仍照常重载（拾取 OutboxProcessor
+  /// 的 PENDING→SENT 后台冲刷）。
+  bool _isInitialConnectionEvent = true;
+
   /// 是否正在流式接收回复。供 [chatViewModelProvider] 的 tick 监听器
   /// 决定是否触发温和刷新（流式中跳过）。
   bool get isStreaming => _isStreaming;
@@ -295,6 +306,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       _connectionSubscription = _gatewayClient
           .connectionStateStream(instanceId)
           .listen((state) {
+            final wasInitial = _isInitialConnectionEvent;
+            _isInitialConnectionEvent = false;
             _updateState((s) => s.copyWith(connectionState: state));
             // 连接断开/恢复路径必须重置 _isStreaming —— 否则一次中途
             // 网关掉线（无 StreamingDone）会让 reloadMessages 在
@@ -322,7 +335,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
             // 故 connected 后重载一次消息列表以反映最新状态。
             // outbox 计数不再在此刷新 —— 由 _outboxCountSubscription 自动驱动。
             if (state == GatewayConnectionState.connected) {
-              unawaited(reloadMessages());
+              if (wasInitial) {
+                // 合成 connected seed：_init() 刚执行过 _loadMessages()，
+                // 再 reload 是每次冷启动已连接聊天都会浪费一次 Drift 查询的
+                // 回归。跳过；真实 connecting→connected 转换会照常重载。
+              } else {
+                unawaited(reloadMessages());
+              }
             }
           });
 

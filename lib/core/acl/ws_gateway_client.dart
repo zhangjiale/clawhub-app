@@ -10,6 +10,7 @@ import 'device_identity.dart';
 import 'gateway_protocol.dart';
 import 'i_device_identity_provider.dart';
 import 'i_gateway_client.dart';
+import 'replayable_connection_state.dart';
 
 /// 真实 WebSocket Gateway 客户端 — 实现 [IGatewayClient] 接口。
 ///
@@ -195,8 +196,6 @@ class WsGatewayClient implements IGatewayClient {
       final conn = _connections.putIfAbsent(
         instance.id,
         () => _InstanceConnection(
-          connectionStateCtrl:
-              StreamController<GatewayConnectionState>.broadcast(),
           messageCtrl: StreamController<Message>.broadcast(),
           toolCallCtrl: StreamController<ToolCall>.broadcast(),
           pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
@@ -206,11 +205,9 @@ class WsGatewayClient implements IGatewayClient {
       conn.manager = manager;
 
       // 订阅连接状态
-      conn._stateSub = manager.connectionState.listen((state) {
-        if (!conn.connectionStateCtrl.isClosed) {
-          conn.connectionStateCtrl.add(state);
-        }
-      });
+      conn._stateSub = manager.connectionState.listen(
+        conn.connectionState.emit,
+      );
 
       // 订阅 Gateway 事件
       conn._eventSub = manager.events.listen(
@@ -262,6 +259,16 @@ class WsGatewayClient implements IGatewayClient {
     conn._eventSub = null;
     await conn._stateSub?.cancel();
     conn._stateSub = null;
+    // 清空 last 缓存必须在 _stateSub 取消「之后」、剩余 await（pairingSub
+    // 取消、manager.dispose、buffer 清理）「之前」进行：
+    //  - 之后：_stateSub 是唯一把旧 manager 的状态事件路由进
+    //    conn.connectionState.emit 的通道；取消后旧 manager 不可能再写入
+    //    _last，故 clear() 不会被迟到的 emit 重新污染。
+    //  - 之前：manager.dispose()（关闭 WebSocket，可达毫秒级）等 await 期间
+    //    若有晚订阅者（如正在打开的 ChatViewModel）调用
+    //    connectionStateStream，_last 仍是 connected → 会拿到陈旧 connected
+    //    seed，而真实底层 manager 已死。提前 clear() 关闭这个窗口。
+    conn.connectionState.clear();
     await conn._pairingSub?.cancel();
     conn._pairingSub = null;
     await manager.dispose();
@@ -272,8 +279,8 @@ class WsGatewayClient implements IGatewayClient {
     _finalizedSessions.removeWhere((key) => key.startsWith('$instanceId:'));
     _deltaSource.removeWhere((key, _) => key.startsWith('$instanceId:'));
 
-    if (emitDisconnected && !conn.connectionStateCtrl.isClosed) {
-      conn.connectionStateCtrl.add(GatewayConnectionState.disconnected);
+    if (emitDisconnected) {
+      conn.connectionState.emit(GatewayConnectionState.disconnected);
     }
   }
 
@@ -416,14 +423,17 @@ class WsGatewayClient implements IGatewayClient {
 
   @override
   Stream<GatewayConnectionState> connectionStateStream(String instanceId) {
-    return _getOrCreateControllers(instanceId).connectionStateCtrl.stream;
+    // Seed 策略详见 [ReplayableConnectionState]。
+    return _getOrCreateControllers(instanceId).connectionState.stream;
   }
 
   @override
   void resetConnectionState(String instanceId) {
-    final ctrl = _connections[instanceId]?.connectionStateCtrl;
-    if (ctrl != null && !ctrl.isClosed) {
-      ctrl.add(GatewayConnectionState.disconnected);
+    final conn = _connections[instanceId];
+    if (conn != null) {
+      // 经过封装以保持 last 缓存与广播事件原子同步 —— 直接 ctrl.add 会
+      // 绕过缓存，让 connected 实例被 reset 后新订阅者拿到陈旧 connected。
+      conn.connectionState.emit(GatewayConnectionState.disconnected);
     }
   }
 
@@ -462,9 +472,7 @@ class WsGatewayClient implements IGatewayClient {
         await conn._pairingSub?.cancel();
         await manager.dispose();
       }
-      if (!conn.connectionStateCtrl.isClosed) {
-        await conn.connectionStateCtrl.close();
-      }
+      await conn.connectionState.dispose();
       if (!conn.messageCtrl.isClosed) {
         await conn.messageCtrl.close();
       }
@@ -967,8 +975,6 @@ class WsGatewayClient implements IGatewayClient {
     return _connections.putIfAbsent(
       instanceId,
       () => _InstanceConnection(
-        connectionStateCtrl:
-            StreamController<GatewayConnectionState>.broadcast(),
         messageCtrl: StreamController<Message>.broadcast(),
         toolCallCtrl: StreamController<ToolCall>.broadcast(),
         pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
@@ -988,7 +994,10 @@ class _InstanceConnection {
   /// already-cleaned-up connections.
   ConnectionManager? manager;
 
-  final StreamController<GatewayConnectionState> connectionStateCtrl;
+  /// 连接状态流 + last 缓存封装。所有发射点必须经过它（详见
+  /// [ReplayableConnectionState]），不得直接持有 StreamController 另行 add。
+  final ReplayableConnectionState connectionState = ReplayableConnectionState();
+
   final StreamController<Message> messageCtrl;
   final StreamController<ToolCall> toolCallCtrl;
   final StreamController<GatewayPairingInfo?> pairingInfoCtrl;
@@ -999,7 +1008,6 @@ class _InstanceConnection {
   StreamSubscription<GatewayPairingInfo?>? _pairingSub;
 
   _InstanceConnection({
-    required this.connectionStateCtrl,
     required this.messageCtrl,
     required this.toolCallCtrl,
     required this.pairingInfoCtrl,

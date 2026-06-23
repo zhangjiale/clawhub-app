@@ -41,6 +41,36 @@ void main() {
       expect(states, contains(GatewayConnectionState.connected));
     });
 
+    test('晚订阅者在连接建立后应立即收到最后已知状态（与 WsGatewayClient 对齐）', () async {
+      final instance = Instance(
+        id: 'inst-late',
+        name: '测试',
+        gatewayUrl: 'wss://test.com:18789',
+        tokenRef: 'ref',
+      );
+
+      // 1. 先连接，等连接完全建立
+      await client.connect(instance);
+      await Future.delayed(const Duration(seconds: 1));
+
+      // 2. 连接已建立后再订阅 —— 模拟聊天页晚打开
+      final states = <GatewayConnectionState>[];
+      final subscription = client
+          .connectionStateStream('inst-late')
+          .listen(states.add);
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        states,
+        contains(GatewayConnectionState.connected),
+        reason:
+            'Mock 必须与 WsGatewayClient 行为一致：晚订阅者应立即收到最后已知 '
+            '状态，否则离线开发模式下会复现"连接已断开"误报。',
+      );
+
+      await subscription.cancel();
+    });
+
     test('testConnection wss:// 总是返回 true', () async {
       final instance = Instance(
         id: 'inst-test',

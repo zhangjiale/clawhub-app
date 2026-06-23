@@ -29,6 +29,11 @@ class _ControllableStreamsGateway extends MockGatewayClient {
   final Map<String, StreamController<StreamingEvent>> streamingCtrls = {};
   // 当非空时,fetchMessageHistory 返回该列表。默认空(保持原有行为)。
   List<Message> fetchHistoryMessages = const [];
+  // 为 true 时,connectionStateStream 模拟 [ReplayableConnectionState] 对
+  // 已连接实例的行为:先向新订阅者下沉一个 connected seed,再透传广播。
+  final bool seedConnectedOnSubscribe;
+
+  _ControllableStreamsGateway({this.seedConnectedOnSubscribe = false});
 
   @override
   Stream<Message> messageStream(String instanceId) {
@@ -39,12 +44,21 @@ class _ControllableStreamsGateway extends MockGatewayClient {
 
   @override
   Stream<GatewayConnectionState> connectionStateStream(String instanceId) {
-    return stateCtrls
+    final live = stateCtrls
         .putIfAbsent(
           instanceId,
           () => StreamController<GatewayConnectionState>.broadcast(),
         )
         .stream;
+    if (!seedConnectedOnSubscribe) return live;
+    return _seededConnected(live);
+  }
+
+  static Stream<GatewayConnectionState> _seededConnected(
+    Stream<GatewayConnectionState> live,
+  ) async* {
+    yield GatewayConnectionState.connected;
+    yield* live;
   }
 
   @override
@@ -106,6 +120,26 @@ class _ThrowOnInsertRepo extends InMemoryMessageRepo {
   @override
   Future<Message> insert(Message message) {
     throw StateError('insert failed (FK constraint)');
+  }
+}
+
+/// [InMemoryMessageRepo] 子类:计数 [getByConversation] 调用次数,
+/// 用于验证 connected seed 不触发冗余 reloadMessages。
+class _CountingGetByConversationRepo extends InMemoryMessageRepo {
+  int getByConversationCallCount = 0;
+
+  @override
+  Future<List<Message>> getByConversation(
+    String conversationId, {
+    String? before,
+    int limit = 50,
+  }) {
+    getByConversationCallCount++;
+    return super.getByConversation(
+      conversationId,
+      before: before,
+      limit: limit,
+    );
   }
 }
 
@@ -422,5 +456,48 @@ void main() {
       );
       vm.dispose();
     });
+
+    test(
+      'connected seed does NOT trigger redundant reloadMessages on cold start',
+      () async {
+        // 模拟「实例已 connected」：connectionStateStream 下沉 connected seed。
+        gateway = _ControllableStreamsGateway(seedConnectedOnSubscribe: true);
+        final countingRepo = _CountingGetByConversationRepo();
+
+        final vm = await setupAndInit(countingRepo);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // _init() 自身调用 _loadMessages() 两次（初始快照 + 历史拉取后）,
+        // 故基线为 2。connected seed 必须被抑制 —— 否则会在此多出第 3 次
+        // getByConversation（即本次回归要锁住的冗余查询）。
+        expect(
+          countingRepo.getByConversationCallCount,
+          2,
+          reason:
+              'connected seed must not trigger a redundant reloadMessages — '
+              '_init() already loaded the latest snapshot twice (initial + '
+              'post-history). A 3rd call means the synthetic seed slipped '
+              'through and fired reloadMessages() on cold start.',
+        );
+
+        // 真实 connecting→connected 转换仍照常重载（拾取 outbox 冲刷）。
+        gateway.emitConnectionState(
+          'inst-1',
+          GatewayConnectionState.connecting,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        gateway.emitConnectionState('inst-1', GatewayConnectionState.connected);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(
+          countingRepo.getByConversationCallCount,
+          3,
+          reason:
+              'real connecting→connected transition must still reload to pick '
+              'up OutboxProcessor PENDING→SENT flushes.',
+        );
+        vm.dispose();
+      },
+    );
   });
 }

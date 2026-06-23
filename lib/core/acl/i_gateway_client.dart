@@ -35,7 +35,13 @@ abstract class IGatewayClient {
   /// 测试连通性
   Future<bool> testConnection(Instance instance);
 
-  /// 获取连接状态流（响应式）
+  /// 获取连接状态流（响应式）。
+  ///
+  /// 晚订阅者会收到最后已知状态作为初始 seed（仅在状态为 `connected` 时；
+  /// 详见 `ReplayableConnectionState`）。调用方应**内联订阅** —— 不要缓存
+  /// 返回的 [Stream] 对象后多次 `.listen()`：当底层处于 `connected` 时，
+  /// 该 stream 实例为单订阅视图，第二次监听会抛 [StateError]。多个订阅方
+  /// 应各自重新调用本方法获取独立 stream。
   Stream<GatewayConnectionState> connectionStateStream(String instanceId);
 
   /// 重置连接状态流到 [GatewayConnectionState.disconnected]，

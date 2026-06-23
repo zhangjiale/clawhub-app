@@ -4,6 +4,7 @@ import 'package:claw_hub/core/acl/device_identity.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/acl/replayable_connection_state.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/domain/models/enums.dart'
     show HealthStatus, MessageRole, MessageType, ToolCallStatus;
@@ -65,6 +66,31 @@ Instance testInstance({
   String gatewayUrl = 'ws://localhost:9999/ws',
   String token = 'test-token',
 }) => Instance(id: id, name: name, gatewayUrl: gatewayUrl, tokenRef: token);
+
+/// Build a [WsGatewayClient] backed by a [ControllableWebSocket], connect
+/// to [testInstance], complete the handshake, and return the client + ws
+/// for event injection. `connect()` is intentionally not awaited because it
+/// blocks on `manager.connect()`.
+Future<({WsGatewayClient client, ControllableWebSocket ws})>
+connectAndHandshake() async {
+  final ws = ControllableWebSocket.ready();
+  final client = WsGatewayClient(
+    identityProvider: FakeDeviceIdentityProvider(),
+    webSocketFactory: (_) => ws.channel,
+  );
+
+  unawaited(client.connect(testInstance()));
+  await pumpMicrotasks();
+
+  ws.simulateServerFrame(challengeJson());
+  await pumpMicrotasks();
+
+  final reqId = extractReqId(ws.sentFrames.first);
+  ws.simulateServerFrame(helloOkJson(reqId));
+  await pumpMicrotasks();
+
+  return (client: client, ws: ws);
+}
 
 // ============================================================================
 // Tests
@@ -496,43 +522,6 @@ void main() {
   // Law 16: Event routing — _handleEvent → _emitMessage / _emitToolCall
   // ==========================================================================
   group('Event routing', () {
-    /// Helper: create a WsGatewayClient backed by a ControllableWebSocket,
-    /// connect to a test instance, complete the handshake, and return the
-    /// client + controllable ws for event injection.
-    Future<({WsGatewayClient client, ControllableWebSocket ws})>
-    connectAndHandshake() async {
-      final ws = ControllableWebSocket.ready();
-      final identityProvider = FakeDeviceIdentityProvider();
-
-      final client = WsGatewayClient(
-        identityProvider: identityProvider,
-        webSocketFactory: (_) => ws.channel,
-      );
-
-      final instance = Instance(
-        id: 'test-instance',
-        name: 'Test',
-        gatewayUrl: 'ws://localhost:9999/ws',
-        tokenRef: 'test-token',
-        healthStatus: HealthStatus.online,
-        isLocalNetwork: false,
-      );
-
-      // Start connect (don't await — it blocks on manager.connect())
-      unawaited(client.connect(instance));
-      await pumpMicrotasks();
-
-      // Complete the challenge → connect → hello-ok handshake
-      ws.simulateServerFrame(challengeJson());
-      await pumpMicrotasks();
-
-      final reqId = extractReqId(ws.sentFrames.first);
-      ws.simulateServerFrame(helloOkJson(reqId));
-      await pumpMicrotasks();
-
-      return (client: client, ws: ws);
-    }
-
     test('chat final event emits complete Message via messageStream', () async {
       final (:client, :ws) = await connectAndHandshake();
 
@@ -1134,6 +1123,167 @@ void main() {
     });
 
     test(
+      'connectionStateStream seeds late subscriber with last known state',
+      () async {
+        // 复现 bug：同一实例连接已建立后，新打开的聊天页（晚订阅者）
+        // 在无 replay 的广播流上收不到已发出的 `connected`，停留在默认
+        // `disconnected`，导致横幅误显示"连接已断开，正在重连..."。
+        final (:client, ws: _) = await connectAndHandshake();
+
+        // 晚订阅：无 replay 的广播流此刻不会投递任何事件。
+        final states = <GatewayConnectionState>[];
+        final sub = client
+            .connectionStateStream('test-instance')
+            .listen(states.add);
+        await pumpMicrotasks();
+
+        expect(
+          states,
+          contains(GatewayConnectionState.connected),
+          reason:
+              '晚订阅者（连接已建立后才订阅）必须立即收到最后已知状态，'
+              '而不是停留在默认 `disconnected` —— 这是同一实例下部分 agent '
+              '显示"连接已断开，正在重连..."的根因。',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test(
+      'connectionStateStream does NOT seed stale terminal state after disconnect',
+      () async {
+        // 安全属性：ConnectionOrchestrator 在 reconnect() / 编辑保存时会重新
+        // 订阅本流。终态（disconnected 等）绝不能作为 seed 下沉，否则
+        // _onConnectionStateChanged 会被陈旧终态提前触发 → _connecting 锁
+        // 提前释放（允许并发 _connect 绕过去重守卫）/ 重发 ReconnectExhaustedEvent
+        // 等过期事件（违反 orchestrator Bug 3 守卫）。
+        // 只有 connected 是安全的 seed（见 connectionStateStream 注释）。
+        final (:client, ws: _) = await connectAndHandshake();
+
+        await client.disconnect('test-instance');
+        await pumpMicrotasks();
+
+        // 断开后新订阅 —— 不应收到任何 stale seed
+        final states = <GatewayConnectionState>[];
+        final sub = client
+            .connectionStateStream('test-instance')
+            .listen(states.add);
+        await pumpMicrotasks();
+
+        expect(
+          states,
+          isEmpty,
+          reason:
+              '终态（disconnected）不得作为 seed 下沉。orchestrator 重连时 '
+              '重新订阅若收到陈旧终态，会触发 _connecting 锁提前释放或重发 '
+              'ReconnectExhaustedEvent，破坏连接去重与 Bug 3 守卫。',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test(
+      'connectionStateStream does NOT seed stale connected state after resetConnectionState',
+      () async {
+        // 锁住问题 1：resetConnectionState 必须经过 ReplayableConnectionState.emit，
+        // 让 last 缓存与广播事件原子同步。否则 connected 实例调 reset 后新订阅者
+        // 会拿到陈旧 connected seed（这次修复想消灭的 bug 复发形态）。
+        final (:client, ws: _) = await connectAndHandshake();
+
+        client.resetConnectionState('test-instance');
+        await pumpMicrotasks();
+
+        final states = <GatewayConnectionState>[];
+        final sub = client
+            .connectionStateStream('test-instance')
+            .listen(states.add);
+        await pumpMicrotasks();
+
+        expect(
+          states,
+          isNot(contains(GatewayConnectionState.connected)),
+          reason:
+              'resetConnectionState 后 last 缓存应为 disconnected（而非 '
+              '保留 connected）。否则新订阅者拿到陈旧 connected seed，UI 显示 '
+              '已连接但真实状态是 reset 后的 disconnected。',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test('connectionStateStream 支持同一实例多个订阅者（修复单订阅回归）', () async {
+      // 回归锁：同一实例下多个聊天页（不同 agent）共享同一条
+      // connectionStateStream。旧 ReplayableConnectionState 把 async* 生成器
+      // 缓存为单订阅流，第二个 .listen() 抛 StateError，导致同实例第二个聊天页
+      // 打开即崩溃。本测试直接覆盖该回归。
+      final (:client, ws: _) = await connectAndHandshake();
+
+      final states1 = <GatewayConnectionState>[];
+      final states2 = <GatewayConnectionState>[];
+      final sub1 = client
+          .connectionStateStream('test-instance')
+          .listen(states1.add);
+      final sub2 = client
+          .connectionStateStream('test-instance')
+          .listen(states2.add);
+      await pumpMicrotasks();
+
+      expect(states1, contains(GatewayConnectionState.connected));
+      expect(states2, contains(GatewayConnectionState.connected));
+
+      await sub1.cancel();
+      await sub2.cancel();
+      await client.dispose();
+    });
+
+    test(
+      'connectionStateStream does NOT seed stale connected during connect-reuse cleanup window',
+      () async {
+        // 锁住问题 2：_cleanup(emitDisconnected: false) 在 connect() 复用已有
+        // conn 时被调用 —— 它 dispose manager 但必须 clear() last 缓存。否则
+        // 在 await 新 manager.connect() 完成之前，晚订阅者会拿到陈旧 connected
+        // seed 而真实底层 manager 已不存在。
+        final (:client, ws: _) = await connectAndHandshake();
+
+        await client.disconnect('test-instance');
+        await pumpMicrotasks();
+
+        // 再次 connect —— 复用 conn 触发 _cleanup(emitDisconnected:false)
+        //    路径。_cleanup 调 clear() 把 last 缓存复位为 null，因此订阅后
+        //    在新握手完成「之前」不应收到任何陈旧 connected seed。
+        unawaited(client.connect(testInstance()));
+        await pumpMicrotasks();
+
+        final states = <GatewayConnectionState>[];
+        final sub = client
+            .connectionStateStream('test-instance')
+            .listen(states.add);
+        await pumpMicrotasks();
+
+        // 关键不变式（窗口内）：_cleanup 已 clear 缓存，订阅初始无 stale seed。
+        // 必须在驱动第二次握手「之前」断言 —— 否则新连接完成后会合法地投递
+        // live `connected`，那是正常事件而非陈旧 seed，整段轨迹断言会误判。
+        expect(
+          states,
+          isEmpty,
+          reason:
+              'connect-reuse 窗口内（新握手完成前）新订阅者不应收到任何 seed —— '
+              '_cleanup 已 clear last 缓存。若非空，说明缓存未清，'
+              '窗口内 seed 与真实 manager 状态错位。',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test(
       'messageStream works before connect (empty stream, no error)',
       () async {
         final client = WsGatewayClient(
@@ -1258,6 +1408,181 @@ void main() {
       expect(config.modelIdentifier, isNull);
 
       await client.dispose();
+    });
+  });
+
+  _replayableConnectionStateTests();
+}
+
+// ============================================================================
+// ReplayableConnectionState 单元测试 —— 锁定"仅 seed connected"契约
+// ============================================================================
+
+void _replayableConnectionStateTests() {
+  group('ReplayableConnectionState', () {
+    test('初始（last == null）订阅者无 seed', () async {
+      final state = ReplayableConnectionState();
+      final events = <GatewayConnectionState>[];
+      final sub = state.stream.listen(events.add);
+      await pumpMicrotasks();
+
+      expect(events, isEmpty);
+
+      await sub.cancel();
+      await state.dispose();
+    });
+
+    test('仅在 emit(connected) 后订阅者才收到 connected seed', () async {
+      final state = ReplayableConnectionState();
+      state.emit(GatewayConnectionState.connected);
+
+      final events = <GatewayConnectionState>[];
+      final sub = state.stream.listen(events.add);
+      await pumpMicrotasks();
+
+      expect(events, [GatewayConnectionState.connected]);
+
+      await sub.cancel();
+      await state.dispose();
+    });
+
+    test(
+      'emit(reconnecting/connecting/recovering/disconnected) 均不下沉 seed',
+      () async {
+        // 锁住问题 4 边界 + 整个设计契约：
+        // 只有 connected 被 seed；其他状态（含瞬态、各终态）保持原广播流
+        // 行为。原因见 WsGatewayClient.connectionStateStream 的注释。
+        const statesToTest = [
+          GatewayConnectionState.connecting,
+          GatewayConnectionState.authenticating,
+          GatewayConnectionState.recovering,
+          GatewayConnectionState.disconnected,
+          GatewayConnectionState.authFailed,
+          GatewayConnectionState.pairingRequired,
+          GatewayConnectionState.reconnectExhausted,
+        ];
+
+        for (final s in statesToTest) {
+          final state = ReplayableConnectionState();
+          state.emit(s);
+
+          final events = <GatewayConnectionState>[];
+          final sub = state.stream.listen(events.add);
+          await pumpMicrotasks();
+
+          expect(
+            events,
+            isEmpty,
+            reason:
+                '状态 $s 不应作为 seed 下沉（避免向 reconnect/编辑保存时 '
+                '重新订阅的 orchestrator 投递陈旧事件）。',
+          );
+
+          await sub.cancel();
+          await state.dispose();
+        }
+      },
+    );
+
+    test('clear() 之后 last 复位为 null，新订阅者无 seed', () async {
+      final state = ReplayableConnectionState();
+      state.emit(GatewayConnectionState.connected);
+      // 模拟 _cleanup(emitDisconnected:false) —— clear 但不 emit
+      state.clear();
+
+      final events = <GatewayConnectionState>[];
+      final sub = state.stream.listen(events.add);
+      await pumpMicrotasks();
+
+      expect(
+        events,
+        isEmpty,
+        reason:
+            'clear() 必须彻底复位 last 缓存，否则 _cleanup 复用路径上 '
+            '会出现陈旧 connected seed。',
+      );
+
+      await sub.cancel();
+      await state.dispose();
+    });
+
+    test('多个同时订阅者均收到 connected seed（广播语义不退化）', () async {
+      // 回归锁：旧实现把 async* 生成器缓存进 _seededView（单订阅流），
+      // 第二个 .listen() 会抛 StateError。同实例下多个聊天页（不同 agent）
+      // 共享同一条 connectionStateStream，必须支持多订阅。
+      final state = ReplayableConnectionState();
+      state.emit(GatewayConnectionState.connected);
+
+      final events1 = <GatewayConnectionState>[];
+      final events2 = <GatewayConnectionState>[];
+      final sub1 = state.stream.listen(events1.add);
+      final sub2 = state.stream.listen(events2.add);
+      await pumpMicrotasks();
+
+      expect(events1, [GatewayConnectionState.connected]);
+      expect(events2, [GatewayConnectionState.connected]);
+
+      // live 事件须同时透传给两个订阅者
+      state.emit(GatewayConnectionState.recovering);
+      await pumpMicrotasks();
+      expect(events1, [
+        GatewayConnectionState.connected,
+        GatewayConnectionState.recovering,
+      ]);
+      expect(events2, [
+        GatewayConnectionState.connected,
+        GatewayConnectionState.recovering,
+      ]);
+
+      await sub1.cancel();
+      await sub2.cancel();
+      await state.dispose();
+    });
+
+    test('取消后重新订阅仍能收到 seed（页面回收复用）', () async {
+      // 回归锁：旧缓存的 async* 流被第一次订阅耗尽后不可重启，
+      // 仅 subscription.cancel()（状态仍为 connected）不会清缓存，
+      // 导致关闭聊天页再重开时 .listen() 抛 StateError。
+      final state = ReplayableConnectionState();
+      state.emit(GatewayConnectionState.connected);
+
+      final events1 = <GatewayConnectionState>[];
+      final sub1 = state.stream.listen(events1.add);
+      await pumpMicrotasks();
+      expect(events1, [GatewayConnectionState.connected]);
+      await sub1.cancel();
+
+      // 仍处于 connected —— 重新订阅不应抛 StateError，且应再次收到 seed
+      final events2 = <GatewayConnectionState>[];
+      final sub2 = state.stream.listen(events2.add);
+      await pumpMicrotasks();
+      expect(events2, [GatewayConnectionState.connected]);
+
+      await sub2.cancel();
+      await state.dispose();
+    });
+
+    test('emit 之后订阅者同时收到 seed 和 live 事件', () async {
+      final state = ReplayableConnectionState();
+      state.emit(GatewayConnectionState.connected);
+
+      final events = <GatewayConnectionState>[];
+      final sub = state.stream.listen(events.add);
+      await pumpMicrotasks();
+
+      // seed 已收到；后续 emit 的 live 事件应继续透传
+      state.emit(GatewayConnectionState.recovering);
+      state.emit(GatewayConnectionState.connected);
+      await pumpMicrotasks();
+
+      expect(events, [
+        GatewayConnectionState.connected, // seed
+        GatewayConnectionState.recovering, // live
+        GatewayConnectionState.connected, // live
+      ]);
+
+      await sub.cancel();
+      await state.dispose();
     });
   });
 }

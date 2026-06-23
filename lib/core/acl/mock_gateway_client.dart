@@ -5,6 +5,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:uuid/uuid.dart';
 import 'gateway_protocol.dart';
 import 'i_gateway_client.dart';
+import 'replayable_connection_state.dart';
 import '../../domain/models/models.dart';
 
 /// Mock Gateway 客户端
@@ -15,8 +16,10 @@ import '../../domain/models/models.dart';
 class MockGatewayClient implements IGatewayClient {
   final Uuid _uuid = const Uuid();
   final Random _random = Random();
-  final Map<String, StreamController<GatewayConnectionState>>
-  _connectionControllers = {};
+
+  /// 连接状态流 + last 缓存封装（与 WsGatewayClient 对齐）。
+  /// 所有发射点必须通过 [ReplayableConnectionState.emit] 单入口。
+  final Map<String, ReplayableConnectionState> _connectionStates = {};
   final Map<String, StreamController<Message>> _messageControllers = {};
   final Map<String, StreamController<ToolCall>> _toolCallControllers = {};
   final Map<String, StreamController<StreamingEvent>> _streamingControllers =
@@ -39,24 +42,20 @@ class MockGatewayClient implements IGatewayClient {
   @override
   Future<void> connect(Instance instance) async {
     await loadMockData();
-    final ctrl = _getOrCreateConnectionController(instance.id);
+    final state = _getOrCreateConnectionState(instance.id);
     // Schedule events on the event queue (Future) rather than emitting
     // synchronously, so ConnectionOrchestrator has time to subscribe to
     // the stream before the events arrive.
-    Future(() {
-      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connecting);
-    });
+    Future(() => state.emit(GatewayConnectionState.connecting));
     await Future.delayed(const Duration(milliseconds: 500));
-    Future(() {
-      if (!ctrl.isClosed) ctrl.add(GatewayConnectionState.connected);
-    });
+    Future(() => state.emit(GatewayConnectionState.connected));
   }
 
   @override
   Future<void> disconnect(String instanceId) async {
-    _getOrCreateConnectionController(
+    _getOrCreateConnectionState(
       instanceId,
-    ).add(GatewayConnectionState.disconnected);
+    ).emit(GatewayConnectionState.disconnected);
   }
 
   @override
@@ -280,15 +279,23 @@ class MockGatewayClient implements IGatewayClient {
 
   @override
   Stream<GatewayConnectionState> connectionStateStream(String instanceId) {
-    return _getOrCreateConnectionController(instanceId).stream;
+    return _getOrCreateConnectionState(instanceId).stream;
   }
 
   @override
   void resetConnectionState(String instanceId) {
-    final ctrl = _connectionControllers[instanceId];
-    if (ctrl != null && !ctrl.isClosed) {
-      ctrl.add(GatewayConnectionState.disconnected);
+    final state = _connectionStates[instanceId];
+    if (state != null) {
+      state.emit(GatewayConnectionState.disconnected);
     }
+  }
+
+  /// 工厂：惰性创建封装实例。
+  ReplayableConnectionState _getOrCreateConnectionState(String instanceId) {
+    return _connectionStates.putIfAbsent(
+      instanceId,
+      () => ReplayableConnectionState(),
+    );
   }
 
   @override
@@ -312,16 +319,6 @@ class MockGatewayClient implements IGatewayClient {
     // asBroadcastStream delivers null to every subscriber, survives hot-reload
     // disconnect/reconnect cycles in development.
     return Stream<GatewayPairingInfo?>.value(null).asBroadcastStream();
-  }
-
-  StreamController<GatewayConnectionState> _getOrCreateConnectionController(
-    String instanceId,
-  ) {
-    return _connectionControllers.putIfAbsent(instanceId, () {
-      final ctrl = StreamController<GatewayConnectionState>.broadcast();
-      ctrl.add(GatewayConnectionState.disconnected);
-      return ctrl;
-    });
   }
 
   StreamController<Message> _getOrCreateMessageController(String instanceId) {
@@ -349,8 +346,8 @@ class MockGatewayClient implements IGatewayClient {
 
   @override
   Future<void> dispose() async {
-    for (final c in _connectionControllers.values) {
-      await c.close();
+    for (final s in _connectionStates.values) {
+      await s.dispose();
     }
     for (final c in _messageControllers.values) {
       await c.close();
@@ -364,7 +361,7 @@ class MockGatewayClient implements IGatewayClient {
     // Clear maps so that subsequent _getOrCreateXxxController calls
     // (via putIfAbsent) create fresh controllers instead of returning
     // the closed ones.
-    _connectionControllers.clear();
+    _connectionStates.clear();
     _messageControllers.clear();
     _toolCallControllers.clear();
     _streamingControllers.clear();
