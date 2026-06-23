@@ -9,6 +9,7 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
+import 'package:claw_hub/features/settings/providers/settings_providers.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/color_grid.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
@@ -66,6 +67,11 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
   List<QuickCommand> _quickCommands = const [];
   bool _formReady = false;
 
+  /// US-020：清空对话操作进行中本地禁用按钮，防止用户双击触发并发清空。
+  /// 不复用 [clearCacheInProgressProvider] —— per-agent 清空 ms 级、无半提交
+  /// 窗口、不该阻止用户打开其他 agent 页面，全局 guard 是粒度错配。
+  bool _isClearing = false;
+
   @override
   void initState() {
     super.initState();
@@ -107,6 +113,62 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
           themeColor: _themeColor,
           quickCommands: _quickCommands,
         );
+  }
+
+  /// US-020 AC-3：清空该虾的对话历史 + 派生缓存（统计/成就/DND/FTS5/头像）。
+  ///
+  /// 二次确认后调用 [clearAgentContentActionProvider]；成功后 SnackBar +
+  /// pop 回到 AgentProfile（此时 cacheClearedTick 已驱动 ProfileVM 重建，
+  /// 用户会看到空状态卡片，形成正反馈）。
+  ///
+  /// 失败时不 pop，SnackBar 显示错误供用户重试。
+  Future<void> _onClearChat(String displayName) async {
+    if (_isClearing) return; // 二次防御（按钮已禁用）
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('清空『$displayName』的对话?'),
+        content: const Text(
+          '将删除该虾的全部消息、统计与成就解锁记录。\n'
+          '此操作不可撤销，Agent 配置与实例连接不受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(foregroundColor: XiaColors.red),
+            child: const Text('确认清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isClearing = true);
+    try {
+      await ref.read(clearAgentContentActionProvider)(widget.agentId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该虾对话已清空')));
+      // 直接 pop 回到 AgentProfile，让用户看到空状态卡片作为正反馈。
+      context.pop();
+    } catch (error, stackTrace) {
+      // Law 8：catch 必须至少 debugPrint，便于排障。
+      debugPrint('[AgentConfig] clear chat failed: $error\n$stackTrace');
+      if (!mounted) return;
+      // 不向用户暴露原始异常字符串（如 SQLite 错误），给通用提示。
+      // 原始错误已在上面 debugPrint 暴露给排障。
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('清空失败，请重试')));
+    } finally {
+      if (mounted) setState(() => _isClearing = false);
+    }
   }
 
   // ── Avatar picker ──────────────────────────────────────────
@@ -304,7 +366,8 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
     final agent = detail.agent;
 
     return PopScope(
-      canPop: !state.isSaving,
+      // 清空期间也阻止返回，避免后台清理完成后失去 SnackBar/重置反馈窗口。
+      canPop: !state.isSaving && !_isClearing,
       // onPopInvokedWithResult intentionally omitted —
       // ref.listen already handles save-success → pop.
       // Adding a manual context.pop() here would defeat canPop (see #1).
@@ -482,6 +545,73 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
                 label: '💾 保存配置',
                 isLoading: state.isSaving,
                 onPressed: state.isSaving ? null : _save,
+              ),
+            ),
+
+            // Section: 危险区域 (US-020 AC-3)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                XiaSpacing.s5,
+                XiaSpacing.s7,
+                XiaSpacing.s5,
+                XiaSpacing.s1,
+              ),
+              child: Text(
+                '⚠️ 危险操作',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  color: XiaColors.text3,
+                  fontWeight: FontWeight.w600,
+                  fontSize: XiaTypography.sectionLabel,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ),
+            Container(
+              margin: const EdgeInsets.symmetric(
+                horizontal: XiaSpacing.pagePaddingH,
+                vertical: XiaSpacing.s2,
+              ),
+              padding: const EdgeInsets.all(XiaSpacing.s5),
+              decoration: BoxDecoration(
+                color: XiaColors.surface,
+                borderRadius: BorderRadius.circular(XiaRadius.lg),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '清空后该虾的对话记录、统计数据和已解锁成就将全部删除，'
+                    '此操作不可撤销。Agent 配置与实例连接不受影响。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: XiaColors.text4,
+                      height: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: XiaSpacing.s4),
+                  OutlinedButton.icon(
+                    onPressed: (state.isSaving || _isClearing)
+                        ? null
+                        : () => _onClearChat(agent.displayName),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: XiaColors.red,
+                      side: const BorderSide(color: XiaColors.red),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: XiaSpacing.s3,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(XiaRadius.md),
+                      ),
+                    ),
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: Text(
+                      _isClearing ? '正在清空...' : '清空该虾对话',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],

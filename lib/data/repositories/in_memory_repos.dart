@@ -531,6 +531,23 @@ class InMemoryMessageRepo implements IMessageRepo {
   }
 
   @override
+  Future<void> clearAgentContent(String agentId) async {
+    // 删除指定 agent 的全部消息。InMemoryRepo 不持有 stats /
+    // achievements / pending_notifications / FTS5（那些是 Drift 实现细节），
+    // 此处只需清消息即可满足 IMessageRepo 接口契约。该实现保留作为参考，
+    // 不在主路径使用（见 CLAUDE.md）。
+    final clientIdsToRemove = _byClientId.entries
+        .where((e) => e.value.agentId == agentId)
+        .map((e) => e.key)
+        .toList();
+    for (final id in clientIdsToRemove) {
+      final msg = _byClientId.remove(id);
+      if (msg?.serverId != null) _byServerId.remove(msg!.serverId);
+    }
+    if (clientIdsToRemove.isNotEmpty) _notifyChanged();
+  }
+
+  @override
   Future<List<Message>> batchInsertByIndexedIds(List<Message> messages) async {
     final inserted = <Message>[];
     for (final msg in messages) {

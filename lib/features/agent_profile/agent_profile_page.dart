@@ -10,6 +10,7 @@ import 'package:claw_hub/features/agent_profile/widgets/profile_header.dart';
 import 'package:claw_hub/features/agent_profile/widgets/stats_grid.dart';
 import 'package:claw_hub/features/agent_profile/widgets/activity_timeline.dart';
 import 'package:claw_hub/features/agent_profile/widgets/achievement_list.dart';
+import 'package:claw_hub/features/agent_profile/widgets/empty_growth_view.dart';
 import 'package:claw_hub/features/agent_profile/widgets/milestone_celebration.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
@@ -128,7 +129,33 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
   }
 
   /// V2 成长面板 tab — header + stats grid + timeline + actions.
+  ///
+  /// US-019 AC-3: 当 messageCount == 0 时（新装 App / 清空虾对话后），
+  /// 用 [EmptyGrowthView] 引导用户去对话，替代显示一排 `--` 的统计网格。
+  /// 仅依据 messageCount（独立 COUNT 查询，权威值）—— stats 是派生缓存，
+  /// 可能因聚合失败而 null，但消息数为 0 时统计天然为空，单条件足够。
   Widget _buildGrowthTab(AgentDetailData value) {
+    if (value.messageCount == 0) {
+      return Column(
+        children: [
+          ProfileHeader(agent: value.agent, instance: value.instance),
+          Expanded(
+            child: EmptyGrowthView(
+              onStartChat: () {
+                context.push(
+                  AppRoutes.chatWithParams(
+                    value.agent.localId,
+                    value.agent.instanceId,
+                    source: widget.source,
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.only(bottom: XiaSpacing.s7),
       children: [

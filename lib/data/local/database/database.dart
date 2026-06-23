@@ -223,6 +223,34 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  /// US-020: 清空指定 agent 的对话内容与全部派生缓存，保留 agents/conversations 骨架。
+  ///
+  /// 删除：messages / tool_calls (FK CASCADE) / agent_stats /
+  ///       achievement_unlocks / pending_notifications + FTS5 索引
+  /// 保留：agents / conversations / instances / user_preferences
+  ///
+  /// **为什么保留骨架**：进行中的流式会话在清空后仍会收到 StreamingDone，
+  /// 最终消息 INSERT 依赖 conversation_id 外键存在；删 agents 会 CASCADE
+  /// 删 conversations，导致 INSERT 抛 FK 异常、回复丢失。与 [clearAllContent]
+  /// 相同的设计取舍。
+  ///
+  /// **为什么清 pending_notifications**：该表无 FK，不会随 messages 级联清理。
+  /// 若残留，DND 结束后汇总通知会引用已删除的对话；该表是派生缓存（可由新
+  /// 消息重建），一并清理保持语义完整。
+  ///
+  /// **顺序约束**：`purgeMessagesFtsForAgent` 必须在 `deleteMessagesByAgent`
+  /// 之前——FTS5 'delete' 需要从 content 表（messages）读 rowid+content
+  /// 构造删除项，删消息后就找不到了。
+  Future<void> clearAgentContent(String agentId) async {
+    await transaction(() async {
+      await purgeMessagesFtsForAgent(agentId); // 必须先于 deleteMessagesByAgent
+      await deleteMessagesByAgent(agentId); // tool_calls 经 FK CASCADE 联动
+      await deleteAgentStats(agentId);
+      await deleteAchievementUnlocksForAgent(agentId);
+      await deletePendingNotificationsForAgent(agentId);
+    });
+  }
+
   /// Purge FTS5 entries for all messages in a given conversation.
   ///
   /// Single round-trip FTS5 `'delete'` over a subquery.

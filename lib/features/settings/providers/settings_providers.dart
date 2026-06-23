@@ -97,6 +97,53 @@ final clearCacheActionProvider = Provider<Future<ClearAllResult> Function()>((
   };
 });
 
+/// per-agent 清空动作 Provider (US-020 AC-3)。
+///
+/// 清空指定 agent 的全部对话内容与派生缓存：messages（+ tool_calls 经
+/// FK CASCADE）、agent_stats、achievement_unlocks、pending_notifications、
+/// FTS5 索引。保留 agents/conversations 骨架（理由同 [ISettingsRepo.clearAll]：
+/// 避免破坏进行中流式会话的 FK 约束）。
+///
+/// **不清头像文件**：自定义头像属于 Agent「配置」（与昵称/主题色同等），
+/// 不属于对话派生数据。二次确认对话框已向用户承诺「Agent 配置不受影响」，
+/// 删头像会让磁盘文件与 `agents.avatar_url` 失同步，造成不一致。仅清空
+/// 对话与依赖对话的派生缓存（统计/成就/DND/FTS5）。
+///
+/// 与 [clearCacheActionProvider] 的差异：
+/// - **不设 [clearCacheInProgressProvider]** —— per-agent 清空是 ms 级原子事务，
+///   无半提交窗口；阻止用户打开其他 agent 页面是粒度错配（其他 agent
+///   完全不受影响）。
+final clearAgentContentActionProvider =
+    Provider<Future<void> Function(String agentId)>((ref) {
+      return (agentId) async {
+        final messageRepo = ref.read(messageRepoProvider);
+        final settingsRepo = ref.read(settingsRepoProvider);
+
+        // 1) DB 事务：清 messages/tool_calls(CASCADE)/stats/achievements/
+        //    pending_notifications/FTS5。原子操作，失败抛回 UI 显示错误。
+        await messageRepo.clearAgentContent(agentId);
+
+        // 2) 失效 settings repo 内部的 storage info 缓存（消息数变了）。
+        //    storageInfoProvider 自身有 repo 内部的时间缓存，仅 ref.invalidate
+        //    不足以绕过，需显式清。
+        settingsRepo.invalidateStorageCache();
+
+        // 3) 顶层 FutureProvider 显式 invalidate（不 watch tick，需手动）。
+        ref.invalidate(storageInfoProvider);
+        ref.invalidate(conversationListProvider);
+        ref.invalidate(statsProvider);
+        ref.read(agentSyncTickerProvider.notifier).state++;
+
+        // 4) Push 信号：让 ChatVM 温和 reloadMessages，AgentProfileVM 销毁
+        //    重建。其他 agent 的 VM 也会响应一次（ms 级开销可忽略），换得
+        //    与 clearAll 一致的广播契约。
+        ref.read(cacheClearedTickProvider.notifier).state++;
+
+        // 5) 搜索 VM 内部状态清空（保留 VM 实例本身，丢弃 query/results）。
+        ref.read(searchViewModelProvider.notifier).clear();
+      };
+    });
+
 /// Real-time network connectivity state provider (US-030).
 ///
 /// Wraps [IConnectivity.onConnectivityChanged] in a [StreamProvider] so the
