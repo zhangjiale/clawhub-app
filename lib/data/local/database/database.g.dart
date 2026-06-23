@@ -5693,6 +5693,15 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Future<int> deleteMessagesByAgent(String agentId) {
+    return customUpdate(
+      'DELETE FROM messages WHERE agent_id = ?1',
+      variables: [Variable<String>(agentId)],
+      updates: {messages},
+      updateKind: UpdateKind.delete,
+    );
+  }
+
   Selectable<UserPreference> getUserPreferences() {
     return customSelect(
       'SELECT * FROM user_preferences WHERE id = 1',
@@ -5765,6 +5774,15 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Future<int> deleteAgentStats(String? agentId) {
+    return customUpdate(
+      'DELETE FROM agent_stats WHERE agent_id = ?1',
+      variables: [Variable<String>(agentId)],
+      updates: {agentStats},
+      updateKind: UpdateKind.delete,
+    );
+  }
+
   Selectable<AchievementUnlock> getAchievementUnlocksForAgent(String agentId) {
     return customSelect(
       'SELECT * FROM achievement_unlocks WHERE agent_id = ?1',
@@ -5786,6 +5804,15 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         Variable<int>(unlockedAt),
       ],
       updates: {achievementUnlocks},
+    );
+  }
+
+  Future<int> deleteAchievementUnlocksForAgent(String agentId) {
+    return customUpdate(
+      'DELETE FROM achievement_unlocks WHERE agent_id = ?1',
+      variables: [Variable<String>(agentId)],
+      updates: {achievementUnlocks},
+      updateKind: UpdateKind.delete,
     );
   }
 
@@ -5854,6 +5881,15 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         Variable<String>(messageServerId),
       ],
       updates: {pendingNotifications},
+    );
+  }
+
+  Future<int> deletePendingNotificationsForAgent(String agentId) {
+    return customUpdate(
+      'DELETE FROM pending_notifications WHERE agent_id = ?1',
+      variables: [Variable<String>(agentId)],
+      updates: {pendingNotifications},
+      updateKind: UpdateKind.delete,
     );
   }
 

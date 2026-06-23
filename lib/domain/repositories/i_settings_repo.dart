@@ -30,6 +30,14 @@ abstract class ISettingsRepo {
   /// 不依赖文件系统访问,因此跨平台安全。
   Future<StorageInfo> getStorageInfo();
 
+  /// 失效 [getStorageInfo] 的内部缓存。
+  ///
+  /// 实现可能对 [getStorageInfo] 做时间缓存以避免频繁 PRAGMA 调用；在批量
+  /// 增删消息（如 [clearAll] 或 per-agent 清空）后，调用方必须先失效该缓存，
+  /// 否则下次 [getStorageInfo] 仍返回陈旧的计数/大小。无内部缓存的实现应为
+  /// 空实现。
+  void invalidateStorageCache();
+
   /// 清空所有聊天内容(US-030 清除缓存)。
   ///
   /// **范围**:

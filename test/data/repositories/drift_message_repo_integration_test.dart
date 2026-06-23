@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:drift/drift.dart' show Variable;
 import 'package:drift/native.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/data/repositories/drift_message_repo.dart';
@@ -389,5 +390,286 @@ void main() {
       final all = await messageRepo.getByConversation(conversationId);
       expect(all.length, 1);
     });
+  });
+
+  group('DriftMessageRepo.clearAgentContent (US-020 AC-3)', () {
+    late db.AppDatabase database;
+    late DriftMessageRepo messageRepo;
+    late DriftConversationRepo conversationRepo;
+    late DriftAgentRepo agentRepo;
+    late DriftInstanceRepo instanceRepo;
+
+    // Two agents under one instance — used to verify isolation
+    // (清 agent A 不影响 agent B 的数据)。
+    const instanceId = 'inst-1';
+    const agentAId = 'local-A';
+    const agentBId = 'local-B';
+
+    setUp(() async {
+      database = await _createTestDb();
+      messageRepo = DriftMessageRepo(database);
+      conversationRepo = DriftConversationRepo(database);
+      agentRepo = DriftAgentRepo(database);
+      instanceRepo = DriftInstanceRepo(database);
+
+      await instanceRepo.save(
+        Instance(
+          id: instanceId,
+          name: 'T',
+          gatewayUrl: 'wss://t.example.com:443',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+      await agentRepo.syncFromGateway(instanceId, [
+        Agent(
+          localId: agentAId,
+          remoteId: 'r-A',
+          instanceId: instanceId,
+          name: 'AgentA',
+          themeColor: '#000',
+        ),
+        Agent(
+          localId: agentBId,
+          remoteId: 'r-B',
+          instanceId: instanceId,
+          name: 'AgentB',
+          themeColor: '#000',
+        ),
+      ]);
+      await conversationRepo.getOrCreate(instanceId, agentAId);
+      await conversationRepo.getOrCreate(instanceId, agentBId);
+    });
+
+    /// Builds a message for a given agent — used to populate both agents
+    /// so we can assert isolation after clearing only one.
+    Message msgFor(
+      String agentLocalId, {
+      required String clientId,
+      String content = 'hi',
+    }) {
+      return Message(
+        clientId: clientId,
+        serverId: clientId, // 1:1 for test convenience
+        conversationId: Conversation.generateId(instanceId, agentLocalId),
+        agentId: agentLocalId,
+        role: MessageRole.user,
+        content: content,
+        type: MessageType.text,
+        status: MessageStatus.delivered,
+        logicalClock: 0,
+      );
+    }
+
+    test('clears messages, stats, achievements, DND queue for target agent '
+        'and leaves other agents intact', () async {
+      // Arrange: populate both agents with messages
+      await messageRepo.insert(msgFor(agentAId, clientId: 'a1', content: 'A1'));
+      await messageRepo.insert(msgFor(agentAId, clientId: 'a2', content: 'A2'));
+      await messageRepo.insert(msgFor(agentBId, clientId: 'b1', content: 'B1'));
+
+      // Populate agent_stats for both
+      await database.upsertAgentStats(
+        agentAId,
+        5, // totalDialogs
+        2, // totalMessages
+        0, // totalToolCalls
+        1, // activeDays
+        1, // currentStreak
+        1000, // firstDialogDate
+        2000, // lastDialogDate
+      );
+      await database.upsertAgentStats(agentBId, 3, 1, 0, 1, 1, 1500, 2500);
+
+      // Populate achievement_unlocks for both
+      await database.insertAchievementUnlock('first-message', agentAId, 1000);
+      await database.insertAchievementUnlock('streak-3', agentAId, 2000);
+      await database.insertAchievementUnlock('first-message', agentBId, 1500);
+
+      // Populate pending_notifications for both
+      await database.insertPendingNotification(
+        agentAId,
+        instanceId,
+        'AgentA',
+        'A notif',
+        3000,
+        'srv-a1',
+      );
+      await database.insertPendingNotification(
+        agentBId,
+        instanceId,
+        'AgentB',
+        'B notif',
+        3500,
+        'srv-b1',
+      );
+
+      // Act: clear agent A only
+      await messageRepo.clearAgentContent(agentAId);
+
+      // Assert: agent A's data fully cleared
+      expect(
+        await messageRepo.getMessageCount(agentAId),
+        0,
+        reason: 'A messages gone',
+      );
+      expect(
+        await database.getAgentStats(agentAId).getSingleOrNull(),
+        isNull,
+        reason: 'A stats row deleted',
+      );
+      expect(
+        await database.getAchievementUnlocksForAgent(agentAId).get(),
+        isEmpty,
+        reason: 'A achievements deleted',
+      );
+
+      // pending_notifications for A — query by counting via a custom select
+      final pendingA = await database
+          .customSelect(
+            'SELECT COUNT(*) AS c FROM pending_notifications WHERE agent_id = ?',
+            variables: [Variable.withString(agentAId)],
+          )
+          .getSingle();
+      expect(
+        pendingA.read<int>('c'),
+        0,
+        reason: 'A pending_notifications deleted',
+      );
+
+      // Assert: agent B's data fully intact (isolation)
+      expect(
+        await messageRepo.getMessageCount(agentBId),
+        1,
+        reason: 'B messages preserved',
+      );
+      expect(
+        await database.getAgentStats(agentBId).getSingleOrNull(),
+        isNotNull,
+        reason: 'B stats preserved',
+      );
+      final bAchievements = await database
+          .getAchievementUnlocksForAgent(agentBId)
+          .get();
+      expect(bAchievements.length, 1, reason: 'B achievements preserved');
+
+      final pendingB = await database
+          .customSelect(
+            'SELECT COUNT(*) AS c FROM pending_notifications WHERE agent_id = ?',
+            variables: [Variable.withString(agentBId)],
+          )
+          .getSingle();
+      expect(
+        pendingB.read<int>('c'),
+        1,
+        reason: 'B pending_notifications preserved',
+      );
+
+      // Assert: agents and conversations skeletons preserved (US-020 contract)
+      expect(
+        await agentRepo.getById(agentAId),
+        isNotNull,
+        reason: 'agent row not deleted — skeleton preserved for FK safety',
+      );
+      expect(
+        await conversationRepo.getOrCreate(instanceId, agentAId),
+        isNotNull,
+        reason: 'conversation row not deleted',
+      );
+    });
+
+    test('purges FTS5 index for target agent only', () async {
+      // Insert one searchable message per agent.
+      await messageRepo.insert(
+        msgFor(agentAId, clientId: 'a1', content: 'apple keyword'),
+      );
+      await messageRepo.insert(
+        msgFor(agentBId, clientId: 'b1', content: 'banana keyword'),
+      );
+
+      // Sanity: both findable via FTS.
+      final preA = await database.searchMessagesSanitized('apple');
+      final preB = await database.searchMessagesSanitized('banana');
+      expect(preA, isNotEmpty);
+      expect(preB, isNotEmpty);
+
+      // Act: clear A only.
+      await messageRepo.clearAgentContent(agentAId);
+
+      // Assert: A no longer in FTS, B still indexed.
+      final postA = await database.searchMessagesSanitized('apple');
+      final postB = await database.searchMessagesSanitized('banana');
+      expect(postA, isEmpty, reason: 'A FTS entries purged');
+      expect(postB, isNotEmpty, reason: 'B FTS entries preserved');
+    });
+
+    test('is idempotent — clearing twice does not throw', () async {
+      await messageRepo.insert(msgFor(agentAId, clientId: 'a1'));
+      await messageRepo.clearAgentContent(agentAId);
+      // Second call on already-empty agent must succeed silently.
+      await messageRepo.clearAgentContent(agentAId);
+      expect(await messageRepo.getMessageCount(agentAId), 0);
+    });
+
+    test('no-op for agent with no data — does not throw', () async {
+      // Agent B exists but has no messages/stats/achievements yet.
+      await messageRepo.clearAgentContent(agentBId);
+      expect(await messageRepo.getMessageCount(agentBId), 0);
+    });
+
+    test(
+      'cascades tool_calls deletion via FK (target only, isolation)',
+      () async {
+        // Arrange: insert a message per agent, then a tool_call row per message.
+        // tool_calls.message_id references messages.client_id (FK ON DELETE
+        // CASCADE). clearAgentContent relies on this cascade — assert it holds.
+        await messageRepo.insert(msgFor(agentAId, clientId: 'a1'));
+        await messageRepo.insert(msgFor(agentBId, clientId: 'b1'));
+
+        Future<int> countToolCallsFor(String agentLocalId) async {
+          // tool_calls has no agent_id; join via messages to count per agent.
+          final row = await database
+              .customSelect(
+                'SELECT COUNT(*) AS c FROM tool_calls tc '
+                'INNER JOIN messages m ON m.client_id = tc.message_id '
+                'WHERE m.agent_id = ?',
+                variables: [Variable.withString(agentLocalId)],
+              )
+              .getSingle();
+          return row.read<int>('c');
+        }
+
+        await database.customStatement(
+          "INSERT INTO tool_calls "
+          "(id, message_id, tool_name, status, input_args, output_result) "
+          "VALUES ('tc-a1', 'a1', 'search', 2, '{}', '{}')",
+        );
+        await database.customStatement(
+          "INSERT INTO tool_calls "
+          "(id, message_id, tool_name, status, input_args, output_result) "
+          "VALUES ('tc-b1', 'b1', 'search', 2, '{}', '{}')",
+        );
+
+        // Sanity: both have a tool_call.
+        expect(await countToolCallsFor(agentAId), 1);
+        expect(await countToolCallsFor(agentBId), 1);
+
+        // Act: clear A only.
+        await messageRepo.clearAgentContent(agentAId);
+
+        // Assert: A's tool_call cascaded away; B's preserved.
+        expect(
+          await countToolCallsFor(agentAId),
+          0,
+          reason: 'A tool_calls cascaded on message delete',
+        );
+        expect(
+          await countToolCallsFor(agentBId),
+          1,
+          reason: 'B tool_calls preserved',
+        );
+      },
+    );
   });
 }

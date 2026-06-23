@@ -96,6 +96,16 @@ abstract class IMessageRepo {
   /// 删除消息（仅本地）
   Future<void> deleteByClientId(String clientId);
 
+  /// US-020 AC-3：清空指定 Agent 的对话内容与全部派生缓存。
+  ///
+  /// 删除范围：messages（+ tool_calls 经 FK CASCADE）、agent_stats、
+  /// achievement_unlocks、pending_notifications、FTS5 索引。
+  /// 保留：agents / conversations 骨架（避免破坏进行中流式会话的 FK 约束，
+  /// 与 [clearAllContent] 一致的取舍）。
+  ///
+  /// 实现必须在单一事务内执行，要么全部成功要么全部回滚。
+  Future<void> clearAgentContent(String agentId);
+
   /// 批量插入消息，同时按 clientId 和 serverId 去重（US-016 AC-2）。
   ///
   /// 跳过已有 clientId 或 serverId 的消息。在单次事务中执行 INSERT + FTS5 同步。

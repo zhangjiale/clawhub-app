@@ -97,6 +97,7 @@ class DriftSettingsRepo implements ISettingsRepo {
   /// Invalidate the storage info cache so the next [getStorageInfo] call
   /// will re-read from the database.  Call this after bulk message
   /// inserts or deletes that materially change the count.
+  @override
   void invalidateStorageCache() {
     _cachedStorageInfo = null;
     _cacheTimestamp = null;

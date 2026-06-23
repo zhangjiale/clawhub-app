@@ -348,6 +348,11 @@ WHERE agent_id = :agentId
 
 deleteMessageByClientId: DELETE FROM messages WHERE client_id = :clientId;
 
+-- US-020: per-agent 清空入口。删除指定 agent 的全部消息。
+-- tool_calls 经 FOREIGN KEY ... ON DELETE CASCADE 级联清理（schema 第 7 行）。
+-- FTS5 索引不会自动联动 messages 删除，需调用方先调 purgeMessagesFtsForAgent。
+deleteMessagesByAgent: DELETE FROM messages WHERE agent_id = :agentId;
+
 -- ============================================================
 -- 7. User Preferences — Singleton global settings (one row)
 -- ============================================================
@@ -417,6 +422,9 @@ INSERT OR REPLACE INTO agent_stats
 VALUES (:agentId, :totalDialogs, :totalMessages, :totalToolCalls,
         :activeDays, :currentStreak, :firstDialogDate, :lastDialogDate);
 
+-- US-020: per-agent 清空。删除指定 agent 的预计算统计行。
+deleteAgentStats: DELETE FROM agent_stats WHERE agent_id = :agentId;
+
 -- Named queries: Achievement Unlocks
 getAchievementUnlocksForAgent:
 SELECT * FROM achievement_unlocks WHERE agent_id = :agentId;
@@ -425,6 +433,10 @@ insertAchievementUnlock:
 INSERT OR IGNORE INTO achievement_unlocks
     (achievement_id, agent_id, unlocked_at)
 VALUES (:achievementId, :agentId, :unlockedAt);
+
+-- US-020: per-agent 清空。删除指定 agent 的全部成就解锁记录（回退为锁定态）。
+deleteAchievementUnlocksForAgent:
+DELETE FROM achievement_unlocks WHERE agent_id = :agentId;
 
 -- ============================================================
 -- 10. Pending Notifications — DND silenced queue (US-018 AC-3)
@@ -472,3 +484,9 @@ INSERT INTO pending_notifications
     (agent_id, instance_id, agent_name, summary, created_at, message_server_id, delivered)
 VALUES (:agentId, :instanceId, :agentName, :summary, :createdAt, :messageServerId, 0)
 ON CONFLICT DO NOTHING;
+
+-- US-020: per-agent 清空。删除指定 agent 的全部 DND 静默队列条目。
+-- 不清会让 DND 汇总通知引用已删除的消息（pending_notifications 无 FK 不会
+-- 级联，必须显式删）。
+deletePendingNotificationsForAgent:
+DELETE FROM pending_notifications WHERE agent_id = :agentId;
