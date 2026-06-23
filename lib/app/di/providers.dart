@@ -520,6 +520,7 @@ final messageCatchUpServiceProvider = Provider<MessageCatchUpService>((ref) {
 final saveInstanceUseCaseProvider = Provider<SaveInstanceUseCase>((ref) {
   return SaveInstanceUseCase(
     instanceRepo: ref.watch(instanceRepoProvider),
+    agentRepo: ref.watch(agentRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
     lifecycle: ref.watch(connectionOrchestratorProvider),
     logger: ref.watch(loggerProvider),
