@@ -151,11 +151,28 @@ class OutboxProcessor {
         // → 死循环到 24h 过期。tombstoned agent 仍存在于 DB（getById 不过滤，
         // 见 US-021 契约），故原 `agent == null` guard 不够，必须加 isRemoved。
         if (agent == null || agent.isRemoved) {
-          _logger.info(
-            '[OutboxProcessor] Skipped: agent ${message.agentId} '
-            '${agent == null ? "not found" : "tombstoned"} '
-            'for message ${message.clientId}',
-          );
+          // US-021 v1.1: tombstoned / missing agent 的消息转 EXPIRED 而非
+          // 继续留在 outbox（避免 PENDING 计数 24h 卡死）。对齐同函数 24h
+          // 过期分支的 updateStatus(expired) 模式。批量写入留给 v2 spec。
+          try {
+            await _messageRepo.updateStatus(
+              message.clientId,
+              MessageStatus.expired,
+            );
+            _logger.info(
+              '[OutboxProcessor] Marked expired (agent ${message.agentId} '
+              '${agent == null ? "not found" : "tombstoned"}): '
+              '${message.clientId}',
+            );
+          } catch (e, st) {
+            // 不抛：不让单条消息失败阻塞后续消息，与现有 24h 分支对齐。
+            // 24h 自然过期兜底；监控通过 _logger.error 抓异常。
+            _logger.error(
+              '[OutboxProcessor] Failed to EXPIRE tombstoned-agent message '
+              '${message.clientId}: $e',
+              st,
+            );
+          }
           continue;
         }
 

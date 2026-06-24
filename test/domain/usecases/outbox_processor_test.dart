@@ -661,4 +661,113 @@ void main() {
       verify(() => messageRepo.tryTransitionToSending('ma2', any())).called(1);
     });
   });
+
+  group('flushOutbox - tombstone → EXPIRED (US-021 v1.1)', () {
+    test(
+      'transitions PENDING message to EXPIRED when agent is tombstoned',
+      () async {
+        // Arrange: tombstoned agent + PENDING message
+        final tombstonedAgent = Agent(
+          localId: _testAgentLocalId,
+          remoteId: _testAgentRemoteId,
+          instanceId: _testInstanceId,
+          name: '产品虾',
+          themeColor: '#6c5ce7',
+          removedAt: 1719200000000, // US-021 tombstone
+        );
+        when(
+          () => agentRepo.getById(_testAgentLocalId),
+        ).thenAnswer((_) async => tombstonedAgent);
+        when(
+          () => instanceRepo.getById(_testInstanceId),
+        ).thenAnswer((_) async => _onlineInstance());
+        when(() => messageRepo.getOutboxByInstance(_testInstanceId)).thenAnswer(
+          (_) async => [
+            _msg(
+              clientId: 'msg-1',
+              logicalClock: 1,
+              status: MessageStatus.pending,
+            ),
+          ],
+        );
+        when(() => messageRepo.updateStatus(any(), any())).thenAnswer(
+          (inv) async => _msg(
+            clientId: inv.positionalArguments[0] as String,
+            logicalClock: 1,
+            status: inv.positionalArguments[1] as MessageStatus,
+          ),
+        );
+
+        // Act
+        await processor.flushOutbox(_testInstanceId);
+
+        // Assert: tombstoned-skip path must transition to EXPIRED, not just
+        // continue (避免 PENDING 计数 24h 卡死)。
+        verify(
+          () => messageRepo.updateStatus('msg-1', MessageStatus.expired),
+        ).called(1);
+      },
+    );
+
+    test(
+      'alive agent does NOT trigger updateStatus (regression guard)',
+      () async {
+        final aliveAgent = Agent(
+          localId: _testAgentLocalId,
+          remoteId: _testAgentRemoteId,
+          instanceId: _testInstanceId,
+          name: '产品虾',
+          themeColor: '#6c5ce7',
+        );
+        when(
+          () => agentRepo.getById(_testAgentLocalId),
+        ).thenAnswer((_) async => aliveAgent);
+        when(
+          () => instanceRepo.getById(_testInstanceId),
+        ).thenAnswer((_) async => _onlineInstance());
+        when(() => messageRepo.getOutboxByInstance(_testInstanceId)).thenAnswer(
+          (_) async => [
+            _msg(
+              clientId: 'msg-1',
+              logicalClock: 1,
+              status: MessageStatus.pending,
+            ),
+          ],
+        );
+        // OutboxProcessor delegates to real SendMessageUseCase.retry which
+        // calls tryTransitionToSending + gatewayClient.sendMessage. Stub those
+        // to let the alive-agent branch complete normally without sending.
+        when(
+          () => messageRepo.tryTransitionToSending(any(), any()),
+        ).thenAnswer((_) async => true);
+        when(() => messageRepo.getByClientId(any())).thenAnswer(
+          (inv) async => _msg(
+            clientId: inv.positionalArguments[0] as String,
+            logicalClock: 1,
+            status: MessageStatus.sending,
+          ),
+        );
+        when(
+          () => gatewayClient.sendMessage(
+            instanceId: any(named: 'instanceId'),
+            agentId: any(named: 'agentId'),
+            message: any(named: 'message'),
+          ),
+        ).thenAnswer((_) async => (serverId: 'srv-1', timestamp: 1));
+        when(() => messageRepo.bindServerId(any(), any())).thenAnswer(
+          (inv) async => _msg(
+            clientId: inv.positionalArguments[0] as String,
+            logicalClock: 1,
+            status: MessageStatus.sent,
+          ),
+        );
+
+        // Act
+        await processor.flushOutbox(_testInstanceId);
+
+        // Assert: updateStatus must NOT be called for alive agent (regression)
+        verifyNever(() => messageRepo.updateStatus(any(), any()));
+      },
+    );
+  });
 }
