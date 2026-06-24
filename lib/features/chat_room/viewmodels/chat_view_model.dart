@@ -64,6 +64,18 @@ class ChatSessionState {
   /// 使用 [CopyWithSentinel] 以支持显式清空。
   final String? highlightedQuery;
 
+  /// US-021 AC8: 当前 agent 是否已被 Gateway 端删除（tombstoned）。
+  ///
+  /// 这是 ChatSessionState 的响应式字段 —— 与 [_agent]（私有缓存，
+  /// 非响应式）解耦。后台 sync tombstone 时由 [refreshAgent]（监听
+  /// agentSyncTickerProvider）刷新此字段，UI 通过 ref.watch 自然重建、
+  /// 渲染"已移除"占位页。
+  ///
+  /// 不把整个 [Agent] 放入 state：Agent.== 仅比较 localId（不含 removedAt），
+  /// tombstone 后 state 看似不变 → Riverpod 不通知重建 → AC8 占位页失效。
+  /// 故用独立 bool 驱动，所有 [_agent] 写入点必须同步此字段。
+  final bool isAgentRemoved;
+
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
@@ -74,6 +86,7 @@ class ChatSessionState {
     this.retryFeedback,
     this.highlightedMessageId,
     this.highlightedQuery,
+    this.isAgentRemoved = false,
   });
 
   ChatSessionState copyWith({
@@ -88,6 +101,7 @@ class ChatSessionState {
     Object? retryFeedback = CopyWithSentinel.instance,
     Object? highlightedMessageId = CopyWithSentinel.instance,
     Object? highlightedQuery = CopyWithSentinel.instance,
+    bool? isAgentRemoved,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -105,6 +119,7 @@ class ChatSessionState {
         highlightedQuery,
         this.highlightedQuery,
       ),
+      isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
     );
   }
 
@@ -120,7 +135,8 @@ class ChatSessionState {
           outboxCount == other.outboxCount &&
           retryFeedback == other.retryFeedback &&
           highlightedMessageId == other.highlightedMessageId &&
-          highlightedQuery == other.highlightedQuery;
+          highlightedQuery == other.highlightedQuery &&
+          isAgentRemoved == other.isAgentRemoved;
 
   @override
   int get hashCode => Object.hash(
@@ -133,6 +149,7 @@ class ChatSessionState {
     retryFeedback,
     highlightedMessageId,
     highlightedQuery,
+    isAgentRemoved,
   );
 }
 
@@ -270,6 +287,15 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// The loaded agent (null until [init] completes).
   Agent? get agent => _agent;
 
+  /// US-021: 把当前 [_agent] 的 tombstone 状态同步进 [ChatSessionState]。
+  ///
+  /// 必须在**每个** `_agent =` 写入点之后调用，使 `state.isAgentRemoved`
+  /// 始终反映最新缓存。AC8 占位页靠此字段响应式重建 —— 若漏调某写入点，
+  /// 该路径下占位页会与真实状态脱节。
+  void _syncAgentRemoved() {
+    _updateState((s) => s.copyWith(isAgentRemoved: _agent?.isRemoved ?? false));
+  }
+
   late final String _conversationId = Conversation.generateId(
     instanceId,
     agentId,
@@ -285,6 +311,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     try {
       // 1. Look up the agent
       _agent = await _agentRepo.getById(agentId);
+      _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（null → false）
       if (_agent == null) {
         debugPrint(
           '[ChatViewModel] Agent not found: agentId=$agentId, '
@@ -532,6 +559,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       _initFuture = null;
       // Signal to send() that the agent is unavailable (shows LoadError).
       _agent = null;
+      // US-021 v1.1: 显式调 _syncAgentRemoved() 重置 isAgentRemoved = false，
+      // 避免上轮 tombstone 状态残留导致 AC8 占位页错乱。
+      // 与 init() line 314 / send() line 634 / refreshAgent() line 878 的
+      // `_agent =` 写入点同模式，SSOT 单一来源。
+      _syncAgentRemoved();
     }
   }
 
@@ -602,6 +634,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       return;
     }
     _agent = freshAgent;
+    _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（send 重查后状态可能变）
 
     // Start a fresh streaming subscription for this send — any stale
     // events from the previous subscription were already cancelled above.
@@ -826,6 +859,28 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     await _loadMessages();
   }
 
+  /// US-021 AC8 响应式入口：重查 agent 最新状态并同步 [ChatSessionState]。
+  ///
+  /// 由 provider 侧 `ref.listen(agentSyncTickerProvider)` 在 agents 同步
+  /// 完成后调用。用户在 ChatRoom 停留期间，后台 [syncFromGateway] 可能
+  /// 把 agent tombstone（远端删除）或复活（远端重新出现）—— 此方法把
+  /// 该变化反映到 `state.isAgentRemoved`，使 AC8 占位页响应式重建。
+  ///
+  /// init 未启动时直接返回（等首次进入再判定），init 失败的错误吞掉由
+  /// [send] 兜底显示。StateNotifier 在 dispose 后写 state 会抛 StateError，
+  /// 与 `init()` / `send()` 中的 `_agentRepo.getById` 失败处理对齐。
+  Future<void> refreshAgent() async {
+    final initFuture = _initFuture;
+    if (initFuture == null) return;
+    try {
+      await initFuture;
+    } catch (_) {
+      return; // init 失败：send() 会兜底
+    }
+    _agent = await _agentRepo.getById(agentId);
+    _syncAgentRemoved();
+  }
+
   // ============================================================
   // SECTION 4: Retry + highlight + connection recovery
   // ============================================================
@@ -956,7 +1011,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _initFuture = null;
     _agent = null;
     _updateState(
-      (s) => s.copyWith(messages: const LoadInProgress(), streamingText: ''),
+      (s) => s.copyWith(
+        messages: const LoadInProgress(),
+        streamingText: '',
+        isAgentRemoved: false, // US-021: retry 重置 tombstone 状态，init() 后会再同步
+      ),
     );
     await init();
   }
