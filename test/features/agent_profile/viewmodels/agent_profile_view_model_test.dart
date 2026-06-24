@@ -766,5 +766,185 @@ void main() {
         expect(vm.state.saveSuccess, false);
       });
     });
+
+    // ============================================================
+    // US-021 v1.1: AgentProfileState.isAgentRemoved + write guards
+    // ============================================================
+    group('US-021 tombstone reactive state', () {
+      final tombAgent = Agent(
+        localId: 'local-1',
+        remoteId: 'remote-1',
+        instanceId: 'inst-1',
+        name: '产品虾',
+        themeColor: '#6c5ce7',
+        removedAt: 1719200000000,
+      );
+
+      test('isAgentRemoved defaults to false on fresh VM', () {
+        final vm = createVM();
+        expect(
+          vm.state.isAgentRemoved,
+          isFalse,
+          reason:
+              '新建 VM 时 isAgentRemoved 必须为 false，'
+              '避免初始化前误显示 tombstone 占位页',
+        );
+      });
+
+      test(
+        'refresh() syncs isAgentRemoved=true when agent is tombstoned',
+        () async {
+          when(
+            () => agentRepo.getById('local-1'),
+          ).thenAnswer((_) async => tombAgent);
+          when(
+            () => instanceRepo.getById('inst-1'),
+          ).thenAnswer((_) async => null);
+          when(
+            () => messageRepo.getMessageCount('local-1'),
+          ).thenAnswer((_) async => 0);
+
+          final vm = createVM();
+          await vm.init();
+
+          expect(
+            vm.state.isAgentRemoved,
+            isTrue,
+            reason:
+                'init 时若 agent 已是 tombstone 状态，'
+                'isAgentRemoved 必须同步为 true，驱动占位页',
+          );
+        },
+      );
+
+      test('saveProfile blocked when agent is tombstoned '
+          '(updateFullProfile not called)', () async {
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => tombAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+
+        final vm = createVM();
+        await vm.init();
+        expect(vm.state.isAgentRemoved, isTrue); // sanity
+
+        await vm.saveProfile(nickname: 'ignored');
+
+        // ★ tombstone guard：禁止写入
+        verifyNever(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            nickname: any(named: 'nickname'),
+            avatarUrl: any(named: 'avatarUrl'),
+            themeColor: any(named: 'themeColor'),
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        );
+        // 不进入 isSaving（早返回，未触发状态机）
+        expect(vm.state.isSaving, isFalse);
+        expect(vm.state.saveSuccess, isFalse);
+        expect(vm.state.saveError, isNull);
+      });
+
+      test('updateAvatar blocked when agent is tombstoned '
+          '(storage service not called)', () async {
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => tombAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+
+        final vm = createVM();
+        await vm.init();
+        expect(vm.state.isAgentRemoved, isTrue); // sanity
+
+        await vm.updateAvatar(Uint8List.fromList([1, 2, 3]));
+
+        // ★ tombstone guard：禁止写入
+        verifyNever(() => avatarStorageService.saveAvatar(any(), any()));
+        verifyNever(
+          () => agentRepo.updateLocalProfile(
+            'local-1',
+            avatarUrl: any(named: 'avatarUrl'),
+          ),
+        );
+        expect(vm.state.isSaving, isFalse);
+        expect(vm.state.saveError, isNull);
+      });
+
+      test('removeAvatar blocked when agent is tombstoned '
+          '(clearAvatar not called)', () async {
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => tombAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+
+        final vm = createVM();
+        await vm.init();
+        expect(vm.state.isAgentRemoved, isTrue); // sanity
+
+        await vm.removeAvatar();
+
+        // ★ tombstone guard：禁止写入
+        verifyNever(() => avatarStorageService.deleteAvatar(any()));
+        verifyNever(() => agentRepo.clearAvatar(any()));
+        expect(vm.state.isSaving, isFalse);
+        expect(vm.state.saveError, isNull);
+      });
+
+      test('refreshAgent reacts to backend sync: '
+          'tombstoned-then-revived updates isAgentRemoved', () async {
+        // init 时是 alive agent
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+
+        final vm = createVM();
+        await vm.init();
+        expect(vm.state.isAgentRemoved, isFalse);
+
+        // 后台 sync 把 agent tombstone 了
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => tombAgent);
+        await vm.refreshAgent();
+        expect(
+          vm.state.isAgentRemoved,
+          isTrue,
+          reason: 'refreshAgent 应在 sync 后捕获到 tombstone 状态',
+        );
+
+        // 复活（agent 重新出现在 Gateway）
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        await vm.refreshAgent();
+        expect(
+          vm.state.isAgentRemoved,
+          isFalse,
+          reason: '复活后 refreshAgent 必须清除 tombstone 标记',
+        );
+      });
+    });
   });
 }

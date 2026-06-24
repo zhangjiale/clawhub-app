@@ -79,12 +79,18 @@ class AgentProfileState {
   final bool saveSuccess;
   final List<Achievement> newUnlocks; // freshly unlocked this session
 
+  /// US-021 v1.1: 当前 agent 是否已被 Gateway 端删除（tombstoned）。
+  /// 响应式字段 —— 与 ChatSessionState.isAgentRemoved 模式一致。
+  /// 任何 `_agent =` 写入点必须同步此字段（_syncAgentRemoved helper）。
+  final bool isAgentRemoved;
+
   const AgentProfileState({
     this.detailLoadState = const LoadInProgress(),
     this.isSaving = false,
     this.saveError,
     this.saveSuccess = false,
     this.newUnlocks = const [],
+    this.isAgentRemoved = false,
   });
 
   /// copyWith 使用 [CopyWithSentinel] 区分 "未传参" 和 "显式传 null"，
@@ -95,6 +101,7 @@ class AgentProfileState {
     Object? saveError = CopyWithSentinel.instance,
     bool? saveSuccess,
     List<Achievement>? newUnlocks,
+    bool? isAgentRemoved,
   }) {
     return AgentProfileState(
       detailLoadState: detailLoadState ?? this.detailLoadState,
@@ -102,6 +109,7 @@ class AgentProfileState {
       saveError: copyWithNullable(saveError, this.saveError),
       saveSuccess: saveSuccess ?? this.saveSuccess,
       newUnlocks: newUnlocks ?? this.newUnlocks,
+      isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
     );
   }
 
@@ -113,7 +121,8 @@ class AgentProfileState {
           isSaving == other.isSaving &&
           saveError == other.saveError &&
           saveSuccess == other.saveSuccess &&
-          newUnlocks == other.newUnlocks;
+          newUnlocks == other.newUnlocks &&
+          isAgentRemoved == other.isAgentRemoved;
 
   @override
   int get hashCode => Object.hash(
@@ -122,6 +131,7 @@ class AgentProfileState {
     saveError,
     saveSuccess,
     newUnlocks,
+    isAgentRemoved,
   );
 }
 
@@ -141,6 +151,28 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final EvaluateAchievementsUseCase _evaluateAchievements;
   final IAvatarStorageService _avatarStorageService;
   final String agentId;
+
+  /// US-021 v1.1: 私有缓存，与 ChatViewModel._agent 模式一致。
+  /// 用于 write guard 在不重新查库的前提下判断 tombstone 状态。
+  Agent? _agent;
+
+  /// US-021 v1.1: 同步 _agent 的 tombstone 状态到 state.isAgentRemoved。
+  /// 必须在每个 `_agent =` 写入点调用一次（SSOT）。
+  void _syncAgentRemoved() {
+    _updateState((s) => s.copyWith(isAgentRemoved: _agent?.isRemoved ?? false));
+  }
+
+  /// US-021 v1.1: 响应式重查入口。provider 侧 `ref.listen(agentSyncTickerProvider)`
+  /// 在 agents 同步完成后调用，把最新 tombstone 状态写进 state。
+  Future<void> refreshAgent() async {
+    try {
+      _agent = await _agentRepo.getById(agentId);
+    } catch (e, st) {
+      debugPrint('[AgentProfileViewModel] refreshAgent failed: $e\n$st');
+      return;
+    }
+    _syncAgentRemoved();
+  }
 
   /// Optional callback invoked when an avatar file needs cache eviction.
   ///
@@ -179,6 +211,9 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     try {
       final agent = await _agentRepo.getById(agentId);
       if (agent == null) throw AgentNotFoundError(agentId);
+      // US-021 v1.1: 缓存 _agent 并同步 tombstone 状态（SSOT）。
+      _agent = agent;
+      _syncAgentRemoved();
 
       // The four detail-loads below are independent (instance + counts +
       // stats + activity) and only need the already-resolved agent. Run
@@ -270,6 +305,14 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     String? avatarUrl,
     List<QuickCommand>? quickCommands,
   }) async {
+    // US-021 v1.1: tombstoned agent 拒绝保存 —— 防止后端已删除但用户
+    // 仍能编辑/保存造成 DB 与 Gateway 不一致。
+    if (_agent?.isRemoved ?? false) {
+      debugPrint(
+        '[AgentProfileViewModel] saveProfile blocked: agent tombstoned',
+      );
+      return;
+    }
     if (state.isSaving) return;
     _updateState(
       (s) => s.copyWith(isSaving: true, saveError: null, saveSuccess: false),
@@ -298,6 +341,13 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   /// [imageBytes] 应为已压缩的 JPEG 字节（由 [ImagePicker] 的
   /// maxWidth/maxHeight/imageQuality 参数在选取时完成压缩）。
   Future<void> updateAvatar(Uint8List imageBytes) async {
+    // US-021 v1.1: tombstoned agent 拒绝写入头像。
+    if (_agent?.isRemoved ?? false) {
+      debugPrint(
+        '[AgentProfileViewModel] updateAvatar blocked: agent tombstoned',
+      );
+      return;
+    }
     return _runAvatarOp(
       opTag: 'save',
       errLabel: '头像保存失败，请重试',
@@ -329,6 +379,13 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
 
   /// 移除头像 — 删除文件 + 清空 DB 中的 avatarUrl + 清除缓存。
   Future<void> removeAvatar() async {
+    // US-021 v1.1: tombstoned agent 拒绝清除头像（同样不会触达 DB）。
+    if (_agent?.isRemoved ?? false) {
+      debugPrint(
+        '[AgentProfileViewModel] removeAvatar blocked: agent tombstoned',
+      );
+      return;
+    }
     return _runAvatarOp(
       opTag: 'remove',
       errLabel: '头像移除失败，请重试',
