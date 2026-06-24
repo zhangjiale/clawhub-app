@@ -18,6 +18,14 @@ class Agent {
   final List<QuickCommand> quickCommands; // 预设快捷指令（MVP 从 mock 数据读取）
   final int createdAt; // 创建时间(秒)
 
+  // US-021: Agent tombstone 状态。
+  // removedAt: Gateway sync 独占写入（DriftAgentRepo.syncFromGateway 通过
+  //   batch SQL UPDATE），非空表示远端已删除该 Agent。毫秒时间戳。
+  // hiddenAt: v2 预留（用户主动隐藏），v1 期间无任何写入路径。
+  // 两者均不经 copyWith 修改（见 copyWith 注释），只能通过 mapper 从 DB 读取注入。
+  final int? removedAt;
+  final int? hiddenAt;
+
   Agent({
     required this.localId,
     required this.remoteId,
@@ -30,9 +38,17 @@ class Agent {
     this.isPinned = false,
     this.quickCommands = const [],
     int? createdAt,
+    this.removedAt,
+    this.hiddenAt,
   }) : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000 {
     _validate();
   }
+
+  /// US-021: Agent 是否已被 Gateway 端删除（tombstoned）。
+  bool get isRemoved => removedAt != null;
+
+  /// US-021: Agent 是否已被用户主动隐藏（v2 预留，v1 恒为 false）。
+  bool get isHidden => hiddenAt != null;
 
   void _validate() {
     if (name.trim().isEmpty) {
@@ -57,6 +73,12 @@ class Agent {
   /// 获取显示名称（优先使用用户自定义昵称）
   String get displayName => nickname ?? name;
 
+  // US-021: copyWith 故意 *不* 暴露 removedAt / hiddenAt 参数。
+  // 现有 copyWith 用 `field: field ?? this.field` 模式，无法清空 nullable 字段
+  //（copyWith(removedAt: null) 会被解读为"保持原值"）。若暴露 removedAt 参数，
+  // 未来某人想用 copyWith 清 tombstone 会静默失败。强制所有 tombstone 状态变更
+  // 走 DriftAgentRepo 的 DB 写入路径（mapper 从 DB 读取注入新值）。
+  // 整改 Agent.copyWith 用 CopyWithSentinel 模式是历史欠债，不在 US-021 范围。
   Agent copyWith({
     String? localId,
     String? remoteId,
@@ -82,6 +104,8 @@ class Agent {
       isPinned: isPinned ?? this.isPinned,
       quickCommands: quickCommands ?? this.quickCommands,
       createdAt: createdAt ?? this.createdAt,
+      removedAt: removedAt, // 透传，外部无法覆盖（copyWith 不暴露此参数）
+      hiddenAt: hiddenAt,
     );
   }
 

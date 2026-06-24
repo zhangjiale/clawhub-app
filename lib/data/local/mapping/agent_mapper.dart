@@ -25,6 +25,8 @@ class AgentMapper {
       isPinned: row.isPinned == 1,
       quickCommands: _safeDeserializeQuickCommands(row.quickCommandsJson),
       createdAt: row.createdAt,
+      removedAt: row.removedAt,
+      hiddenAt: row.hiddenAt,
     );
   }
 

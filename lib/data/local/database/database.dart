@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration {
@@ -108,6 +108,13 @@ class AppDatabase extends _$AppDatabase {
             "UPDATE agents SET theme_color = '#4F83FF' "
             "WHERE theme_color = '#007AFF'",
           );
+        }
+        if (from < 6) {
+          // US-021: Agent tombstone 列。nullable add column 是 SQLite O(1)
+          // 操作（只改 schema 不重写行），无需 backfill。removed_at 由
+          // DriftAgentRepo.syncFromGateway 独占写入；hidden_at v1 不写入。
+          await migrator.addColumn(agents, agents.removedAt);
+          await migrator.addColumn(agents, agents.hiddenAt);
         }
       },
     );

@@ -140,6 +140,40 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     // .notifier gives us the ChatViewModel for calling action methods.
     final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;
+    // US-021 AC8: agent 已被 Gateway 删除（tombstoned）时不进入聊天界面 ——
+    // 渲染"已移除"占位页并提示，用户点返回离开。agent 为 null（init 未完成）
+    // 时跳过，等加载完再判断。与 send() 的 AC9 重查互补：AC8 拦"打开已删除
+    // agent"，AC9 拦"停留期间被删"。
+    if (agent != null && agent.isRemoved) {
+      return Scaffold(
+        appBar: AppBar(
+          leading: XiaBackButton(onPressed: _handleBack),
+          title: const Text('虾已移除'),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.delete_outline, size: 48, color: XiaColors.red),
+                const SizedBox(height: 16),
+                const Text(
+                  '该 Agent 已从 Gateway 移除',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  agent.displayName,
+                  style: theme.textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     // 历史同步是否被截断（US-016 AC-2）—— 重连后 catch-up 撞翻页上限时为 true。
     // .select() 限定重建范围：仅当本实例的截断状态变化时才重建此 Widget，
     // 其他实例的 catch-up 完成不会触发无关 ChatRoomPage 重建。
