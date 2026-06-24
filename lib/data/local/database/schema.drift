@@ -35,6 +35,8 @@ CREATE TABLE agents (
     description TEXT,
     is_pinned INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
+    removed_at INTEGER, -- US-021: Gateway sync 独占写入；非空表示远端已删除（毫秒）
+    hidden_at INTEGER,  -- US-021 v2 预留：用户主动隐藏；v1 不写入
     UNIQUE(instance_id, remote_id),
     FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
 );
@@ -164,6 +166,15 @@ UPDATE instances SET health_status = :status WHERE is_local_network = :isLocalNe
 getAgentsByInstance:
 SELECT * FROM agents WHERE instance_id = :instanceId ORDER BY is_pinned DESC, name ASC;
 
+-- US-021: 默认过滤 tombstoned/hidden 的活跃 agent 查询。
+-- 原 getAllAgents / getAgentsByInstance 保留不过滤版（deleteByInstanceId
+-- 清理逻辑及未来"显示已移除"开关会用）。
+getAllActiveAgents:
+SELECT * FROM agents WHERE removed_at IS NULL AND hidden_at IS NULL ORDER BY is_pinned DESC, name ASC;
+
+getActiveAgentsByInstance:
+SELECT * FROM agents WHERE instance_id = :instanceId AND removed_at IS NULL AND hidden_at IS NULL ORDER BY is_pinned DESC, name ASC;
+
 getAllAgents:
 SELECT * FROM agents ORDER BY is_pinned DESC, name ASC;
 
@@ -174,8 +185,8 @@ SELECT * FROM agents WHERE instance_id = :instanceId AND remote_id = :remoteId;
 
 insertAgent:
 INSERT INTO agents
-    (local_id, remote_id, instance_id, name, nickname, avatar_url, theme_color, quick_commands_json, description, is_pinned, created_at)
-VALUES (:localId, :remoteId, :instanceId, :name, :nickname, :avatarUrl, :themeColor, :quickCommandsJson, :description, :isPinned, :createdAt);
+    (local_id, remote_id, instance_id, name, nickname, avatar_url, theme_color, quick_commands_json, description, is_pinned, created_at, removed_at, hidden_at)
+VALUES (:localId, :remoteId, :instanceId, :name, :nickname, :avatarUrl, :themeColor, :quickCommandsJson, :description, :isPinned, :createdAt, :removedAt, :hiddenAt);
 
 updateAgentFromGateway:
 UPDATE agents SET name = :name, description = :description WHERE local_id = :localId;

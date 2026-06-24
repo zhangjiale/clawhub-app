@@ -155,6 +155,58 @@ void main() {
       );
     });
 
+    // US-021 AC9: agent 被 Gateway 端删除（tombstoned）时，send() 应拒发并
+    // 提示，不把消息塞进 outbox（OutboxProcessor 虽会 skip，但用户得不到
+    // 即时反馈，消息会卡 PENDING 到 24h 过期）。
+    test('WHEN agent is tombstoned (removed by Gateway) THEN send refuses '
+        'with LoadError and does NOT enqueue (US-021)', () async {
+      final tombstoned = Agent(
+        localId: 'local-1',
+        remoteId: 'r-1',
+        instanceId: 'inst-1',
+        name: '产品虾',
+        themeColor: '#6c5ce7',
+        removedAt: 1719200000000,
+      );
+      await agentRepo.syncFromGateway('inst-1', [tombstoned]);
+
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://t.example.com:443',
+          tokenRef: 'test-token-ref',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+
+      final vm = createViewModel(instanceId: 'inst-1', agentId: 'local-1');
+      // 不显式调 init —— send() 内部会调
+
+      await vm.send('Hello!');
+
+      final state = vm.state;
+      expect(
+        state.messages,
+        isA<LoadError>(),
+        reason: 'tombstoned agent 应显示 LoadError',
+      );
+      expect(
+        (state.messages as LoadError).error.toString(),
+        contains('removed'),
+        reason: '错误信息应提示 agent 已被移除',
+      );
+      // 关键：不应往 message repo 写入任何消息（不进 outbox）。
+      // send() 成功路径会用 clientId 写入 user message，这里抽查一个
+      // 可能的 clientId 不存在 —— 更稳妥的是验证 repo 里没有任何消息。
+      // InMemoryMessageRepo 无 getAll，用 getByConversation 反查。
+      final convId = Conversation.generateId('inst-1', 'local-1');
+      final msgs = await messageRepo.getByConversation(convId);
+      expect(msgs, isEmpty, reason: 'tombstoned agent 不应产生消息');
+      expect(state.thinkingState, ThinkingState.idle, reason: '不应进入 thinking');
+    });
+
     test('WHEN agent exists but init NOT awaited (race condition) '
         'THEN send awaits init automatically and succeeds', () async {
       // Setup: add agent to repo

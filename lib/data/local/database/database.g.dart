@@ -667,6 +667,28 @@ class Agents extends Table with TableInfo<Agents, Agent> {
     requiredDuringInsert: true,
     $customConstraints: 'NOT NULL',
   );
+  static const VerificationMeta _removedAtMeta = const VerificationMeta(
+    'removedAt',
+  );
+  late final GeneratedColumn<int> removedAt = GeneratedColumn<int>(
+    'removed_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: '',
+  );
+  static const VerificationMeta _hiddenAtMeta = const VerificationMeta(
+    'hiddenAt',
+  );
+  late final GeneratedColumn<int> hiddenAt = GeneratedColumn<int>(
+    'hidden_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: '',
+  );
   @override
   List<GeneratedColumn> get $columns => [
     localId,
@@ -680,6 +702,8 @@ class Agents extends Table with TableInfo<Agents, Agent> {
     description,
     isPinned,
     createdAt,
+    removedAt,
+    hiddenAt,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -773,6 +797,18 @@ class Agents extends Table with TableInfo<Agents, Agent> {
     } else if (isInserting) {
       context.missing(_createdAtMeta);
     }
+    if (data.containsKey('removed_at')) {
+      context.handle(
+        _removedAtMeta,
+        removedAt.isAcceptableOrUnknown(data['removed_at']!, _removedAtMeta),
+      );
+    }
+    if (data.containsKey('hidden_at')) {
+      context.handle(
+        _hiddenAtMeta,
+        hiddenAt.isAcceptableOrUnknown(data['hidden_at']!, _hiddenAtMeta),
+      );
+    }
     return context;
   }
 
@@ -830,6 +866,14 @@ class Agents extends Table with TableInfo<Agents, Agent> {
         DriftSqlType.int,
         data['${effectivePrefix}created_at'],
       )!,
+      removedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}removed_at'],
+      ),
+      hiddenAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}hidden_at'],
+      ),
     );
   }
 
@@ -861,6 +905,10 @@ class Agent extends DataClass implements Insertable<Agent> {
   final String? description;
   final int? isPinned;
   final int createdAt;
+  final int? removedAt;
+
+  /// US-021: Gateway sync 独占写入；非空表示远端已删除（毫秒）
+  final int? hiddenAt;
   const Agent({
     this.localId,
     required this.remoteId,
@@ -873,6 +921,8 @@ class Agent extends DataClass implements Insertable<Agent> {
     this.description,
     this.isPinned,
     required this.createdAt,
+    this.removedAt,
+    this.hiddenAt,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -902,6 +952,12 @@ class Agent extends DataClass implements Insertable<Agent> {
       map['is_pinned'] = Variable<int>(isPinned);
     }
     map['created_at'] = Variable<int>(createdAt);
+    if (!nullToAbsent || removedAt != null) {
+      map['removed_at'] = Variable<int>(removedAt);
+    }
+    if (!nullToAbsent || hiddenAt != null) {
+      map['hidden_at'] = Variable<int>(hiddenAt);
+    }
     return map;
   }
 
@@ -932,6 +988,12 @@ class Agent extends DataClass implements Insertable<Agent> {
           ? const Value.absent()
           : Value(isPinned),
       createdAt: Value(createdAt),
+      removedAt: removedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(removedAt),
+      hiddenAt: hiddenAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(hiddenAt),
     );
   }
 
@@ -954,6 +1016,8 @@ class Agent extends DataClass implements Insertable<Agent> {
       description: serializer.fromJson<String?>(json['description']),
       isPinned: serializer.fromJson<int?>(json['is_pinned']),
       createdAt: serializer.fromJson<int>(json['created_at']),
+      removedAt: serializer.fromJson<int?>(json['removed_at']),
+      hiddenAt: serializer.fromJson<int?>(json['hidden_at']),
     );
   }
   @override
@@ -971,6 +1035,8 @@ class Agent extends DataClass implements Insertable<Agent> {
       'description': serializer.toJson<String?>(description),
       'is_pinned': serializer.toJson<int?>(isPinned),
       'created_at': serializer.toJson<int>(createdAt),
+      'removed_at': serializer.toJson<int?>(removedAt),
+      'hidden_at': serializer.toJson<int?>(hiddenAt),
     };
   }
 
@@ -986,6 +1052,8 @@ class Agent extends DataClass implements Insertable<Agent> {
     Value<String?> description = const Value.absent(),
     Value<int?> isPinned = const Value.absent(),
     int? createdAt,
+    Value<int?> removedAt = const Value.absent(),
+    Value<int?> hiddenAt = const Value.absent(),
   }) => Agent(
     localId: localId.present ? localId.value : this.localId,
     remoteId: remoteId ?? this.remoteId,
@@ -1000,6 +1068,8 @@ class Agent extends DataClass implements Insertable<Agent> {
     description: description.present ? description.value : this.description,
     isPinned: isPinned.present ? isPinned.value : this.isPinned,
     createdAt: createdAt ?? this.createdAt,
+    removedAt: removedAt.present ? removedAt.value : this.removedAt,
+    hiddenAt: hiddenAt.present ? hiddenAt.value : this.hiddenAt,
   );
   Agent copyWithCompanion(AgentsCompanion data) {
     return Agent(
@@ -1022,6 +1092,8 @@ class Agent extends DataClass implements Insertable<Agent> {
           : this.description,
       isPinned: data.isPinned.present ? data.isPinned.value : this.isPinned,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      removedAt: data.removedAt.present ? data.removedAt.value : this.removedAt,
+      hiddenAt: data.hiddenAt.present ? data.hiddenAt.value : this.hiddenAt,
     );
   }
 
@@ -1038,7 +1110,9 @@ class Agent extends DataClass implements Insertable<Agent> {
           ..write('quickCommandsJson: $quickCommandsJson, ')
           ..write('description: $description, ')
           ..write('isPinned: $isPinned, ')
-          ..write('createdAt: $createdAt')
+          ..write('createdAt: $createdAt, ')
+          ..write('removedAt: $removedAt, ')
+          ..write('hiddenAt: $hiddenAt')
           ..write(')'))
         .toString();
   }
@@ -1056,6 +1130,8 @@ class Agent extends DataClass implements Insertable<Agent> {
     description,
     isPinned,
     createdAt,
+    removedAt,
+    hiddenAt,
   );
   @override
   bool operator ==(Object other) =>
@@ -1071,7 +1147,9 @@ class Agent extends DataClass implements Insertable<Agent> {
           other.quickCommandsJson == this.quickCommandsJson &&
           other.description == this.description &&
           other.isPinned == this.isPinned &&
-          other.createdAt == this.createdAt);
+          other.createdAt == this.createdAt &&
+          other.removedAt == this.removedAt &&
+          other.hiddenAt == this.hiddenAt);
 }
 
 class AgentsCompanion extends UpdateCompanion<Agent> {
@@ -1086,6 +1164,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
   final Value<String?> description;
   final Value<int?> isPinned;
   final Value<int> createdAt;
+  final Value<int?> removedAt;
+  final Value<int?> hiddenAt;
   final Value<int> rowid;
   const AgentsCompanion({
     this.localId = const Value.absent(),
@@ -1099,6 +1179,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
     this.description = const Value.absent(),
     this.isPinned = const Value.absent(),
     this.createdAt = const Value.absent(),
+    this.removedAt = const Value.absent(),
+    this.hiddenAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AgentsCompanion.insert({
@@ -1113,6 +1195,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
     this.description = const Value.absent(),
     this.isPinned = const Value.absent(),
     required int createdAt,
+    this.removedAt = const Value.absent(),
+    this.hiddenAt = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : remoteId = Value(remoteId),
        instanceId = Value(instanceId),
@@ -1130,6 +1214,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
     Expression<String>? description,
     Expression<int>? isPinned,
     Expression<int>? createdAt,
+    Expression<int>? removedAt,
+    Expression<int>? hiddenAt,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1144,6 +1230,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
       if (description != null) 'description': description,
       if (isPinned != null) 'is_pinned': isPinned,
       if (createdAt != null) 'created_at': createdAt,
+      if (removedAt != null) 'removed_at': removedAt,
+      if (hiddenAt != null) 'hidden_at': hiddenAt,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1160,6 +1248,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
     Value<String?>? description,
     Value<int?>? isPinned,
     Value<int>? createdAt,
+    Value<int?>? removedAt,
+    Value<int?>? hiddenAt,
     Value<int>? rowid,
   }) {
     return AgentsCompanion(
@@ -1174,6 +1264,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
       description: description ?? this.description,
       isPinned: isPinned ?? this.isPinned,
       createdAt: createdAt ?? this.createdAt,
+      removedAt: removedAt ?? this.removedAt,
+      hiddenAt: hiddenAt ?? this.hiddenAt,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1214,6 +1306,12 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
     if (createdAt.present) {
       map['created_at'] = Variable<int>(createdAt.value);
     }
+    if (removedAt.present) {
+      map['removed_at'] = Variable<int>(removedAt.value);
+    }
+    if (hiddenAt.present) {
+      map['hidden_at'] = Variable<int>(hiddenAt.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1234,6 +1332,8 @@ class AgentsCompanion extends UpdateCompanion<Agent> {
           ..write('description: $description, ')
           ..write('isPinned: $isPinned, ')
           ..write('createdAt: $createdAt, ')
+          ..write('removedAt: $removedAt, ')
+          ..write('hiddenAt: $hiddenAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -5276,6 +5376,22 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     ).asyncMap(agents.mapFromRow);
   }
 
+  Selectable<Agent> getAllActiveAgents() {
+    return customSelect(
+      'SELECT * FROM agents WHERE removed_at IS NULL AND hidden_at IS NULL ORDER BY is_pinned DESC, name ASC',
+      variables: [],
+      readsFrom: {agents},
+    ).asyncMap(agents.mapFromRow);
+  }
+
+  Selectable<Agent> getActiveAgentsByInstance(String instanceId) {
+    return customSelect(
+      'SELECT * FROM agents WHERE instance_id = ?1 AND removed_at IS NULL AND hidden_at IS NULL ORDER BY is_pinned DESC, name ASC',
+      variables: [Variable<String>(instanceId)],
+      readsFrom: {agents},
+    ).asyncMap(agents.mapFromRow);
+  }
+
   Selectable<Agent> getAllAgents() {
     return customSelect(
       'SELECT * FROM agents ORDER BY is_pinned DESC, name ASC',
@@ -5315,9 +5431,11 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     String? description,
     int? isPinned,
     int createdAt,
+    int? removedAt,
+    int? hiddenAt,
   ) {
     return customInsert(
-      'INSERT INTO agents (local_id, remote_id, instance_id, name, nickname, avatar_url, theme_color, quick_commands_json, description, is_pinned, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)',
+      'INSERT INTO agents (local_id, remote_id, instance_id, name, nickname, avatar_url, theme_color, quick_commands_json, description, is_pinned, created_at, removed_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)',
       variables: [
         Variable<String>(localId),
         Variable<String>(remoteId),
@@ -5330,6 +5448,8 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         Variable<String>(description),
         Variable<int>(isPinned),
         Variable<int>(createdAt),
+        Variable<int>(removedAt),
+        Variable<int>(hiddenAt),
       ],
       updates: {agents},
     );
@@ -6200,6 +6320,8 @@ typedef $AgentsCreateCompanionBuilder =
       Value<String?> description,
       Value<int?> isPinned,
       required int createdAt,
+      Value<int?> removedAt,
+      Value<int?> hiddenAt,
       Value<int> rowid,
     });
 typedef $AgentsUpdateCompanionBuilder =
@@ -6215,6 +6337,8 @@ typedef $AgentsUpdateCompanionBuilder =
       Value<String?> description,
       Value<int?> isPinned,
       Value<int> createdAt,
+      Value<int?> removedAt,
+      Value<int?> hiddenAt,
       Value<int> rowid,
     });
 
@@ -6278,6 +6402,16 @@ class $AgentsFilterComposer extends Composer<_$AppDatabase, Agents> {
 
   ColumnFilters<int> get createdAt => $composableBuilder(
     column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get removedAt => $composableBuilder(
+    column: $table.removedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get hiddenAt => $composableBuilder(
+    column: $table.hiddenAt,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -6344,6 +6478,16 @@ class $AgentsOrderingComposer extends Composer<_$AppDatabase, Agents> {
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<int> get removedAt => $composableBuilder(
+    column: $table.removedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get hiddenAt => $composableBuilder(
+    column: $table.hiddenAt,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $AgentsAnnotationComposer extends Composer<_$AppDatabase, Agents> {
@@ -6394,6 +6538,12 @@ class $AgentsAnnotationComposer extends Composer<_$AppDatabase, Agents> {
 
   GeneratedColumn<int> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<int> get removedAt =>
+      $composableBuilder(column: $table.removedAt, builder: (column) => column);
+
+  GeneratedColumn<int> get hiddenAt =>
+      $composableBuilder(column: $table.hiddenAt, builder: (column) => column);
 }
 
 class $AgentsTableManager
@@ -6435,6 +6585,8 @@ class $AgentsTableManager
                 Value<String?> description = const Value.absent(),
                 Value<int?> isPinned = const Value.absent(),
                 Value<int> createdAt = const Value.absent(),
+                Value<int?> removedAt = const Value.absent(),
+                Value<int?> hiddenAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => AgentsCompanion(
                 localId: localId,
@@ -6448,6 +6600,8 @@ class $AgentsTableManager
                 description: description,
                 isPinned: isPinned,
                 createdAt: createdAt,
+                removedAt: removedAt,
+                hiddenAt: hiddenAt,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -6463,6 +6617,8 @@ class $AgentsTableManager
                 Value<String?> description = const Value.absent(),
                 Value<int?> isPinned = const Value.absent(),
                 required int createdAt,
+                Value<int?> removedAt = const Value.absent(),
+                Value<int?> hiddenAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => AgentsCompanion.insert(
                 localId: localId,
@@ -6476,6 +6632,8 @@ class $AgentsTableManager
                 description: description,
                 isPinned: isPinned,
                 createdAt: createdAt,
+                removedAt: removedAt,
+                hiddenAt: hiddenAt,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

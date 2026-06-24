@@ -146,10 +146,15 @@ class OutboxProcessor {
             agentCache[message.agentId] ??
             await _agentRepo.getById(message.agentId);
         agentCache[message.agentId] = agent;
-        if (agent == null) {
+        // US-021: tombstoned agent（Gateway 端已删除）也必须跳过 —— 否则
+        // chat.send 会返回 agent_not_found → 消息变 FAILED → 下轮 flush 重试
+        // → 死循环到 24h 过期。tombstoned agent 仍存在于 DB（getById 不过滤，
+        // 见 US-021 契约），故原 `agent == null` guard 不够，必须加 isRemoved。
+        if (agent == null || agent.isRemoved) {
           _logger.info(
             '[OutboxProcessor] Skipped: agent ${message.agentId} '
-            'not found for message ${message.clientId}',
+            '${agent == null ? "not found" : "tombstoned"} '
+            'for message ${message.clientId}',
           );
           continue;
         }

@@ -422,6 +422,67 @@ void main() {
         ),
       );
     });
+
+    test('skips PENDING message when agent is tombstoned (US-021)', () async {
+      final m1 = _msg(clientId: 'm1', logicalClock: 1);
+      when(
+        () => messageRepo.getOutboxByInstance(_testInstanceId),
+      ).thenAnswer((_) async => [m1]);
+      when(
+        () => instanceRepo.getById(_testInstanceId),
+      ).thenAnswer((_) async => _onlineInstance());
+      // Agent 存在但被 tombstone（Gateway 端已删除）。直接构造（copyWith
+      // 故意不暴露 removedAt，见 spec §3.3）。
+      when(() => agentRepo.getById(_testAgentLocalId)).thenAnswer(
+        (_) async => Agent(
+          localId: _testAgentLocalId,
+          remoteId: _testAgentRemoteId,
+          instanceId: _testInstanceId,
+          name: '产品虾',
+          removedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+
+      final sent = await processor.flushOutbox(_testInstanceId);
+
+      expect(sent, 0);
+      verifyNever(() => messageRepo.tryTransitionToSending(any(), any()));
+      verifyNever(
+        () => gatewayClient.sendMessage(
+          instanceId: any(named: 'instanceId'),
+          agentId: any(named: 'agentId'),
+          message: any(named: 'message'),
+        ),
+      );
+    });
+
+    test('skips FAILED message when agent is tombstoned (US-021)', () async {
+      final m1 = _msg(clientId: 'm1', logicalClock: 1);
+      // FAILED 消息也在 outbox 中
+      when(
+        () => messageRepo.getOutboxByInstance(_testInstanceId),
+      ).thenAnswer((_) async => [m1]);
+      when(
+        () => instanceRepo.getById(_testInstanceId),
+      ).thenAnswer((_) async => _onlineInstance());
+      when(() => agentRepo.getById(_testAgentLocalId)).thenAnswer(
+        (_) async => Agent(
+          localId: _testAgentLocalId,
+          remoteId: _testAgentRemoteId,
+          instanceId: _testInstanceId,
+          name: '产品虾',
+          removedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+
+      final sent = await processor.flushOutbox(_testInstanceId);
+
+      expect(sent, 0);
+      verifyNever(() => messageRepo.tryTransitionToSending(any(), any()));
+    });
+
+    // 注：active agent 正常发送的路径由 "sends PENDING messages in logicalClock
+    // order" 测试覆盖；此处只新增 tombstone-skip 行为（US-021 真正的增量）。
   });
 
   group('flushOutbox - expiry', () {

@@ -163,4 +163,85 @@ void main() {
       expect(updated.name, original.name); // 未修改
     });
   });
+
+  // US-021: Agent tombstone 状态。removed_at / hidden_at 由
+  // DriftAgentRepo.syncFromGateway 通过 DB 独占写入（不经过 copyWith），
+  // 此处只验证 domain 层的只读语义。
+  group('Agent tombstone state (US-021)', () {
+    Agent baseAgent() => Agent(
+      localId: 'local-a1',
+      remoteId: 'r1',
+      instanceId: 'inst-001',
+      name: '产品虾',
+    );
+
+    test('默认构造的 Agent 既未移除也未隐藏', () {
+      final agent = baseAgent();
+      expect(agent.removedAt, isNull);
+      expect(agent.hiddenAt, isNull);
+      expect(agent.isRemoved, isFalse);
+      expect(agent.isHidden, isFalse);
+    });
+
+    test('removedAt 非空时 isRemoved 为 true', () {
+      final agent = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+      );
+      expect(agent.removedAt, 1719200000000);
+      expect(agent.isRemoved, isTrue);
+      expect(agent.isHidden, isFalse); // hiddenAt 仍 null
+    });
+
+    test('hiddenAt 非空时 isHidden 为 true', () {
+      final agent = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        hiddenAt: 1719200000000,
+      );
+      expect(agent.hiddenAt, 1719200000000);
+      expect(agent.isHidden, isTrue);
+      expect(agent.isRemoved, isFalse); // removedAt 仍 null
+    });
+
+    test('removedAt 与 hiddenAt 可同时非空（正交状态）', () {
+      final agent = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+        hiddenAt: 1719300000000,
+      );
+      expect(agent.isRemoved, isTrue);
+      expect(agent.isHidden, isTrue);
+    });
+
+    test('copyWith 不暴露 removedAt/hiddenAt 参数，透传保留 tombstone 状态', () {
+      // copyWith 故意不暴露 removedAt/hiddenAt（防 ?? old 清空坑，见 spec §3.3）。
+      // 改其他字段时，tombstone 状态必须被透传保留。
+      final tombstoned = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+        hiddenAt: 1719300000000,
+      );
+
+      final updated = tombstoned.copyWith(name: '改名后的虾');
+
+      expect(updated.name, '改名后的虾');
+      // tombstone 状态被透传，未被清空
+      expect(updated.removedAt, 1719200000000);
+      expect(updated.hiddenAt, 1719300000000);
+      expect(updated.isRemoved, isTrue);
+      expect(updated.isHidden, isTrue);
+    });
+  });
 }

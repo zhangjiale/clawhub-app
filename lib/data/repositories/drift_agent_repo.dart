@@ -18,13 +18,17 @@ class DriftAgentRepo implements IAgentRepo {
 
   @override
   Future<List<Agent>> getByInstanceId(String instanceId) async {
-    final rows = await _database.getAgentsByInstance(instanceId).get();
+    // US-021: 默认过滤 tombstoned (removed_at) 和 hidden (hidden_at) agent。
+    // 原未过滤的 getAgentsByInstance 命名查询保留供 deleteByInstanceId 清理
+    // 逻辑及未来"显示已移除"开关使用。
+    final rows = await _database.getActiveAgentsByInstance(instanceId).get();
     return rows.map(AgentMapper.toDomain).toList();
   }
 
   @override
   Future<List<Agent>> getAll() async {
-    final rows = await _database.getAllAgents().get();
+    // US-021: 默认过滤 tombstoned + hidden agent（见 getByInstanceId 注释）。
+    final rows = await _database.getAllActiveAgents().get();
     return rows.map(AgentMapper.toDomain).toList();
   }
 
@@ -55,6 +59,10 @@ class DriftAgentRepo implements IAgentRepo {
 
   @override
   Future<Agent?> findByCompositeKey(String instanceId, String remoteId) async {
+    // INTENTIONALLY UNFILTERED — 不过滤 tombstoned/hidden agent。syncFromGateway
+    // 的复活逻辑（US-021）依赖此查询找回 tombstoned agent 以清空 removed_at。
+    // 误加 WHERE removed_at IS NULL 过滤会让复活路径永远找不到对象，被迫降级
+    // 为新插入 → 失去全部历史 messages。getById 同理不过滤。
     final row = await _database
         .findAgentByCompositeKey(instanceId, remoteId)
         .getSingleOrNull();
@@ -69,6 +77,9 @@ class DriftAgentRepo implements IAgentRepo {
     final results = <Agent>[];
 
     await _database.transaction(() async {
+      // *** 顺序不可换 ***：upsert 必须在 diff 之前。diff 的 `NOT IN (remoteIds)`
+      // 依赖 remoteIds 是完整的远端列表（含本次刚 upsert 的新 agent）。若把 diff
+      // 提前，新 upsert 的 agent 会因不在旧 remoteIds 里被误 tombstone。
       for (final remote in remoteAgents) {
         final existingRow = await _database
             .findAgentByCompositeKey(instanceId, remote.remoteId)
@@ -100,12 +111,63 @@ class DriftAgentRepo implements IAgentRepo {
             remote.description,
             remote.isPinned ? 1 : 0,
             remote.createdAt,
+            null, // removedAt — 新插入的 agent 未被 tombstone
+            null, // hiddenAt — v1 不写入
           );
           final insertedRow = await _database
               .getAgentByLocalId(remote.localId)
               .getSingle();
           results.add(AgentMapper.toDomain(insertedRow));
         }
+      }
+
+      // US-021: 差集 → tombstone / 复活（batch SQL，Law 6 合规）。
+      //
+      // 协议契约：scope 不足时 fetchAgents 抛错被上层接住，`agents: []` 在
+      // 协议下唯一含义为"Gateway 真无 agent"，必须正常走 tombstone（而非
+      // "空列表跳过"），否则用户清空 Gateway 后本地仍残留幽灵虾——这正是
+      // US-021 要修的原 BUG。
+      //
+      // 用两条 UPDATE 替代 N 行逐行写入：Law 6 禁止 for...await repo/DB 的
+      // N+1 模式，pre-commit hook 的正则会拦下逐行写法。
+      //
+      // customStatement 选择：本项目 agents 表当前无 .watch() stream 查询，
+      // UI 全走 agentSyncTickerProvider 脚踏式刷新，故 customStatement 的
+      // "不触发 stream 失效"特性对本改动无影响。未来若给 agents 加 watch，
+      // 需改用 Drift typed update。
+      //
+      // do-while 重入安全：ConnectionOrchestrator._syncAgentsForInstance 的
+      // pending-retry 循环可能对同一实例多次 sync。SQL 的
+      // `WHERE removed_at IS [NOT] NULL` guard 保证同一 agent 不会重复打标/
+      // 复活——天然幂等。
+      //
+      // removed_at 存毫秒（与 created_at 的秒精度不同，跨列计算注意换算）。
+      final remoteIds = remoteAgents.map((a) => a.remoteId).toList();
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      if (remoteIds.isEmpty) {
+        // 远端一个都没有 → 本实例所有 active agent 全部 tombstone
+        await _database.customStatement(
+          'UPDATE agents SET removed_at = ? '
+          'WHERE instance_id = ? AND removed_at IS NULL',
+          [now, instanceId],
+        );
+      } else {
+        final placeholders = remoteIds.map((_) => '?').join(', ');
+        // tombstone：本地存在、远端缺失、且尚未 tombstoned 的 agent
+        await _database.customStatement(
+          'UPDATE agents SET removed_at = ? '
+          'WHERE instance_id = ? AND removed_at IS NULL '
+          'AND remote_id NOT IN ($placeholders)',
+          [now, instanceId, ...remoteIds],
+        );
+        // 复活：远端又出现、且当前 tombstoned 的 agent
+        await _database.customStatement(
+          'UPDATE agents SET removed_at = NULL '
+          'WHERE instance_id = ? AND removed_at IS NOT NULL '
+          'AND remote_id IN ($placeholders)',
+          [instanceId, ...remoteIds],
+        );
       }
     });
 

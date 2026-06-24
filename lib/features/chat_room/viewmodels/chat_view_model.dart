@@ -579,6 +579,30 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       return;
     }
 
+    // US-021 AC9: 重查 agent 最新状态。init() 的 _agent 是首次加载缓存，
+    // 用户在 ChatRoom 停留期间 agent 可能被 sync tombstone（Gateway 端删除）。
+    // 若不重查，消息会被塞进 outbox，OutboxProcessor 虽会 skip（guard 已加
+    // isRemoved），但用户得不到即时反馈、消息卡 PENDING 到 24h 过期。
+    final freshAgent = await _agentRepo.getById(agentId);
+    if (freshAgent == null || freshAgent.isRemoved) {
+      _updateState(
+        (s) => s.copyWith(
+          messages: LoadError(
+            'Agent has been removed from the Gateway. '
+            'Please go back and try again.',
+            StackTrace.current,
+          ),
+        ),
+      );
+      debugPrint(
+        '[ChatViewModel] send() blocked: agent $agentId '
+        '${freshAgent == null ? "not found" : "tombstoned"} '
+        'in instance $instanceId.',
+      );
+      return;
+    }
+    _agent = freshAgent;
+
     // Start a fresh streaming subscription for this send — any stale
     // events from the previous subscription were already cancelled above.
     _startStreaming();
