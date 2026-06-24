@@ -241,5 +241,134 @@ void main() {
           (vm.state.results as LoadData).value as List<SearchResult>;
       expect(results.first.instanceId, 'inst-1');
     });
+
+    test('filters out tombstoned agents from search results', () async {
+      // Arrange: 2 messages, one for active agent, one for tombstoned agent
+      final activeAgent = Agent(
+        localId: 'agent-active',
+        remoteId: 'r-1',
+        instanceId: 'inst-1',
+        name: '活虾',
+        themeColor: '#6c5ce7',
+      );
+      final tombstonedAgent = Agent(
+        localId: 'agent-tomb',
+        remoteId: 'r-2',
+        instanceId: 'inst-1',
+        name: '死虾',
+        themeColor: '#6c5ce7',
+        removedAt: 1719200000000,
+      );
+      final msgActive = Message(
+        clientId: 'm1',
+        conversationId: 'c1',
+        agentId: 'agent-active',
+        role: MessageRole.user,
+        content: 'hello active',
+        type: MessageType.text,
+        logicalClock: 1,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+      final msgTomb = Message(
+        clientId: 'm2',
+        conversationId: 'c2',
+        agentId: 'agent-tomb',
+        role: MessageRole.user,
+        content: 'hello tomb',
+        type: MessageType.text,
+        logicalClock: 2,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+
+      when(
+        () => messageRepo.search(
+          any(),
+          limit: any(named: 'limit'),
+          offset: any(named: 'offset'),
+        ),
+      ).thenAnswer((_) async => [msgActive, msgTomb]);
+      when(() => agentRepo.getByIds(any())).thenAnswer(
+        (_) async => {
+          'agent-active': activeAgent,
+          'agent-tomb': tombstonedAgent,
+        },
+      );
+      when(() => conversationRepo.getByIds(any())).thenAnswer(
+        (_) async => {
+          'c1': Conversation(
+            id: 'c1',
+            instanceId: 'inst-1',
+            agentId: 'agent-active',
+          ),
+          'c2': Conversation(
+            id: 'c2',
+            instanceId: 'inst-1',
+            agentId: 'agent-tomb',
+          ),
+        },
+      );
+
+      vm.onQueryChanged('hello');
+
+      // Wait for debounce + execution
+      await Future.delayed(const Duration(milliseconds: 400));
+
+      // Assert: only active agent's result remains
+      final results = switch (vm.state.results) {
+        LoadData(:final value) => value,
+        _ => <SearchResult>[],
+      };
+      expect(results.length, 1, reason: 'tombstoned agent 必须从搜索结果过滤');
+      expect(results[0].agentId, 'agent-active');
+      expect(results.any((r) => r.agentId == 'agent-tomb'), isFalse);
+    });
+
+    test('preserves non-tombstoned agents in search results', () async {
+      final aliveAgent = Agent(
+        localId: 'agent-1',
+        remoteId: 'r-1',
+        instanceId: 'inst-1',
+        name: '活虾',
+        themeColor: '#6c5ce7',
+      );
+      final msg = Message(
+        clientId: 'm1',
+        conversationId: 'c1',
+        agentId: 'agent-1',
+        role: MessageRole.user,
+        content: 'hello',
+        type: MessageType.text,
+        logicalClock: 1,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+      when(
+        () => messageRepo.search(
+          any(),
+          limit: any(named: 'limit'),
+          offset: any(named: 'offset'),
+        ),
+      ).thenAnswer((_) async => [msg]);
+      when(
+        () => agentRepo.getByIds(any()),
+      ).thenAnswer((_) async => {'agent-1': aliveAgent});
+      when(() => conversationRepo.getByIds(any())).thenAnswer(
+        (_) async => {
+          'c1': Conversation(
+            id: 'c1',
+            instanceId: 'inst-1',
+            agentId: 'agent-1',
+          ),
+        },
+      );
+
+      vm.onQueryChanged('hello');
+      await Future.delayed(const Duration(milliseconds: 400));
+
+      final results = switch (vm.state.results) {
+        LoadData(:final value) => value,
+        _ => <SearchResult>[],
+      };
+      expect(results.length, 1, reason: 'alive agent 必须保留');
+    });
   });
 }

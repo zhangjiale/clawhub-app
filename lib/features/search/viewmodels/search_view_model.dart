@@ -163,22 +163,29 @@ class SearchViewModel extends StateNotifier<SearchState> {
       final hasMore = messages.length > _pageSize;
       final pageMessages = hasMore ? messages.sublist(0, _pageSize) : messages;
 
-      final results = pageMessages.map((m) {
-        final agent = agents[m.agentId];
-        final conv = conversations[m.conversationId];
-        return SearchResult(
-          messageClientId: m.clientId,
-          conversationId: m.conversationId,
-          agentId: m.agentId,
-          instanceId: conv?.instanceId ?? '',
-          agentName: agent?.displayName ?? m.agentId,
-          agentAvatarUrl: agent?.avatarUrl,
-          agentThemeColor: agent?.themeColor ?? '#4F83FF',
-          messageContent: m.content ?? '',
-          messageTimestamp: m.timestamp,
-          highlightQuery: query,
-        );
-      }).toList();
+      // US-021 v1.1: tombstoned agent 的搜索结果跳过（AC2 要求）。
+      // 对齐 message_hub_providers.dart:62-64 的过滤模式。
+      final results = pageMessages
+          .map((m) {
+            final agent = agents[m.agentId];
+            // tombstoned agent → 跳过整条结果
+            if (agent?.isRemoved ?? false) return null;
+            final conv = conversations[m.conversationId];
+            return SearchResult(
+              messageClientId: m.clientId,
+              conversationId: m.conversationId,
+              agentId: m.agentId,
+              instanceId: conv?.instanceId ?? '',
+              agentName: agent?.displayName ?? m.agentId,
+              agentAvatarUrl: agent?.avatarUrl,
+              agentThemeColor: agent?.themeColor ?? '#4F83FF',
+              messageContent: m.content ?? '',
+              messageTimestamp: m.timestamp,
+              highlightQuery: query,
+            );
+          })
+          .whereType<SearchResult>()
+          .toList();
 
       final totalFetched = offset + results.length;
 
