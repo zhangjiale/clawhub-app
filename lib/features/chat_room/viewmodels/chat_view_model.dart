@@ -10,6 +10,7 @@ import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
+import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
@@ -76,6 +77,13 @@ class ChatSessionState {
   /// 故用独立 bool 驱动，所有 [_agent] 写入点必须同步此字段。
   final bool isAgentRemoved;
 
+  /// 同步于 vm.agent.quickCommands —— 任意 DB 写入触发 rebuild，让 UI 在
+  /// ChatRoomPage.build() 中重新读取 vm.agent.quickCommands 拿到新值。
+  /// 不放进 == 比较会导致 Riverpod 状态去重不通知 UI rebuild（仅
+  /// isAgentRemoved 变更才 dedup 不命中，quickCommands/nickname 等字段变更
+  /// 完全无 rebuild 信号）。
+  final List<QuickCommand> quickCommands;
+
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
@@ -87,6 +95,7 @@ class ChatSessionState {
     this.highlightedMessageId,
     this.highlightedQuery,
     this.isAgentRemoved = false,
+    this.quickCommands = const [],
   });
 
   ChatSessionState copyWith({
@@ -102,6 +111,7 @@ class ChatSessionState {
     Object? highlightedMessageId = CopyWithSentinel.instance,
     Object? highlightedQuery = CopyWithSentinel.instance,
     bool? isAgentRemoved,
+    List<QuickCommand>? quickCommands,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -120,6 +130,7 @@ class ChatSessionState {
         this.highlightedQuery,
       ),
       isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
+      quickCommands: quickCommands ?? this.quickCommands,
     );
   }
 
@@ -136,7 +147,8 @@ class ChatSessionState {
           retryFeedback == other.retryFeedback &&
           highlightedMessageId == other.highlightedMessageId &&
           highlightedQuery == other.highlightedQuery &&
-          isAgentRemoved == other.isAgentRemoved;
+          isAgentRemoved == other.isAgentRemoved &&
+          quickCommands == other.quickCommands;
 
   @override
   int get hashCode => Object.hash(
@@ -150,6 +162,7 @@ class ChatSessionState {
     highlightedMessageId,
     highlightedQuery,
     isAgentRemoved,
+    quickCommands,
   );
 }
 
@@ -328,6 +341,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       // 1. Look up the agent
       _agent = await _agentRepo.getById(agentId);
       _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（null → false）
+      _updateState(
+        (s) => s.copyWith(quickCommands: _agent?.quickCommands ?? const []),
+      ); // ★ 响应式镜像 quickCommands（避免 Riverpod == dedup）
       if (_agent == null) {
         debugPrint(
           '[ChatViewModel] Agent not found: agentId=$agentId, '
@@ -372,6 +388,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
           (agent) {
             _agent = agent;
             _syncAgentRemoved();
+            // ★ 同步 quickCommands 到 state,确保非 identity 字段
+            // (quickCommands/nickname/themeColor 等) 变更时 Riverpod
+            // 不会因 state.== 而抑制 UI rebuild。
+            _updateState(
+              (s) =>
+                  s.copyWith(quickCommands: agent?.quickCommands ?? const []),
+            );
           },
           onError: (error, stackTrace) {
             // Law 8: catch 必有 debugPrint

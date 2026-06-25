@@ -120,7 +120,50 @@ void main() {
         reason: 'watchById 应让 vm.agent 在保存后立刻反映新 quickCommands',
       );
       expect(vm.agent!.quickCommands.first.payload, '/status');
+      // ★ state.quickCommands 镜像必须同步,否则 ChatRoomPage.build()
+      //   不会 rebuild(Riverpod state.== dedup)。
+      expect(
+        vm.state.quickCommands.length,
+        1,
+        reason:
+            'state.quickCommands must update so ChatRoomPage.build() re-runs',
+      );
+      expect(vm.state.quickCommands.first.payload, '/status');
     });
+
+    test(
+      'state.quickCommands changes when watchById emits new quickCommands '
+      '(regression: Riverpod == dedup would otherwise suppress rebuild)',
+      () async {
+        await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
+        final vm = createViewModel();
+        await vm.init();
+        final beforeState = vm.state;
+        expect(beforeState.quickCommands, isEmpty);
+
+        await agentRepo.updateFullProfile(
+          _agentId,
+          quickCommands: [
+            QuickCommand(
+              id: 'c1',
+              agentId: _agentId,
+              label: 'X',
+              payload: '/x',
+              sortOrder: 0,
+            ),
+          ],
+        );
+
+        // 关键断言: state 引用必须不同 (Riverpod 会触发 rebuild)
+        expect(
+          identical(vm.state, beforeState),
+          isFalse,
+          reason: 'state must be a new instance so Riverpod notifies listeners',
+        );
+        expect(vm.state.quickCommands.length, 1);
+        expect(vm.state.quickCommands.first.payload, '/x');
+      },
+    );
 
     test('init() subscribes to watchById for nickname change', () async {
       await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
