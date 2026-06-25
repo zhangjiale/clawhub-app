@@ -669,6 +669,23 @@ void main() {
         expect(service.shown, isEmpty);
       },
     );
+
+    test(
+      'connected -> recovering (flaky network) -> no connection-change notification',
+      () async {
+        // 弱网抖动时 WebSocket 断开后先进入 recovering，此时不应弹
+        // "虾连接已断开"通知。
+        final c = build();
+        await c.start();
+        gateway.connController.add(GatewayConnectionState.connected);
+        await _pump();
+        gateway.connController.add(GatewayConnectionState.recovering);
+        await _pump();
+        await c.dispose();
+
+        expect(service.shown, isEmpty);
+      },
+    );
   });
 }
 

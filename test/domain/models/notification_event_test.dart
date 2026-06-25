@@ -67,7 +67,7 @@ void main() {
       expect(e.toState, NotificationConnectionState.reconnecting);
     });
 
-    test('isOnlineDrop is true when online -> non-online', () {
+    test('isOnlineDrop is true only when online -> offline', () {
       expect(
         ConnectionChangeEvent(
           instanceId: 'i',
@@ -83,6 +83,16 @@ void main() {
           instanceName: 'n',
           fromState: NotificationConnectionState.reconnecting,
           toState: NotificationConnectionState.online,
+        ).isOnlineDrop,
+        isFalse,
+      );
+      // reconnecting 是自动重连的中间状态，不应视为掉线。
+      expect(
+        ConnectionChangeEvent(
+          instanceId: 'i',
+          instanceName: 'n',
+          fromState: NotificationConnectionState.online,
+          toState: NotificationConnectionState.reconnecting,
         ).isOnlineDrop,
         isFalse,
       );

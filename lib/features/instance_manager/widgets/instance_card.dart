@@ -210,10 +210,12 @@ class _ActionBtn extends StatelessWidget {
     return PressFeedback(
       onTap: onTap,
       builder: (child, isPressed) => AnimatedScale(
-        // Scale is the primary visible feedback signal: surface2→surface3
-        // color shift alone has only ~3% luminance delta (imperceptible),
-        // and the danger variant doesn't change color at all on press.
-        // Matches the HeaderButton pattern (scale 0.93) for consistency.
+        // Scale + accent border on press — the previous color-only change
+        // (surface2→surface3) had only ~3% luminance delta, imperceptible
+        // on a 36×36 button, and the danger variant had zero color change.
+        // The 1px accent border (matches _AddInstanceCard pattern in
+        // instance_list_page.dart:209-213) is the primary visible signal;
+        // scale 0.93 reinforces it.
         scale: isPressed ? 0.93 : 1.0,
         duration: XiaMotion.durationFast,
         curve: XiaMotion.ease,
@@ -225,10 +227,17 @@ class _ActionBtn extends StatelessWidget {
           decoration: BoxDecoration(
             color: danger
                 ? (isPressed
-                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.15)!
+                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.25)!
                       : XiaColors.redMuted)
                 : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
             borderRadius: BorderRadius.circular(XiaRadius.sm),
+            border: isPressed
+                ? Border.all(
+                    color: danger ? XiaColors.red : XiaColors.accent,
+                    width: 1,
+                    strokeAlign: BorderSide.strokeAlignInside,
+                  )
+                : null,
           ),
           alignment: Alignment.center,
           child: child,

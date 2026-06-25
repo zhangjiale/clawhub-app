@@ -54,6 +54,18 @@ abstract class IAgentRepo {
     List<QuickCommand>? quickCommands,
   });
 
+  /// 响应式订阅指定 agent 的数据变化。
+  ///
+  /// Drift 实现基于 `agents` 表的 `.watchSingleOrNull()`，DB 任意写入
+  /// （updateFullProfile / updateLocalProfile / clearAvatar / syncFromGateway /
+  /// togglePin）都会 emit 新值。InMemory 实现基于 `StreamController.broadcast`
+  /// + 手动 emit（仿 InMemoryMessageRepo._messagesChanged）。
+  ///
+  /// 订阅时立即 emit 当前行（seed event），后续每次 commit emit 一次。
+  /// tombstoned agent（removed_at != null）正常 emit，由调用方判断 isRemoved。
+  /// 不存在的 localId 立即 emit null 并保持 open（等待后续创建）。
+  Stream<Agent?> watchById(String localId);
+
   /// 清除头像 — 将 avatarUrl 显式置为 null。
   ///
   /// 与 [updateLocalProfile] 不同：后者对 null 参数使用"跳过此列"语义，
