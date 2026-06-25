@@ -344,6 +344,8 @@ class ConnectionManager {
     if (_config.signPayload != null && _challengeNonce != null) {
       try {
         // 构造 V3 签名 payload（§2.5）
+        // _config.deviceFamily is non-nullable (defaults to 'phone'); this
+        // matches the wire deviceFamily written by buildConnectParams.
         final v3Payload = buildV3SignaturePayload(
           deviceId: _deviceId,
           clientId: _config.clientId,
@@ -354,7 +356,7 @@ class ConnectionManager {
           token: _token,
           nonce: _challengeNonce!,
           platform: _config.platform,
-          deviceFamily: _config.deviceFamily ?? 'phone',
+          deviceFamily: _config.deviceFamily,
         );
         signature = await _config.signPayload!(v3Payload);
         debugPrint('[CM] Signed V3 challenge payload');

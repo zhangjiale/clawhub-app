@@ -163,4 +163,83 @@ void main() {
       expect(buffer.text, isEmpty);
     });
   });
+
+  // ============================================================================
+  // Bug #1: deviceFamily alignment between signature payload and connect wire
+  // spec §2.5 requires 11 pipe-separated segments, ending with deviceFamily.
+  // Signature path always includes `|phone|` (default); wire path used to skip
+  // the field when config.deviceFamily was null, causing the server-side
+  // signature reconstruction to mismatch and reject with
+  // DEVICE_AUTH_SIGNATURE_INVALID.
+  // ============================================================================
+  group('buildConnectParams deviceFamily alignment', () {
+    test('wire client.deviceFamily mirrors explicit config.deviceFamily', () {
+      final params = buildConnectParams(
+        token: 't',
+        deviceId: 'd',
+        config: ConnectionConfig(deviceFamily: 'phone'),
+      );
+      final client = params['client'] as Map<String, dynamic>;
+      expect(
+        client['deviceFamily'],
+        'phone',
+        reason: 'wire field must mirror the configured deviceFamily',
+      );
+    });
+
+    test(
+      'wire client.deviceFamily is always present (defaults to phone) — Bug #1',
+      () {
+        final params = buildConnectParams(
+          token: 't',
+          deviceId: 'd',
+          config: ConnectionConfig(),
+        );
+        final client = params['client'] as Map<String, dynamic>;
+        expect(
+          client.containsKey('deviceFamily'),
+          isTrue,
+          reason:
+              'wire must always include deviceFamily so the server-side '
+              'signature payload reconstruction matches the client payload',
+        );
+        expect(
+          client['deviceFamily'],
+          'phone',
+          reason: 'default deviceFamily must align with signing path default',
+        );
+      },
+    );
+
+    test('buildV3SignaturePayload includes default deviceFamily segment', () {
+      // Wire default must equal the signed-payload default. If the wire
+      // omits the field but the signature includes it, the server
+      // reconstructs a different payload and rejects the signature.
+      final payload = buildV3SignaturePayload(
+        deviceId: 'd',
+        clientId: 'openclaw-ios',
+        clientMode: 'ui',
+        role: 'operator',
+        scopes: const ['operator.read'],
+        signedAtMs: 1700000000000,
+        token: 't',
+        nonce: 'n',
+        platform: 'ios',
+        deviceFamily: 'phone',
+      );
+      // Format: "v3|...|{platform}|{deviceFamily}" — 11 segments,
+      // last one is 'phone' (the default).
+      final segments = payload.split('|');
+      expect(
+        segments.length,
+        11,
+        reason: 'spec §2.5 mandates 11 pipe-separated segments',
+      );
+      expect(
+        segments.last,
+        'phone',
+        reason: 'last segment is deviceFamily; must be present',
+      );
+    });
+  });
 }
