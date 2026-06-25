@@ -78,3 +78,4 @@ memory/
 # *.g.dart
 # *.freezed.dart
 # *.gr.dart
+.worktrees/
