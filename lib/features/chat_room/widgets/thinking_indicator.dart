@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 
 /// Thinking indicator — three bouncing dots, matching ComponentSpec Section 4.3.
 ///
-/// Bubble: 20/20/8/20 radius (matches Agent bubble), surface bg, shadow-s.
-/// Dots: 6×6, text3 color, 800ms bounce cycle, staggered delays.
+/// Bubble: 20/20/8/20 radius (matches Agent bubble), surface bg, border.
+/// Dots: 6×6, AgentTheme.of(context).primary (full opacity), 800ms bounce cycle,
+/// staggered delays.
 class ThinkingIndicator extends StatefulWidget {
   const ThinkingIndicator({super.key});
 
@@ -33,6 +35,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final dotColor = AgentTheme.of(context).primary;
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: XiaSpacing.pagePaddingH,
@@ -58,11 +61,23 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _BouncingDot(controller: _controller, delay: 0.0),
+                _BouncingDot(
+                  controller: _controller,
+                  delay: 0.0,
+                  dotColor: dotColor,
+                ),
                 const SizedBox(width: 4),
-                _BouncingDot(controller: _controller, delay: 0.15),
+                _BouncingDot(
+                  controller: _controller,
+                  delay: 0.15,
+                  dotColor: dotColor,
+                ),
                 const SizedBox(width: 4),
-                _BouncingDot(controller: _controller, delay: 0.3),
+                _BouncingDot(
+                  controller: _controller,
+                  delay: 0.3,
+                  dotColor: dotColor,
+                ),
               ],
             ),
           ),
@@ -75,8 +90,13 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
 class _BouncingDot extends StatelessWidget {
   final AnimationController controller;
   final double delay; // seconds
+  final Color dotColor;
 
-  const _BouncingDot({required this.controller, required this.delay});
+  const _BouncingDot({
+    required this.controller,
+    required this.delay,
+    required this.dotColor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -96,9 +116,9 @@ class _BouncingDot extends StatelessWidget {
           child: Container(
             width: 6,
             height: 6,
-            decoration: const BoxDecoration(
-              // V2: violet (accent2) dots per ComponentSpec §4.3
-              color: XiaColors.accent2,
+            decoration: BoxDecoration(
+              // Dot color from AgentTheme.of(context).primary (spec §4.3)
+              color: dotColor,
               shape: BoxShape.circle,
             ),
           ),
