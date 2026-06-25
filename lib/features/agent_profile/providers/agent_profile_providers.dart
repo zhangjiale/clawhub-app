@@ -53,6 +53,13 @@ final agentProfileViewModelProvider =
         },
       );
       vm.init();
+
+      // US-021 v1.1: 订阅 sync ticker，让本 provider 在 agents 同步完成后
+      // （含 tombstone / 复活）自动重建。与 chat_providers.dart:72-74 同模式。
+      ref.listen(agentSyncTickerProvider, (_, __) {
+        vm.refreshAgent();
+      });
+
       ref.onDispose(() => vm.dispose());
       return vm;
     });
