@@ -225,9 +225,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// 响应式 agent 订阅 —— _init() 中订阅 watchById(agentId) stream，
   /// 任何 DB 写入（本地保存 / Gateway sync）触发 emit 后自动同步 _agent，
   /// UI 经 vm.agent getter 立即看到最新值（quickCommands / nickname 等）。
-  /// 仿现有 7 个 stream subscription 模式（messageStream / connectionStateStream /
-  /// toolCallStream / streamingDeltaStream / watchOutboxCount / outboxCount /
-  /// outboxFlushTickerProvider）。
+  /// 仿现有 7 个 stream subscription 模式。
+  ///
+  /// **双保险设计（重要：不要简化其中一条）**：
+  /// - watchById stream = **同实例** DB 写入响应式 SSOT（修本 spec bug）
+  /// - agentSyncTickerProvider = **跨实例** tombstone 显式触发（BUG B/C 修复）
+  ///
+  /// 两条路径不冲突：watchById 缺失时 ticker 可作为 tombstone fallback；
+  /// ticker 缺失时 watchById 已能驱动本地写响应式刷新。
+  /// 删除任一条都会让对应场景失效。修改前请先阅读设计文档：
+  /// docs/superpowers/specs/2026-06-25-chatvm-agent-reactivity-design.md §6.7
   StreamSubscription<Agent?>? _agentSubscription;
 
   /// Configurable flush delay for streaming text state updates.
