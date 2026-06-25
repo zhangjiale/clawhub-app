@@ -153,6 +153,7 @@ Key docs for AI-assisted development. Paths relative to repo root unless noted.
 | Design Tokens | `docs/design/design-tokens-v2.md` | Any UI color/spacing/radius/shadow/motion change |
 | Component Spec | `docs/design/component-spec-v2.md` | Building/modifying any page widget or component |
 | API Protocol | `docs/technical/api-protocol.md` | Gateway WebSocket work — handshake, RPC, events, auth |
+| ACL Protocol Gaps | `docs/technical/acl-protocol-gaps.md` | 剩余 ACL 协议实现差距（deviceToken 已修，maxPayload / shutdown / payload.large 等待续） |
 | Architecture | `docs/technical/architecture.md` | Understanding project structure, data models, provider inventory |
 | Database Schema | `docs/technical/database-schema.sql` | Schema changes, migration, FTS5 query design |
 | Design Assets | `docs/design/assets/` | App icon, splash screen, shrimp state images |
