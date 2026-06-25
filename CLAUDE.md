@@ -142,20 +142,21 @@ Use Conventional Commits: `feat(scope):`, `fix(scope):`, `perf(scope):`, `docs:`
 
 ### Documentation Map
 
-Key docs for AI-assisted development (all paths relative to `docs/`):
+Key docs for AI-assisted development. Paths relative to repo root unless noted.
 
 | Document | Path | Use When |
 |---|---|---|
-| Docs Index | `README.md` | Top-level entry point for all design/technical/product docs |
-| Iron Laws (coding rules) | `engineering/iron-laws.md` | Before every code change — mandatory gate check |
-| PRD | `product/prd.md` | Understanding feature requirements, acceptance criteria |
-| User Stories | `product/user-stories.md` | Sprint planning, INVEST validation, dependency tracing |
-| Design Tokens | `design/design-tokens-v2.md` | Any UI color/spacing/radius/shadow/motion change |
-| Component Spec | `design/component-spec-v2.md` | Building/modifying any page widget or component |
-| API Protocol | `technical/api-protocol.md` | Gateway WebSocket work — handshake, RPC, events, auth |
-| Architecture | `technical/architecture.md` | Understanding project structure, data models, provider inventory |
-| Database Schema | `technical/database-schema.sql` | Schema changes, migration, FTS5 query design |
-| Design Assets | `design/assets/` | App icon, splash screen, shrimp state images |
+| Docs Index | `docs/README.md` | Top-level entry point for all design/technical/product docs |
+| Iron Laws (coding rules) | `docs/engineering/iron-laws.md` | Before every code change — mandatory gate check |
+| PRD | `docs/product/prd.md` | Understanding feature requirements, acceptance criteria |
+| User Stories | `docs/product/user-stories.md` | Sprint planning, INVEST validation, dependency tracing |
+| Design Tokens | `docs/design/design-tokens-v2.md` | Any UI color/spacing/radius/shadow/motion change |
+| Component Spec | `docs/design/component-spec-v2.md` | Building/modifying any page widget or component |
+| API Protocol | `docs/technical/api-protocol.md` | Gateway WebSocket work — handshake, RPC, events, auth |
+| Architecture | `docs/technical/architecture.md` | Understanding project structure, data models, provider inventory |
+| Database Schema | `docs/technical/database-schema.sql` | Schema changes, migration, FTS5 query design |
+| Design Assets | `docs/design/assets/` | App icon, splash screen, shrimp state images |
+| AgentTheme (per-agent branding) | `lib/app/theme/agent_theme.dart` | Wiring per-agent theme color into widget tree via `ThemeExtension<AgentTheme>` + `AgentTheme.of(context).primary`. Sibling consumers: `QuickCommandBar` (pill text), `MessageBubble` (user bubble bg), `ThinkingIndicator` (dot color). Falls back to `XiaColors.accent` (V2 sapphire `#4F83FF`) when no agent is in scope. |
 
 ### Iron Laws
 
