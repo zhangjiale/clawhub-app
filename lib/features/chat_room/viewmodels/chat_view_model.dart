@@ -209,6 +209,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   Timer? _flushTimer;
   Agent? _agent;
 
+  /// 响应式 agent 订阅 —— _init() 中订阅 watchById(agentId) stream，
+  /// 任何 DB 写入（本地保存 / Gateway sync）触发 emit 后自动同步 _agent，
+  /// UI 经 vm.agent getter 立即看到最新值（quickCommands / nickname 等）。
+  /// 仿现有 7 个 stream subscription 模式（messageStream / connectionStateStream /
+  /// toolCallStream / streamingDeltaStream / watchOutboxCount / outboxCount /
+  /// outboxFlushTickerProvider）。
+  StreamSubscription<Agent?>? _agentSubscription;
+
   /// Configurable flush delay for streaming text state updates.
   ///
   /// Defaults to 150ms to match [StreamingBubble]'s MarkdownBody debounce.
@@ -347,6 +355,39 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
       // 3. Load local messages immediately (fast path)
       await _loadMessages();
+
+      // ★ 3.5 订阅 agent 响应式 stream
+      // seed event（Drift .watchSingleOrNull() 订阅时立即 emit 当前行）
+      // 会把 _agent 重写为同值并触发 _syncAgentRemoved() —— 因
+      // ChatSessionState.copyWith 等价检测，state 写入是 no-op，不触发
+      // UI 重建。无须额外 .where() 过滤（且 Agent.== 仅比 localId/
+      // removedAt/hiddenAt 三个身份字段，filter 反而会误丢 quickCommands
+      // / nickname 等字段变更）。
+      // 包装在 try 中：mocktail 未 stub 的 watchById 可能返回 null，
+      // 真实实现 (InMemory / Drift) 不会。失败只丢响应式刷新，
+      // 不影响其余 6 个 stream 订阅。
+      try {
+        final agentStream = _agentRepo.watchById(agentId);
+        _agentSubscription = agentStream.listen(
+          (agent) {
+            _agent = agent;
+            _syncAgentRemoved();
+          },
+          onError: (error, stackTrace) {
+            // Law 8: catch 必有 debugPrint
+            debugPrint(
+              '[ChatViewModel] watchById error for $agentId: '
+              '$error\n$stackTrace',
+            );
+          },
+        );
+      } catch (error, stackTrace) {
+        // Law 8: catch 必有 debugPrint
+        debugPrint(
+          '[ChatViewModel] watchById subscribe failed for $agentId: '
+          '$error\n$stackTrace',
+        );
+      }
 
       // 4. Subscribe to connection state
       _connectionSubscription = _gatewayClient
@@ -1106,6 +1147,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _isStreaming = false;
     _outboxCountSubscription?.cancel();
     _outboxCountSubscription = null;
+    _agentSubscription?.cancel(); // ★ 新增
+    _agentSubscription = null; // ★ 新增
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     _stallTimer?.cancel();
