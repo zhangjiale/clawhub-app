@@ -19,6 +19,24 @@ Widget _wrap(Widget child) {
   );
 }
 
+/// Predicate: true iff the widget is an [AnimatedScale] whose direct child
+/// is an [AnimatedContainer] that in turn holds an [Icon] matching [icon].
+///
+/// Walks down through [AnimatedContainer.child] only — the action button
+/// places the icon as the AnimatedContainer's child via PressFeedback's
+/// `builder` parameter. This uniquely identifies the _ActionBtn's scale
+/// wrapper (vs. the outer InstanceCard's AnimatedScale, whose child is a
+/// plain Container, not an AnimatedContainer).
+bool Function(Widget) _wrapsIconInScale(IconData icon) {
+  return (Widget w) {
+    if (w is! AnimatedScale) return false;
+    final container = w.child;
+    if (container is! AnimatedContainer) return false;
+    final child = container.child;
+    return child is Icon && child.icon == icon;
+  };
+}
+
 /// ProviderScope override that injects a test [ConnectionOrchestrator].
 Widget _wrapWithOrchestrator(
   Widget child, {
@@ -154,6 +172,8 @@ class _NoopAgentRepo implements IAgentRepo {
   }) async {}
   @override
   Future<void> deleteByInstanceId(String instanceId) async {}
+  @override
+  Stream<Agent?> watchById(String localId) => const Stream<Agent?>.empty();
 }
 
 void main() {
@@ -378,16 +398,18 @@ void main() {
         _wrap(InstanceCard(instance: testInstance, onTap: () {})),
       );
 
+      // Verify the _ActionBtn wraps its AnimatedContainer in an
+      // AnimatedScale. We walk the tree manually via byWidgetPredicate
+      // because the outer InstanceCard also has an AnimatedScale (from
+      // PressFeedback's automatic scale handling), so naive ancestor
+      // finders would match BOTH and fail findsOneWidget.
       expect(
-        find.ancestor(
-          of: find.byIcon(Icons.refresh),
-          matching: find.byType(AnimatedScale),
-        ),
+        find.byWidgetPredicate(_wrapsIconInScale(Icons.refresh)),
         findsOneWidget,
         reason:
-            'The refresh (reconnect) button must scale on press. '
-            'Color-only feedback (surface2→surface3) is below the '
-            'human-perception threshold (~3% delta).',
+            'The action button must scale on press. Color-only feedback '
+            '(surface2→surface3) is below the human-perception threshold '
+            '(~3% delta).',
       );
     });
 
@@ -405,15 +427,167 @@ void main() {
       );
 
       expect(
-        find.ancestor(
-          of: find.byIcon(Icons.delete_outline),
-          matching: find.byType(AnimatedScale),
-        ),
+        find.byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline)),
         findsOneWidget,
         reason:
             'The delete button must scale on press. '
             'Currently the danger variant has zero press feedback.',
       );
+    });
+
+    testWidgets('refresh button scale factor decreases mid-press', (
+      tester,
+    ) async {
+      // Stronger guarantee than "AnimatedScale exists": verify the scale
+      // factor actually changes during a press gesture. Catches a future
+      // refactor that wraps the AnimatedContainer in an unused AnimatedScale.
+      // Use a fake orchestrator because the real one opens a WebSocket on
+      // tap, which would fail in the test environment.
+      final orch = _TestOrchestrator();
+      await tester.pumpWidget(
+        _wrapWithOrchestrator(
+          InstanceCard(instance: testInstance, onTap: () {}),
+          orchestrator: orch,
+        ),
+      );
+
+      AnimatedScale readInnerScale() =>
+          find
+                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
+                  .evaluate()
+                  .single
+                  .widget
+              as AnimatedScale;
+
+      expect(
+        readInnerScale().scale,
+        equals(1.0),
+        reason: 'Initial (idle) scale must be 1.0',
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byIcon(Icons.refresh)),
+      );
+      await tester.pump(
+        XiaMotion.durationFast + const Duration(milliseconds: 50),
+      );
+
+      expect(
+        readInnerScale().scale,
+        lessThan(1.0),
+        reason:
+            'While pressed, the inner scale must be < 1.0 so the user '
+            'perceives the press.',
+      );
+
+      await gesture.up();
+      await tester.pump(
+        XiaMotion.durationFast + const Duration(milliseconds: 50),
+      );
+      expect(
+        readInnerScale().scale,
+        equals(1.0),
+        reason: 'After release, scale must return to 1.0',
+      );
+    });
+
+    testWidgets('refresh button shows accent border on press', (tester) async {
+      // The PRIMARY visible feedback signal — color-only or scale-only
+      // changes are too subtle on a 36×36 button. A 1px accent border
+      // (matching _AddInstanceCard pattern) is unambiguous on a real
+      // device. Without this, the user has no way to know the tap
+      // registered.
+      final orch = _TestOrchestrator();
+      await tester.pumpWidget(
+        _wrapWithOrchestrator(
+          InstanceCard(instance: testInstance, onTap: () {}),
+          orchestrator: orch,
+        ),
+      );
+
+      AnimatedScale readInnerScale() =>
+          find
+                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
+                  .evaluate()
+                  .single
+                  .widget
+              as AnimatedScale;
+
+      // Idle: no border, surface2 background.
+      final idle = readInnerScale().child as AnimatedContainer;
+      expect(idle.decoration, isA<BoxDecoration>());
+      expect(
+        (idle.decoration as BoxDecoration).border,
+        isNull,
+        reason: 'Idle state must not have a border (avoids 1px layout shift)',
+      );
+      expect(
+        (idle.decoration as BoxDecoration).color,
+        equals(XiaColors.surface2),
+      );
+
+      // Press: 1px accent border.
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byIcon(Icons.refresh)),
+      );
+      await tester.pump(
+        XiaMotion.durationFast + const Duration(milliseconds: 50),
+      );
+
+      final pressed = readInnerScale().child as AnimatedContainer;
+      final pressedBorder =
+          (pressed.decoration as BoxDecoration).border as Border;
+      expect(
+        pressedBorder.top.color,
+        equals(XiaColors.accent),
+        reason: 'Pressed state must show accent (bright blue) border',
+      );
+
+      await gesture.up();
+    });
+
+    testWidgets('delete button shows red border on press', (tester) async {
+      // The danger variant must also get a clearly visible feedback signal
+      // (red border, not just a tiny scale change). Before the fix, the
+      // delete button had zero press feedback.
+      await tester.pumpWidget(
+        _wrap(
+          InstanceCard(instance: testInstance, onTap: () {}, onDelete: () {}),
+        ),
+      );
+
+      AnimatedScale readInnerScale() =>
+          find
+                  .byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline))
+                  .evaluate()
+                  .single
+                  .widget
+              as AnimatedScale;
+
+      final idle = readInnerScale().child as AnimatedContainer;
+      expect(
+        (idle.decoration as BoxDecoration).border,
+        isNull,
+        reason: 'Idle state must not have a border (avoids 1px layout shift)',
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byIcon(Icons.delete_outline)),
+      );
+      await tester.pump(
+        XiaMotion.durationFast + const Duration(milliseconds: 50),
+      );
+
+      final pressed = readInnerScale().child as AnimatedContainer;
+      final pressedBorder =
+          (pressed.decoration as BoxDecoration).border as Border;
+      expect(
+        pressedBorder.top.color,
+        equals(XiaColors.red),
+        reason: 'Pressed delete button must show red border',
+      );
+
+      await gesture.up();
     });
   });
 }
