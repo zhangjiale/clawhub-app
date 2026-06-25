@@ -745,6 +745,8 @@ onclick 跳转 `page-agent-detail`。
 
 **生命周期**: 用户发送消息后插入 DOM，Agent 回复后 remove()。模拟延迟 1200ms + random(0~800ms)。
 
+**装饰约束**: Typing Indicator 仅由气泡和三个跳动圆点组成，**不包含**左侧头像或图标装饰。容器从页面左 padding 直接开始，不前置 avatar。
+
 ### 4.4 Quick Commands（快捷指令栏）
 
 **容器 `.quick-cmds`**:
