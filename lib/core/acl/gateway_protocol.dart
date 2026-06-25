@@ -593,7 +593,17 @@ class ConnectionConfig {
 
   ConnectionConfig({
     this.locale = 'zh-CN',
-    this.platform = 'flutter',
+
+    /// Default platform string. Spec §2.3 lists valid `client.id` enum
+    /// values; 'flutter' is a framework name, not a platform. The DI path
+    /// in `lib/app/di/providers.dart` always overrides this with the real
+    /// OS string from [platformOS], so the default only matters for mock
+    /// and unit-test paths. Picked 'web' because:
+    ///  - it's a legal [platformOS] return value (kIsWeb branch);
+    ///  - it routes to 'gateway-client' via [ClientIds.forPlatform]
+    ///    (same as the old 'flutter' default).
+    /// See Bug #3 in `docs/technical/api-protocol.md` audit history.
+    this.platform = 'web',
     this.deviceFamily = 'phone',
     this.modelIdentifier,
     this.clientDisplayName,

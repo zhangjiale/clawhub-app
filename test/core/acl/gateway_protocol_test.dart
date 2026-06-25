@@ -242,4 +242,60 @@ void main() {
       );
     });
   });
+
+  // ============================================================================
+  // Bug #3: ConnectionConfig default platform must be a valid OpenClaw spec
+  // platform (§2.3). The previous default `'flutter'` is a Flutter framework
+  // name, not a platform name. Production is unaffected (DI overrides with
+  // platformOS()), but mock/test paths benefit from a legal value so future
+  // server-side enum validation cannot reject the default.
+  // ============================================================================
+  group('ConnectionConfig defaults', () {
+    test('default platform is a valid OpenClaw spec §2.3 value — Bug #3', () {
+      // Spec §2.3 client.id enum + platformOS() values (DI production path).
+      // 'flutter' is intentionally NOT in this set — it's a framework name,
+      // not a platform.
+      const spec = {
+        // spec §2.3 client.id values
+        'webchat-ui',
+        'openclaw-control-ui',
+        'openclaw-tui',
+        'webchat',
+        'cli',
+        'gateway-client',
+        'openclaw-macos',
+        'openclaw-ios',
+        'openclaw-android',
+        'node-host',
+        'test',
+        'fingerprint',
+        'openclaw-probe',
+        // platformOS() values used by lib/app/di/providers.dart
+        'ios',
+        'android',
+        'macos',
+        'linux',
+        'windows',
+        'web',
+      };
+      expect(
+        ConnectionConfig().platform,
+        isIn(spec),
+        reason:
+            'default platform must be a valid OpenClaw spec value, '
+            'not a framework name like "flutter"',
+      );
+    });
+
+    test('ClientIds.forPlatform accepts the default platform', () {
+      final defaultPlatform = ConnectionConfig().platform;
+      expect(
+        () => ClientIds.forPlatform(defaultPlatform),
+        returnsNormally,
+        reason:
+            'ClientIds.forPlatform must handle any default platform value '
+            'via its switch default case',
+      );
+    });
+  });
 }
