@@ -154,6 +154,8 @@ class _NoopAgentRepo implements IAgentRepo {
   }) async {}
   @override
   Future<void> deleteByInstanceId(String instanceId) async {}
+  @override
+  Stream<Agent?> watchById(String localId) => const Stream<Agent?>.empty();
 }
 
 void main() {
