@@ -119,6 +119,9 @@ void main() {
     // Default stubs
     when(() => messageRepo.resetStaleSending(any())).thenAnswer((_) async => 0);
     when(
+      () => messageRepo.updateStatuses(any(), any()),
+    ).thenAnswer((_) async => []);
+    when(
       () => agentRepo.getById(_testAgentLocalId),
     ).thenAnswer((_) async => _testAgent());
   });
@@ -502,22 +505,25 @@ void main() {
         () => instanceRepo.getById(_testInstanceId),
       ).thenAnswer((_) async => _onlineInstance());
       when(
-        () => messageRepo.updateStatus('old', MessageStatus.expired),
+        () => messageRepo.updateStatuses(['old'], MessageStatus.expired),
       ).thenAnswer(
-        (_) async => _msg(
-          clientId: 'old',
-          logicalClock: 1,
-          status: MessageStatus.expired,
-          timestamp: oldTimestamp,
-        ),
+        (_) async => [
+          _msg(
+            clientId: 'old',
+            logicalClock: 1,
+            status: MessageStatus.expired,
+            timestamp: oldTimestamp,
+          ),
+        ],
       );
 
       final sent = await processor.flushOutbox(_testInstanceId);
 
       expect(sent, 0);
       verify(
-        () => messageRepo.updateStatus('old', MessageStatus.expired),
+        () => messageRepo.updateStatuses(['old'], MessageStatus.expired),
       ).called(1);
+      verifyNever(() => messageRepo.updateStatus(any(), any()));
       verifyNever(() => messageRepo.tryTransitionToSending(any(), any()));
     });
   });
@@ -690,12 +696,16 @@ void main() {
             ),
           ],
         );
-        when(() => messageRepo.updateStatus(any(), any())).thenAnswer(
-          (inv) async => _msg(
-            clientId: inv.positionalArguments[0] as String,
-            logicalClock: 1,
-            status: inv.positionalArguments[1] as MessageStatus,
-          ),
+        when(
+          () => messageRepo.updateStatuses(['msg-1'], MessageStatus.expired),
+        ).thenAnswer(
+          (_) async => [
+            _msg(
+              clientId: 'msg-1',
+              logicalClock: 1,
+              status: MessageStatus.expired,
+            ),
+          ],
         );
 
         // Act
@@ -704,13 +714,14 @@ void main() {
         // Assert: tombstoned-skip path must transition to EXPIRED, not just
         // continue (避免 PENDING 计数 24h 卡死)。
         verify(
-          () => messageRepo.updateStatus('msg-1', MessageStatus.expired),
+          () => messageRepo.updateStatuses(['msg-1'], MessageStatus.expired),
         ).called(1);
+        verifyNever(() => messageRepo.updateStatus(any(), any()));
       },
     );
 
     test(
-      'alive agent does NOT trigger updateStatus (regression guard)',
+      'alive agent does NOT trigger expiry batch (regression guard)',
       () async {
         final aliveAgent = Agent(
           localId: _testAgentLocalId,
@@ -765,7 +776,56 @@ void main() {
         // Act
         await processor.flushOutbox(_testInstanceId);
 
-        // Assert: updateStatus must NOT be called for alive agent (regression)
+        // Assert: expiry batch must NOT be triggered for alive agent (regression)
+        verifyNever(() => messageRepo.updateStatus(any(), any()));
+        verifyNever(() => messageRepo.updateStatuses(any(), any()));
+      },
+    );
+
+    test(
+      'batches EXPIRED updates for multiple tombstoned/aged messages (Law 6)',
+      () async {
+        final tombstonedAgent = Agent(
+          localId: _testAgentLocalId,
+          remoteId: _testAgentRemoteId,
+          instanceId: _testInstanceId,
+          name: '产品虾',
+          removedAt: 1719200000000,
+        );
+        when(
+          () => agentRepo.getById(_testAgentLocalId),
+        ).thenAnswer((_) async => tombstonedAgent);
+        when(
+          () => instanceRepo.getById(_testInstanceId),
+        ).thenAnswer((_) async => _onlineInstance());
+
+        final oldTimestamp = DateTime.now()
+            .subtract(const Duration(hours: 25))
+            .millisecondsSinceEpoch;
+        when(() => messageRepo.getOutboxByInstance(_testInstanceId)).thenAnswer(
+          (_) async => [
+            _msg(clientId: 'old-1', logicalClock: 1, timestamp: oldTimestamp),
+            _msg(clientId: 'old-2', logicalClock: 2, timestamp: oldTimestamp),
+            _msg(clientId: 'tomb-1', logicalClock: 3),
+            _msg(clientId: 'tomb-2', logicalClock: 4),
+          ],
+        );
+        when(
+          () => messageRepo.updateStatuses(any(), MessageStatus.expired),
+        ).thenAnswer((_) async => []);
+
+        await processor.flushOutbox(_testInstanceId);
+
+        final captured =
+            verify(
+                  () => messageRepo.updateStatuses(
+                    captureAny(),
+                    MessageStatus.expired,
+                  ),
+                ).captured.single
+                as List<String>;
+        expect(captured, hasLength(4));
+        expect(captured, containsAll(['old-1', 'old-2', 'tomb-1', 'tomb-2']));
         verifyNever(() => messageRepo.updateStatus(any(), any()));
       },
     );

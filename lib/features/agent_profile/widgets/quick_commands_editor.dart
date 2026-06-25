@@ -113,36 +113,37 @@ class _QuickCommandsEditorState extends State<QuickCommandsEditor> {
             ),
           )
         else
-          Flexible(
-            child: ReorderableListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              buildDefaultDragHandles: false,
-              itemCount: widget.commands.length,
-              onReorder: _onReorder,
-              itemBuilder: (context, index) {
-                final cmd = widget.commands[index];
-                return Dismissible(
-                  key: Key('qc-dismiss-${cmd.id}'),
-                  direction: DismissDirection.endToStart,
-                  background: Container(
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: XiaSpacing.s4),
-                    color: XiaColors.red,
-                    child: const Icon(
-                      Icons.delete_outline,
-                      color: Colors.white,
-                    ),
-                  ),
-                  onDismissed: (_) => _onDelete(index),
-                  child: _QuickCommandRow(
-                    key: Key('qc-row-${cmd.id}'),
-                    command: cmd,
-                    index: index,
-                  ),
-                );
-              },
-            ),
+          // 不要包 Flexible：QuickCommandsEditor 的实际父容器是无界高度的
+          // ListView（见 AgentConfigPage 的 ListView body），flex 子节点会
+          // 触发 "RenderFlex children have non-zero flex but incoming
+          // height constraints are unbounded" 异常，框架吞掉后导致
+          // ReorderableListView 不渲染任何 item。shrinkWrap:true + 不可滚
+          // 动物理已经让列表按内容自适应高度，不需要 Flexible。
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            itemCount: widget.commands.length,
+            onReorder: _onReorder,
+            itemBuilder: (context, index) {
+              final cmd = widget.commands[index];
+              return Dismissible(
+                key: Key('qc-dismiss-${cmd.id}'),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: XiaSpacing.s4),
+                  color: XiaColors.red,
+                  child: const Icon(Icons.delete_outline, color: Colors.white),
+                ),
+                onDismissed: (_) => _onDelete(index),
+                child: _QuickCommandRow(
+                  key: Key('qc-row-${cmd.id}'),
+                  command: cmd,
+                  index: index,
+                ),
+              );
+            },
           ),
         const SizedBox(height: XiaSpacing.s2),
         Align(

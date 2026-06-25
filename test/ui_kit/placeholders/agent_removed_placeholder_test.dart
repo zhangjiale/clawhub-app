@@ -1,11 +1,12 @@
 // US-021 v1.1: AgentRemovedPlaceholder widget 测试。
-// 验证 4 个分支：(1) 显示 agent name，(2) agentName=null 隐藏 name 行，
-// (3) source 透传到 smartBack，(4) source=null 也走 smartBack。
+// 验证 3 个分支：(1) 显示 agent name，(2) agentName=null 隐藏 name 行，
+// (3) onBack 回调被调用。US-021 v1.2 移除 onBack=null 的 smartBack 兜底
+// （dead code —— 所有调用点都显式传 onBack）。
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:go_router/go_router.dart';
 import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 void main() {
   group('AgentRemovedPlaceholder', () {
@@ -38,38 +39,25 @@ void main() {
       );
     });
 
-    testWidgets('back button invokes smartBack with provided source', (
-      tester,
-    ) async {
-      // Use a minimal go_router with one location to verify smartBack is called
-      final router = GoRouter(
-        initialLocation: '/placeholder',
-        routes: [
-          GoRoute(
-            path: '/placeholder',
-            builder: (_, _) =>
-                AgentRemovedPlaceholder(source: 'messages', onBack: () {}),
+    testWidgets('back button invokes provided onBack callback', (tester) async {
+      var invoked = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AgentRemovedPlaceholder(
+            source: 'messages',
+            onBack: () => invoked = true,
           ),
-        ],
+        ),
       );
-      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
-      // Just verify the back button exists; full smartBack integration is
-      // covered by widget context, not unit-testable in isolation.
-      expect(
-        find.byType(BackButton),
-        findsNothing,
-        reason: '我们用自定义 XiaBackButton，不是默认 BackButton',
-      );
+
+      await tester.tap(find.byType(XiaBackButton));
+      await tester.pumpAndSettle();
+
+      expect(invoked, isTrue, reason: '返回按钮应调用传入的 onBack');
     });
 
-    testWidgets('back button invokes smartBack with null source by default', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        MaterialApp(home: AgentRemovedPlaceholder(onBack: () {})),
-      );
-      // 应该不抛错
-      expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
-    });
+    // US-021 v1.2: onBack 现为 required,所有调用点（chat_room_page /
+    // agent_profile_page / agent_config_page）都显式传入。如果未来有人忘
+    // 传，编译期会立刻报错,无需运行时兜底。
   });
 }

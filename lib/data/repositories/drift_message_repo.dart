@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
-import 'package:drift/drift.dart' show Variable;
+import 'package:drift/drift.dart' show UpdateKind, Variable;
 
 import '../local/database/database.dart' as db;
 import '../local/mapping/message_mapper.dart';
@@ -245,6 +245,73 @@ class DriftMessageRepo implements IMessageRepo {
 
     await _database.updateMessageStatusById(status.toInt(), clientId);
     return updated;
+  }
+
+  @override
+  Future<List<Message>> updateStatuses(
+    List<String> clientIds,
+    MessageStatus status,
+  ) async {
+    if (clientIds.isEmpty) return <Message>[];
+
+    return _database.transaction(() async {
+      // 1. 读取快照。同一事务内 SELECT 与 UPDATE 一致(SQLite deferred
+      //    transaction: BEGIN 后第一次读/写时获取 SHARED 锁,后续写升级
+      //    RESERVED,其他写事务必须等本事务 COMMIT/ROLLBACK)。
+      //    ORDER BY logical_clock ASC 仅作确定性遍历,无业务意义。
+      final placeholders = clientIds.map((_) => '?').join(', ');
+      final rows = await _database
+          .customSelect(
+            'SELECT * FROM messages WHERE client_id IN ($placeholders) '
+            'ORDER BY logical_clock ASC',
+            variables: [for (final id in clientIds) Variable.withString(id)],
+            readsFrom: {_database.messages},
+          )
+          .get();
+
+      // 2. FSM 过滤:只接受合法转换的行,并记录每行的 (clientId, currentStatus)
+      //    tuple 供第 3 步做 CAS guard。
+      //
+      //    BUG G 修复背景:本事务内 SELECT 与 UPDATE 原子,但显式 status
+      //    guard 是 defense in depth —— 防止未来重构去掉 transaction wrapper
+      //    时引入 race。语义与 [tryTransitionToSending] 的 `AND status = ?`
+      //    单行 CAS 一致,只是 [updateStatuses] 走批量路径。
+      final expectedTuples = <(String, int)>[]; // (clientId, oldStatus)
+      final updatedMessages = <Message>[];
+      for (final row in rows) {
+        final message = MessageMapper.toDomain(db.Message.fromJson(row.data));
+        if (!message.status.canTransitionTo(status)) continue;
+        expectedTuples.add((message.clientId, message.status.toInt()));
+        updatedMessages.add(message.transitionTo(status));
+      }
+
+      if (expectedTuples.isEmpty) return <Message>[];
+
+      // 3. BUG J 修复:用 [customUpdate] + `updates: {messages}` 替代
+      //    [customStatement] —— customStatement 不触发 messages 表的 stream
+      //    watcher invalidate,导致 watchOutboxCount / watchByConversation 等
+      //    stream 不会发射新值,OutboxWarningBanner 等 UI 显示陈旧计数。
+      //
+      //    BUG G 修复:WHERE 子句用 tuple IN
+      //    `(client_id, status) IN ((?, ?), (?, ?), ...)` 做 CAS guard。
+      //    若某行的 status 在 SELECT 之后被并发路径修改,该 tuple 不再匹配,
+      //    UPDATE 跳过该行,不会用 stale snapshot 覆盖新状态。
+      final tuplePlaceholders = expectedTuples.map((_) => '(?, ?)').join(', ');
+      final args = <Object>[status.toInt()];
+      for (final (clientId, oldStatus) in expectedTuples) {
+        args.add(clientId);
+        args.add(oldStatus);
+      }
+      await _database.customUpdate(
+        'UPDATE messages SET status = ? '
+        'WHERE (client_id, status) IN ($tuplePlaceholders)',
+        variables: [for (final arg in args) Variable<Object>(arg)],
+        updateKind: UpdateKind.update,
+        updates: {_database.messages},
+      );
+
+      return updatedMessages;
+    });
   }
 
   @override

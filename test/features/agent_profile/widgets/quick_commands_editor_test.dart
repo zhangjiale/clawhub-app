@@ -136,5 +136,46 @@ void main() {
         expect(captured![i].sortOrder, i);
       }
     });
+
+    // 回归测试：当 QuickCommandsEditor 被嵌入到无界高度的父容器里时
+    // （实际场景：AgentConfigPage 的外层 ListView），非空列表也必须能
+    // 正确渲染。
+    //
+    // 原 bug：build 用了 Flexible(ReorderableListView.builder(...))，
+    // 在外层 ListView 给 Column 提供 unbounded height 时，框架抛
+    // `RenderFlex children have non-zero flex but incoming height
+    // constraints are unbounded`，框架在 release 模式吞掉异常，导致
+    // ReorderableListView 不渲染任何 item——用户表现为"添加快捷指令
+    // 后列表还是空的"。
+    testWidgets('renders items when embedded in an unbounded-height ListView', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            // 关键：用 ListView 提供 unbounded vertical 约束，
+            // 复现 AgentConfigPage 真实场景。
+            body: ListView(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  child: QuickCommandsEditor(
+                    agentId: agentId,
+                    commands: sampleCommands,
+                    onChanged: (_) {},
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 三个 label 必须可见
+      expect(find.text('状态'), findsOneWidget);
+      expect(find.text('重置'), findsOneWidget);
+      expect(find.text('记忆'), findsOneWidget);
+    });
   });
 }

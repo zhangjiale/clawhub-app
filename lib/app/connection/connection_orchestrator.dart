@@ -345,8 +345,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
               '[ConnectionOrchestrator] Synced ${remoteAgents.length} agents '
               'for $instanceId',
             );
-            // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建
-            _emitEvent(const AgentsSyncedEvent());
+            // 通知 UI 层 agent 数据已更新，触发 agentListProvider 重建。
+            // 携带 instanceId 让 chat/agent_profile 的 ticker listener 能按实例
+            // 过滤（BUG B 修复），避免跨实例 N+1 getById。
+            _emitEvent(AgentsSyncedEvent(instanceId));
             // Success — break out of for-loop, then check
             // _syncPendingRetry for pending retries below.
             break;

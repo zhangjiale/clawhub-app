@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
@@ -8,6 +10,15 @@ import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
+
+class _DelayedConversationRepo extends InMemoryConversationRepo {
+  final Completer<List<Conversation>> _completer = Completer();
+
+  @override
+  Future<List<Conversation>> getAllWithMessages() => _completer.future;
+
+  void complete(List<Conversation> value) => _completer.complete(value);
+}
 
 void main() {
   group('Message Hub Providers', () {
@@ -31,118 +42,125 @@ void main() {
           messageRepoProvider.overrideWith(
             (ref) => messageRepo ?? InMemoryMessageRepo(),
           ),
-          gatewayClientProvider.overrideWith(
-            (ref) => MockGatewayClient(),
-          ),
+          gatewayClientProvider.overrideWith((ref) => MockGatewayClient()),
         ],
       );
       addTearDown(container.dispose);
       return container;
     }
 
-    test('conversationListProvider returns empty when no conversations', () async {
-      final container = createContainer();
-      final data = await container.read(conversationListProvider.future);
-      expect(data.previews, isEmpty);
-    });
+    test(
+      'conversationListProvider returns empty when no conversations',
+      () async {
+        final container = createContainer();
+        final data = await container.read(conversationListProvider.future);
+        expect(data.previews, isEmpty);
+      },
+    );
 
-    test('conversationListProvider returns sorted conversations with agent info',
-        () async {
-      final agentRepo = InMemoryAgentRepo();
-      final instanceRepo = InMemoryInstanceRepo();
-      final conversationRepo = InMemoryConversationRepo();
+    test(
+      'conversationListProvider returns sorted conversations with agent info',
+      () async {
+        final agentRepo = InMemoryAgentRepo();
+        final instanceRepo = InMemoryInstanceRepo();
+        final conversationRepo = InMemoryConversationRepo();
 
-      // Seed instance
-      await instanceRepo.save(Instance(
-        id: 'inst-1',
-        name: 'My MacBook',
-        gatewayUrl: 'wss://test.com:18789',
-        tokenRef: 'ref',
-      ));
+        // Seed instance
+        await instanceRepo.save(
+          Instance(
+            id: 'inst-1',
+            name: 'My MacBook',
+            gatewayUrl: 'wss://test.com:18789',
+            tokenRef: 'ref',
+          ),
+        );
 
-      // Seed agent
-      final agent = Agent(
-        localId: 'local-1',
-        remoteId: 'r-1',
-        instanceId: 'inst-1',
-        name: '产品虾',
-        themeColor: '#6c5ce7',
-      );
-      await agentRepo.syncFromGateway('inst-1', [agent]);
+        // Seed agent
+        final agent = Agent(
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
+          themeColor: '#6c5ce7',
+        );
+        await agentRepo.syncFromGateway('inst-1', [agent]);
 
-      // Seed conversations
-      final conv1 = Conversation(
-        agentId: 'local-1',
-        instanceId: 'inst-1',
-        lastMessagePreview: '你好，有什么可以帮你的？',
-        lastMessageTime: DateTime.now().millisecondsSinceEpoch,
-      );
-      await conversationRepo.getOrCreate('inst-1', 'local-1');
-      await conversationRepo.updateLastMessage(
-        conversationId: conv1.id,
-        messageId: 'msg-1',
-        preview: '你好，有什么可以帮你的？',
-        timestamp: DateTime.now().millisecondsSinceEpoch,
-        role: MessageRole.agent,
-      );
+        // Seed conversations
+        final conv1 = Conversation(
+          agentId: 'local-1',
+          instanceId: 'inst-1',
+          lastMessagePreview: '你好，有什么可以帮你的？',
+          lastMessageTime: DateTime.now().millisecondsSinceEpoch,
+        );
+        await conversationRepo.getOrCreate('inst-1', 'local-1');
+        await conversationRepo.updateLastMessage(
+          conversationId: conv1.id,
+          messageId: 'msg-1',
+          preview: '你好，有什么可以帮你的？',
+          timestamp: DateTime.now().millisecondsSinceEpoch,
+          role: MessageRole.agent,
+        );
 
-      final container = createContainer(
-        agentRepo: agentRepo,
-        instanceRepo: instanceRepo,
-        conversationRepo: conversationRepo,
-      );
+        final container = createContainer(
+          agentRepo: agentRepo,
+          instanceRepo: instanceRepo,
+          conversationRepo: conversationRepo,
+        );
 
-      final data = await container.read(conversationListProvider.future);
-      expect(data.previews.length, 1);
-      expect(data.previews.first.agent.name, '产品虾');
-      expect(data.previews.first.instanceName, 'My MacBook');
-      expect(
-        data.previews.first.conversation.lastMessagePreview,
-        '你好，有什么可以帮你的？',
-      );
-    });
+        final data = await container.read(conversationListProvider.future);
+        expect(data.previews.length, 1);
+        expect(data.previews.first.agent.name, '产品虾');
+        expect(data.previews.first.instanceName, 'My MacBook');
+        expect(
+          data.previews.first.conversation.lastMessagePreview,
+          '你好，有什么可以帮你的？',
+        );
+      },
+    );
 
-    test('conversationListProvider skips conversations with missing agents',
-        () async {
-      final conversationRepo = InMemoryConversationRepo();
+    test(
+      'conversationListProvider skips conversations with missing agents',
+      () async {
+        final conversationRepo = InMemoryConversationRepo();
 
-      // Seed conversation for a non-existent agent
-      final conv = Conversation(
-        agentId: 'missing-agent',
-        instanceId: 'inst-1',
-        lastMessagePreview: 'test',
-        lastMessageTime: DateTime.now().millisecondsSinceEpoch,
-      );
-      // Directly insert into store via getOrCreate which creates the entry
-      await conversationRepo.getOrCreate('inst-1', 'missing-agent');
-      await conversationRepo.updateLastMessage(
-        conversationId: conv.id,
-        messageId: 'msg-1',
-        preview: 'test',
-        timestamp: DateTime.now().millisecondsSinceEpoch,
-        role: MessageRole.agent,
-      );
+        // Seed conversation for a non-existent agent
+        final conv = Conversation(
+          agentId: 'missing-agent',
+          instanceId: 'inst-1',
+          lastMessagePreview: 'test',
+          lastMessageTime: DateTime.now().millisecondsSinceEpoch,
+        );
+        // Directly insert into store via getOrCreate which creates the entry
+        await conversationRepo.getOrCreate('inst-1', 'missing-agent');
+        await conversationRepo.updateLastMessage(
+          conversationId: conv.id,
+          messageId: 'msg-1',
+          preview: 'test',
+          timestamp: DateTime.now().millisecondsSinceEpoch,
+          role: MessageRole.agent,
+        );
 
-      final container = createContainer(
-        conversationRepo: conversationRepo,
-      );
+        final container = createContainer(conversationRepo: conversationRepo);
 
-      final data = await container.read(conversationListProvider.future);
-      // Missing agent — skipped
-      expect(data.previews, isEmpty);
-    });
+        final data = await container.read(conversationListProvider.future);
+        // Missing agent — skipped
+        expect(data.previews, isEmpty);
+      },
+    );
 
     test('conversationListProvider includes unread count', () async {
       final agentRepo = InMemoryAgentRepo();
       final instanceRepo = InMemoryInstanceRepo();
       final conversationRepo = InMemoryConversationRepo();
 
-      await instanceRepo.save(Instance(
-        id: 'inst-1',
-        name: 'My MacBook',
-        gatewayUrl: 'wss://test.com:18789',
-        tokenRef: 'ref',
-      ));
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'My MacBook',
+          gatewayUrl: 'wss://test.com:18789',
+          tokenRef: 'ref',
+        ),
+      );
 
       await agentRepo.syncFromGateway('inst-1', [
         Agent(
@@ -181,5 +199,32 @@ void main() {
       expect(data.previews.length, 1);
       expect(data.previews.first.conversation.unreadCount, 3);
     });
+
+    test(
+      'conversationListProvider does not throw StateError when disposed during async gap',
+      () async {
+        final delayedRepo = _DelayedConversationRepo();
+        final container = createContainer(conversationRepo: delayedRepo);
+
+        final future = container.read(conversationListProvider.future);
+
+        // Let the provider body reach the first await.
+        await Future.delayed(const Duration(milliseconds: 10));
+
+        // Dispose before the async work completes.
+        container.dispose();
+
+        // Complete the original async call with a non-empty conversation list,
+        // so the provider body continues past the early return and reaches the
+        // post-await repository reads.
+        delayedRepo.complete([
+          Conversation(id: 'conv-1', agentId: 'agent-1', instanceId: 'inst-1'),
+        ]);
+
+        // With the bug, post-await ref.watch(agentRepoProvider/instanceRepoProvider)
+        // would throw StateError because ref is no longer valid after disposal.
+        await expectLater(future, completes);
+      },
+    );
   });
 }

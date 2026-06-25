@@ -1,0 +1,308 @@
+// US-021 AC8 响应式 (provider 层):
+// 验证 chatViewModelProvider 的 `ref.listen(agentSyncTickerProvider)` 真的会在
+// ticker 递增时调用 vm.refreshAgent()，且 refreshAgent 内部抛出的异常不会
+// 从 fire-and-forget 监听器泄漏为未处理异步错误。
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+
+import 'package:claw_hub/app/di/providers.dart';
+import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/i_achievement_checker.dart';
+import 'package:claw_hub/data/repositories/in_memory_repos.dart';
+import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/instance.dart';
+import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
+import 'package:claw_hub/domain/usecases/send_message.dart';
+import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
+import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
+import 'package:claw_hub/ui_kit/async_state.dart';
+
+class _MockAgentRepo extends Mock implements IAgentRepo {}
+
+class _MockGatewayClient extends Mock implements IGatewayClient {}
+
+class _MockAchievementChecker extends Mock implements IAchievementChecker {}
+
+void main() {
+  late _MockAgentRepo agentRepo;
+  late InMemoryInstanceRepo instanceRepo;
+  late InMemoryConversationRepo conversationRepo;
+  late InMemoryMessageRepo messageRepo;
+  late _MockGatewayClient gatewayClient;
+  late _MockAchievementChecker achievementChecker;
+
+  final activeAgent = Agent(
+    localId: 'local-a',
+    remoteId: 'remote-a',
+    instanceId: 'inst-1',
+    name: '产品虾',
+    themeColor: '#6c5ce7',
+  );
+
+  setUp(() {
+    agentRepo = _MockAgentRepo();
+    instanceRepo = InMemoryInstanceRepo();
+    conversationRepo = InMemoryConversationRepo();
+    messageRepo = InMemoryMessageRepo(conversationRepo: conversationRepo);
+    gatewayClient = _MockGatewayClient();
+    achievementChecker = _MockAchievementChecker();
+
+    // Gateway streams: empty is enough for init to subscribe safely.
+    when(
+      () => gatewayClient.connectionStateStream(any()),
+    ).thenAnswer((_) => Stream.empty());
+    when(
+      () => gatewayClient.messageStream(any()),
+    ).thenAnswer((_) => Stream.empty());
+    when(
+      () => gatewayClient.toolCallStream(any()),
+    ).thenAnswer((_) => Stream.empty());
+    when(
+      () => gatewayClient.streamingDeltaStream(any()),
+    ).thenAnswer((_) => Stream.empty());
+    when(
+      () => gatewayClient.pairingInfoStream(any()),
+    ).thenAnswer((_) => Stream.empty());
+    when(
+      () => gatewayClient.fetchMessageHistory(
+        instanceId: any(named: 'instanceId'),
+        agentId: any(named: 'agentId'),
+        cursor: any(named: 'cursor'),
+      ),
+    ).thenAnswer((_) async => (messages: <Message>[], nextCursor: null));
+    when(() => achievementChecker.check(any())).thenReturn(null);
+  });
+
+  Future<void> waitForInitComplete(ProviderContainer container) async {
+    final vm = container.read(
+      chatViewModelProvider((
+        instanceId: 'inst-1',
+        agentId: 'local-a',
+      )).notifier,
+    );
+    for (var i = 0; i < 100; i++) {
+      if (vm.state.messages is! LoadInProgress) return;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    throw StateError('vm.init() did not complete within 1s');
+  }
+
+  ProviderContainer createContainer() {
+    final sendUseCase = SendMessageUseCase(
+      messageRepo: messageRepo,
+      conversationRepo: conversationRepo,
+      instanceRepo: instanceRepo,
+      gatewayClient: gatewayClient,
+    );
+
+    final container = ProviderContainer(
+      overrides: [
+        agentRepoProvider.overrideWithValue(agentRepo),
+        instanceRepoProvider.overrideWithValue(instanceRepo),
+        conversationRepoProvider.overrideWithValue(conversationRepo),
+        messageRepoProvider.overrideWithValue(messageRepo),
+        gatewayClientProvider.overrideWithValue(gatewayClient),
+        sendMessageUseCaseProvider.overrideWithValue(sendUseCase),
+        achievementCheckerProvider.overrideWithValue(achievementChecker),
+      ],
+    );
+    addTearDown(() {
+      runZonedGuarded(() => container.dispose(), (error, stack) {
+        // Swallow the double-dispose AssertionError from Riverpod's
+        // StateNotifierProviderElement.runOnDispose (same pattern as
+        // agent_profile_provider_test).
+      });
+    });
+    return container;
+  }
+
+  test(
+    'ref.listen(agentSyncTickerProvider) triggers vm.refreshAgent on ticker bump',
+    () async {
+      var calls = 0;
+      when(() => agentRepo.getById('local-a')).thenAnswer((_) async {
+        calls++;
+        return activeAgent;
+      });
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+
+      final container = createContainer();
+      container.read(
+        chatViewModelProvider((instanceId: 'inst-1', agentId: 'local-a')),
+      );
+      await waitForInitComplete(container);
+
+      final initCalls = calls;
+      expect(initCalls, 1);
+
+      // BUG B 修复:ticker 携带 instanceId,listener 过滤本实例才触发。
+      // bump 时指定与 VM 相同的 instanceId → refreshAgent 应被调。
+      container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        calls,
+        2,
+        reason: 'ticker bump 后 listener 应触发 refreshAgent → getById 第 2 次',
+      );
+    },
+  );
+
+  // BUG B 修复:跨实例 ticker bump 不应触发本实例的 refreshAgent。
+  // 原实现 ticker = StateProvider<int> 无 payload,任何实例 sync 都会触发
+  // 所有 ChatRoom 的 getById —— N 个实例 + 1 sync = N 次冗余 SQLite read。
+  // 修复后 ticker = StateProvider<String?>,listener 按 instanceId 过滤。
+  test(
+    'cross-instance ticker bump is filtered out (Law 6 / N+1 prevention)',
+    () async {
+      var calls = 0;
+      when(() => agentRepo.getById('local-a')).thenAnswer((_) async {
+        calls++;
+        return activeAgent;
+      });
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+
+      final container = createContainer();
+      container.read(
+        chatViewModelProvider((instanceId: 'inst-1', agentId: 'local-a')),
+      );
+      await waitForInitComplete(container);
+      expect(calls, 1, reason: 'init 阶段 getById 调 1 次');
+
+      // bump ticker 携带**不同**的 instanceId('inst-2'),本 VM 应跳过
+      container.read(agentSyncTickerProvider.notifier).state = 'inst-2';
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        calls,
+        1,
+        reason:
+            '跨实例 ticker bump 不应触发本实例的 refreshAgent,'
+            '避免 N 个 ChatRoom 全量冗余查询。'
+            '当前 calls=$calls(预期 1)',
+      );
+    },
+  );
+
+  test(
+    'refreshAgent error from fire-and-forget listen is swallowed (no unhandled async error)',
+    () async {
+      var calls = 0;
+      when(() => agentRepo.getById('local-a')).thenAnswer((_) async {
+        calls++;
+        if (calls > 1) throw Exception('DB error on refresh');
+        return activeAgent;
+      });
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+
+      final container = createContainer();
+      final vm = container.read(
+        chatViewModelProvider((
+          instanceId: 'inst-1',
+          agentId: 'local-a',
+        )).notifier,
+      );
+      await waitForInitComplete(container);
+
+      // 触发 refreshAgent，内部 getById 会抛异常。
+      // ticker 携带本实例 instanceId 才能命中 listener 过滤。
+      container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      // 如果异常从 fire-and-forget 监听器泄漏，测试框架会捕获到未处理异步错误。
+      // 此处断言 VM 仍在工作且状态未因异常而损坏。
+      expect(vm.state.isAgentRemoved, isFalse);
+      expect(calls, greaterThan(1));
+    },
+  );
+
+  // US-021 v1.2 修复:refreshAgent 简化后,必须在 init() 未启动时
+  // (initFuture == null) 也能从 ticker 同步 tombstone 状态。原实现
+  // `if (initFuture == null) return;` 会让 init 未跑的窗口期内
+  // isAgentRemoved 维持 false,用户看到的是普通 ChatRoom UI。
+  //
+  // 直接构造 ChatViewModel (绕过 provider 的自动 init 调用) 来模拟
+  // "refreshAgent 在 init 之前被调用"的场景。
+  test('refreshAgent syncs tombstone when init was never called '
+      '(initFuture == null, US-021 v1.2 简化)', () async {
+    final tombstonedAgent = Agent(
+      localId: 'local-a',
+      remoteId: 'remote-a',
+      instanceId: 'inst-1',
+      name: '产品虾',
+      themeColor: '#6c5ce7',
+      removedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    when(
+      () => agentRepo.getById('local-a'),
+    ).thenAnswer((_) async => tombstonedAgent);
+
+    // 直接构造 VM,不调 init() —— _initFuture 字段保持 null。
+    final vm = ChatViewModel(
+      agentRepo: agentRepo,
+      conversationRepo: InMemoryConversationRepo(),
+      messageRepo: InMemoryMessageRepo(),
+      instanceRepo: instanceRepo,
+      gatewayClient: gatewayClient,
+      sendMessageUseCase: SendMessageUseCase(
+        messageRepo: messageRepo,
+        conversationRepo: conversationRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gatewayClient,
+      ),
+      instanceId: 'inst-1',
+      agentId: 'local-a',
+      achievementChecker: _MockAchievementChecker(),
+      flushDelay: Duration.zero,
+    );
+    expect(vm.state.isAgentRemoved, isFalse);
+
+    await vm.refreshAgent();
+
+    expect(
+      vm.state.isAgentRemoved,
+      isTrue,
+      reason:
+          'initFuture == null 时,refreshAgent 不能早退,'
+          '必须直接 fetch agent 并同步 tombstone 状态',
+    );
+  });
+}

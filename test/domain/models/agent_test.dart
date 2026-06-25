@@ -244,4 +244,108 @@ void main() {
       expect(updated.isHidden, isTrue);
     });
   });
+
+  // US-021: equality/hashCode 必须区分同一 Agent 的 tombstone 状态变化，
+  // 否则 Set/Map 会把 alive 与 tombstoned 折叠，Riverpod 也不会重建。
+  group('Agent equality (US-021)', () {
+    final alive = Agent(
+      localId: 'local-a1',
+      remoteId: 'r1',
+      instanceId: 'inst-001',
+      name: '产品虾',
+    );
+
+    test('相同 localId 的 alive 与 tombstoned Agent 不相等', () {
+      final tombstoned = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+      );
+      expect(alive == tombstoned, isFalse);
+      expect(tombstoned == alive, isFalse);
+    });
+
+    test('相同 localId 的 alive 与 hidden Agent 不相等', () {
+      final hidden = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        hiddenAt: 1719300000000,
+      );
+      expect(alive == hidden, isFalse);
+      expect(hidden == alive, isFalse);
+    });
+
+    test('removedAt 不同的两个 tombstoned Agent 不相等', () {
+      final a = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+      );
+      final b = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000001,
+      );
+      expect(a == b, isFalse);
+    });
+
+    test('hiddenAt 不同的两个 hidden Agent 不相等', () {
+      final a = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        hiddenAt: 1719300000000,
+      );
+      final b = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        hiddenAt: 1719300000001,
+      );
+      expect(a == b, isFalse);
+    });
+
+    test('所有字段相同（含 tombstone 状态）的 Agent 相等', () {
+      final a = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+        hiddenAt: 1719300000000,
+      );
+      final b = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+        hiddenAt: 1719300000000,
+      );
+      expect(a == b, isTrue);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('Set 不把 alive 与 tombstoned 折叠成同一个元素', () {
+      final tombstoned = Agent(
+        localId: 'local-a1',
+        remoteId: 'r1',
+        instanceId: 'inst-001',
+        name: '产品虾',
+        removedAt: 1719200000000,
+      );
+      final set = {alive, tombstoned};
+      expect(set.length, 2);
+    });
+  });
 }

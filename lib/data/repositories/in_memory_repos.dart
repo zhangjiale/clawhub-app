@@ -20,6 +20,17 @@ class InMemoryInstanceRepo implements IInstanceRepo {
   Future<Instance?> getById(String id) async => _store[id];
 
   @override
+  Future<Map<String, Instance>> getByIds(List<String> ids) async {
+    if (ids.isEmpty) return {};
+    final result = <String, Instance>{};
+    for (final id in ids) {
+      final instance = _store[id];
+      if (instance != null) result[id] = instance;
+    }
+    return result;
+  }
+
+  @override
   Future<Instance> save(Instance instance) async {
     _store[instance.id] = instance;
     return instance;
@@ -91,12 +102,30 @@ class InMemoryAgentRepo implements IAgentRepo {
 
   @override
   Future<List<Agent>> getByInstanceId(String instanceId) async {
+    // US-021: 默认过滤 tombstoned + hidden agent, 对齐 Drift 实现
+    // (DriftAgentRepo.getActiveAgentsByInstance 用 WHERE removed_at IS NULL
+    // AND hidden_at IS NULL)。getById/getAllByInstanceId/findByCompositeKey
+    // 仍不过滤,以满足 OutboxProcessor / sync 复活 / host 切换警告契约。
+    return _sorted(
+      _store.values.where(
+        (a) => a.instanceId == instanceId && !a.isRemoved && !a.isHidden,
+      ),
+    );
+  }
+
+  @override
+  Future<List<Agent>> getAllByInstanceId(String instanceId) async {
+    // 不过滤,返回实例下全部 agent (含 tombstoned/hidden)。
+    // 用于 host 切换警告等需要统计全部本地 agent 的场景,
+    // 与 Drift 的 getAgentsByInstance (不过滤版) 语义一致。
     return _sorted(_store.values.where((a) => a.instanceId == instanceId));
   }
 
   @override
   Future<List<Agent>> getAll() async {
-    return _sorted(_store.values);
+    // US-021: 默认过滤 tombstoned + hidden agent, 对齐 Drift 实现
+    // (DriftAgentRepo.getAllActiveAgents)。
+    return _sorted(_store.values.where((a) => !a.isRemoved && !a.isHidden));
   }
 
   @override
@@ -353,6 +382,24 @@ class InMemoryMessageRepo implements IMessageRepo {
     final updated = msg.transitionTo(status); // 使用领域模型的状态机验证
     _byClientId[clientId] = updated;
     _notifyChanged();
+    return updated;
+  }
+
+  @override
+  Future<List<Message>> updateStatuses(
+    List<String> clientIds,
+    MessageStatus status,
+  ) async {
+    final updated = <Message>[];
+    for (final id in clientIds) {
+      final msg = _byClientId[id];
+      if (msg == null) continue;
+      if (!msg.status.canTransitionTo(status)) continue;
+      final newMsg = msg.transitionTo(status);
+      _byClientId[id] = newMsg;
+      updated.add(newMsg);
+    }
+    if (updated.isNotEmpty) _notifyChanged();
     return updated;
   }
 

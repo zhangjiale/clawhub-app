@@ -114,10 +114,12 @@ class Agent {
       identical(this, other) ||
       other is Agent &&
           runtimeType == other.runtimeType &&
-          localId == other.localId;
+          localId == other.localId &&
+          removedAt == other.removedAt &&
+          hiddenAt == other.hiddenAt;
 
   @override
-  int get hashCode => localId.hashCode;
+  int get hashCode => Object.hash(localId, removedAt, hiddenAt);
 
   @override
   String toString() =>

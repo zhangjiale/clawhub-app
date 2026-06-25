@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
@@ -118,6 +119,40 @@ void main() {
           'init 失败时 catch 块必须调 _syncAgentRemoved() 重置 '
           'isAgentRemoved，避免上轮 tombstone 状态残留导致 AC8 '
           '占位页错乱',
+    );
+  });
+
+  // US-021 init 短路（chat_view_model.dart:_init 修复）:
+  // 当前 bug：_init() 只在 _agent == null 时早退。tombstoned agent
+  // (isRemoved=true) 仍走完 stream 订阅 + getOrCreate + _loadMessages。
+  // AC8 占位页显示时下面挂了 5 个 stream 订阅 + 1 个 dangling conversation
+  // row，浪费资源且在 revive 后无法干净重订阅（_initFuture 已 cache）。
+  test('init with tombstoned agent short-circuits: NO conversation row created '
+      '(US-021 _init early-return)', () async {
+    // Arrange: tombstoned agent 已存在
+    when(
+      () => agentRepo.getById(_agentId),
+    ).thenAnswer((_) async => _tombstonedAgent());
+
+    final vm = createViewModel();
+    await vm.init();
+
+    // Sanity: tombstone 状态已同步
+    expect(
+      vm.state.isAgentRemoved,
+      isTrue,
+      reason: 'init 必须把 isRemoved agent 同步到 state.isAgentRemoved',
+    );
+
+    // Critical: 不应创建 dangling conversation 行
+    final convId = Conversation.generateId(_instanceId, _agentId);
+    final conv = await conversationRepo.getById(convId);
+    expect(
+      conv,
+      isNull,
+      reason:
+          'tombstoned agent 的 init 应早退，不应调用 '
+          '_conversationRepo.getOrCreate 创建 dangling conversation',
     );
   });
 }

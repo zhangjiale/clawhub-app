@@ -6,6 +6,7 @@ import 'package:claw_hub/core/iconnectivity.dart';
 import 'package:claw_hub/domain/models/clear_all_result.dart';
 import 'package:claw_hub/domain/models/storage_info.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
+import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
 import 'package:claw_hub/features/search/providers/search_providers.dart';
 import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
@@ -55,8 +56,7 @@ final storageInfoProvider = FutureProvider<StorageInfo>((ref) {
 ///    repo 抛异常，guard 仍会复位为 false，避免永久阻塞页面打开
 /// 4. 失效范围（push 模型 + 顶层 FutureProvider 显式 invalidate）:
 ///    - 顶层 FutureProvider: [storageInfoProvider] / [conversationListProvider] /
-///      [statsProvider]（不 watch tick，需显式 invalidate）
-///    - ticker: `agentSyncTickerProvider++`（驱动 [agentListProvider]）
+///      [statsProvider] / [agentListProvider]（不 watch tick，需显式 invalidate）
 ///    - push 信号: `cacheClearedTickProvider++` → 所有 watch/listen 该 tick
 ///      的 family VM 自动响应（agentProfileVM 重建、chatVM 温和刷新）。
 ///      本 provider **无需 import agent_profile / chat_room** —— 依赖箭头反转。
@@ -79,8 +79,8 @@ final clearCacheActionProvider = Provider<Future<ClearAllResult> Function()>((
         ref.invalidate(storageInfoProvider);
         ref.invalidate(conversationListProvider);
         ref.invalidate(statsProvider);
-        // agentListProvider 走 ticker（已有 ref.watch 依赖）
-        ref.read(agentSyncTickerProvider.notifier).state++;
+        // agentListProvider 不 watch tick(直接 ref.invalidate 即可)
+        ref.invalidate(agentListProvider);
         // Push 信号:递增 tick → agentProfileVM 自动重建、chatVM 温和
         // 刷新（reloadMessages，isStreaming 守卫保护流式）。无需枚举
         // live-set，无需 import agent_profile / chat_room。
@@ -132,7 +132,7 @@ final clearAgentContentActionProvider =
         ref.invalidate(storageInfoProvider);
         ref.invalidate(conversationListProvider);
         ref.invalidate(statsProvider);
-        ref.read(agentSyncTickerProvider.notifier).state++;
+        ref.invalidate(agentListProvider);
 
         // 4) Push 信号：让 ChatVM 温和 reloadMessages，AgentProfileVM 销毁
         //    重建。其他 agent 的 VM 也会响应一次（ms 级开销可忽略），换得

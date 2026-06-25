@@ -10,7 +10,6 @@ import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
-import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
@@ -32,6 +31,7 @@ import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/ui_kit/status_banner.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
+import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -140,38 +140,17 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     // .notifier gives us the ChatViewModel for calling action methods.
     final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;
-    // US-021 AC8: agent 已被 Gateway 删除（tombstoned）时不进入聊天界面 ——
-    // 渲染"已移除"占位页并提示，用户点返回离开。agent 为 null（init 未完成）
-    // 时跳过，等加载完再判断。与 send() 的 AC9 重查互补：AC8 拦"打开已删除
-    // agent"，AC9 拦"停留期间被删"。
-    if (agent != null && agent.isRemoved) {
-      return Scaffold(
-        appBar: AppBar(
-          leading: XiaBackButton(onPressed: _handleBack),
-          title: const Text('虾已移除'),
-        ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.delete_outline, size: 48, color: XiaColors.red),
-                const SizedBox(height: 16),
-                const Text(
-                  '该 Agent 已从 Gateway 移除',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  agent.displayName,
-                  style: theme.textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
+    // US-021 AC8: agent 已被 Gateway 删除（tombstoned）时不进入聊天界面。
+    // 用 session.isAgentRemoved（响应式字段）而非 vm.agent（_agent 是非响应式
+    // 缓存，后台 sync tombstone 后不会更新）—— refreshAgent() 与所有 _agent
+    // 写入点会同步此字段，state 变化经 ref.watch 触发本 build 重建。
+    // US-021 v1.2: 迁移到 AgentRemovedPlaceholder widget，与 AgentProfilePage /
+    // AgentConfigPage 共用同一份占位页（避免三处文案/样式 drift）。
+    if (session.isAgentRemoved) {
+      return AgentRemovedPlaceholder(
+        agentName: agent?.displayName,
+        source: widget.source,
+        onBack: _handleBack,
       );
     }
     // 历史同步是否被截断（US-016 AC-2）—— 重连后 catch-up 撞翻页上限时为 true。

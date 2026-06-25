@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:claw_hub/domain/models/agent.dart';
@@ -194,6 +192,175 @@ void main() {
       final results =
           (vm.state.results as LoadData).value as List<SearchResult>;
       expect(results.length, 20);
+    });
+
+    test(
+      'loadMore uses raw DB offset after tombstoned agents are filtered',
+      () async {
+        final activeAgent = Agent(
+          localId: 'agent-active',
+          remoteId: 'r-active',
+          instanceId: 'inst-1',
+          name: '活虾',
+          themeColor: '#6c5ce7',
+        );
+        final tombstonedAgent = Agent(
+          localId: 'agent-tomb',
+          remoteId: 'r-tomb',
+          instanceId: 'inst-1',
+          name: '死虾',
+          themeColor: '#6c5ce7',
+          removedAt: 1719200000000,
+        );
+
+        // First page: 21 raw rows, first 5 belong to tombstoned agent.
+        final firstPage = List.generate(
+          21,
+          (i) => Message(
+            clientId: 'msg-$i',
+            conversationId: 'conv-${i < 5 ? 'tomb' : 'active'}',
+            agentId: i < 5 ? 'agent-tomb' : 'agent-active',
+            role: MessageRole.user,
+            content: 'hello $i',
+            type: MessageType.text,
+            logicalClock: i,
+            timestamp: 1000 + i,
+          ),
+        );
+
+        when(
+          () => messageRepo.search('raw', limit: 21, offset: 0),
+        ).thenAnswer((_) async => firstPage);
+        when(() => messageRepo.search('raw', limit: 21, offset: 20)).thenAnswer(
+          (_) async => [
+            Message(
+              clientId: 'msg-21',
+              conversationId: 'conv-active',
+              agentId: 'agent-active',
+              role: MessageRole.user,
+              content: 'hello 21',
+              type: MessageType.text,
+              logicalClock: 21,
+              timestamp: 1021,
+            ),
+          ],
+        );
+        when(() => agentRepo.getByIds(any())).thenAnswer(
+          (_) async => {
+            'agent-active': activeAgent,
+            'agent-tomb': tombstonedAgent,
+          },
+        );
+        when(() => conversationRepo.getByIds(any())).thenAnswer(
+          (_) async => {
+            'conv-active': Conversation(
+              id: 'conv-active',
+              instanceId: 'inst-1',
+              agentId: 'agent-active',
+            ),
+            'conv-tomb': Conversation(
+              id: 'conv-tomb',
+              instanceId: 'inst-1',
+              agentId: 'agent-tomb',
+            ),
+          },
+        );
+
+        vm.onQueryChanged('raw');
+        await Future.delayed(const Duration(milliseconds: 400));
+
+        // First page yields 15 visible results (msg-5..msg-19) + hasMore.
+        final firstResults = switch (vm.state.results) {
+          LoadData(:final value) => value,
+          _ => <SearchResult>[],
+        };
+        expect(firstResults.length, 15);
+        expect(vm.state.hasMore, true);
+
+        await vm.loadMore();
+
+        // Critical: second query must use raw offset 20, not filtered offset 15.
+        verify(
+          () => messageRepo.search('raw', limit: 21, offset: 20),
+        ).called(1);
+
+        final allResults = switch (vm.state.results) {
+          LoadData(:final value) => value,
+          _ => <SearchResult>[],
+        };
+        final clientIds = allResults.map((r) => r.messageClientId).toList();
+        expect(clientIds.toSet().length, clientIds.length);
+        expect(
+          allResults.any(
+            (r) =>
+                r.messageClientId == 'msg-19' && r.messageClientId == 'msg-21',
+          ),
+          isFalse,
+        );
+        expect(allResults.any((r) => r.messageClientId == 'msg-21'), isTrue);
+      },
+    );
+
+    test('hasMore=false when entire page is tombstoned '
+        '(no load-more affordance for empty visible results)', () async {
+      // US-021 v1.2 修复：原 hasMore 用 raw DB 计数
+      // (messages.length > _pageSize)，当全页 tombstone 时 hasMore 仍 true，
+      // 用户点 load more 反复拿到 0 可见结果,UX 卡死。
+      final tombstonedAgent = Agent(
+        localId: 'agent-tomb',
+        remoteId: 'r-tomb',
+        instanceId: 'inst-1',
+        name: '死虾',
+        themeColor: '#6c5ce7',
+        removedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+
+      // 21 raw rows (hasMore raw=true), 全部 tombstoned → filtered=0
+      final allTombPage = List.generate(
+        21,
+        (i) => Message(
+          clientId: 'msg-$i',
+          conversationId: 'conv-tomb',
+          agentId: 'agent-tomb',
+          role: MessageRole.user,
+          content: 'hello $i',
+          type: MessageType.text,
+          logicalClock: i,
+          timestamp: 1000 + i,
+        ),
+      );
+
+      when(
+        () => messageRepo.search('raw', limit: 21, offset: 0),
+      ).thenAnswer((_) async => allTombPage);
+      when(
+        () => agentRepo.getByIds(any()),
+      ).thenAnswer((_) async => {'agent-tomb': tombstonedAgent});
+      when(() => conversationRepo.getByIds(any())).thenAnswer(
+        (_) async => {
+          'conv-tomb': Conversation(
+            id: 'conv-tomb',
+            instanceId: 'inst-1',
+            agentId: 'agent-tomb',
+          ),
+        },
+      );
+
+      vm.onQueryChanged('raw');
+      await Future.delayed(const Duration(milliseconds: 400));
+
+      final results = switch (vm.state.results) {
+        LoadData(:final value) => value,
+        _ => <SearchResult>[],
+      };
+      expect(results, isEmpty, reason: '全 tombstone 页 → 0 可见结果');
+      expect(
+        vm.state.hasMore,
+        isFalse,
+        reason:
+            'hasMore 必须基于可见结果数 (filtered),不是 raw DB 计数。'
+            '全 tombstone 页不应让用户继续点 load more',
+      );
     });
 
     test('dispose cancels debounce timer', () async {

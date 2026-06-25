@@ -174,6 +174,15 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     _syncAgentRemoved();
   }
 
+  /// BUG B 修复入口:暴露 agent 的 instanceId,让 provider 层的 ticker
+  /// listener 能按 `next == instanceId` 过滤跨实例 sync,避免
+  /// `_agentRepo.getById()` N+1 (N 个 active profile × 任意 sync)。
+  ///
+  /// 返回 null 当 [_agent] 尚未加载（init 未完成或 agent 在 DB 中不存在）。
+  /// ticker 监听器在 null 时跳过 — 下次 sync tick 会再 fire,届时 _agent
+  /// 必然已就绪。
+  String? get instanceId => _agent?.instanceId;
+
   /// Optional callback invoked when an avatar file needs cache eviction.
   ///
   /// Receives the absolute file path of the old avatar image. The callback
@@ -248,8 +257,13 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
         ),
       );
     } catch (error, stackTrace) {
+      // US-021: 详情加载失败时不应继续显示 tombstone 占位页，否则用户看不到
+      // 错误信息。重置 isAgentRemoved 让 UI 回退到 LoadError 状态。
       _updateState(
-        (s) => s.copyWith(detailLoadState: LoadError(error, stackTrace)),
+        (s) => s.copyWith(
+          detailLoadState: LoadError(error, stackTrace),
+          isAgentRemoved: false,
+        ),
       );
     }
   }
@@ -305,12 +319,22 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     String? avatarUrl,
     List<QuickCommand>? quickCommands,
   }) async {
-    // US-021 v1.1: tombstoned agent 拒绝保存 —— 防止后端已删除但用户
-    // 仍能编辑/保存造成 DB 与 Gateway 不一致。
-    if (_agent?.isRemoved ?? false) {
+    // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝保存 —— 防止后端已删除
+    // 或状态未知时用户仍能编辑/保存，造成 DB 与 Gateway 不一致。
+    // US-021 v1.2 修复：阻断必须 surface saveError，否则 UI 看不到反馈。
+    // 区分 null（未加载）和 tombstoned（已删除）两条文案。
+    if (_agent == null) {
+      debugPrint(
+        '[AgentProfileViewModel] saveProfile blocked: agent not loaded',
+      );
+      _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
+      return;
+    }
+    if (_agent!.isRemoved) {
       debugPrint(
         '[AgentProfileViewModel] saveProfile blocked: agent tombstoned',
       );
+      _updateState((s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法保存'));
       return;
     }
     if (state.isSaving) return;
@@ -341,10 +365,21 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   /// [imageBytes] 应为已压缩的 JPEG 字节（由 [ImagePicker] 的
   /// maxWidth/maxHeight/imageQuality 参数在选取时完成压缩）。
   Future<void> updateAvatar(Uint8List imageBytes) async {
-    // US-021 v1.1: tombstoned agent 拒绝写入头像。
-    if (_agent?.isRemoved ?? false) {
+    // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝写入头像。
+    // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
+    if (_agent == null) {
+      debugPrint(
+        '[AgentProfileViewModel] updateAvatar blocked: agent not loaded',
+      );
+      _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
+      return;
+    }
+    if (_agent!.isRemoved) {
       debugPrint(
         '[AgentProfileViewModel] updateAvatar blocked: agent tombstoned',
+      );
+      _updateState(
+        (s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法上传头像'),
       );
       return;
     }
@@ -379,10 +414,21 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
 
   /// 移除头像 — 删除文件 + 清空 DB 中的 avatarUrl + 清除缓存。
   Future<void> removeAvatar() async {
-    // US-021 v1.1: tombstoned agent 拒绝清除头像（同样不会触达 DB）。
-    if (_agent?.isRemoved ?? false) {
+    // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝清除头像（同样不会触达 DB）。
+    // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
+    if (_agent == null) {
+      debugPrint(
+        '[AgentProfileViewModel] removeAvatar blocked: agent not loaded',
+      );
+      _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
+      return;
+    }
+    if (_agent!.isRemoved) {
       debugPrint(
         '[AgentProfileViewModel] removeAvatar blocked: agent tombstoned',
+      );
+      _updateState(
+        (s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法移除头像'),
       );
       return;
     }

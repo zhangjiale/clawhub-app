@@ -33,6 +33,15 @@ abstract class IMessageRepo {
   /// 更新消息状态
   Future<Message> updateStatus(String clientId, MessageStatus status);
 
+  /// 批量更新多条消息的状态。
+  ///
+  /// 跳过不存在的 clientId 以及状态机不允许的转换，返回实际被更新的消息列表。
+  /// 空列表时直接返回空列表，不查询数据库（Law 6 批量入口）。
+  Future<List<Message>> updateStatuses(
+    List<String> clientIds,
+    MessageStatus status,
+  );
+
   /// 绑定 serverId（SENDING -> SENT）
   Future<Message> bindServerId(String clientId, String serverId);
 
@@ -90,7 +99,7 @@ abstract class IMessageRepo {
   Future<int> getMessageCount(String agentId);
 
   /// 批量获取多个 Agent 的消息总数（替代 N+1 查询）
-  /// 返回 Map<agentId, count>，未出现在结果中的 agentId 表示消息数为 0
+  /// 返回 `Map<String, int>`（`agentId` → count），未出现在结果中的 `agentId` 表示消息数为 0
   Future<Map<String, int>> getMessageCountsByAgent(List<String> agentIds);
 
   /// 删除消息（仅本地）

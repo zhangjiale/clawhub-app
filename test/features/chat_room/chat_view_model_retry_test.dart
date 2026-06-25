@@ -210,6 +210,40 @@ void main() {
       );
     });
 
+    test('retryMessage surfaces feedback when agent is tombstoned', () async {
+      final vm = await setupVm();
+      gateway.shouldFail = true;
+      await vm.send('Hello!');
+      var messages = (vm.state.messages as LoadData<List<Message>>).value;
+      final failed = messages.firstWhere((m) => m.content == 'Hello!');
+      expect(failed.status, MessageStatus.failed);
+
+      // Simulate Gateway-side tombstone: delete local agent then re-sync with removedAt.
+      await agentRepo.deleteByInstanceId('inst-1');
+      await agentRepo.syncFromGateway('inst-1', [
+        Agent(
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
+          removedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      ]);
+
+      // Retry should short-circuit with feedback and not change message status.
+      await vm.retryMessage(failed.clientId);
+
+      messages = (vm.state.messages as LoadData<List<Message>>).value;
+      final retried = messages.firstWhere((m) => m.clientId == failed.clientId);
+      expect(retried.status, MessageStatus.failed);
+      expect(vm.state.retryFeedback, isNotNull);
+      expect(
+        vm.state.retryFeedback,
+        contains('已被删除'),
+        reason: 'Should tell user the agent was tombstoned',
+      );
+    });
+
     test('retryMessage is a no-op for non-FAILED messages', () async {
       final vm = await setupVm();
       gateway.shouldFail = false;

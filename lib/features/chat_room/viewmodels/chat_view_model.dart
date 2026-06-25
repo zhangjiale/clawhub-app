@@ -228,6 +228,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// reply already arrived.
   bool _awaitingReply = false;
 
+  /// BUG C 修复:ticker 命中本实例后置 true,提醒 [send] 在下次发消息时
+  /// 重查 agent (因为 sync 刚发生,缓存可能已 stale)。send 消费后清零。
+  ///
+  /// tombstone 仅由 [syncFromGateway] 写入,而 syncFromGateway 必触发
+  /// AgentsSyncedEvent → ticker listener → 此标志。因此无 ticker fire 时
+  /// 缓存的 tombstone 状态与 DB 一致,可安全复用,无需冗余 getById。
+  bool _tombstoneSuspect = false;
+
   /// 是否正在接收流式回复增量（首个 [StreamingDelta] 到达后置 true，
   /// [StreamingDone]/回复到达/流错误后置 false）。
   ///
@@ -320,6 +328,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         // Early return: without an agent, streaming/message routing is
         // impossible (requires agentId for filtering).  The UI will show
         // LoadError via [send()] if the user attempts to send.
+        return;
+      }
+      // US-021: tombstoned agent 同样早退 —— 不订阅 stream、不创建 dangling
+      // conversation 行、不加载消息历史。占位页（AC8）正确显示的同时
+      // 避免:(a) 浪费 5 个 stream 订阅资源,(b) revive 后 _initFuture 已
+      // cache 导致无法干净重订阅,(c) DB 中残留幽灵 conversation 行。
+      if (_agent!.isRemoved) {
+        debugPrint(
+          '[ChatViewModel] Agent tombstoned: agentId=$agentId, '
+          'instanceId=$instanceId — short-circuit init.',
+        );
         return;
       }
 
@@ -611,12 +630,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       return;
     }
 
-    // US-021 AC9: 重查 agent 最新状态。init() 的 _agent 是首次加载缓存，
-    // 用户在 ChatRoom 停留期间 agent 可能被 sync tombstone（Gateway 端删除）。
-    // 若不重查，消息会被塞进 outbox，OutboxProcessor 虽会 skip（guard 已加
-    // isRemoved），但用户得不到即时反馈、消息卡 PENDING 到 24h 过期。
-    final freshAgent = await _agentRepo.getById(agentId);
-    if (freshAgent == null || freshAgent.isRemoved) {
+    // US-021: 缓存的 _agent 已被 init 标记为 tombstoned → 早退。
+    // init 在 agent.isRemoved 时已短退 (line 329-335),后续 send 看到
+    // _agent.isRemoved=true 不应继续发消息,直接 LoadError。
+    if (_agent!.isRemoved) {
       _updateState(
         (s) => s.copyWith(
           messages: LoadError(
@@ -627,14 +644,39 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         ),
       );
       debugPrint(
-        '[ChatViewModel] send() blocked: agent $agentId '
-        '${freshAgent == null ? "not found" : "tombstoned"} '
-        'in instance $instanceId.',
+        '[ChatViewModel] send() blocked: agent $agentId tombstoned '
+        '(cached from init) in instance $instanceId.',
       );
       return;
     }
-    _agent = freshAgent;
-    _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（send 重查后状态可能变）
+
+    // BUG C 修复 (Law 6): 仅在 [_tombstoneSuspect] 为 true 时才重查
+    // agent。无 ticker fire 时 init 时刻的 _agent 缓存与 DB 一致
+    // (tombstone 仅由 syncFromGateway 写入,而 sync 必触发 ticker),
+    // 复用缓存避免每发一次都 getById 一次 (N send = N 冗余 read)。
+    if (_tombstoneSuspect) {
+      final freshAgent = await _agentRepo.getById(agentId);
+      _tombstoneSuspect = false;
+      if (freshAgent == null || freshAgent.isRemoved) {
+        _updateState(
+          (s) => s.copyWith(
+            messages: LoadError(
+              'Agent has been removed from the Gateway. '
+              'Please go back and try again.',
+              StackTrace.current,
+            ),
+          ),
+        );
+        debugPrint(
+          '[ChatViewModel] send() blocked: agent $agentId '
+          '${freshAgent == null ? "not found" : "tombstoned"} '
+          'after tombstone-suspect refresh in instance $instanceId.',
+        );
+        return;
+      }
+      _agent = freshAgent;
+      _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（send 重查后状态可能变）
+    }
 
     // Start a fresh streaming subscription for this send — any stale
     // events from the previous subscription were already cancelled above.
@@ -866,19 +908,36 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// 把 agent tombstone（远端删除）或复活（远端重新出现）—— 此方法把
   /// 该变化反映到 `state.isAgentRemoved`，使 AC8 占位页响应式重建。
   ///
-  /// init 未启动时直接返回（等首次进入再判定），init 失败的错误吞掉由
-  /// [send] 兜底显示。StateNotifier 在 dispose 后写 state 会抛 StateError，
-  /// 与 `init()` / `send()` 中的 `_agentRepo.getById` 失败处理对齐。
+  /// US-021 v1.2 简化：去掉 `if (initFuture == null) return;` 早退守卫和
+  /// `await initFuture` 等待逻辑。refreshAgent 直接独立 fetch agent —— 与
+  /// init() 的 fetch 完全独立（init 走 tombstone 短路路径，refreshAgent
+  /// 走 ticker 驱动路径），两者并发时最后一次写入生效，`_syncAgentRemoved`
+  /// 保证 state 反映最终结果。`initFuture` 守卫是过度防御 —— ticker 监听器
+  /// 只在 provider body 中注册，provider body 必先调 `vm.init()`，所以
+  /// 实际不会到达 initFuture == null 路径。简化后代码更清晰,边界路径行为
+  /// 也更可预测（即使 init 尚未完成也会 fetch 并同步 tombstone 状态）。
   Future<void> refreshAgent() async {
-    final initFuture = _initFuture;
-    if (initFuture == null) return;
     try {
-      await initFuture;
-    } catch (_) {
-      return; // init 失败：send() 会兜底
+      _agent = await _agentRepo.getById(agentId);
+    } catch (e, st) {
+      debugPrint('[ChatViewModel] refreshAgent getById failed: $e\n$st');
+      return;
     }
-    _agent = await _agentRepo.getById(agentId);
     _syncAgentRemoved();
+  }
+
+  /// BUG C 修复入口:在 ticker 命中本实例时同时设 tombstone-suspect 标志
+  /// 并执行 refreshAgent。
+  ///
+  /// [_tombstoneSuspect] 在 [send] 中被消费后清零。语义：
+  /// - 标志置 true → 缓存可能已 stale（sync 刚发生），send 需重查
+  /// - 标志置 false → 缓存仍是 init 时刻的快照,send 复用 _agent 即可
+  ///
+  /// 此方法与 [refreshAgent] 拆开的目的是:让 provider 层的 ticker listener
+  /// 在调 refreshAgent 前"声明"下次 send 需要重查,语义边界清晰。
+  Future<void> markTombstoneSuspectAndRefresh() async {
+    _tombstoneSuspect = true;
+    await refreshAgent();
   }
 
   // ============================================================
@@ -911,7 +970,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     }
 
     final agent = await _agentRepo.getById(agentId);
-    if (agent == null) {
+    if (agent == null || agent.isRemoved) {
+      _agent = agent;
+      _syncAgentRemoved();
       _updateState((s) => s.copyWith(retryFeedback: 'Agent 已被删除，无法重试'));
       return;
     }

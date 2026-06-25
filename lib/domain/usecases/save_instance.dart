@@ -143,7 +143,9 @@ class SaveInstanceUseCase {
       final oldHost = _normalizeHost(existing!.gatewayUrl);
       final newHost = _normalizeHost(trimmedUrl);
       if (oldHost != null && newHost != null && oldHost != newHost) {
-        final localAgents = await _agentRepo.getByInstanceId(instanceId);
+        // US-021: host 切换警告必须统计全部本地 agent（含 tombstoned），防止
+        // 仅含 tombstoned agent 的实例被误判为空而跳过用户确认。
+        final localAgents = await _agentRepo.getAllByInstanceId(instanceId);
         if (localAgents.isNotEmpty) {
           throw GatewayChangeRequiredException(
             localAgentCount: localAgents.length,

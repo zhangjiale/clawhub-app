@@ -10,6 +10,12 @@ abstract class IInstanceRepo {
   /// 根据 ID 获取单个实例
   Future<Instance?> getById(String id);
 
+  /// 批量根据 ID 获取实例（替代 N+1 查询，Law 6）。
+  /// 返回 `Map<id, Instance>`，未找到的 ID 不出现在结果中。
+  /// 传入空列表时返回空 Map（不查询数据库）。
+  /// 契约对齐 [IAgentRepo.getByIds]。
+  Future<Map<String, Instance>> getByIds(List<String> ids);
+
   /// 保存实例（新增或更新）
   /// 返回保存后的实例
   Future<Instance> save(Instance instance);

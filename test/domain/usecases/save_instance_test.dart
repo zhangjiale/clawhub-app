@@ -4,7 +4,6 @@ import 'package:claw_hub/domain/usecases/save_instance.dart';
 import 'package:claw_hub/domain/usecases/gateway_change_resolution.dart';
 import 'package:claw_hub/domain/usecases/gateway_change_exceptions.dart';
 import 'package:claw_hub/domain/models/models.dart';
-import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 
@@ -14,12 +13,14 @@ class MockGatewayClient extends Mock implements IGatewayClient {}
 
 class MockAgentRepo extends Mock implements IAgentRepo {}
 
-Agent _fakeAgent(String remoteId) => Agent(
+Agent _fakeAgent(String remoteId, {int? removedAt, int? hiddenAt}) => Agent(
   localId: 'local-$remoteId',
   remoteId: remoteId,
   instanceId: 'inst-1',
   name: 'Agent $remoteId',
   createdAt: 1700000000,
+  removedAt: removedAt,
+  hiddenAt: hiddenAt,
 );
 
 void main() {
@@ -53,6 +54,9 @@ void main() {
     // 默认：本地无 agents（不触发 GatewayChangeRequiredException）
     when(
       () => agentRepo.getByInstanceId(any()),
+    ).thenAnswer((_) async => <Agent>[]);
+    when(
+      () => agentRepo.getAllByInstanceId(any()),
     ).thenAnswer((_) async => <Agent>[]);
     when(() => agentRepo.deleteByInstanceId(any())).thenAnswer((_) async {});
   });
@@ -274,13 +278,14 @@ void main() {
         instanceId: 'inst-1',
       );
       verifyNever(() => agentRepo.getByInstanceId(any()));
+      verifyNever(() => agentRepo.getAllByInstanceId(any()));
       verifyNever(() => agentRepo.deleteByInstanceId(any()));
       verify(() => instanceRepo.save(any())).called(1);
     });
 
     test('host 变化 + 本地 agents 为空 → 不抛, 正常 save', () async {
       when(
-        () => agentRepo.getByInstanceId('inst-1'),
+        () => agentRepo.getAllByInstanceId('inst-1'),
       ).thenAnswer((_) async => <Agent>[]);
       await useCase.execute(
         name: '原名称',
@@ -288,7 +293,8 @@ void main() {
         token: 'token',
         instanceId: 'inst-1',
       );
-      verify(() => agentRepo.getByInstanceId('inst-1')).called(1);
+      verify(() => agentRepo.getAllByInstanceId('inst-1')).called(1);
+      verifyNever(() => agentRepo.getByInstanceId(any()));
       verifyNever(() => agentRepo.deleteByInstanceId(any()));
       verify(() => instanceRepo.save(any())).called(1);
     });
@@ -296,7 +302,7 @@ void main() {
     test(
       'host 变化 + 本地 agents 非空 + onGatewayChange=null → 抛 GatewayChangeRequiredException',
       () async {
-        when(() => agentRepo.getByInstanceId('inst-1')).thenAnswer(
+        when(() => agentRepo.getAllByInstanceId('inst-1')).thenAnswer(
           (_) async => [_fakeAgent('a'), _fakeAgent('b'), _fakeAgent('c')],
         );
 
@@ -322,7 +328,7 @@ void main() {
       'host 变化 + onGatewayChange=null + 本地非空 → save / testConnection / deleteByInstanceId 都未到达',
       () async {
         when(
-          () => agentRepo.getByInstanceId('inst-1'),
+          () => agentRepo.getAllByInstanceId('inst-1'),
         ).thenAnswer((_) async => [_fakeAgent('a')]);
 
         await expectLater(
@@ -338,6 +344,39 @@ void main() {
         verifyNever(() => gatewayClient.testConnection(any()));
         verifyNever(() => agentRepo.deleteByInstanceId(any()));
         verifyNever(() => instanceRepo.save(any()));
+      },
+    );
+
+    test(
+      'host 变化 + 本地仅有 tombstoned agents → 仍触发 GatewayChangeRequiredException',
+      () async {
+        // US-021: host 切换警告必须统计全部本地 agent（含 tombstoned），否则用户
+        // 可能在不知情的情况下清除仍有历史消息的数据。
+        when(() => agentRepo.getAllByInstanceId('inst-1')).thenAnswer(
+          (_) async => [
+            _fakeAgent('a', removedAt: DateTime.now().millisecondsSinceEpoch),
+          ],
+        );
+        // 默认列表接口（过滤后）为空，模拟 bug 场景：若用 getByInstanceId 会漏判。
+        when(
+          () => agentRepo.getByInstanceId('inst-1'),
+        ).thenAnswer((_) async => <Agent>[]);
+
+        expect(
+          () => useCase.execute(
+            name: '原名称',
+            gatewayUrl: 'wss://new.example.com:18789',
+            token: 'token',
+            instanceId: 'inst-1',
+          ),
+          throwsA(
+            isA<GatewayChangeRequiredException>().having(
+              (e) => e.localAgentCount,
+              'localAgentCount',
+              1,
+            ),
+          ),
+        );
       },
     );
 

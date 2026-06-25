@@ -62,6 +62,8 @@ class SendMessageUseCase {
 
   /// 发送消息
   /// 返回最终状态的消息实体
+  ///
+  /// 若 [agent] 已被 Gateway 端 tombstone，则抛出 [AgentRemovedError]。
   Future<Message> execute({
     required String instanceId,
     required Agent agent,
@@ -69,6 +71,10 @@ class SendMessageUseCase {
     required MessageType type,
     Map<String, dynamic>? metadata,
   }) async {
+    if (agent.isRemoved) {
+      throw AgentRemovedError(agent.localId);
+    }
+
     // 1. 生成 clientId 并构建消息
     final clientId = _uuid.v4();
     final conversation = await _conversationRepo.getOrCreate(

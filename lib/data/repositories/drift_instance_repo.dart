@@ -25,6 +25,28 @@ class DriftInstanceRepo implements IInstanceRepo {
   }
 
   @override
+  Future<Map<String, Instance>> getByIds(List<String> ids) async {
+    if (ids.isEmpty) return {};
+    // Law 6: 单次 IN 查询替代 N 次 getById（message_hub N+1 修复）。
+    // 对齐 DriftAgentRepo.getByIds 的 customSelect 模式。readsFrom 指定
+    // instances 表以保证 Drift table-level invalidation 正确。
+    final placeholders = ids.map((_) => '?').join(', ');
+    final rows = await _database
+        .customSelect(
+          'SELECT * FROM instances WHERE id IN ($placeholders)',
+          variables: [for (final id in ids) drift.Variable.withString(id)],
+          readsFrom: {_database.instances},
+        )
+        .get();
+    final result = <String, Instance>{};
+    for (final row in rows) {
+      final instance = InstanceMapper.toDomain(db.Instance.fromJson(row.data));
+      result[instance.id] = instance;
+    }
+    return result;
+  }
+
+  @override
   Future<Instance> save(Instance instance) async {
     await _database.upsertInstance(
       instance.id,
@@ -76,11 +98,13 @@ class DriftInstanceRepo implements IInstanceRepo {
   }) async {
     return _database.transaction(() async {
       // 1. 查询匹配的实例 ID
-      final rows = await _database.customSelect(
-        'SELECT id FROM instances WHERE is_local_network = ?1',
-        variables: [drift.Variable<int>(isLocalNetwork ? 1 : 0)],
-        readsFrom: {_database.instances},
-      ).get();
+      final rows = await _database
+          .customSelect(
+            'SELECT id FROM instances WHERE is_local_network = ?1',
+            variables: [drift.Variable<int>(isLocalNetwork ? 1 : 0)],
+            readsFrom: {_database.instances},
+          )
+          .get();
       final ids = rows.map((r) => r.read<String>('id')).toList();
 
       // 2. 批量更新状态

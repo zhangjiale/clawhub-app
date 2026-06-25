@@ -1,16 +1,16 @@
 // US-021 v1.1: Agent 已被 Gateway 删除（tombstoned）时的占位 Scaffold。
-// 复用 ChatRoom AC8 placeholder 文案/颜色（chat_room_page.dart:146-175）。
-// 三处使用：ChatRoom（已存在，迁移目标）、AgentProfilePage、AgentConfigPage。
+// US-021 v1.2 迁移：原 ChatRoom AC8 placeholder 文案/颜色已统一到本 widget，
+// 三处调用点（ChatRoom / AgentProfilePage / AgentConfigPage）共用。
 //
-// onBack 走 smartBack(context, source: source) 而非 Navigator.pop，保证
-// 智能返回栈契约（US-011）：从不同 tab 进入的回退到正确源。
+// onBack 是 required —— 三处调用点都显式传入 page-level back handler
+// （保留 PopScope / smartBack 各自的 smartBack 契约）。如果未来新增调用点
+// 忘传，编译期立刻报错，不再依赖运行时 ?? smartBack 兜底（dead code）。
 //
 // agentName 可空：init 中途失败的边界场景拿不到 agent 信息。
 //
 // 文案 hardcoded（CLAUDE.md 提到 localization WIP），v2 抽 l10n 资源。
 
 import 'package:flutter/material.dart';
-import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
@@ -24,15 +24,16 @@ class AgentRemovedPlaceholder extends StatelessWidget {
 
   final VoidCallback onBack;
   final String? agentName;
+
+  /// 透传给调用方的 source hint（保留以备 v2 多入口接入）;
+  /// 当前 onBack 已包含完整 back 逻辑，此字段暂未在 widget 内消费。
   final String? source;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: XiaBackButton(
-          onPressed: () => smartBack(context, source: source),
-        ),
+        leading: XiaBackButton(onPressed: onBack),
         title: const Text('虾已移除'),
       ),
       body: Center(

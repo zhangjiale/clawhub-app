@@ -5,7 +5,15 @@ import '../models/quick_command.dart';
 /// 对齐: 架构 vFinal 5.2 (消息中心聚合)
 abstract class IAgentRepo {
   /// 获取指定实例下的所有 Agent（按置顶优先、名称排序）
+  ///
+  /// 默认过滤 tombstoned (removed_at) 和 hidden (hidden_at) agent。若需要
+  /// 获取包含 tombstoned/hidden 的全部 agent，请使用 [getAllByInstanceId]。
   Future<List<Agent>> getByInstanceId(String instanceId);
+
+  /// 获取指定实例下的所有 Agent（不过滤 tombstoned/hidden）。
+  ///
+  /// 用于 host 切换警告等需要统计全部本地 agent 的场景。
+  Future<List<Agent>> getAllByInstanceId(String instanceId);
 
   /// 获取所有 Agent（按置顶优先、最近活跃时间排序）
   Future<List<Agent>> getAll();
@@ -14,7 +22,7 @@ abstract class IAgentRepo {
   Future<Agent?> getById(String localId);
 
   /// 批量根据本地 ID 获取 Agent（替代 N+1 查询）。
-  /// 返回 Map<localId, Agent>，未找到的 ID 不出现在结果中。
+  /// 返回 `Map<localId, Agent>`，未找到的 ID 不出现在结果中。
   /// 传入空列表时返回空 Map（不查询数据库）。
   Future<Map<String, Agent>> getByIds(List<String> localIds);
 

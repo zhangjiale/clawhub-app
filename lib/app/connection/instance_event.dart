@@ -16,8 +16,16 @@ sealed class InstanceEvent {
 /// Agent 同步完成信号 — 触发 agentListProvider 刷新。
 ///
 /// 对齐旧 `_onAgentsSynced` 回调。
+///
+/// [instanceId] 携带被同步的实例 id —— 修复 BUG B（chat / agent_profile
+/// 的 ticker listener 跨实例 N+1）。listeners 收到事件后必须按
+/// `event.instanceId == self.instanceId` 过滤再触发本实例的 refreshAgent，
+/// 否则任意实例 sync 会导致所有 active ChatRoom/Profile 页面的
+/// `_agentRepo.getById()` 被重查一次（每开 N 个聊天 = N 次冗余 read）。
 class AgentsSyncedEvent extends InstanceEvent {
-  const AgentsSyncedEvent();
+  final String instanceId;
+
+  const AgentsSyncedEvent(this.instanceId);
 }
 
 /// 配对信息变更（需要审批 / 审批完成 / 断开时清除）。

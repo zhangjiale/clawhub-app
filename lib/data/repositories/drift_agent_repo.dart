@@ -26,6 +26,15 @@ class DriftAgentRepo implements IAgentRepo {
   }
 
   @override
+  Future<List<Agent>> getAllByInstanceId(String instanceId) async {
+    // US-021: 不过滤，返回实例下全部 agent（含 tombstoned/hidden）。
+    // SaveInstanceUseCase 的 host 切换警告需要统计所有本地 agent，避免只含
+    // tombstoned agent 的实例被误判为空。
+    final rows = await _database.getAgentsByInstance(instanceId).get();
+    return rows.map(AgentMapper.toDomain).toList();
+  }
+
+  @override
   Future<List<Agent>> getAll() async {
     // US-021: 默认过滤 tombstoned + hidden agent（见 getByInstanceId 注释）。
     final rows = await _database.getAllActiveAgents().get();
@@ -74,16 +83,44 @@ class DriftAgentRepo implements IAgentRepo {
     String instanceId,
     List<Agent> remoteAgents,
   ) async {
-    final results = <Agent>[];
+    // Collect the local IDs that correspond to the synced remote agents.
+    // We intentionally do NOT build the returned Agent objects here — the
+    // subsequent tombstone/revive UPDATEs can change removed_at, so reading
+    // rows before those UPDATEs would leak stale tombstone state to callers.
+    final syncedLocalIds = <String>[];
 
     await _database.transaction(() async {
       // *** 顺序不可换 ***：upsert 必须在 diff 之前。diff 的 `NOT IN (remoteIds)`
       // 依赖 remoteIds 是完整的远端列表（含本次刚 upsert 的新 agent）。若把 diff
       // 提前，新 upsert 的 agent 会因不在旧 remoteIds 里被误 tombstone。
+
+      // Law 6: 一次 batch SELECT 取出本实例下所有可能的现有 row,避免
+      // per-remote-agent N+1。建 Map<remoteId, row> 后,循环内仅做
+      // 内存查找,不再 round-trip SQLite。remoteAgents 为空时无需查
+      // (差集分支会直接 tombstone 全部 active agent)。
+      final existingByRemoteId = <String, db.Agent>{};
+      if (remoteAgents.isNotEmpty) {
+        final remoteIds = remoteAgents.map((a) => a.remoteId).toList();
+        final placeholders = remoteIds.map((_) => '?').join(', ');
+        final rows = await _database
+            .customSelect(
+              'SELECT * FROM agents '
+              'WHERE instance_id = ? AND remote_id IN ($placeholders)',
+              variables: [
+                Variable.withString(instanceId),
+                for (final id in remoteIds) Variable.withString(id),
+              ],
+              readsFrom: {_database.agents},
+            )
+            .get();
+        for (final row in rows) {
+          final agent = db.Agent.fromJson(row.data);
+          existingByRemoteId[agent.remoteId] = agent;
+        }
+      }
+
       for (final remote in remoteAgents) {
-        final existingRow = await _database
-            .findAgentByCompositeKey(instanceId, remote.remoteId)
-            .getSingleOrNull();
+        final existingRow = existingByRemoteId[remote.remoteId];
 
         if (existingRow != null) {
           // Update name/description from remote, preserve local customizations
@@ -92,11 +129,7 @@ class DriftAgentRepo implements IAgentRepo {
             remote.description,
             existingRow.localId,
           );
-          // Re-read to get the updated row with preserved local fields
-          final updatedRow = await _database
-              .getAgentByLocalId(existingRow.localId!)
-              .getSingle();
-          results.add(AgentMapper.toDomain(updatedRow));
+          syncedLocalIds.add(existingRow.localId!);
         } else {
           // New agent — insert with fresh localId
           await _database.insertAgent(
@@ -114,34 +147,15 @@ class DriftAgentRepo implements IAgentRepo {
             null, // removedAt — 新插入的 agent 未被 tombstone
             null, // hiddenAt — v1 不写入
           );
-          final insertedRow = await _database
-              .getAgentByLocalId(remote.localId)
-              .getSingle();
-          results.add(AgentMapper.toDomain(insertedRow));
+          syncedLocalIds.add(remote.localId);
         }
       }
 
-      // US-021: 差集 → tombstone / 复活（batch SQL，Law 6 合规）。
-      //
-      // 协议契约：scope 不足时 fetchAgents 抛错被上层接住，`agents: []` 在
-      // 协议下唯一含义为"Gateway 真无 agent"，必须正常走 tombstone（而非
-      // "空列表跳过"），否则用户清空 Gateway 后本地仍残留幽灵虾——这正是
-      // US-021 要修的原 BUG。
-      //
-      // 用两条 UPDATE 替代 N 行逐行写入：Law 6 禁止 for...await repo/DB 的
-      // N+1 模式，pre-commit hook 的正则会拦下逐行写法。
-      //
-      // customStatement 选择：本项目 agents 表当前无 .watch() stream 查询，
-      // UI 全走 agentSyncTickerProvider 脚踏式刷新，故 customStatement 的
-      // "不触发 stream 失效"特性对本改动无影响。未来若给 agents 加 watch，
-      // 需改用 Drift typed update。
-      //
-      // do-while 重入安全：ConnectionOrchestrator._syncAgentsForInstance 的
-      // pending-retry 循环可能对同一实例多次 sync。SQL 的
-      // `WHERE removed_at IS [NOT] NULL` guard 保证同一 agent 不会重复打标/
-      // 复活——天然幂等。
-      //
-      // removed_at 存毫秒（与 created_at 的秒精度不同，跨列计算注意换算）。
+      // US-021: 差集 → tombstone / 复活。两条 batch UPDATE 替代 N 行
+      // 逐行写入（Law 6）。`agents: []` 协议下唯一含义为"Gateway 真无
+      // agent",必须正常走 tombstone —— 否则清空 Gateway 后本地残留幽灵虾。
+      // SQL 的 `WHERE removed_at IS [NOT] NULL` guard 保证 do-while 重入幂等。
+      // removed_at 存毫秒（created_at 是秒）。
       final remoteIds = remoteAgents.map((a) => a.remoteId).toList();
       final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -171,7 +185,30 @@ class DriftAgentRepo implements IAgentRepo {
       }
     });
 
-    return results;
+    if (syncedLocalIds.isEmpty) return [];
+
+    // Re-read the synced rows AFTER the transaction commits so the returned
+    // Agents reflect the final tombstone/revive state.
+    final placeholders = syncedLocalIds.map((_) => '?').join(', ');
+    final rows = await _database
+        .customSelect(
+          'SELECT * FROM agents WHERE local_id IN ($placeholders)',
+          variables: [for (final id in syncedLocalIds) Variable.withString(id)],
+          readsFrom: {_database.agents},
+        )
+        .get();
+
+    final byLocalId = <String, Agent>{};
+    for (final row in rows) {
+      final agent = AgentMapper.toDomain(db.Agent.fromJson(row.data));
+      byLocalId[agent.localId] = agent;
+    }
+
+    // Preserve the order of remoteAgents in the returned list.
+    return syncedLocalIds
+        .where((id) => byLocalId.containsKey(id))
+        .map((id) => byLocalId[id]!)
+        .toList();
   }
 
   @override

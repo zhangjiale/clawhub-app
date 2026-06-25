@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:drift/drift.dart' show Variable;
 import 'package:drift/native.dart';
+import 'package:drift/src/runtime/executor/executor.dart';
+import 'package:drift/src/runtime/executor/interceptor.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
@@ -259,6 +261,25 @@ void main() {
       expect(c.removedAt, isNull);
     });
 
+    test('syncFromGateway return value reflects revive UPDATE '
+        '(does not leak stale removedAt)', () async {
+      await agentRepo.syncFromGateway('inst-1', [remote('local-c', 'r-c')]);
+      await agentRepo.syncFromGateway('inst-1', []); // C 被 tombstone
+      expect((await agentRepo.getById('local-c'))!.isRemoved, isTrue);
+
+      // 复活后 syncFromGateway 的返回值必须已经是复活后的状态，
+      // 不能把 upsert 之后、revive UPDATE 之前的 stale tombstone 泄漏给调用方。
+      final returned = await agentRepo.syncFromGateway('inst-1', [
+        remote('local-c', 'r-c'),
+      ]);
+
+      expect(returned, hasLength(1));
+      final c = returned.single;
+      expect(c.localId, 'local-c');
+      expect(c.isRemoved, isFalse, reason: '返回值应在 revive UPDATE 之后构造');
+      expect(c.removedAt, isNull);
+    });
+
     test('does not touch hidden_at column during sync diff', () async {
       await agentRepo.syncFromGateway('inst-1', [remote('local-c', 'r-c')]);
 
@@ -335,6 +356,88 @@ void main() {
 
       expect(removedAt2, removedAt1);
     });
+  });
+
+  // Law 6: syncFromGateway 必须用 batch SELECT 而不是 N+1 (per-remote
+  // findAgentByCompositeKey)。当远端有 N 个 agent，existing-row 查询次数
+  // 应为 O(1)（一次 batch SELECT with `remote_id IN (...)`），不是 O(N)。
+  // 用 drift 的 QueryInterceptor API 数 runSelect 调用次数。
+  group('DriftAgentRepo.syncFromGateway N+1 prevention (Law 6)', () {
+    test(
+      'batch SELECT for existing rows: runSelect count is O(1), not O(N)',
+      () async {
+        // 1. 计数 interceptor —— 只统计"existing row 查找"类 SELECT
+        //    (匹配 `... FROM agents WHERE ... remote_id` 模式)。
+        final finderCalls = <String>[];
+        final interceptor = _CountingQueryInterceptor(
+          onRunSelect: (stmt, args) {
+            // drift 把所有 SELECT 都路由到 runSelect。挑出 agents 表
+            // 的存在性查询（findAgentByCompositeKey 编译为
+            // `SELECT * FROM agents WHERE instance_id = ? AND remote_id = ?`，
+            // batch 化后是 `... AND remote_id IN (?, ?, ...)`）。
+            final upper = stmt.toUpperCase();
+            if (upper.contains('FROM AGENTS') &&
+                upper.contains('REMOTE_ID') &&
+                !upper.contains('COUNT')) {
+              finderCalls.add(stmt);
+            }
+          },
+        );
+
+        // 2. 用 interceptor 包裹 NativeDatabase.memory，传给 AppDatabase
+        final database = db.AppDatabase(
+          NativeDatabase.memory(
+            setup: (sqlDb) {
+              sqlDb.execute('PRAGMA foreign_keys = ON');
+            },
+          ).interceptWith(interceptor),
+        );
+        addTearDown(() => database.close());
+
+        final instanceRepo = DriftInstanceRepo(database);
+        await instanceRepo.save(
+          Instance(
+            id: 'inst-1',
+            name: 'Test',
+            gatewayUrl: 'ws://test:18789',
+            tokenRef: 'tok',
+            healthStatus: HealthStatus.online,
+          ),
+        );
+        final agentRepo = DriftAgentRepo(database);
+
+        // 3. 同步 20 个远端 agent
+        const N = 20;
+        final remotes = List<Agent>.generate(
+          N,
+          (i) => Agent(
+            localId: 'local-$i',
+            remoteId: 'remote-$i',
+            instanceId: 'inst-1',
+            name: '虾 $i',
+          ),
+        );
+        await agentRepo.syncFromGateway('inst-1', remotes);
+
+        // 4. 验证 existing-row 查询是 O(1)
+        //    batch 化后应只有 1 个 `remote_id IN (...)` 查询。
+        //    N+1 旧实现会有 N 个 `remote_id = ?` 查询。
+        expect(
+          finderCalls.length,
+          lessThanOrEqualTo(2),
+          reason:
+              'existing-row 查询应为 O(1) batch SELECT，不是 O(N)。'
+              '实际看到 ${finderCalls.length} 次: $finderCalls',
+        );
+        expect(
+          finderCalls.any((s) => s.toUpperCase().contains('REMOTE_ID IN')),
+          isTrue,
+          reason:
+              '应使用 `remote_id IN (?, ?, ...)` 批量查询模式,'
+              '而非 N 次 `remote_id = ?`。实际查询: $finderCalls',
+        );
+      },
+    );
   });
 
   // US-021: 默认过滤语义。getAll / getByInstanceId 默认排除 tombstoned +
@@ -417,6 +520,15 @@ void main() {
     );
 
     test(
+      'getAllByInstanceId includes tombstoned and hidden agents — SaveInstanceUseCase 契约',
+      () async {
+        final byInst = await agentRepo.getAllByInstanceId('inst-1');
+        final ids = byInst.map((a) => a.localId).toSet();
+        expect(ids, {'local-a', 'local-b', 'local-c'});
+      },
+    );
+
+    test(
       'getById returns tombstoned agent (unfiltered) — OutboxProcessor 契约',
       () async {
         final b = await agentRepo.getById('local-b');
@@ -440,4 +552,22 @@ void main() {
       },
     );
   });
+}
+
+/// Drift QueryInterceptor 包装：把 runSelect 语句+参数转给回调。
+/// 用于 Law 6 测试 —— 计数 N+1 vs batch SELECT。
+class _CountingQueryInterceptor extends QueryInterceptor {
+  _CountingQueryInterceptor({required this.onRunSelect});
+
+  final void Function(String statement, List<Object?> args) onRunSelect;
+
+  @override
+  Future<List<Map<String, Object?>>> runSelect(
+    QueryExecutor executor,
+    String statement,
+    List<Object?> args,
+  ) {
+    onRunSelect(statement, args);
+    return executor.runSelect(statement, args);
+  }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
@@ -61,6 +63,33 @@ final chatViewModelProvider =
       // 当前 tick 恒为 0（clearCacheActionProvider 尚未递增），此处为空操作。
       ref.listen(cacheClearedTickProvider, (_, __) {
         vm.reloadMessages();
+      });
+
+      // US-021 AC8 响应式：agents 同步完成后（含 tombstone/复活）重查 agent。
+      // 用户停在 ChatRoom 期间，后台 syncFromGateway 可能 tombstone 当前
+      // agent —— 不 listen 则占位页无法响应式出现（_agent 是非响应式缓存）。
+      // refreshAgent 把最新 tombstone 状态写进 state.isAgentRemoved，UI 经
+      // ref.watch(chatViewModelProvider) 自然重建。与 agentListProvider /
+      // conversationListProvider 同模式（均 watch 此 ticker）。
+      //
+      // BUG B 修复:ticker = StateProvider<String?> 携带被同步的 instanceId。
+      // listener 按 `next == params.instanceId` 过滤,跨实例 sync 不触发本 VM
+      // 的 refreshAgent,避免 N 个 ChatRoom × 任意 sync = N 次冗余 getById。
+      // 命中本实例时同时置 _tombstoneSuspect = true,让 send() 在下次发消息
+      // 时能识别"缓存可能已 stale"并重查（BUG C 修复）。
+      ref.listen<String?>(agentSyncTickerProvider, (prev, next) {
+        if (next == null || next != params.instanceId) return;
+        // ChatViewModel.refreshAgent() 内部已捕获并记录异常；provider 层用
+        // unawaited + catchError 兜底，确保 fire-and-forget 监听器不会泄漏
+        // 未处理异步错误。
+        unawaited(
+          vm.markTombstoneSuspectAndRefresh().catchError((
+            Object e,
+            StackTrace st,
+          ) {
+            return Future<void>.value();
+          }),
+        );
       });
 
       return vm;

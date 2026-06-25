@@ -60,6 +60,7 @@ class SearchViewModel extends StateNotifier<SearchState> {
 
   Timer? _debounceTimer;
   int _searchGeneration = 0;
+  int _rawOffset = 0; // 已消费的原始（未过滤）行数，用于分页 offset
 
   static const _pageSize = 20;
   static const _maxResults = 200;
@@ -99,12 +100,12 @@ class SearchViewModel extends StateNotifier<SearchState> {
   /// Load more results (pagination). No-op if already loading or no more.
   Future<void> loadMore() async {
     if (!state.hasMore || state.isLoadingMore) return;
-    final currentCount = switch (state.results) {
-      LoadData(:final value) => value.length,
-      _ => 0,
-    };
     _updateState((s) => s.copyWith(isLoadingMore: true));
-    await _executeSearch(state.query, offset: currentCount);
+    await _executeSearch(
+      state.query,
+      offset: _rawOffset,
+      generation: _searchGeneration,
+    );
     _updateState((s) => s.copyWith(isLoadingMore: false));
   }
 
@@ -114,6 +115,7 @@ class SearchViewModel extends StateNotifier<SearchState> {
 
   Future<void> _search(String query) async {
     final generation = ++_searchGeneration;
+    _rawOffset = 0;
     _updateState(
       (s) => s.copyWith(
         query: query,
@@ -187,7 +189,7 @@ class SearchViewModel extends StateNotifier<SearchState> {
           .whereType<SearchResult>()
           .toList();
 
-      final totalFetched = offset + results.length;
+      final rawConsumed = offset + pageMessages.length;
 
       // Merge into existing results if paginating, else replace.
       final merged = offset == 0
@@ -202,10 +204,17 @@ class SearchViewModel extends StateNotifier<SearchState> {
 
       // 丢弃过期的搜索结果（更新一代搜索已启动）
       if (generation != _searchGeneration) return;
+      _rawOffset = rawConsumed;
       _updateState(
         (s) => s.copyWith(
           results: LoadData(merged),
-          hasMore: hasMore && totalFetched < _maxResults,
+          // US-021 v1.2: hasMore 基于可见（filtered）结果数，不是 raw DB 计数。
+          // 旧逻辑 `hasMore = hasMore && rawConsumed < _maxResults` 在全页
+          // tombstone 时会返回 true（raw messages.length > _pageSize），用户
+          // 点 load more 反复拿到 0 可见结果,UX 卡死。
+          // 现在用 `results.length > 0`：可见数为 0 时不显示 load more 按钮
+          // （避免空翻页）;可见数 ≥ 1 时仍可继续（保留 load more 触发条件）。
+          hasMore: results.isNotEmpty && rawConsumed < _maxResults,
         ),
       );
     } catch (error, stackTrace) {
@@ -237,6 +246,7 @@ class SearchViewModel extends StateNotifier<SearchState> {
   void clear() {
     _debounceTimer?.cancel();
     _searchGeneration++;
+    _rawOffset = 0;
     _updateState(
       (s) => s.copyWith(
         results: const LoadData([]),

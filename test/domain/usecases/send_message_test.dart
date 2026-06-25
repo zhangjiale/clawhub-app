@@ -174,6 +174,46 @@ void main() {
       ).called(1);
     });
 
+    test('Agent 已被 tombstone 时应抛出 AgentRemovedError 且不做任何写入', () async {
+      final tombstonedAgent = Agent(
+        localId: testAgent.localId,
+        remoteId: testAgent.remoteId,
+        instanceId: testAgent.instanceId,
+        name: testAgent.name,
+        removedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+
+      await expectLater(
+        () => useCase.execute(
+          instanceId: 'inst-test',
+          agent: tombstonedAgent,
+          content: '你好',
+          type: MessageType.text,
+        ),
+        throwsA(isA<AgentRemovedError>()),
+      );
+
+      verifyNever(() => conversationRepo.getOrCreate(any(), any()));
+      verifyNever(() => messageRepo.insert(any()));
+      verifyNever(
+        () => conversationRepo.updateLastMessage(
+          conversationId: any(named: 'conversationId'),
+          messageId: any(named: 'messageId'),
+          preview: any(named: 'preview'),
+          timestamp: any(named: 'timestamp'),
+          role: any(named: 'role'),
+        ),
+      );
+      verifyNever(() => instanceRepo.getById(any()));
+      verifyNever(
+        () => gatewayClient.sendMessage(
+          instanceId: any(named: 'instanceId'),
+          agentId: any(named: 'agentId'),
+          message: any(named: 'message'),
+        ),
+      );
+    });
+
     test('实例离线时应标记消息为 PENDING', () async {
       final offlineInstance = testInstance.copyWith(
         healthStatus: HealthStatus.offline,

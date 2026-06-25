@@ -818,7 +818,7 @@ void main() {
       );
 
       test('saveProfile blocked when agent is tombstoned '
-          '(updateFullProfile not called)', () async {
+          '(updateFullProfile not called) + saveError surfaced', () async {
         when(
           () => agentRepo.getById('local-1'),
         ).thenAnswer((_) async => tombAgent);
@@ -848,11 +848,17 @@ void main() {
         // 不进入 isSaving（早返回，未触发状态机）
         expect(vm.state.isSaving, isFalse);
         expect(vm.state.saveSuccess, isFalse);
-        expect(vm.state.saveError, isNull);
+        // US-021 v1.2 修复：阻断必须 surface 错误，文案应明确说明 tombstone。
+        expect(vm.state.saveError, isNotNull);
+        expect(
+          vm.state.saveError,
+          contains('移除'),
+          reason: 'tombstone 阻断文案必须说明"已被移除"原因',
+        );
       });
 
       test('updateAvatar blocked when agent is tombstoned '
-          '(storage service not called)', () async {
+          '(storage service not called) + saveError surfaced', () async {
         when(
           () => agentRepo.getById('local-1'),
         ).thenAnswer((_) async => tombAgent);
@@ -878,11 +884,11 @@ void main() {
           ),
         );
         expect(vm.state.isSaving, isFalse);
-        expect(vm.state.saveError, isNull);
+        expect(vm.state.saveError, isNotNull);
       });
 
       test('removeAvatar blocked when agent is tombstoned '
-          '(clearAvatar not called)', () async {
+          '(clearAvatar not called) + saveError surfaced', () async {
         when(
           () => agentRepo.getById('local-1'),
         ).thenAnswer((_) async => tombAgent);
@@ -903,7 +909,7 @@ void main() {
         verifyNever(() => avatarStorageService.deleteAvatar(any()));
         verifyNever(() => agentRepo.clearAvatar(any()));
         expect(vm.state.isSaving, isFalse);
-        expect(vm.state.saveError, isNull);
+        expect(vm.state.saveError, isNotNull);
       });
 
       test('refreshAgent reacts to backend sync: '
@@ -945,6 +951,104 @@ void main() {
           reason: '复活后 refreshAgent 必须清除 tombstone 标记',
         );
       });
+
+      test('saveProfile blocked when _agent is null (init failed/not loaded) '
+          'surfaces saveError for UX feedback', () async {
+        final vm = createVM();
+        // 不调 init，_agent 为 null
+        expect(vm.state.isAgentRemoved, isFalse);
+
+        await vm.saveProfile(nickname: 'ignored');
+
+        verifyNever(
+          () => agentRepo.updateFullProfile(
+            'local-1',
+            nickname: any(named: 'nickname'),
+            avatarUrl: any(named: 'avatarUrl'),
+            themeColor: any(named: 'themeColor'),
+            quickCommands: any(named: 'quickCommands'),
+          ),
+        );
+        expect(vm.state.isSaving, isFalse);
+        // US-021 v1.1 修复：阻断必须 surface 错误，否则用户看不到反馈。
+        expect(
+          vm.state.saveError,
+          isNotNull,
+          reason:
+              'tombstoned/null _agent 的 saveProfile 必须 surface '
+              'saveError 让 UI 显示 toast/banner，不能静默 no-op',
+        );
+      });
+
+      test('updateAvatar blocked when _agent is null (init failed/not loaded) '
+          'surfaces saveError for UX feedback', () async {
+        final vm = createVM();
+
+        await vm.updateAvatar(Uint8List.fromList([1, 2, 3]));
+
+        verifyNever(() => avatarStorageService.saveAvatar(any(), any()));
+        verifyNever(
+          () => agentRepo.updateLocalProfile(
+            'local-1',
+            avatarUrl: any(named: 'avatarUrl'),
+          ),
+        );
+        expect(vm.state.isSaving, isFalse);
+        expect(
+          vm.state.saveError,
+          isNotNull,
+          reason: '阻断 updateAvatar 必须 surface saveError',
+        );
+      });
+
+      test('removeAvatar blocked when _agent is null (init failed/not loaded) '
+          'surfaces saveError for UX feedback', () async {
+        final vm = createVM();
+
+        await vm.removeAvatar();
+
+        verifyNever(() => avatarStorageService.deleteAvatar(any()));
+        verifyNever(() => agentRepo.clearAvatar(any()));
+        expect(vm.state.isSaving, isFalse);
+        expect(
+          vm.state.saveError,
+          isNotNull,
+          reason: '阻断 removeAvatar 必须 surface saveError',
+        );
+      });
+
+      test(
+        'refresh() resets isAgentRemoved=false on error so LoadError shows',
+        () async {
+          // init 时 agent 是 tombstoned，isAgentRemoved=true
+          when(
+            () => agentRepo.getById('local-1'),
+          ).thenAnswer((_) async => tombAgent);
+          when(
+            () => instanceRepo.getById('inst-1'),
+          ).thenAnswer((_) async => null);
+          when(
+            () => messageRepo.getMessageCount('local-1'),
+          ).thenAnswer((_) async => 0);
+
+          final vm = createVM();
+          await vm.init();
+          expect(vm.state.isAgentRemoved, isTrue);
+
+          // refresh 时 getById 抛异常
+          when(
+            () => agentRepo.getById('local-1'),
+          ).thenThrow(Exception('DB error'));
+          await vm.refresh();
+
+          expect(vm.state.detailLoadState, isA<LoadError>());
+          expect(
+            vm.state.isAgentRemoved,
+            isFalse,
+            reason: '详情加载失败时不应继续显示 tombstone 占位页',
+          );
+        },
+      );
     });
   });
 }

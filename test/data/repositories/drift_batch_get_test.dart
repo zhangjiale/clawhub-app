@@ -195,4 +195,65 @@ void main() {
       expect(result[conv.id]!.agentId, 'agent-x');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // DriftInstanceRepo.getByIds (US-021 N+1 修复)
+  // ---------------------------------------------------------------------------
+  group('DriftInstanceRepo.getByIds', () {
+    late db.AppDatabase database;
+    late DriftInstanceRepo instanceRepo;
+
+    Future<void> seedInstance(String id, String name) async {
+      await instanceRepo.save(
+        Instance(
+          id: id,
+          name: name,
+          gatewayUrl: 'wss://$id.test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+        ),
+      );
+    }
+
+    setUp(() async {
+      database = await _createTestDb();
+      instanceRepo = DriftInstanceRepo(database);
+    });
+
+    test('returns empty map for empty list', () async {
+      final result = await instanceRepo.getByIds([]);
+      expect(result, isEmpty);
+    });
+
+    test('returns empty map when no IDs match', () async {
+      final result = await instanceRepo.getByIds(['ghost-1', 'ghost-2']);
+      expect(result, isEmpty);
+    });
+
+    test('returns single instance by ID', () async {
+      await seedInstance('inst-1', 'A');
+      final result = await instanceRepo.getByIds(['inst-1']);
+      expect(result.length, 1);
+      expect(result['inst-1']!.name, 'A');
+    });
+
+    test('returns multiple instances by IDs', () async {
+      await seedInstance('inst-a', 'A');
+      await seedInstance('inst-b', 'B');
+      await seedInstance('inst-c', 'C');
+
+      final result = await instanceRepo.getByIds(['inst-a', 'inst-c']);
+      expect(result.length, 2);
+      expect(result['inst-a']!.name, 'A');
+      expect(result['inst-c']!.name, 'C');
+      expect(result.containsKey('inst-b'), isFalse);
+    });
+
+    test('returns only matching IDs (partial match)', () async {
+      await seedInstance('exists-1', 'Exists');
+      final result = await instanceRepo.getByIds(['exists-1', 'missing-1']);
+      expect(result.length, 1);
+      expect(result['exists-1']!.name, 'Exists');
+    });
+  });
 }

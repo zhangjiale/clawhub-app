@@ -209,19 +209,30 @@ class _ActionBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     return PressFeedback(
       onTap: onTap,
-      builder: (child, isPressed) => AnimatedContainer(
+      builder: (child, isPressed) => AnimatedScale(
+        // Scale is the primary visible feedback signal: surface2→surface3
+        // color shift alone has only ~3% luminance delta (imperceptible),
+        // and the danger variant doesn't change color at all on press.
+        // Matches the HeaderButton pattern (scale 0.93) for consistency.
+        scale: isPressed ? 0.93 : 1.0,
         duration: XiaMotion.durationFast,
         curve: XiaMotion.ease,
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          color: danger
-              ? XiaColors.redMuted
-              : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
-          borderRadius: BorderRadius.circular(XiaRadius.sm),
+        child: AnimatedContainer(
+          duration: XiaMotion.durationFast,
+          curve: XiaMotion.ease,
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: danger
+                ? (isPressed
+                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.15)!
+                      : XiaColors.redMuted)
+                : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
+            borderRadius: BorderRadius.circular(XiaRadius.sm),
+          ),
+          alignment: Alignment.center,
+          child: child,
         ),
-        alignment: Alignment.center,
-        child: child,
       ),
       child: Icon(
         icon,

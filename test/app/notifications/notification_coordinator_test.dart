@@ -538,6 +538,43 @@ void main() {
 
       expect(service.shown, isEmpty);
     });
+
+    // US-021: tombstoned agent (Gateway 已删除) 不应触发通知。
+    // 漏网之鱼场景：findByCompositeKey 故意不过滤 (复活契约)，
+    // 但 _onMessage 必须在发送通知前检查 isRemoved。
+    // 否则用户会收到来自"已删除 agent"的最后一条回复推送，
+    // 点击进入 ChatRoom 又看到 '虾已移除' 占位页 —— 体验脱节。
+    test('agent reply when agent is tombstoned -> NOT notified '
+        '(US-021 suppression)', () async {
+      agentRepo.agents['remote-1'] = Agent(
+        localId: 'local-1',
+        remoteId: 'remote-1',
+        instanceId: 'i',
+        name: '已删除虾',
+        removedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+
+      final c = build();
+      await c.start();
+      gateway.messageController.add(
+        Message(
+          clientId: 'c1',
+          serverId: 'srv1',
+          conversationId: 'conv',
+          agentId: 'remote-1',
+          role: MessageRole.agent,
+          content: '我是遗言',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+          timestamp: 1000,
+        ),
+      );
+      await _pump();
+      await c.dispose();
+
+      expect(service.shown, isEmpty, reason: 'tombstoned agent 的回复不应触发本地通知推送');
+    });
   });
 
   // ── _onConnectionState 状态转换 ─────────────────────────────────

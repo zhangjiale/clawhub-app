@@ -95,6 +95,8 @@ class _NoopInstanceRepo implements IInstanceRepo {
   @override
   Future<Instance?> getById(String id) async => null;
   @override
+  Future<Map<String, Instance>> getByIds(List<String> ids) async => {};
+  @override
   Future<Instance> save(Instance instance) async => instance;
   @override
   Future<void> delete(String id) async {}
@@ -115,6 +117,8 @@ class _NoopInstanceRepo implements IInstanceRepo {
 class _NoopAgentRepo implements IAgentRepo {
   @override
   Future<List<Agent>> getByInstanceId(String instanceId) async => [];
+  @override
+  Future<List<Agent>> getAllByInstanceId(String instanceId) async => [];
   @override
   Future<List<Agent>> getAll() async => [];
   @override
@@ -361,6 +365,55 @@ void main() {
 
       expect(find.text('重连失败'), findsOneWidget);
       expect(find.text('等待审批'), findsNothing);
+    });
+
+    testWidgets('refresh button scales on press for visible feedback', (
+      tester,
+    ) async {
+      // Bug fix: surface2(0xFF15171E) → surface3(0xFF1C1F28) alone has only
+      // ~3% luminance delta, imperceptible on a phone. The action button
+      // must combine a scale animation (per HeaderButton pattern) so the
+      // press is visually obvious.
+      await tester.pumpWidget(
+        _wrap(InstanceCard(instance: testInstance, onTap: () {})),
+      );
+
+      expect(
+        find.ancestor(
+          of: find.byIcon(Icons.refresh),
+          matching: find.byType(AnimatedScale),
+        ),
+        findsOneWidget,
+        reason:
+            'The refresh (reconnect) button must scale on press. '
+            'Color-only feedback (surface2→surface3) is below the '
+            'human-perception threshold (~3% delta).',
+      );
+    });
+
+    testWidgets('delete button scales on press for visible feedback', (
+      tester,
+    ) async {
+      // Same root cause as the refresh button: the danger variant of
+      // _ActionBtn does not change color at all on press (always redMuted),
+      // and has no scale animation. Without these, the delete button has
+      // literally zero press feedback.
+      await tester.pumpWidget(
+        _wrap(
+          InstanceCard(instance: testInstance, onTap: () {}, onDelete: () {}),
+        ),
+      );
+
+      expect(
+        find.ancestor(
+          of: find.byIcon(Icons.delete_outline),
+          matching: find.byType(AnimatedScale),
+        ),
+        findsOneWidget,
+        reason:
+            'The delete button must scale on press. '
+            'Currently the danger variant has zero press feedback.',
+      );
     });
   });
 }

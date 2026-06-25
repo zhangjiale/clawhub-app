@@ -109,6 +109,10 @@ class OutboxProcessor {
       // 存储 Agent? 类型，null 表示 agent 不存在（也缓存，避免重复查询已删除的 agent）。
       final Map<String, Agent?> agentCache = {};
 
+      // 批量收集需要标记为 EXPIRED 的消息（24h 自然过期 + tombstoned agent）。
+      // 出队后一次性批量写入，避免 Law 6 逐条 update（OutboxProcessor 原实现痛点）。
+      final expiredClientIds = <String>[];
+
       // 4. 顺序遍历队列
       for (final message in outbox) {
         // 4a. 整轮超时检查：超过 _flushRoundTimeout 则停止本轮，
@@ -122,20 +126,13 @@ class OutboxProcessor {
           break;
         }
 
-        // 4b. 过期检查：超过 24h 的消息标记 EXPIRED
+        // 4b. 过期检查：超过 24h 的消息加入批量 EXPIRED 列表。
         if (now - message.timestamp > _expireThreshold.inMilliseconds) {
-          try {
-            await _messageRepo.updateStatus(
-              message.clientId,
-              MessageStatus.expired,
-            );
-            _logger.info(
-              '[OutboxProcessor] Marked expired: ${message.clientId} '
-              '(age=${(now - message.timestamp) ~/ 1000}s)',
-            );
-          } catch (_) {
-            // iron-law-allow: Law8 -- FSM validation failure when status already changed by concurrent path
-          }
+          expiredClientIds.add(message.clientId);
+          _logger.info(
+            '[OutboxProcessor] Queued for expiry: ${message.clientId} '
+            '(age=${(now - message.timestamp) ~/ 1000}s)',
+          );
           continue;
         }
 
@@ -152,27 +149,14 @@ class OutboxProcessor {
         // 见 US-021 契约），故原 `agent == null` guard 不够，必须加 isRemoved。
         if (agent == null || agent.isRemoved) {
           // US-021 v1.1: tombstoned / missing agent 的消息转 EXPIRED 而非
-          // 继续留在 outbox（避免 PENDING 计数 24h 卡死）。对齐同函数 24h
-          // 过期分支的 updateStatus(expired) 模式。批量写入留给 v2 spec。
-          try {
-            await _messageRepo.updateStatus(
-              message.clientId,
-              MessageStatus.expired,
-            );
-            _logger.info(
-              '[OutboxProcessor] Marked expired (agent ${message.agentId} '
-              '${agent == null ? "not found" : "tombstoned"}): '
-              '${message.clientId}',
-            );
-          } catch (e, st) {
-            // 不抛：不让单条消息失败阻塞后续消息，与现有 24h 分支对齐。
-            // 24h 自然过期兜底；监控通过 _logger.error 抓异常。
-            _logger.error(
-              '[OutboxProcessor] Failed to EXPIRE tombstoned-agent message '
-              '${message.clientId}: $e',
-              st,
-            );
-          }
+          // 继续留在 outbox（避免 PENDING 计数 24h 卡死）。
+          // 与 24h 过期分支一起批量写入（IMessageRepo.updateStatuses）。
+          expiredClientIds.add(message.clientId);
+          _logger.info(
+            '[OutboxProcessor] Queued for expiry (agent ${message.agentId} '
+            '${agent == null ? "not found" : "tombstoned"}): '
+            '${message.clientId}',
+          );
           continue;
         }
 
@@ -203,6 +187,28 @@ class OutboxProcessor {
             stackTrace,
           );
           continue;
+        }
+      }
+
+      // 4e. 批量写入所有 24h 过期 / tombstoned-agent 消息的状态为 EXPIRED。
+      if (expiredClientIds.isNotEmpty) {
+        try {
+          await _messageRepo.updateStatuses(
+            expiredClientIds,
+            MessageStatus.expired,
+          );
+          _logger.info(
+            '[OutboxProcessor] Marked ${expiredClientIds.length} messages '
+            'expired: ${expiredClientIds.join(", ")}',
+          );
+        } catch (error, stackTrace) {
+          // 不抛：不让批量写入失败阻塞本轮已发送的统计；剩余消息会在
+          // 下一轮 flush 中重新评估（状态未变则继续被跳过并再次尝试 EXPIRE）。
+          _logger.error(
+            '[OutboxProcessor] Failed to EXPIRE ${expiredClientIds.length} '
+            'messages: $error',
+            stackTrace,
+          );
         }
       }
 

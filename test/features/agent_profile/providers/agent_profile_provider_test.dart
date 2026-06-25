@@ -181,8 +181,9 @@ void main() {
     final initCalls = calls;
     expect(initCalls, 1, reason: 'init 期间 refresh 应调用 1 次 getById');
 
-    // 模拟后台 sync: ticker 递增一次 → ref.listen 回调触发 vm.refreshAgent()
-    container.read(agentSyncTickerProvider.notifier).state++;
+    // 模拟后台 sync: ticker 携带本 instanceId 触发 → ref.listen 回调触发 vm.refreshAgent()
+    // BUG B 修复后 ticker = StateProvider<String?>,需指定 instanceId 才能命中 listener。
+    container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
     // ref.listen 回调是异步的,让 microtask 链跑完
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
@@ -194,6 +195,39 @@ void main() {
       reason: 'ticker bump 后 listener 应触发 refreshAgent → getById 第 2 次',
     );
   });
+
+  // BUG B 修复:跨实例 ticker bump 不应触发本实例的 refreshAgent。
+  // AgentProfile 监听过滤 next != vm.instanceId 的 case,避免实例 A sync 时
+  // 实例 B/C/D 的所有 profile 页 N+1 调用 getById。
+  test(
+    'cross-instance ticker bump is filtered out (Law 6 / N+1 prevention)',
+    () async {
+      var calls = 0;
+      when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+        calls++;
+        return activeAgent; // instanceId: 'inst-1'
+      });
+
+      final container = createContainer();
+      container.read(agentProfileViewModelProvider('local-1'));
+      await waitForInitComplete(container);
+      expect(calls, 1, reason: 'init 阶段 getById 调 1 次');
+
+      // bump ticker 携带**不同**的 instanceId('inst-2'),本 VM 应跳过
+      container.read(agentSyncTickerProvider.notifier).state = 'inst-2';
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        calls,
+        1,
+        reason:
+            '跨实例 ticker bump 不应触发本实例的 refreshAgent。'
+            '当前 calls=$calls(预期 1)',
+      );
+    },
+  );
 
   test('ticker bump also updates isAgentRemoved when agent becomes tombstoned '
       'between init and sync', () async {
@@ -213,7 +247,8 @@ void main() {
 
     expect(vm.state.isAgentRemoved, isFalse);
 
-    container.read(agentSyncTickerProvider.notifier).state++;
+    // BUG B 修复后 ticker 携带本 instanceId 触发 listener
+    container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
@@ -224,4 +259,31 @@ void main() {
       reason: 'ticker → refreshAgent → refreshAgent 应捕获后台 tombstone',
     );
   });
+
+  test(
+    'refreshAgent error from fire-and-forget listen is swallowed (no unhandled async error)',
+    () async {
+      var calls = 0;
+      when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+        calls++;
+        if (calls > 1) throw Exception('DB error on refresh');
+        return activeAgent;
+      });
+
+      final container = createContainer();
+      final vm = container.read(
+        agentProfileViewModelProvider('local-1').notifier,
+      );
+      await waitForInitComplete(container);
+
+      // BUG B 修复后 ticker 携带 instanceId 触发 listener
+      container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(vm.state.isAgentRemoved, isFalse);
+      expect(calls, greaterThan(1));
+    },
+  );
 }

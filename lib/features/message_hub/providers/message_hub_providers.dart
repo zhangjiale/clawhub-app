@@ -38,27 +38,43 @@ final conversationListProvider = FutureProvider<ConversationListData>((
   // 不在 providers.dart 里 ref.invalidate 是为避免 message_hub_providers
   // ↔ providers.dart 的循环 import（前者已依赖后者）。
   ref.watch(agentSyncTickerProvider);
-  final conversations = await ref
-      .watch(conversationRepoProvider)
-      .getAllWithMessages();
+
+  // 在第一个 await 前 capture 所有 repo，避免 provider dispose 后 ref.watch
+  // 抛出 StateError（Riverpod 禁止 async gap 后继续使用 ref）。
+  final conversationRepo = ref.watch(conversationRepoProvider);
+  final agentRepo = ref.watch(agentRepoProvider);
+  final instanceRepo = ref.watch(instanceRepoProvider);
+
+  final conversations = await conversationRepo.getAllWithMessages();
+
+  if (conversations.isEmpty) return ConversationListData(previews: const []);
+
+  // Law 6 (批量查询)：2 次批量 IN 查询替代原先 2N 次串行 getById。两次查询
+  // 用 Future.wait 并行，wall time ≈ max(T(agents), T(instances)) 而非两者之和。
+  // getAllWithMessages 已按 lastMessageTime DESC 排序，按 conversations 原始
+  // 顺序迭代构建 previews（getByIds 返回 Map 不保序，但我们用 conversations
+  // 作为迭代源，Map 仅做 O(1) 查找）。
+  final agentIds = conversations.map((c) => c.agentId).toSet().toList();
+  final instanceIds = conversations.map((c) => c.instanceId).toSet().toList();
+  final (agents, instances) = await (
+    agentRepo.getByIds(agentIds),
+    instanceRepo.getByIds(instanceIds),
+  ).wait;
 
   final previews = <ConversationPreview>[];
   for (final conv in conversations) {
-    final agent = await ref.watch(agentRepoProvider).getById(conv.agentId);
-    // US-021: 跳过 tombstoned agent 的 conversation（getById 不过滤，故需显式
+    final agent = agents[conv.agentId];
+    // US-021: 跳过 tombstoned agent 的 conversation（getByIds 不过滤，故需显式
     // 检查 isRemoved）。hidden agent 的 conversation 仍显示（用户隐藏≠删历史）。
     if (agent == null || agent.isRemoved) continue;
-
-    final instance = await ref
-        .watch(instanceRepoProvider)
-        .getById(conv.instanceId);
 
     previews.add(
       ConversationPreview(
         conversation: conv,
         agent: agent,
-        instanceName: instance?.name ?? 'Unknown',
-        healthStatus: instance?.healthStatus ?? HealthStatus.unknown,
+        instanceName: instances[conv.instanceId]?.name ?? 'Unknown',
+        healthStatus:
+            instances[conv.instanceId]?.healthStatus ?? HealthStatus.unknown,
       ),
     );
   }

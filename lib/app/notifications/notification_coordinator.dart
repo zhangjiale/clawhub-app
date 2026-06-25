@@ -198,6 +198,18 @@ class NotificationCoordinator {
     try {
       // Message.agentId 是 Gateway remoteId → 解析为本地 Agent (localId + 名称)。
       final agent = await agentRepo.findByCompositeKey(instanceId, msg.agentId);
+      // US-021: 抑制 tombstoned agent 的回复通知。findByCompositeKey 故意
+      // 不过滤 (OutboxProcessor/sync 复活契约)，但 UI 层（ChatRoom / Profile /
+      // Config）均显示"已移除"占位页。Notification 与这些 UI 路径独立，若不
+      // 显式过滤会出现"通知显示已删除 agent 的回复，但点进去看到占位页"
+      // 的体验脱节。
+      if (agent != null && agent.isRemoved) {
+        logger.info(
+          '[NotificationCoordinator] suppressed reply from tombstoned '
+          'agent: remoteId=${msg.agentId}',
+        );
+        return;
+      }
       final agentName = agent?.displayName ?? '虾';
       final localId = agent?.localId ?? msg.agentId;
 

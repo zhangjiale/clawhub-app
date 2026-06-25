@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
@@ -56,8 +57,24 @@ final agentProfileViewModelProvider =
 
       // US-021 v1.1: 订阅 sync ticker，让本 provider 在 agents 同步完成后
       // （含 tombstone / 复活）自动重建。与 chat_providers.dart:72-74 同模式。
-      ref.listen(agentSyncTickerProvider, (_, __) {
-        vm.refreshAgent();
+      //
+      // BUG B 修复:ticker = StateProvider<String?> 携带被同步的 instanceId。
+      // listener 按 `next == vm.instanceId` 过滤,跨实例 sync 不触发本 VM
+      // 的 refreshAgent,避免 N 个 active profile × 任意 sync = N 次冗余
+      // getById。vm.instanceId 来自 _agent.instanceId (init 后才有效);
+      // init 未完成时 (null) 跳过 — 下次 sync tick 会再 fire。
+      ref.listen<String?>(agentSyncTickerProvider, (prev, next) {
+        if (next == null) return;
+        final myInstance = vm.instanceId;
+        if (myInstance == null || next != myInstance) return;
+        // AgentProfileViewModel.refreshAgent() 内部已捕获并记录异常；provider
+        // 层用 unawaited + catchError 兜底，确保 fire-and-forget 监听器不会
+        // 泄漏未处理异步错误。
+        unawaited(
+          vm.refreshAgent().catchError((Object e, StackTrace st) {
+            return Future<void>.value();
+          }),
+        );
       });
 
       ref.onDispose(() => vm.dispose());
