@@ -41,21 +41,6 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
       child: Row(
         children: [
           Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: XiaColors.accentMuted,
-              borderRadius: BorderRadius.circular(XiaRadius.sm),
-            ),
-            alignment: Alignment.center,
-            child: const Icon(
-              Icons.psychology,
-              size: 16,
-              color: XiaColors.accent,
-            ),
-          ),
-          const SizedBox(width: XiaSpacing.s2),
-          Container(
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.7,
             ),

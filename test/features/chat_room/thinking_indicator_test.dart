@@ -5,18 +5,17 @@ import 'package:claw_hub/features/chat_room/widgets/thinking_indicator.dart';
 void main() {
   group('ThinkingIndicator', () {
     Widget buildIndicator() {
-      return const MaterialApp(
-        home: Scaffold(
-          body: ThinkingIndicator(),
-        ),
-      );
+      return const MaterialApp(home: Scaffold(body: ThinkingIndicator()));
     }
 
-    testWidgets('renders psychology icon indicating AI thinking', (tester) async {
-      await tester.pumpWidget(buildIndicator());
+    testWidgets(
+      'does NOT render psychology avatar icon (spec §4.3: bubble+dots only)',
+      (tester) async {
+        await tester.pumpWidget(buildIndicator());
 
-      expect(find.byIcon(Icons.psychology), findsOneWidget);
-    });
+        expect(find.byIcon(Icons.psychology), findsNothing);
+      },
+    );
 
     testWidgets('renders three bouncing dots inside bubble', (tester) async {
       await tester.pumpWidget(buildIndicator());
@@ -39,8 +38,8 @@ void main() {
 
       // Pump forward to exercise the animation controller (now 800ms cycle)
       await tester.pump(const Duration(milliseconds: 300));
-      // Widget should still be present after animation ticks
-      expect(find.byIcon(Icons.psychology), findsOneWidget);
+      // Three dots should still be present after animation ticks
+      expect(dotFinder, findsNWidgets(3));
     });
   });
 }
