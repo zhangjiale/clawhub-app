@@ -85,6 +85,12 @@ class InMemoryAgentRepo implements IAgentRepo {
   final Map<String, Agent> _byCompositeKey =
       {}; // "instanceId:remoteId" -> Agent
 
+  /// Agent 变更广播 — 任何 mutation path 写入后 emit 当前 agent（仿
+  /// InMemoryMessageRepo._messagesChanged 模式）。watchById 订阅者收到 emit 后
+  /// 可立即拿到最新值，实现响应式刷新。
+  final StreamController<Agent> _agentsChanged =
+      StreamController<Agent>.broadcast();
+
   /// Shared sort comparator: pinned first, then by name.
   int _compareAgents(Agent a, Agent b) {
     if (a.isPinned != b.isPinned) return b.isPinned ? 1 : -1;
@@ -150,6 +156,7 @@ class InMemoryAgentRepo implements IAgentRepo {
   void _putAgent(Agent agent) {
     _store[agent.localId] = agent;
     _byCompositeKey[_compositeKey(agent.instanceId, agent.remoteId)] = agent;
+    if (!_agentsChanged.isClosed) _agentsChanged.add(agent); // ★ 新增
   }
 
   @override
@@ -262,6 +269,26 @@ class InMemoryAgentRepo implements IAgentRepo {
     for (final agent in toRemove) {
       _store.remove(agent.localId);
       _byCompositeKey.remove(_compositeKey(agent.instanceId, agent.remoteId));
+    }
+  }
+
+  @override
+  Stream<Agent?> watchById(String localId) async* {
+    // Seed event: 立即 emit 当前值（仿 Drift .watchSingleOrNull() 行为）。
+    yield _store[localId];
+    // 后续变化: filter 该 localId 的 emit。
+    // 用 yield* 委托给 transformed stream 而非 await for,确保外层 listen
+    // cancel 时 broadcast stream 的内部 subscription 也被正确取消
+    // (await for 在 broadcast stream 上不会传播 cancel,会导致 dispose hang)。
+    yield* _agentsChanged.stream
+        .where((changed) => changed.localId == localId)
+        .map((_) => _store[localId]);
+  }
+
+  /// 关闭内部 stream controller（测试 cleanup + 未来真实 dispose 路径）。
+  Future<void> dispose() async {
+    if (!_agentsChanged.isClosed) {
+      await _agentsChanged.close();
     }
   }
 }
