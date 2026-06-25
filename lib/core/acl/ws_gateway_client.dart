@@ -9,6 +9,7 @@ import 'connection_manager.dart';
 import 'device_identity.dart';
 import 'gateway_protocol.dart';
 import 'i_device_identity_provider.dart';
+import 'i_device_token_store.dart';
 import 'i_gateway_client.dart';
 import 'replayable_connection_state.dart';
 
@@ -51,6 +52,13 @@ class WsGatewayClient implements IGatewayClient {
   /// never be blocked by device-info read failures.
   final Future<String?> Function()? _modelIdentifierLoader;
 
+  /// Optional: persist the issued deviceToken (差距 #1 fix, spec §2.2).
+  /// When null (no DI injection), ConnectionManager falls back to using
+  /// the constructor-provided `instance.tokenRef` for every connect —
+  /// first-time pairing path on every reconnect, which forces a full
+  /// re-pair each time.  Production should always inject.
+  final IDeviceTokenStore? _deviceTokenStore;
+
   /// 创建 WebSocket Gateway 客户端。
   ///
   /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
@@ -61,17 +69,23 @@ class WsGatewayClient implements IGatewayClient {
   ///
   /// [webSocketFactory] 和 [timerFactory] 仅供测试注入，
   /// 生产环境留空即可（委托 [ConnectionManager] 默认行为）。
+  ///
+  /// [deviceTokenStore] 持久化 Gateway 签发的 deviceToken；后续重连
+  /// 时优先复用缓存令牌（spec §2.2）。当未注入时，退化为每次连接
+  /// 都使用 `instance.tokenRef`（每次都走配对流程）。
   WsGatewayClient({
     required IDeviceIdentityProvider identityProvider,
     ConnectionConfig? config,
     WebSocketChannel Function(Uri)? webSocketFactory,
     TimerFactory? timerFactory,
     Future<String?> Function()? modelIdentifierLoader,
+    IDeviceTokenStore? deviceTokenStore,
   }) : _identityProvider = identityProvider,
        _config = config ?? ConnectionConfig(),
        _webSocketFactory = webSocketFactory,
        _timerFactory = timerFactory,
-       _modelIdentifierLoader = modelIdentifierLoader;
+       _modelIdentifierLoader = modelIdentifierLoader,
+       _deviceTokenStore = deviceTokenStore;
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -190,6 +204,7 @@ class WsGatewayClient implements IGatewayClient {
         config: config,
         webSocketFactory: _webSocketFactory,
         timerFactory: _timerFactory,
+        deviceTokenStore: _deviceTokenStore,
       );
 
       // 复用已有的流控制器（若有），否则创建新的

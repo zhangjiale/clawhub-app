@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import 'package:flutter/foundation.dart';
 
 import '../utils/retry_strategy.dart';
+import 'i_device_token_store.dart';
 import 'i_gateway_client.dart';
 import 'gateway_protocol.dart';
 
@@ -85,6 +86,25 @@ class ConnectionManager {
   final String _deviceId;
   final ConnectionConfig _config;
 
+  /// 设备令牌（deviceToken）存储 — 持久化 Gateway 签发的设备令牌。
+  ///
+  /// 如果注入，则在握手时优先用缓存令牌（避免重复走配对审批），
+  /// 并在 hello-ok 时把新签发的令牌落盘（spec §2.2 / §4.11）。
+  final IDeviceTokenStore? _deviceTokenStore;
+
+  /// Effective bearer token used for this connect attempt.
+  ///
+  /// Computed at the start of each [_doConnect] call:
+  /// 1. If [_deviceTokenStore] is non-null, try `load(_instanceId)`.
+  /// 2. If a cached token is returned, use it (subsequent-reconnect path,
+  ///    spec §2.2 后续重连复用该令牌).
+  /// 3. Otherwise fall back to the constructor-provided [_token]
+  ///    (first-time pairing code path).
+  ///
+  /// Read by both [onConnectChallenge] (for the V3 signature payload) and
+  /// the connect request body (`auth.token`).
+  String _effectiveToken = '';
+
   /// WebSocket 创建工厂 — 可注入以在测试中替换 WebSocket。
   final WebSocketChannel Function(Uri) _webSocketFactory;
 
@@ -110,16 +130,21 @@ class ConnectionManager {
     WebSocketChannel Function(Uri)? webSocketFactory,
     @visibleForTesting TimerFactory? timerFactory,
     RetryStrategy? retryStrategy,
+    IDeviceTokenStore? deviceTokenStore,
   }) : _retryStrategy = retryStrategy ?? _defaultRetryStrategy,
        _instanceId = instanceId,
        _gatewayUrl = gatewayUrl,
        _token = token,
        _deviceId = deviceId,
        _config = config,
+       _deviceTokenStore = deviceTokenStore,
        _webSocketFactory = webSocketFactory ?? WebSocketChannel.connect,
        _createTimer = timerFactory ?? Timer.new,
        _uuid = uuid ?? const Uuid() {
     _connectionStateController.add(GatewayConnectionState.disconnected);
+    // Default to the constructor-provided token; overridden in _doConnect
+    // when a cached deviceToken is available.
+    _effectiveToken = token;
   }
 
   // ---------------------------------------------------------------------------
@@ -205,6 +230,29 @@ class ConnectionManager {
     _setState(GatewayConnectionState.connecting);
 
     try {
+      // Resolve the bearer token for this connect attempt.
+      // 差距 #1: prefer the cached deviceToken over the original pairing
+      // code (spec §2.2 后续重连复用该令牌).  Falls back to [_token]
+      // when no store is injected or no cached value exists.
+      _effectiveToken = _token;
+      if (_deviceTokenStore != null) {
+        try {
+          final cached = await _deviceTokenStore.load(_instanceId);
+          if (cached != null && cached.isNotEmpty) {
+            _effectiveToken = cached;
+            debugPrint(
+              '[CM] Using cached deviceToken for $_instanceId '
+              '(spec §2.2 reconnect path)',
+            );
+          }
+        } catch (e, st) {
+          debugPrint(
+            '[CM] deviceTokenStore.load failed for $_instanceId: $e\n'
+            'Falling back to instance.tokenRef.\n$st',
+          );
+        }
+      }
+
       final originalUri = Uri.parse(_gatewayUrl);
       // Validate the scheme early — web_socket_channel wraps permanent
       // configuration errors (wrong scheme, invalid host) as
@@ -222,7 +270,10 @@ class ConnectionManager {
       // Gateway 在 WebSocket 握手阶段通过 URL query 验证 token，
       // 不在握手中携带 token 会导致连接被拒绝。
       final uri = originalUri.replace(
-        queryParameters: {...originalUri.queryParameters, 'token': _token},
+        queryParameters: {
+          ...originalUri.queryParameters,
+          'token': _effectiveToken,
+        },
       );
       final ws = _webSocketFactory(uri);
       await ws.ready.timeout(
@@ -353,7 +404,10 @@ class ConnectionManager {
           role: _config.role,
           scopes: _config.scopes,
           signedAtMs: nowMs,
-          token: _token,
+          // Use the effective token (cached deviceToken if available,
+          // else the constructor-provided pairing code) so the signed
+          // payload matches what we send in `auth.token` (spec §2.5).
+          token: _effectiveToken,
           nonce: _challengeNonce!,
           platform: _config.platform,
           deviceFamily: _config.deviceFamily,
@@ -376,7 +430,9 @@ class ConnectionManager {
 
     final id = _uuid.v4();
     final params = buildConnectParams(
-      token: _token,
+      // Match the signed token: cached deviceToken if available, else the
+      // original pairing code.  spec §2.2 + §2.5 alignment.
+      token: _effectiveToken,
       deviceId: _deviceId,
       config: _config,
       signature: signature,
@@ -437,6 +493,28 @@ class ConnectionManager {
         debugPrint(
           '[CM] Connected to $_instanceId (protocol: ${payload['protocol']})',
         );
+
+        // 差距 #1: persist the issued deviceToken (spec §2.2 务必持久化).
+        // Best-effort — a failed save doesn't break the current connection;
+        // the worst case is a re-pair on next reconnect.  Errors are
+        // logged and swallowed.
+        final auth = payload['auth'] as Map<String, dynamic>?;
+        final newDeviceToken = auth?['deviceToken'] as String?;
+        if (newDeviceToken != null &&
+            newDeviceToken.isNotEmpty &&
+            _deviceTokenStore != null) {
+          unawaited(
+            _deviceTokenStore.save(_instanceId, newDeviceToken).catchError((
+              Object e,
+              StackTrace st,
+            ) {
+              debugPrint(
+                '[CM] deviceTokenStore.save failed for $_instanceId: $e\n'
+                'Future reconnects may need to re-pair.\n$st',
+              );
+            }),
+          );
+        }
 
         _resetTickTimeout();
       } else {

@@ -5,8 +5,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
+import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
+import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/data/services/avatar_storage_service.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
@@ -184,6 +186,17 @@ final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
   );
 });
 
+/// 设备令牌（deviceToken）存储 — 持久化 Gateway 签发的设备令牌（差距 #1）。
+///
+/// 后续重连时优先复用缓存令牌（spec §2.2 后续重连复用该令牌），
+/// 避免重复走 device.pair 审批流程。
+/// 可通过 override 注入 fake 以进行单元测试。
+final deviceTokenStoreProvider = Provider<IDeviceTokenStore>((ref) {
+  return SecureStorageDeviceTokenStore(
+    secureStorage: const FlutterSecureStorage(),
+  );
+});
+
 /// Cached device model identifier — the platform channel call only needs
 /// to happen once per app lifetime. Injecting a FutureProvider keeps the
 /// loader's expensive call (10–50ms iOS/Android) out of every reconnect.
@@ -218,6 +231,8 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
     // 设备型号在 DI 容器启动时解析一次并缓存,connect 时只读取缓存值,
     // 避免每次 reconnect 都重新走 platform channel(10-50ms 阻塞)。
     modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
+    // 差距 #1: 持久化 deviceToken，后续重连优先复用。
+    deviceTokenStore: ref.watch(deviceTokenStoreProvider),
   );
   ref.onDispose(() => client.dispose());
   return client;

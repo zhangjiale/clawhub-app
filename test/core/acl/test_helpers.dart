@@ -81,6 +81,18 @@ String helloOkJson(String id) =>
     '{"type":"res","id":"$id","ok":true,'
     '"payload":{"type":"hello-ok","protocol":4,"policy":{"tickIntervalMs":15000}}}';
 
+/// Build a `hello-ok` response that also carries a freshly issued
+/// `auth.deviceToken` (OpenClaw spec §2.2 — first pairing).
+///
+/// Used by deviceToken persistence tests in
+/// `connection_manager_device_token_test.dart` (差距 #1 fix).
+String helloOkWithDeviceTokenJson(String id, String deviceToken) =>
+    '{"type":"res","id":"$id","ok":true,'
+    '"payload":{"type":"hello-ok","protocol":4,'
+    '"auth":{"deviceToken":"$deviceToken","role":"operator",'
+    '"scopes":["operator.read","operator.write"]},'
+    '"policy":{"tickIntervalMs":15000}}}';
+
 /// Extract the request ID from a sent JSON frame.
 String extractReqId(String sentFrame) {
   final m = RegExp(r'"id":"([^"]+)"').firstMatch(sentFrame);
