@@ -15,6 +15,7 @@ import 'package:claw_hub/ui_kit/color_grid.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
+import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/features/agent_profile/widgets/quick_commands_editor.dart';
 
@@ -335,6 +336,17 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
       LoadData<AgentDetailData>(:final value) => value,
       _ => null,
     };
+
+    // US-021 v1.1: tombstoned agent 不进入配置表单。
+    // ConfigPage 没有 source 字段（始终从 Profile 上下文进入），source 传 null。
+    // data 可空 —— init 中途失败时仍渲染「已移除」核心信息。
+    if (state.isAgentRemoved) {
+      return AgentRemovedPlaceholder(
+        agentName: detail?.agent.displayName,
+        source: null,
+        onBack: () => context.pop(),
+      );
+    }
 
     final appBar = AppBar(title: const Text('个性化配置'));
 

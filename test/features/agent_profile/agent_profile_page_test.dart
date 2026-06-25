@@ -17,6 +17,7 @@ import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/features/agent_profile/agent_profile_page.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
+import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
 
 class MockAgentRepo extends Mock implements IAgentRepo {}
 
@@ -140,6 +141,45 @@ void main() {
       await tester.pumpWidget(buildPage());
       await tester.pumpAndSettle();
       expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+    });
+
+    testWidgets('renders AgentRemovedPlaceholder when isAgentRemoved is true', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            agentProfileViewModelProvider('local-1').overrideWith((ref) {
+              final vm = AgentProfileViewModel(
+                agentRepo: agentRepo,
+                instanceRepo: instanceRepo,
+                messageRepo: messageRepo,
+                activityRepo: activityRepo,
+                evaluateAchievements: EvaluateAchievementsUseCase(
+                  achievementRepo,
+                ),
+                avatarStorageService: avatarStorageService,
+                agentId: 'local-1',
+              );
+              vm.state = vm.state.copyWith(isAgentRemoved: true);
+              return vm;
+            }),
+          ],
+          child: const MaterialApp(home: AgentProfilePage(agentId: 'local-1')),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(AgentRemovedPlaceholder), findsOneWidget);
+      expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
+    });
+
+    testWidgets('renders profile normally when isAgentRemoved is false', (
+      tester,
+    ) async {
+      await tester.pumpWidget(buildPage());
+      await tester.pumpAndSettle();
+      expect(find.byType(AgentRemovedPlaceholder), findsNothing);
+      expect(find.text('产品虾'), findsAtLeastNWidgets(1));
     });
   });
 }

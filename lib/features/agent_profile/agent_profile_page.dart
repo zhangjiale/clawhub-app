@@ -17,6 +17,7 @@ import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/ui_kit/detail_tabs.dart';
 import 'package:claw_hub/ui_kit/loading_skeleton.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
+import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// Agent 详情页 — V2 §5.
@@ -57,6 +58,21 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
     }
     final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
     final theme = Theme.of(context);
+
+    // US-021 v1.1: tombstoned agent 显示占位页（与 ChatRoom AC8 同模式）。
+    // data 可空 —— init 中途失败时 detailLoadState 仍为 LoadInProgress /
+    // LoadError，agentName=null，placeholder 仍渲染「已移除」核心信息。
+    if (state.isAgentRemoved) {
+      final data = switch (state.detailLoadState) {
+        LoadData<AgentDetailData>(:final value) => value,
+        _ => null,
+      };
+      return AgentRemovedPlaceholder(
+        agentName: data?.agent.displayName,
+        source: widget.source,
+        onBack: _handleBack,
+      );
+    }
 
     return PopScope(
       canPop: false,
