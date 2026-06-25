@@ -277,9 +277,9 @@ class InMemoryAgentRepo implements IAgentRepo {
     // Seed event: 立即 emit 当前值（仿 Drift .watchSingleOrNull() 行为）。
     yield _store[localId];
     // 后续变化: filter 该 localId 的 emit。
-    // 用 yield* 委托给 transformed stream 而非 await for,确保外层 listen
-    // cancel 时 broadcast stream 的内部 subscription 也被正确取消
-    // (await for 在 broadcast stream 上不会传播 cancel,会导致 dispose hang)。
+    // 用 yield* 委托给 transformed stream 而非 await for:
+    // .where().map() 产生的 single-subscription stream 取消语义更明确,
+    // 外层 listen cancel 时内部 subscription 的 cancel future 立即完成。
     yield* _agentsChanged.stream
         .where((changed) => changed.localId == localId)
         .map((_) => _store[localId]);
