@@ -1585,4 +1585,87 @@ void _replayableConnectionStateTests() {
       await state.dispose();
     });
   });
+
+  // ==========================================================================
+  // Bug #2: chat.history cursor field name — defensively read both
+  // 'cursor' and 'nextCursor' from response payload.
+  //
+  // spec §5.4 example uses 'cursor' but the client used to only read
+  // 'nextCursor', causing pagination to deadlock at page 2 (nextCursor
+  // was always null because the server was sending 'cursor').
+  // ==========================================================================
+  group('fetchMessageHistory pagination (Bug #2)', () {
+    /// Helper: send a chat.history request and inject a server response.
+    /// The 1st sent frame is the connect request (consumed by
+    /// connectAndHandshake); the 2nd sent frame is chat.history.
+    Future<({List<Message> messages, String? nextCursor})> sendHistory(
+      WsGatewayClient client,
+      ControllableWebSocket ws, {
+      String? cursor,
+      String? nextCursor,
+    }) async {
+      final future = client.fetchMessageHistory(
+        instanceId: 'test-instance',
+        agentId: 'a-1',
+      );
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames[1]);
+      ws.simulateServerFrame(
+        chatHistoryResponseJson(
+          id: reqId,
+          cursor: cursor,
+          nextCursor: nextCursor,
+        ),
+      );
+      return future;
+    }
+
+    test('reads nextCursor from payload.nextCursor field', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final result = await sendHistory(client, ws, nextCursor: 'nc-1');
+      expect(result.nextCursor, 'nc-1');
+      await client.dispose();
+    });
+
+    test(
+      'falls back to payload.cursor when nextCursor absent (Bug #2)',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+        final result = await sendHistory(client, ws, cursor: 'c-1');
+        expect(
+          result.nextCursor,
+          'c-1',
+          reason:
+              'must read "cursor" field per docs/technical/api-protocol.md §5.4',
+        );
+        await client.dispose();
+      },
+    );
+
+    test('prefers nextCursor when both present (forward-compat)', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final result = await sendHistory(
+        client,
+        ws,
+        nextCursor: 'nc-1',
+        cursor: 'c-1',
+      );
+      expect(
+        result.nextCursor,
+        'nc-1',
+        reason: 'nextCursor is the forward-compat field name; wins over cursor',
+      );
+      await client.dispose();
+    });
+
+    test(
+      'returns null when neither cursor nor nextCursor is present',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+        final result = await sendHistory(client, ws);
+        expect(result.nextCursor, isNull);
+        await client.dispose();
+      },
+    );
+  });
 }

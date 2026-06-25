@@ -1,7 +1,8 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
-import 'package:claw_hub/core/acl/gateway_protocol.dart' show ClientIds;
+import 'package:claw_hub/core/acl/gateway_protocol.dart'
+    show ClientIds, ConnectionConfig;
 
 void main() {
   group('platformOS', () {
@@ -89,6 +90,23 @@ void main() {
       final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
       const validFamilies = ['phone', 'desktop'];
       expect(deviceFamily, isIn(validFamilies));
+    });
+
+    // =========================================================================
+    // Bug #1 anti-regression: deviceFamily default in ConnectionConfig
+    // After Bug #1 fix, the default deviceFamily is 'phone' so that
+    // buildConnectParams and buildV3SignaturePayload both use the same
+    // value (preventing DEVICE_AUTH_SIGNATURE_INVALID on the server).
+    // =========================================================================
+    test('ConnectionConfig default deviceFamily is "phone" (Bug #1 lock)', () {
+      final config = ConnectionConfig();
+      expect(
+        config.deviceFamily,
+        'phone',
+        reason:
+            'Bug #1 fix: default must be "phone" so wire and signing paths '
+            'always produce the same deviceFamily segment',
+      );
     });
   });
 }

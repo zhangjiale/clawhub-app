@@ -163,4 +163,139 @@ void main() {
       expect(buffer.text, isEmpty);
     });
   });
+
+  // ============================================================================
+  // Bug #1: deviceFamily alignment between signature payload and connect wire
+  // spec §2.5 requires 11 pipe-separated segments, ending with deviceFamily.
+  // Signature path always includes `|phone|` (default); wire path used to skip
+  // the field when config.deviceFamily was null, causing the server-side
+  // signature reconstruction to mismatch and reject with
+  // DEVICE_AUTH_SIGNATURE_INVALID.
+  // ============================================================================
+  group('buildConnectParams deviceFamily alignment', () {
+    test('wire client.deviceFamily mirrors explicit config.deviceFamily', () {
+      final params = buildConnectParams(
+        token: 't',
+        deviceId: 'd',
+        config: ConnectionConfig(deviceFamily: 'phone'),
+      );
+      final client = params['client'] as Map<String, dynamic>;
+      expect(
+        client['deviceFamily'],
+        'phone',
+        reason: 'wire field must mirror the configured deviceFamily',
+      );
+    });
+
+    test(
+      'wire client.deviceFamily is always present (defaults to phone) — Bug #1',
+      () {
+        final params = buildConnectParams(
+          token: 't',
+          deviceId: 'd',
+          config: ConnectionConfig(),
+        );
+        final client = params['client'] as Map<String, dynamic>;
+        expect(
+          client.containsKey('deviceFamily'),
+          isTrue,
+          reason:
+              'wire must always include deviceFamily so the server-side '
+              'signature payload reconstruction matches the client payload',
+        );
+        expect(
+          client['deviceFamily'],
+          'phone',
+          reason: 'default deviceFamily must align with signing path default',
+        );
+      },
+    );
+
+    test('buildV3SignaturePayload includes default deviceFamily segment', () {
+      // Wire default must equal the signed-payload default. If the wire
+      // omits the field but the signature includes it, the server
+      // reconstructs a different payload and rejects the signature.
+      final payload = buildV3SignaturePayload(
+        deviceId: 'd',
+        clientId: 'openclaw-ios',
+        clientMode: 'ui',
+        role: 'operator',
+        scopes: const ['operator.read'],
+        signedAtMs: 1700000000000,
+        token: 't',
+        nonce: 'n',
+        platform: 'ios',
+        deviceFamily: 'phone',
+      );
+      // Format: "v3|...|{platform}|{deviceFamily}" — 11 segments,
+      // last one is 'phone' (the default).
+      final segments = payload.split('|');
+      expect(
+        segments.length,
+        11,
+        reason: 'spec §2.5 mandates 11 pipe-separated segments',
+      );
+      expect(
+        segments.last,
+        'phone',
+        reason: 'last segment is deviceFamily; must be present',
+      );
+    });
+  });
+
+  // ============================================================================
+  // Bug #3: ConnectionConfig default platform must be a valid OpenClaw spec
+  // platform (§2.3). The previous default `'flutter'` is a Flutter framework
+  // name, not a platform name. Production is unaffected (DI overrides with
+  // platformOS()), but mock/test paths benefit from a legal value so future
+  // server-side enum validation cannot reject the default.
+  // ============================================================================
+  group('ConnectionConfig defaults', () {
+    test('default platform is a valid OpenClaw spec §2.3 value — Bug #3', () {
+      // Spec §2.3 client.id enum + platformOS() values (DI production path).
+      // 'flutter' is intentionally NOT in this set — it's a framework name,
+      // not a platform.
+      const spec = {
+        // spec §2.3 client.id values
+        'webchat-ui',
+        'openclaw-control-ui',
+        'openclaw-tui',
+        'webchat',
+        'cli',
+        'gateway-client',
+        'openclaw-macos',
+        'openclaw-ios',
+        'openclaw-android',
+        'node-host',
+        'test',
+        'fingerprint',
+        'openclaw-probe',
+        // platformOS() values used by lib/app/di/providers.dart
+        'ios',
+        'android',
+        'macos',
+        'linux',
+        'windows',
+        'web',
+      };
+      expect(
+        ConnectionConfig().platform,
+        isIn(spec),
+        reason:
+            'default platform must be a valid OpenClaw spec value, '
+            'not a framework name like "flutter"',
+      );
+    });
+
+    test('ClientIds.forPlatform accepts the default platform', () {
+      final defaultPlatform = ConnectionConfig().platform;
+      expect(
+        () => ClientIds.forPlatform(defaultPlatform),
+        returnsNormally,
+        reason:
+            'ClientIds.forPlatform must handle any default platform value '
+            'via its switch default case',
+      );
+    });
+  });
 }

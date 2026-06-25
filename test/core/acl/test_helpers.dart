@@ -151,3 +151,25 @@ String agentLifecycleJson({
 const String tickJson = '{"type":"event","event":"tick","payload":{}}';
 
 const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';
+
+/// Build a `chat.history` response frame.
+///
+/// Pass [cursor] OR [nextCursor] to verify the defensive read in
+/// `WsGatewayClient.fetchMessageHistory` (Bug #2). When both are
+/// provided, [nextCursor] wins (forward-compat with future Gateway
+/// versions that may switch to OpenAI-style `nextCursor` naming).
+String chatHistoryResponseJson({
+  required String id,
+  String? cursor,
+  String? nextCursor,
+  // ignore: avoid_unused_constructor_parameters
+  List<Map<String, dynamic>> messages = const [],
+}) {
+  final cursorField = cursor != null ? '"cursor":"$cursor",' : '';
+  final nextCursorField = nextCursor != null
+      ? '"nextCursor":"$nextCursor",'
+      : '';
+  return '{"type":"res","id":"$id","ok":true,'
+      '"payload":{"messages":[],$cursorField$nextCursorField'
+      '"hasMore":false}}';
+}

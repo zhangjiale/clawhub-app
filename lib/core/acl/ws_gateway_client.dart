@@ -364,7 +364,13 @@ class WsGatewayClient implements IGatewayClient {
             .map((json) => _parseMessage(json))
             .toList() ??
         [];
-    final nextCursor = res.payload?['nextCursor'] as String?;
+    // Bug #2 fix: server spec uses 'cursor' (docs/technical/api-protocol.md
+    // §5.4) but the client used to only read 'nextCursor', causing pagination
+    // to deadlock at page 2. Read 'nextCursor' first (forward-compat with
+    // future Gateway versions) and fall back to 'cursor'.
+    final nextCursor =
+        res.payload?['nextCursor'] as String? ??
+        res.payload?['cursor'] as String?;
 
     return (messages: messages, nextCursor: nextCursor);
   }
