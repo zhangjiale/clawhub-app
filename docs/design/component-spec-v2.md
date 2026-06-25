@@ -803,10 +803,10 @@ onclick 跳转 `page-agent-detail`。
 
 | 属性 | 值 |
 |---|---|
-| display | flex, align-items: flex-end |
+| display | flex, align-items: center |
 | gap | 6px |
 
-注意：V2 移除了 Plus Button（加号按钮），简化输入栏。
+注意：V2 移除了 Plus Button（加号按钮），简化输入栏。`align-items: center` 让 36×36 发送按钮与输入框的内容区在单行默认状态下视觉居中。
 
 #### 4.5.2 Textarea（文本输入框）`.input-bar textarea`
 
