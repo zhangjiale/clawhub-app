@@ -144,9 +144,17 @@ SELECT COUNT(*) AS cnt FROM instances
 WHERE name = :name AND (COALESCE(:excludeId, '') = '' OR id != :excludeId);
 
 upsertInstance:
-INSERT OR REPLACE INTO instances
+INSERT INTO instances
     (id, name, gateway_url, token_ref, health_status, is_local_network, last_connected_at, created_at)
-VALUES (:id, :name, :gatewayUrl, :tokenRef, :healthStatus, :isLocalNetwork, :lastConnectedAt, :createdAt);
+VALUES (:id, :name, :gatewayUrl, :tokenRef, :healthStatus, :isLocalNetwork, :lastConnectedAt, :createdAt)
+ON CONFLICT(id) DO UPDATE SET
+    name = :name,
+    gateway_url = :gatewayUrl,
+    token_ref = :tokenRef,
+    health_status = :healthStatus,
+    is_local_network = :isLocalNetwork,
+    last_connected_at = :lastConnectedAt,
+    created_at = :createdAt;
 
 deleteInstanceById: DELETE FROM instances WHERE id = :id;
 

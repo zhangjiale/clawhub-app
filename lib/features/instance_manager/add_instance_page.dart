@@ -89,6 +89,7 @@ class _AddInstancePageState extends ConsumerState<AddInstancePage> {
         setState(() {
           _nameController.text = instance.name;
           _urlController.text = instance.gatewayUrl;
+          _tokenController.text = instance.tokenRef;
           _isLoaded = true;
         });
         return;

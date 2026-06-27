@@ -362,7 +362,10 @@ class WsGatewayClient implements IGatewayClient {
   }) async {
     final manager = _requireManager(instanceId);
 
-    final params = <String, dynamic>{'agentId': agentId, 'limit': limit};
+    // Gateway 协议要求 sessionKey（格式 agent:{agentId}:main），
+    // 而非 agentId。对齐 chat.send 的 sessionKey 构造方式。
+    final sessionKey = 'agent:$agentId:main';
+    final params = <String, dynamic>{'sessionKey': sessionKey, 'limit': limit};
     if (cursor != null) params['cursor'] = cursor;
 
     final res = await manager.sendRequest(Methods.chatHistory, params);

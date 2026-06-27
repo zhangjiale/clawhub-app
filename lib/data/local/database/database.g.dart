@@ -5317,7 +5317,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     int createdAt,
   ) {
     return customInsert(
-      'INSERT OR REPLACE INTO instances (id, name, gateway_url, token_ref, health_status, is_local_network, last_connected_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
+      'INSERT INTO instances (id, name, gateway_url, token_ref, health_status, is_local_network, last_connected_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT (id) DO UPDATE SET name = ?2, gateway_url = ?3, token_ref = ?4, health_status = ?5, is_local_network = ?6, last_connected_at = ?7, created_at = ?8',
       variables: [
         Variable<String>(id),
         Variable<String>(name),

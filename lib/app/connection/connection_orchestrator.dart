@@ -162,21 +162,19 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   }
 
   /// 实例保存后调用（新建或编辑）。
+  ///
+  /// 新建实例时建立初始 WebSocket 连接。
+  /// 编辑已有实例时，若连接已存在则跳过重连——避免每次保存都触发
+  /// agent 全量同步（syncFromGateway），防止因 Gateway 返回数据差异
+  /// 或本地 DB 状态异常导致 agent 被意外 tombstone/重建。
   Future<void> onInstanceSaved(Instance instance) async {
-    // 编辑：先断开旧连接，再重连
     if (_connectionSubscriptions.containsKey(instance.id)) {
-      await _disconnect(instance.id);
+      // 编辑已有实例：连接已存在，不需重连。
+      // 若需强制重连（如 token 变化），用户可通过 UI 手动刷新。
+      return;
     }
 
-    // 始终尝试建连，不依赖 SaveInstanceUseCase 的连通性测试结果。
-    //
-    // 原因：SaveInstanceUseCase 的 testConnection() 可能因网络抖动、
-    // DNS 延迟、Gateway 瞬时不可达等原因返回 false。若因此直接跳过
-    // _connect()，实例将永远失去重连机会，UI 始终显示"离线"。
-    //
-    // ConnectionManager 内置指数退避自动重连（1→2→4→8→16s），对
-    // 短暂不可达的 Gateway 有良好的恢复能力。建连成功后，
-    // _onConnectionStateChanged 会自动将 DB 状态更新为 online。
+    // 新建实例：建立初始连接
     await _connect(instance);
   }
 
