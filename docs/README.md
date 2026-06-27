@@ -14,6 +14,7 @@ docs/
 │   └── assets/                  # 设计资源 (App 图标 / 启动屏 / 虾状态图)
 ├── technical/                   # 技术文档
 │   ├── api-protocol.md          # OpenClaw Gateway WebSocket 协议规格书
+│   ├── acl-protocol-gaps.md     # ACL 协议实现差距清单（剩余 P1/P2/P3 + Follow-up）
 │   ├── architecture.md          # 技术架构与组件拆解 (含技术选型、数据模型、Provider清单)
 │   └── database-schema.sql      # SQLite 数据库 Schema (Zero-Trigger 设计)
 ├── engineering/                 # 工程规范
@@ -35,6 +36,7 @@ docs/
 | 查看 UI 颜色/字体/间距定义 | `design/design-tokens-v2.md` |
 | 查看每个页面的组件标注 | `design/component-spec-v2.md` |
 | 理解 WebSocket 协议和认证流程 | `technical/api-protocol.md` |
+| 查看 ACL 实现与 spec 的剩余差距 | `technical/acl-protocol-gaps.md` |
 | 了解技术选型和项目结构 | `technical/architecture.md` |
 | 查看数据库表结构 | `technical/database-schema.sql` |
 | 了解编码规范 | `engineering/iron-laws.md` |

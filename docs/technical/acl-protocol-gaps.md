@@ -1,0 +1,318 @@
+# ACL 协议实现差距清单（Remaining Protocol Gaps）
+
+> **状态**：实施计划文档。本文件追踪 OpenClaw Gateway 协议 spec 与 `lib/core/acl/`
+> 实现之间的**未完成项**。每条 gap 含严重度、spec 引用、文件位置、建议修法、测试面，
+> 方便后续 sprint 直接接续。
+>
+> **最后更新**：2026-06-26 — 完成差距 #1（deviceToken 持久化）后
+> 审计的剩余 5 个 P1/P2/P3 gap + 1 个 §A.9 retry 留待 + 3 个 follow-up 小问题。
+
+---
+
+## 已完成
+
+| Gap | 标题 | 严重度 | Commit |
+|---|---|---|---|
+| #1 | `hello-ok.auth.deviceToken` 持久化 | P1 | `eae026f` (merge 集成) + `a793453` (存储层) |
+
+---
+
+## 未完成（按优先级排序）
+
+### Gap #2 — `hello-ok.policy.maxPayload` / `maxBufferedBytes` 客户端自保护
+
+**严重度**：🟠 P1（健壮性，会 OOM 或阻塞）
+
+**Spec 引用**：
+- §2.2 hello-ok payload：`policy.maxPayload = 26214400` (~25MB)、`policy.maxBufferedBytes = 52428800` (~50MB)
+- §3.5 传输层载荷限制
+
+**症状**：
+- `_handleConnectResponse` 只读 `policy.tickIntervalMs` 写入 `_tickIntervalMs`，
+  `maxPayload` 和 `maxBufferedBytes` 完全被忽略
+- 单帧 > 25MB 时 Gateway 不会主动拒绝（依赖客户端守门），客户端无防御会内存爆
+- 出站缓冲 > 50MB 时应停止读 WebSocket 防止 OOM
+
+**文件位置**：
+- `lib/core/acl/connection_manager.dart:432-435`（`_handleConnectResponse` 的 policy 读取）
+- 守门逻辑可放在 `ws_gateway_client.dart:sendRequest` 或 `connection_manager.dart:sendRequest`
+
+**建议修法**：
+1. `_handleConnectResponse` 把 `maxPayload` / `maxBufferedBytes` 存到 `_maxPayloadBytes` / `_maxBufferedBytes` 字段
+2. `sendRequest` 序列化前检查 JSON 长度，超 `_maxPayloadBytes` 抛 `PayloadTooLargeException`
+3. 出站缓冲监控在 `WsGatewayClient._pendingRequests` 排队处加阈值（具体策略待定：
+   drop oldest / 拒绝新请求 / 触发 backpressure）
+4. 在 `ConnectionConfig` 加 `defaultMaxPayload` (e.g. 25MB) 让 `ConnectionManager` 在
+   policy 缺失时降级
+
+**测试面**：
+- `test/core/acl/connection_manager_policy_test.dart`（新）：
+  - 解析 hello-ok 的 maxPayload 字段
+  - 超大 payload 抛异常
+  - 出站缓冲监控触发
+- `test/core/acl/gateway_protocol_test.dart`：扩 `ConnectionConfig` 默认值测试
+
+---
+
+### Gap #3 — `hello-ok.features.events` 列表未消费
+
+**严重度**：🟡 P2（功能完整性，业务层不知道推送哪些事件）
+
+**Spec 引用**：
+- §2.2 hello-ok：`features.events: ["chat", "tick", "health", ...]`
+- §4C 完整事件类型列表
+
+**症状**：
+- hello-ok 解析时直接丢弃 `features` 字段
+- 业务层无法区分"Gateway 实际会推送哪些事件"vs"理论支持但本 Gateway 不推送"
+- 前端无法做"Gateway 不支持某个事件"的 fallback UI 提示
+
+**文件位置**：
+- `lib/core/acl/connection_manager.dart:432` 起（policy 解析处）
+- 暴露可加在 `IGatewayClient.connectionStateStream` 旁边的 features stream，
+  或注入到 `ConnectionOrchestrator` 的 instance metadata
+
+**建议修法**：
+1. `ConnectionManager` 解析 `features.events` 存入 `Set<String> _supportedEvents`
+2. 暴露只读 `Set<String> get supportedEvents`
+3. `WsGatewayClient` 转发到 Riverpod `gatewayFeaturesProvider`
+4. UI 层（如有需要）通过 provider 读
+
+**测试面**：
+- `connection_manager_features_test.dart`（新）：
+  - 解析 events 数组
+  - 暴露 getter 返回正确 set
+  - features 缺失时返回空 set（向后兼容）
+
+---
+
+### Gap #4 — `shutdown` 事件未区分主动重连 vs 优雅退避
+
+**严重度**：🟠 P1（UX，所有 shutdown 走 1→30s 退避）
+
+**Spec 引用**：
+- §2.7 shutdown 事件
+- §2.6 shutdown 语义："服务端主动通知客户端即将关闭"
+
+**症状**：
+- `connection_manager.dart:364` 把 `shutdown` 当 `disconnected` 处理，触发通用重连退避
+- 实际语义：服务端 shutdown 是**主动的、可预期的**，应立即重连
+  （无需退避，因服务端 ready 即可用）
+- 与"网络瞬断"+"对端崩溃"区分不开 → 关闭后用户等 1s → 2s → 4s → 8s 才能恢复
+
+**文件位置**：
+- `lib/core/acl/connection_manager.dart:362-367`（`_handleEvent` 的 `Events.shutdown` case）
+
+**建议修法**：
+1. `_handleEvent` 的 `Events.shutdown` case 不调通用 `_scheduleReconnect`
+2. 改调新方法 `_handleGracefulShutdown()`，逻辑：
+   - `_setState(GatewayConnectionState.disconnected)` 立即
+   - 不退避：`Timer(Duration.zero, _doConnect)`（或最小 200ms 等待服务端 ready）
+   - 保留重连尝试计数（避免触发 reconnectExhausted）
+3. 如果用户主动 disconnect（`_intentionalDisconnect=true`），仍跳过重连
+
+**测试面**：
+- `test/core/acl/connection_manager_shutdown_test.dart`（新）：
+  - shutdown 事件后立即进入 disconnected
+  - 短间隔内重连成功（不经过 1s 退避）
+  - 用户主动 disconnect 期间收到 shutdown 不会触发重连
+
+---
+
+### Gap #5 — `tick.payload.ts` 未消费（时钟漂移检测）
+
+**严重度**：🔵 P3（可观测性，签名 `DEVICE_AUTH_SIGNATURE_EXPIRED` 时无法定位根因）
+
+**Spec 引用**：
+- §2.8 心跳保活：tick 事件可包含 `payload.ts`（服务端时间戳）
+- §A.8 `DEVICE_AUTH_SIGNATURE_EXPIRED`
+
+**症状**：
+- `connection_manager.dart:362-363` 只 reset tick timer，丢弃 payload
+- 客户端时钟偏差大时签名会过期（`DEVICE_AUTH_SIGNATURE_EXPIRED`），
+  但无任何日志指示"是客户端时钟问题"
+- 无法做"对时"或"漂移告警"
+
+**文件位置**：
+- `lib/core/acl/connection_manager.dart:362`（`case Events.tick`）
+
+**建议修法**：
+1. 解析 `payload?['ts'] as int?`
+2. 与 `DateTime.now().millisecondsSinceEpoch` 比对，差 > 5s 时
+   `debugPrint` 警告
+3. （可选）通过 Riverpod 暴露 `clockDriftMsProvider` 给诊断 UI
+
+**测试面**：
+- `connection_manager_tick_test.dart`（新）：
+  - tick 带 ts 时记录漂移
+  - 漂移 < 5s 不告警
+  - tick 不带 ts 时静默忽略
+
+---
+
+### Gap #6 — `payload.large` 诊断事件无业务处理
+
+**严重度**：🟠 P1（用户体验差，用户看到"消息没到"无解释）
+
+**Spec 引用**：
+- §2.7 事件类型表：`payload.large` 事件
+- spec 语义："单帧超过 maxPayload 限制时由 Gateway 主动发此事件给客户端"
+
+**症状**：
+- `ws_gateway_client.dart:_handleEvent` switch 只 case `chat` 和 `agent`，
+  `payload.large` 被静默吞掉
+- 实际场景：用户发大附件 / 长 message → Gateway 拒收 → 客户端以为发出去了 → 静默失败
+- 应触发 UI 提示 + 写入诊断日志
+
+**文件位置**：
+- `lib/core/acl/ws_gateway_client.dart:_handleEvent`（switch on `event.event`）
+
+**建议修法**：
+1. 新增 `Events.payloadLarge = 'payload.large'` 到 `gateway_protocol.dart`
+2. `ws_gateway_client.dart` 加 `case Events.payloadLarge:` → emit 诊断 stream
+3. 新 `payload.large` 事件类（如 `LargePayloadNotice`）含 sessionKey + size + limit
+4. `IGatewayClient` 加 `largePayloadNoticeStream(String instanceId)`
+5. UI 层（chat_room）订阅 stream → 弹 SnackBar 提示用户
+
+**测试面**：
+- `test/core/acl/ws_gateway_client_test.dart`：
+  - 收到 payload.large 时 emit LargePayloadNotice
+  - notice 包含 size + limit 字段
+  - 走 stream 不阻塞主流程
+
+---
+
+### Gap #1+ — §A.9 `AUTH_TOKEN_MISMATCH` 设备令牌重试（之前 #1 修复的延期项）
+
+**严重度**：🟡 P2（增强鲁棒性，目前依赖首次配对码兜底）
+
+**Spec 引用**：
+- §A.9 `AUTH_TOKEN_MISMATCH` 处理：
+  > 可信客户端（环回或带 tlsFingerprint 的 wss://）可尝试一次使用缓存设备令牌的重试。
+  > 若仍失败，停止自动重连并提示用户。
+- `error.details.canRetryWithDeviceToken`（布尔）
+- `error.details.recommendedNextStep: "retry_with_device_token"`
+
+**症状**：
+- 当前 `_handleConnectResponse` 的 error 分支只 switch `NOT_PAIRED` 和
+  `DEVICE_AUTH_DEVICE_ID_MISMATCH`，其他错误码直接 `_handleAuthFailure`
+- 没有 `AUTH_TOKEN_MISMATCH` 特殊路径 → 不会触发"用缓存 deviceToken 重试一次"
+- 也没有 `canRetryWithDeviceToken` 检查
+
+**文件位置**：
+- `lib/core/acl/connection_manager.dart:502-525`（error 分支 switch）
+
+**建议修法**：
+1. error 分支新增 `errorCode == 'AUTH_TOKEN_MISMATCH'` case
+2. 检查 `details['canRetryWithDeviceToken'] == true`
+3. 如果是环回（`isLocalNetwork`）或 wss:// + tlsFingerprint（待确认）→ 重试一次
+4. 第二次失败 → `_handleAuthFailure` 终态，不退避
+5. 字段结构可在 `ProtocolError.details` 加 `canRetryWithDeviceToken` getter
+6. `i_device_token_store` 已经有 `delete()`，可用于重试前清空旧缓存（如果服务
+   端轮换了 token）
+
+**测试面**：
+- `connection_manager_auth_retry_test.dart`（新）：
+  - AUTH_TOKEN_MISMATCH + canRetryWithDeviceToken=true → 用缓存重试一次
+  - 重试仍失败 → 终态
+  - canRetryWithDeviceToken=false → 不重试
+  - 非可信连接（公网）→ 不重试（即使 canRetryWithDeviceToken=true）
+
+---
+
+## Follow-up（小问题，非阻塞）
+
+### F-1 — `ProtocolError.details` 类型守卫
+
+**严重度**：🟡 P2（崩溃风险，服务端 schema 变更可触发）
+
+**位置**：`lib/core/acl/gateway_protocol.dart:331`
+
+**症状**：
+- `details: json['details'] as Map<String, dynamic>?` 假设 details 总是 Map
+- 服务端某些错误码可能返回 string 类型的 details（如
+  `error.details: "retry_with_device_token"`），此时 `as Map` 抛 TypeError
+- 当前 `error.details['canRetryWithDeviceToken']` 也会因 TypeError 崩溃
+
+**建议修法**：
+```dart
+details: json['details'] is Map
+    ? json['details'] as Map<String, dynamic>
+    : null,
+```
+
+**测试面**：1-2 个单元测试覆盖 string/int 类型 details 不崩
+
+---
+
+### F-2 — `scopes` 列表顺序敏感（签名一致性）
+
+**严重度**：🔵 P3（理论风险，目前所有调用方都传常量）
+
+**位置**：
+- `lib/core/acl/gateway_protocol.dart:218`（`buildV3SignaturePayload`）
+- `lib/core/acl/connection_manager.dart:354`（调用处）
+
+**症状**：
+- `scopesStr = scopes.join(',')` 不排序
+- 如果某天调用方传乱序 scopes，客户端/服务端 SHA256 不一致
+- 当前 `operatorScopes` 常量是有序的所以没问题，但缺少防御
+
+**建议修法**：
+```dart
+// 在 buildV3SignaturePayload 内部
+final sortedScopes = List<String>.from(scopes)..sort();
+final scopesStr = sortedScopes.join(',');
+```
+
+**测试面**：1 个测试验证乱序输入产生相同 payload
+
+---
+
+### F-3 — DI 路径 desktop 平台 deviceFamily
+
+**严重度**：🔵 P3（spec 不明确，但 production 未测）
+
+**位置**：`lib/app/di/providers.dart:204`
+```dart
+final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
+```
+
+**症状**：
+- Bug #1 修复后 `ConnectionConfig` 默认 `'phone'`
+- DI 路径显式覆盖为 `'phone'` 或 `'desktop'`（二分）
+- 但 spec §2.5 没列 `'desktop'` 作为 deviceFamily 合法值
+- 服务端未来加 enum 校验可能拒掉
+
+**建议修法**：
+- 当前通过即可
+- 后续对接真实 Gateway 时验证 desktop 是否被接受；如果不接受改成 `'phone'` 兜底
+- 或在 spec 不明确时统一用 `'phone'`（让 spec 团队澄清）
+
+**测试面**：等真实 Gateway 验证
+
+---
+
+## 总结
+
+| 类型 | 数量 | 工作量估计 |
+|---|---|---|
+| 🟠 P1 | 3 (#2, #4, #6) | 各 1-2 个 commit，每个 ~150-300 行 |
+| 🟡 P2 | 3 (#3, #1+, F-1) | 各 1 个 commit，~100-200 行 |
+| 🔵 P3 | 3 (#5, F-2, F-3) | 零散小改，~50 行 |
+
+**建议实施顺序**（价值/风险比）：
+1. **F-1** ProtocolError details 守卫（5 行代码，1 测试，1 commit）
+2. **Gap #4** shutdown 区分（UX 提升明显，~150 行）
+3. **Gap #6** payload.large（用户能感知到，价值高）
+4. **Gap #2** policy 客户端保护（健壮性，避免 OOM）
+5. 其余按需
+
+**完成此清单的 1 个全部 P1 + F-1 后** 即可认为 ACL 协议层对齐 spec 100%。
+
+---
+
+**导航**：
+- 上游：[api-protocol.md](api-protocol.md)（协议 spec）
+- 上游：[architecture.md](architecture.md)（ACL 模块边界）
+- 已完成 audit：差距 #1 修复 commit `eae026f`（merge `d02fb8e`）

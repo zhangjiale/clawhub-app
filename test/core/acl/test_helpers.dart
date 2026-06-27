@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -81,10 +82,30 @@ String helloOkJson(String id) =>
     '{"type":"res","id":"$id","ok":true,'
     '"payload":{"type":"hello-ok","protocol":4,"policy":{"tickIntervalMs":15000}}}';
 
+/// Build a `hello-ok` response that also carries a freshly issued
+/// `auth.deviceToken` (OpenClaw spec §2.2 — first pairing).
+///
+/// Used by deviceToken persistence tests in
+/// `connection_manager_device_token_test.dart` (差距 #1 fix).
+String helloOkWithDeviceTokenJson(String id, String deviceToken) =>
+    '{"type":"res","id":"$id","ok":true,'
+    '"payload":{"type":"hello-ok","protocol":4,'
+    '"auth":{"deviceToken":"$deviceToken","role":"operator",'
+    '"scopes":["operator.read","operator.write"]},'
+    '"policy":{"tickIntervalMs":15000}}}';
+
 /// Extract the request ID from a sent JSON frame.
 String extractReqId(String sentFrame) {
   final m = RegExp(r'"id":"([^"]+)"').firstMatch(sentFrame);
   return m!.group(1)!;
+}
+
+/// Extract the bearer token from `params.auth.token` in a sent connect frame.
+String extractAuthToken(String sentFrame) {
+  final decoded = jsonDecode(sentFrame) as Map<String, dynamic>;
+  final params = decoded['params'] as Map<String, dynamic>;
+  final auth = params['auth'] as Map<String, dynamic>;
+  return auth['token'] as String;
 }
 
 /// Build a `chat` event frame with `state: "delta"` (Gateway v2026.6.6).
@@ -151,3 +172,23 @@ String agentLifecycleJson({
 const String tickJson = '{"type":"event","event":"tick","payload":{}}';
 
 const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';
+
+/// Build a `chat.history` response frame.
+///
+/// Pass [cursor] OR [nextCursor] to verify the defensive read in
+/// `WsGatewayClient.fetchMessageHistory` (Bug #2). When both are
+/// provided, [nextCursor] wins (forward-compat with future Gateway
+/// versions that may switch to OpenAI-style `nextCursor` naming).
+String chatHistoryResponseJson({
+  required String id,
+  String? cursor,
+  String? nextCursor,
+}) {
+  final cursorField = cursor != null ? '"cursor":"$cursor",' : '';
+  final nextCursorField = nextCursor != null
+      ? '"nextCursor":"$nextCursor",'
+      : '';
+  return '{"type":"res","id":"$id","ok":true,'
+      '"payload":{"messages":[],$cursorField$nextCursorField'
+      '"hasMore":false}}';
+}

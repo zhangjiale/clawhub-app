@@ -1,0 +1,4484 @@
+=== COMMITTED UNPUSHED (origin/master...HEAD) ===
+diff --git a/lib/app/di/providers.dart b/lib/app/di/providers.dart
+index 34cd291..09fba8e 100644
+--- a/lib/app/di/providers.dart
++++ b/lib/app/di/providers.dart
+@@ -5,8 +5,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+ import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
+ import 'package:claw_hub/core/acl/gateway_protocol.dart';
+ import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
++import 'package:claw_hub/core/acl/i_device_token_store.dart';
+ import 'package:claw_hub/core/acl/i_gateway_client.dart';
+ import 'package:claw_hub/core/acl/mock_gateway_client.dart';
++import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
+ import 'package:claw_hub/core/acl/ws_gateway_client.dart';
+ import 'package:claw_hub/data/services/avatar_storage_service.dart';
+ import 'package:claw_hub/core/debug_print_logger.dart';
+@@ -184,6 +186,17 @@ final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
+   );
+ });
+ 
++/// 设备令牌（deviceToken）存储 — 持久化 Gateway 签发的设备令牌（差距 #1）。
++///
++/// 后续重连时优先复用缓存令牌（spec §2.2 后续重连复用该令牌），
++/// 避免重复走 device.pair 审批流程。
++/// 可通过 override 注入 fake 以进行单元测试。
++final deviceTokenStoreProvider = Provider<IDeviceTokenStore>((ref) {
++  return SecureStorageDeviceTokenStore(
++    secureStorage: const FlutterSecureStorage(),
++  );
++});
++
+ /// Cached device model identifier — the platform channel call only needs
+ /// to happen once per app lifetime. Injecting a FutureProvider keeps the
+ /// loader's expensive call (10–50ms iOS/Android) out of every reconnect.
+@@ -218,6 +231,8 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
+     // 设备型号在 DI 容器启动时解析一次并缓存,connect 时只读取缓存值,
+     // 避免每次 reconnect 都重新走 platform channel(10-50ms 阻塞)。
+     modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
++    // 差距 #1: 持久化 deviceToken，后续重连优先复用。
++    deviceTokenStore: ref.watch(deviceTokenStoreProvider),
+   );
+   ref.onDispose(() => client.dispose());
+   return client;
+diff --git a/lib/core/acl/connection_manager.dart b/lib/core/acl/connection_manager.dart
+index 0fae867..fbba7e4 100644
+--- a/lib/core/acl/connection_manager.dart
++++ b/lib/core/acl/connection_manager.dart
+@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
+ import 'package:flutter/foundation.dart';
+ 
+ import '../utils/retry_strategy.dart';
++import 'i_device_token_store.dart';
+ import 'i_gateway_client.dart';
+ import 'gateway_protocol.dart';
+ 
+@@ -85,6 +86,25 @@ class ConnectionManager {
+   final String _deviceId;
+   final ConnectionConfig _config;
+ 
++  /// 设备令牌（deviceToken）存储 — 持久化 Gateway 签发的设备令牌。
++  ///
++  /// 如果注入，则在握手时优先用缓存令牌（避免重复走配对审批），
++  /// 并在 hello-ok 时把新签发的令牌落盘（spec §2.2 / §4.11）。
++  final IDeviceTokenStore? _deviceTokenStore;
++
++  /// Effective bearer token used for this connect attempt.
++  ///
++  /// Computed at the start of each [_doConnect] call:
++  /// 1. If [_deviceTokenStore] is non-null, try `load(_instanceId)`.
++  /// 2. If a cached token is returned, use it (subsequent-reconnect path,
++  ///    spec §2.2 后续重连复用该令牌).
++  /// 3. Otherwise fall back to the constructor-provided [_token]
++  ///    (first-time pairing code path).
++  ///
++  /// Read by both [onConnectChallenge] (for the V3 signature payload) and
++  /// the connect request body (`auth.token`).
++  String _effectiveToken = '';
++
+   /// WebSocket 创建工厂 — 可注入以在测试中替换 WebSocket。
+   final WebSocketChannel Function(Uri) _webSocketFactory;
+ 
+@@ -110,16 +130,21 @@ class ConnectionManager {
+     WebSocketChannel Function(Uri)? webSocketFactory,
+     @visibleForTesting TimerFactory? timerFactory,
+     RetryStrategy? retryStrategy,
++    IDeviceTokenStore? deviceTokenStore,
+   }) : _retryStrategy = retryStrategy ?? _defaultRetryStrategy,
+        _instanceId = instanceId,
+        _gatewayUrl = gatewayUrl,
+        _token = token,
+        _deviceId = deviceId,
+        _config = config,
++       _deviceTokenStore = deviceTokenStore,
+        _webSocketFactory = webSocketFactory ?? WebSocketChannel.connect,
+        _createTimer = timerFactory ?? Timer.new,
+        _uuid = uuid ?? const Uuid() {
+     _connectionStateController.add(GatewayConnectionState.disconnected);
++    // Default to the constructor-provided token; overridden in _doConnect
++    // when a cached deviceToken is available.
++    _effectiveToken = token;
+   }
+ 
+   // ---------------------------------------------------------------------------
+@@ -205,6 +230,29 @@ class ConnectionManager {
+     _setState(GatewayConnectionState.connecting);
+ 
+     try {
++      // Resolve the bearer token for this connect attempt.
++      // 差距 #1: prefer the cached deviceToken over the original pairing
++      // code (spec §2.2 后续重连复用该令牌).  Falls back to [_token]
++      // when no store is injected or no cached value exists.
++      _effectiveToken = _token;
++      if (_deviceTokenStore != null) {
++        try {
++          final cached = await _deviceTokenStore.load(_instanceId);
++          if (cached != null && cached.isNotEmpty) {
++            _effectiveToken = cached;
++            debugPrint(
++              '[CM] Using cached deviceToken for $_instanceId '
++              '(spec §2.2 reconnect path)',
++            );
++          }
++        } catch (e, st) {
++          debugPrint(
++            '[CM] deviceTokenStore.load failed for $_instanceId: $e\n'
++            'Falling back to instance.tokenRef.\n$st',
++          );
++        }
++      }
++
+       final originalUri = Uri.parse(_gatewayUrl);
+       // Validate the scheme early — web_socket_channel wraps permanent
+       // configuration errors (wrong scheme, invalid host) as
+@@ -222,7 +270,10 @@ class ConnectionManager {
+       // Gateway 在 WebSocket 握手阶段通过 URL query 验证 token，
+       // 不在握手中携带 token 会导致连接被拒绝。
+       final uri = originalUri.replace(
+-        queryParameters: {...originalUri.queryParameters, 'token': _token},
++        queryParameters: {
++          ...originalUri.queryParameters,
++          'token': _effectiveToken,
++        },
+       );
+       final ws = _webSocketFactory(uri);
+       await ws.ready.timeout(
+@@ -344,6 +395,8 @@ class ConnectionManager {
+     if (_config.signPayload != null && _challengeNonce != null) {
+       try {
+         // 构造 V3 签名 payload（§2.5）
++        // _config.deviceFamily is non-nullable (defaults to 'phone'); this
++        // matches the wire deviceFamily written by buildConnectParams.
+         final v3Payload = buildV3SignaturePayload(
+           deviceId: _deviceId,
+           clientId: _config.clientId,
+@@ -351,10 +404,13 @@ class ConnectionManager {
+           role: _config.role,
+           scopes: _config.scopes,
+           signedAtMs: nowMs,
+-          token: _token,
++          // Use the effective token (cached deviceToken if available,
++          // else the constructor-provided pairing code) so the signed
++          // payload matches what we send in `auth.token` (spec §2.5).
++          token: _effectiveToken,
+           nonce: _challengeNonce!,
+           platform: _config.platform,
+-          deviceFamily: _config.deviceFamily ?? 'phone',
++          deviceFamily: _config.deviceFamily,
+         );
+         signature = await _config.signPayload!(v3Payload);
+         debugPrint('[CM] Signed V3 challenge payload');
+@@ -374,7 +430,9 @@ class ConnectionManager {
+ 
+     final id = _uuid.v4();
+     final params = buildConnectParams(
+-      token: _token,
++      // Match the signed token: cached deviceToken if available, else the
++      // original pairing code.  spec §2.2 + §2.5 alignment.
++      token: _effectiveToken,
+       deviceId: _deviceId,
+       config: _config,
+       signature: signature,
+@@ -436,6 +494,28 @@ class ConnectionManager {
+           '[CM] Connected to $_instanceId (protocol: ${payload['protocol']})',
+         );
+ 
++        // 差距 #1: persist the issued deviceToken (spec §2.2 务必持久化).
++        // Best-effort — a failed save doesn't break the current connection;
++        // the worst case is a re-pair on next reconnect.  Errors are
++        // logged and swallowed.
++        final auth = payload['auth'] as Map<String, dynamic>?;
++        final newDeviceToken = auth?['deviceToken'] as String?;
++        if (newDeviceToken != null &&
++            newDeviceToken.isNotEmpty &&
++            _deviceTokenStore != null) {
++          unawaited(
++            _deviceTokenStore.save(_instanceId, newDeviceToken).catchError((
++              Object e,
++              StackTrace st,
++            ) {
++              debugPrint(
++                '[CM] deviceTokenStore.save failed for $_instanceId: $e\n'
++                'Future reconnects may need to re-pair.\n$st',
++              );
++            }),
++          );
++        }
++
+         _resetTickTimeout();
+       } else {
+         _handleAuthFailure('Unexpected hello payload type: $payloadType');
+diff --git a/lib/core/acl/gateway_protocol.dart b/lib/core/acl/gateway_protocol.dart
+index 98dafc7..78ecf97 100644
+--- a/lib/core/acl/gateway_protocol.dart
++++ b/lib/core/acl/gateway_protocol.dart
+@@ -152,9 +152,10 @@ Map<String, dynamic> buildConnectParams({
+   if (config.clientDisplayName != null) {
+     client['displayName'] = config.clientDisplayName;
+   }
+-  if (config.deviceFamily != null) {
+-    client['deviceFamily'] = config.deviceFamily;
+-  }
++  // deviceFamily is non-nullable on ConnectionConfig (default 'phone')
++  // and is part of the v3 signature payload — always write to wire so
++  // the server-side signature reconstruction matches the client payload.
++  client['deviceFamily'] = config.deviceFamily;
+   if (config.modelIdentifier != null) {
+     client['modelIdentifier'] = config.modelIdentifier;
+   }
+@@ -202,6 +203,17 @@ String buildV3SignaturePayload({
+   required String platform,
+   String deviceFamily = 'phone',
+ }) {
++  // Light defense: spec §2.5 mandates an 11-segment pipe-separated
++  // payload with a non-empty deviceFamily at the end. A null/empty
++  // deviceFamily would emit a literal "|null|" or "||" segment, which
++  // the server-side parser would reject. ConnectionConfig defaults
++  // deviceFamily to 'phone' so this only fires if a caller explicitly
++  // nulls the field — fail-fast in dev/test, no runtime cost in release.
++  assert(
++    deviceFamily.isNotEmpty,
++    'deviceFamily must be a non-empty string — DI must inject a '
++    'platformOS()-derived value (e.g. "phone" or "desktop")',
++  );
+   final scopesStr = scopes.join(',');
+   return 'v3|$deviceId|$clientId|$clientMode|$role|$scopesStr'
+       '|$signedAtMs|$token|$nonce|${platform.toLowerCase()}|${deviceFamily.toLowerCase()}';
+@@ -559,7 +571,16 @@ String? resolveAgentId(String sessionKey, Map<String, String> mapping) {
+ class ConnectionConfig {
+   final String locale;
+   final String platform;
+-  final String? deviceFamily;
++
++  /// Device family (e.g. `phone`, `desktop`). Non-nullable with default
++  /// `'phone'` so that [buildConnectParams] always writes a non-null
++  /// deviceFamily field on the wire — matching the v3 signature payload
++  /// (which always includes the deviceFamily segment per spec §2.5).
++  /// This is Bug #1 fix: previously nullable default caused the wire
++  /// field to be omitted while the signed payload still contained
++  /// `|phone|`, so the server-side signature reconstruction mismatched
++  /// and the connection was rejected with DEVICE_AUTH_SIGNATURE_INVALID.
++  final String deviceFamily;
+   final String? modelIdentifier;
+   final String? clientDisplayName;
+   final String clientVersion;
+@@ -572,8 +593,18 @@ class ConnectionConfig {
+ 
+   ConnectionConfig({
+     this.locale = 'zh-CN',
+-    this.platform = 'flutter',
+-    this.deviceFamily,
++
++    /// Default platform string. Spec §2.3 lists valid `client.id` enum
++    /// values; 'flutter' is a framework name, not a platform. The DI path
++    /// in `lib/app/di/providers.dart` always overrides this with the real
++    /// OS string from [platformOS], so the default only matters for mock
++    /// and unit-test paths. Picked 'web' because:
++    ///  - it's a legal [platformOS] return value (kIsWeb branch);
++    ///  - it routes to 'gateway-client' via [ClientIds.forPlatform]
++    ///    (same as the old 'flutter' default).
++    /// See Bug #3 in `docs/technical/api-protocol.md` audit history.
++    this.platform = 'web',
++    this.deviceFamily = 'phone',
+     this.modelIdentifier,
+     this.clientDisplayName,
+     this.clientVersion = '1.0.0',
+@@ -590,7 +621,7 @@ class ConnectionConfig {
+   ConnectionConfig copyWith({
+     String? locale,
+     String? platform,
+-    Object? deviceFamily = CopyWithSentinel.instance,
++    String? deviceFamily,
+     Object? modelIdentifier = CopyWithSentinel.instance,
+     Object? clientDisplayName = CopyWithSentinel.instance,
+     String? clientVersion,
+@@ -604,7 +635,7 @@ class ConnectionConfig {
+     return ConnectionConfig(
+       locale: locale ?? this.locale,
+       platform: platform ?? this.platform,
+-      deviceFamily: copyWithNullable(deviceFamily, this.deviceFamily),
++      deviceFamily: deviceFamily ?? this.deviceFamily,
+       modelIdentifier: copyWithNullable(modelIdentifier, this.modelIdentifier),
+       clientDisplayName: copyWithNullable(
+         clientDisplayName,
+diff --git a/lib/core/acl/i_device_token_store.dart b/lib/core/acl/i_device_token_store.dart
+new file mode 100644
+index 0000000..9ff08d6
+--- /dev/null
++++ b/lib/core/acl/i_device_token_store.dart
+@@ -0,0 +1,31 @@
++/// 设备令牌（deviceToken）存储接口 — 持久化 Gateway 签发的设备令牌。
++///
++/// 背景：OpenClaw 协议 §2.2 规定，首次配对成功后，hello-ok 响应中包含
++/// `auth.deviceToken` 字段。客户端**必须**持久化此令牌；后续重连时
++/// 复用该令牌可避免重复走配对审批流程（§4.11）。
++///
++/// 令牌可被服务端 `device.token.rotate` 轮换（替换）或 `device.token.revoke`
++/// 撤销（删除），客户端应通过 [save]/[delete] 同步这些状态变更。
++///
++/// 实现类：[SecureStorageDeviceTokenStore]（使用 FlutterSecureStorage）。
++/// 通过抽象接口注入，使单元测试可使用 fake 实现替换。
++abstract class IDeviceTokenStore {
++  /// 持久化 [instanceId] 对应的设备令牌。
++  ///
++  /// 覆盖语义：重复调用会覆盖旧值，对应 §4.11 `device.token.rotate` 流程。
++  /// [deviceToken] 不可为空字符串；调用方需自行校验。
++  Future<void> save(String instanceId, String deviceToken);
++
++  /// 加载缓存的设备令牌。
++  ///
++  /// 返回 `null` 的情况：
++  /// - 从未配对过（首次连接）
++  /// - 配对被撤销（`device.token.revoke`）
++  /// - 持久化层损坏（FlutterSecureStorage 异常已捕获时）
++  ///
++  /// 返回空字符串也视作 `null` 处理，避免向 Gateway 发送空 bearer token。
++  Future<String?> load(String instanceId);
++
++  /// 删除缓存的设备令牌 — 通常在设备被解绑或本地用户登出时调用。
++  Future<void> delete(String instanceId);
++}
+diff --git a/lib/core/acl/secure_storage_device_token_store.dart b/lib/core/acl/secure_storage_device_token_store.dart
+new file mode 100644
+index 0000000..1cb0f71
+--- /dev/null
++++ b/lib/core/acl/secure_storage_device_token_store.dart
+@@ -0,0 +1,44 @@
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++
++import 'i_device_token_store.dart';
++
++/// [IDeviceTokenStore] 的安全存储实现 — 使用 [FlutterSecureStorage] 持久化设备令牌。
++///
++/// 存储键格式：`clawhub_device_token_<instanceId>`，每个实例独立存储。
++///
++/// 设备令牌本身已是高熵的不透明字符串（由 Gateway Ed25519 私钥签发），
++/// 不需要额外加密；但仍使用 Keychain/Keystore 防止明文落盘。
++///
++/// [secureStorage] 可注入 fake 以便单元测试。
++class SecureStorageDeviceTokenStore implements IDeviceTokenStore {
++  final FlutterSecureStorage _secureStorage;
++
++  /// Key prefix for all device tokens.  The suffix is the instance UUID.
++  /// Chosen to coexist with Ed25519IdentityProvider's keys
++  /// (`clawhub_device_ed25519_*`) without collision.
++  static const String _keyPrefix = 'clawhub_device_token_';
++
++  SecureStorageDeviceTokenStore({FlutterSecureStorage? secureStorage})
++    : _secureStorage = secureStorage ?? const FlutterSecureStorage();
++
++  String _key(String instanceId) => '$_keyPrefix$instanceId';
++
++  @override
++  Future<void> save(String instanceId, String deviceToken) async {
++    await _secureStorage.write(key: _key(instanceId), value: deviceToken);
++  }
++
++  @override
++  Future<String?> load(String instanceId) async {
++    final value = await _secureStorage.read(key: _key(instanceId));
++    // Treat empty string as absent — prevents sending an empty bearer
++    // token to the Gateway if the storage layer ever returns one.
++    if (value == null || value.isEmpty) return null;
++    return value;
++  }
++
++  @override
++  Future<void> delete(String instanceId) async {
++    await _secureStorage.delete(key: _key(instanceId));
++  }
++}
+diff --git a/lib/core/acl/ws_gateway_client.dart b/lib/core/acl/ws_gateway_client.dart
+index 52dea58..988ab37 100644
+--- a/lib/core/acl/ws_gateway_client.dart
++++ b/lib/core/acl/ws_gateway_client.dart
+@@ -9,6 +9,7 @@ import 'connection_manager.dart';
+ import 'device_identity.dart';
+ import 'gateway_protocol.dart';
+ import 'i_device_identity_provider.dart';
++import 'i_device_token_store.dart';
+ import 'i_gateway_client.dart';
+ import 'replayable_connection_state.dart';
+ 
+@@ -51,6 +52,13 @@ class WsGatewayClient implements IGatewayClient {
+   /// never be blocked by device-info read failures.
+   final Future<String?> Function()? _modelIdentifierLoader;
+ 
++  /// Optional: persist the issued deviceToken (差距 #1 fix, spec §2.2).
++  /// When null (no DI injection), ConnectionManager falls back to using
++  /// the constructor-provided `instance.tokenRef` for every connect —
++  /// first-time pairing path on every reconnect, which forces a full
++  /// re-pair each time.  Production should always inject.
++  final IDeviceTokenStore? _deviceTokenStore;
++
+   /// 创建 WebSocket Gateway 客户端。
+   ///
+   /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
+@@ -61,17 +69,23 @@ class WsGatewayClient implements IGatewayClient {
+   ///
+   /// [webSocketFactory] 和 [timerFactory] 仅供测试注入，
+   /// 生产环境留空即可（委托 [ConnectionManager] 默认行为）。
++  ///
++  /// [deviceTokenStore] 持久化 Gateway 签发的 deviceToken；后续重连
++  /// 时优先复用缓存令牌（spec §2.2）。当未注入时，退化为每次连接
++  /// 都使用 `instance.tokenRef`（每次都走配对流程）。
+   WsGatewayClient({
+     required IDeviceIdentityProvider identityProvider,
+     ConnectionConfig? config,
+     WebSocketChannel Function(Uri)? webSocketFactory,
+     TimerFactory? timerFactory,
+     Future<String?> Function()? modelIdentifierLoader,
++    IDeviceTokenStore? deviceTokenStore,
+   }) : _identityProvider = identityProvider,
+        _config = config ?? ConnectionConfig(),
+        _webSocketFactory = webSocketFactory,
+        _timerFactory = timerFactory,
+-       _modelIdentifierLoader = modelIdentifierLoader;
++       _modelIdentifierLoader = modelIdentifierLoader,
++       _deviceTokenStore = deviceTokenStore;
+ 
+   /// instanceId → 实例连接
+   final Map<String, _InstanceConnection> _connections = {};
+@@ -190,6 +204,7 @@ class WsGatewayClient implements IGatewayClient {
+         config: config,
+         webSocketFactory: _webSocketFactory,
+         timerFactory: _timerFactory,
++        deviceTokenStore: _deviceTokenStore,
+       );
+ 
+       // 复用已有的流控制器（若有），否则创建新的
+@@ -364,7 +379,13 @@ class WsGatewayClient implements IGatewayClient {
+             .map((json) => _parseMessage(json))
+             .toList() ??
+         [];
+-    final nextCursor = res.payload?['nextCursor'] as String?;
++    // Bug #2 fix: server spec uses 'cursor' (docs/technical/api-protocol.md
++    // §5.4) but the client used to only read 'nextCursor', causing pagination
++    // to deadlock at page 2. Read 'nextCursor' first (forward-compat with
++    // future Gateway versions) and fall back to 'cursor'.
++    final nextCursor =
++        res.payload?['nextCursor'] as String? ??
++        res.payload?['cursor'] as String?;
+ 
+     return (messages: messages, nextCursor: nextCursor);
+   }
+diff --git a/lib/data/repositories/drift_agent_repo.dart b/lib/data/repositories/drift_agent_repo.dart
+index 5eb4539..07a69e7 100644
+--- a/lib/data/repositories/drift_agent_repo.dart
++++ b/lib/data/repositories/drift_agent_repo.dart
+@@ -78,6 +78,16 @@ class DriftAgentRepo implements IAgentRepo {
+     return row != null ? AgentMapper.toDomain(row) : null;
+   }
+ 
++  @override
++  Stream<Agent?> watchById(String localId) {
++    // Drift .watchSingleOrNull()：订阅时立即 emit 当前行（如果存在），后续每次
++    // 该行 commit 触发 emit。不存在的 localId 立即 emit null 并保持 open。
++    return _database.getAgentByLocalId(localId).watchSingleOrNull().map((row) {
++      if (row == null) return null;
++      return AgentMapper.toDomain(row);
++    });
++  }
++
+   @override
+   Future<List<Agent>> syncFromGateway(
+     String instanceId,
+diff --git a/lib/data/repositories/in_memory_repos.dart b/lib/data/repositories/in_memory_repos.dart
+index fb348f7..2e71fbd 100644
+--- a/lib/data/repositories/in_memory_repos.dart
++++ b/lib/data/repositories/in_memory_repos.dart
+@@ -85,6 +85,12 @@ class InMemoryAgentRepo implements IAgentRepo {
+   final Map<String, Agent> _byCompositeKey =
+       {}; // "instanceId:remoteId" -> Agent
+ 
++  /// Agent 变更广播 — 任何 mutation path 写入后 emit 当前 agent（仿
++  /// InMemoryMessageRepo._messagesChanged 模式）。watchById 订阅者收到 emit 后
++  /// 可立即拿到最新值，实现响应式刷新。
++  final StreamController<Agent> _agentsChanged =
++      StreamController<Agent>.broadcast();
++
+   /// Shared sort comparator: pinned first, then by name.
+   int _compareAgents(Agent a, Agent b) {
+     if (a.isPinned != b.isPinned) return b.isPinned ? 1 : -1;
+@@ -150,6 +156,7 @@ class InMemoryAgentRepo implements IAgentRepo {
+   void _putAgent(Agent agent) {
+     _store[agent.localId] = agent;
+     _byCompositeKey[_compositeKey(agent.instanceId, agent.remoteId)] = agent;
++    if (!_agentsChanged.isClosed) _agentsChanged.add(agent); // ★ 新增
+   }
+ 
+   @override
+@@ -264,6 +271,26 @@ class InMemoryAgentRepo implements IAgentRepo {
+       _byCompositeKey.remove(_compositeKey(agent.instanceId, agent.remoteId));
+     }
+   }
++
++  @override
++  Stream<Agent?> watchById(String localId) async* {
++    // Seed event: 立即 emit 当前值（仿 Drift .watchSingleOrNull() 行为）。
++    yield _store[localId];
++    // 后续变化: filter 该 localId 的 emit。
++    // 用 yield* 委托给 transformed stream 而非 await for:
++    // .where().map() 产生的 single-subscription stream 取消语义更明确,
++    // 外层 listen cancel 时内部 subscription 的 cancel future 立即完成。
++    yield* _agentsChanged.stream
++        .where((changed) => changed.localId == localId)
++        .map((_) => _store[localId]);
++  }
++
++  /// 关闭内部 stream controller（测试 cleanup + 未来真实 dispose 路径）。
++  Future<void> dispose() async {
++    if (!_agentsChanged.isClosed) {
++      await _agentsChanged.close();
++    }
++  }
+ }
+ 
+ /// 内存版消息仓库
+diff --git a/lib/domain/models/notification_event.dart b/lib/domain/models/notification_event.dart
+index fde0c82..8e9c91a 100644
+--- a/lib/domain/models/notification_event.dart
++++ b/lib/domain/models/notification_event.dart
+@@ -128,8 +128,13 @@ class ConnectionChangeEvent extends NotificationEvent {
+     required this.toState,
+   });
+ 
+-  /// 是否为"掉线"——从在线变为非在线，是用户最关心的连接变化通知场景。
+-  bool get isOnlineDrop => fromState.isOnline && !toState.isOnline;
++  /// 是否为"掉线"——从在线变为离线终态，是用户最关心的连接变化通知场景。
++  ///
++  /// 注意：中间状态 [NotificationConnectionState.reconnecting]（如 WebSocket
++  /// 断开后进入的 recovering/connecting/authenticating）不计入掉线，避免
++  /// 弱网抖动时每次短暂重连都弹出"虾连接已断开"通知。
++  bool get isOnlineDrop =>
++      fromState.isOnline && toState == NotificationConnectionState.offline;
+ 
+   @override
+   bool operator ==(Object other) =>
+diff --git a/lib/domain/repositories/i_agent_repo.dart b/lib/domain/repositories/i_agent_repo.dart
+index 14cef8a..35ddea8 100644
+--- a/lib/domain/repositories/i_agent_repo.dart
++++ b/lib/domain/repositories/i_agent_repo.dart
+@@ -54,6 +54,18 @@ abstract class IAgentRepo {
+     List<QuickCommand>? quickCommands,
+   });
+ 
++  /// 响应式订阅指定 agent 的数据变化。
++  ///
++  /// Drift 实现基于 `agents` 表的 `.watchSingleOrNull()`，DB 任意写入
++  /// （updateFullProfile / updateLocalProfile / clearAvatar / syncFromGateway /
++  /// togglePin）都会 emit 新值。InMemory 实现基于 `StreamController.broadcast`
++  /// + 手动 emit（仿 InMemoryMessageRepo._messagesChanged）。
++  ///
++  /// 订阅时立即 emit 当前行（seed event），后续每次 commit emit 一次。
++  /// tombstoned agent（removed_at != null）正常 emit，由调用方判断 isRemoved。
++  /// 不存在的 localId 立即 emit null 并保持 open（等待后续创建）。
++  Stream<Agent?> watchById(String localId);
++
+   /// 清除头像 — 将 avatarUrl 显式置为 null。
+   ///
+   /// 与 [updateLocalProfile] 不同：后者对 null 参数使用"跳过此列"语义，
+diff --git a/lib/features/chat_room/viewmodels/chat_view_model.dart b/lib/features/chat_room/viewmodels/chat_view_model.dart
+index f8746c2..4239702 100644
+--- a/lib/features/chat_room/viewmodels/chat_view_model.dart
++++ b/lib/features/chat_room/viewmodels/chat_view_model.dart
+@@ -10,6 +10,7 @@ import 'package:claw_hub/domain/models/conversation.dart';
+ import 'package:claw_hub/domain/models/enums.dart';
+ import 'package:claw_hub/domain/models/message.dart';
+ import 'package:claw_hub/domain/models/message_status.dart';
++import 'package:claw_hub/domain/models/quick_command.dart';
+ import 'package:claw_hub/domain/models/tool_call.dart';
+ import 'package:claw_hub/domain/repositories/repositories.dart';
+ import 'package:claw_hub/core/i_achievement_checker.dart';
+@@ -76,6 +77,13 @@ class ChatSessionState {
+   /// 故用独立 bool 驱动，所有 [_agent] 写入点必须同步此字段。
+   final bool isAgentRemoved;
+ 
++  /// 同步于 vm.agent.quickCommands —— 任意 DB 写入触发 rebuild，让 UI 在
++  /// ChatRoomPage.build() 中重新读取 vm.agent.quickCommands 拿到新值。
++  /// 不放进 == 比较会导致 Riverpod 状态去重不通知 UI rebuild（仅
++  /// isAgentRemoved 变更才 dedup 不命中，quickCommands/nickname 等字段变更
++  /// 完全无 rebuild 信号）。
++  final List<QuickCommand> quickCommands;
++
+   const ChatSessionState({
+     this.messages = const LoadInProgress(),
+     this.thinkingState = ThinkingState.idle,
+@@ -87,6 +95,7 @@ class ChatSessionState {
+     this.highlightedMessageId,
+     this.highlightedQuery,
+     this.isAgentRemoved = false,
++    this.quickCommands = const [],
+   });
+ 
+   ChatSessionState copyWith({
+@@ -102,6 +111,7 @@ class ChatSessionState {
+     Object? highlightedMessageId = CopyWithSentinel.instance,
+     Object? highlightedQuery = CopyWithSentinel.instance,
+     bool? isAgentRemoved,
++    List<QuickCommand>? quickCommands,
+   }) {
+     return ChatSessionState(
+       messages: messages ?? this.messages,
+@@ -120,6 +130,7 @@ class ChatSessionState {
+         this.highlightedQuery,
+       ),
+       isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
++      quickCommands: quickCommands ?? this.quickCommands,
+     );
+   }
+ 
+@@ -136,7 +147,8 @@ class ChatSessionState {
+           retryFeedback == other.retryFeedback &&
+           highlightedMessageId == other.highlightedMessageId &&
+           highlightedQuery == other.highlightedQuery &&
+-          isAgentRemoved == other.isAgentRemoved;
++          isAgentRemoved == other.isAgentRemoved &&
++          quickCommands == other.quickCommands;
+ 
+   @override
+   int get hashCode => Object.hash(
+@@ -150,6 +162,7 @@ class ChatSessionState {
+     highlightedMessageId,
+     highlightedQuery,
+     isAgentRemoved,
++    quickCommands,
+   );
+ }
+ 
+@@ -209,6 +222,21 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+   Timer? _flushTimer;
+   Agent? _agent;
+ 
++  /// 响应式 agent 订阅 —— _init() 中订阅 watchById(agentId) stream，
++  /// 任何 DB 写入（本地保存 / Gateway sync）触发 emit 后自动同步 _agent，
++  /// UI 经 vm.agent getter 立即看到最新值（quickCommands / nickname 等）。
++  /// 仿现有 7 个 stream subscription 模式。
++  ///
++  /// **双保险设计（重要：不要简化其中一条）**：
++  /// - watchById stream = **同实例** DB 写入响应式 SSOT（修本 spec bug）
++  /// - agentSyncTickerProvider = **跨实例** tombstone 显式触发（BUG B/C 修复）
++  ///
++  /// 两条路径不冲突：watchById 缺失时 ticker 可作为 tombstone fallback；
++  /// ticker 缺失时 watchById 已能驱动本地写响应式刷新。
++  /// 删除任一条都会让对应场景失效。修改前请先阅读设计文档：
++  /// docs/superpowers/specs/2026-06-25-chatvm-agent-reactivity-design.md §6.7
++  StreamSubscription<Agent?>? _agentSubscription;
++
+   /// Configurable flush delay for streaming text state updates.
+   ///
+   /// Defaults to 150ms to match [StreamingBubble]'s MarkdownBody debounce.
+@@ -320,6 +348,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+       // 1. Look up the agent
+       _agent = await _agentRepo.getById(agentId);
+       _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（null → false）
++      _updateState(
++        (s) => s.copyWith(quickCommands: _agent?.quickCommands ?? const []),
++      ); // ★ 响应式镜像 quickCommands（避免 Riverpod == dedup）
+       if (_agent == null) {
+         debugPrint(
+           '[ChatViewModel] Agent not found: agentId=$agentId, '
+@@ -348,6 +379,46 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+       // 3. Load local messages immediately (fast path)
+       await _loadMessages();
+ 
++      // ★ 3.5 订阅 agent 响应式 stream
++      // seed event（Drift .watchSingleOrNull() 订阅时立即 emit 当前行）
++      // 会把 _agent 重写为同值并触发 _syncAgentRemoved() —— 因
++      // ChatSessionState.copyWith 等价检测，state 写入是 no-op，不触发
++      // UI 重建。无须额外 .where() 过滤（且 Agent.== 仅比 localId/
++      // removedAt/hiddenAt 三个身份字段，filter 反而会误丢 quickCommands
++      // / nickname 等字段变更）。
++      // 包装在 try 中：mocktail 未 stub 的 watchById 可能返回 null，
++      // 真实实现 (InMemory / Drift) 不会。失败只丢响应式刷新，
++      // 不影响其余 6 个 stream 订阅。
++      try {
++        final agentStream = _agentRepo.watchById(agentId);
++        _agentSubscription = agentStream.listen(
++          (agent) {
++            _agent = agent;
++            _syncAgentRemoved();
++            // ★ 同步 quickCommands 到 state,确保非 identity 字段
++            // (quickCommands/nickname/themeColor 等) 变更时 Riverpod
++            // 不会因 state.== 而抑制 UI rebuild。
++            _updateState(
++              (s) =>
++                  s.copyWith(quickCommands: agent?.quickCommands ?? const []),
++            );
++          },
++          onError: (error, stackTrace) {
++            // Law 8: catch 必有 debugPrint
++            debugPrint(
++              '[ChatViewModel] watchById error for $agentId: '
++              '$error\n$stackTrace',
++            );
++          },
++        );
++      } catch (error, stackTrace) {
++        // Law 8: catch 必有 debugPrint
++        debugPrint(
++          '[ChatViewModel] watchById subscribe failed for $agentId: '
++          '$error\n$stackTrace',
++        );
++      }
++
+       // 4. Subscribe to connection state
+       _connectionSubscription = _gatewayClient
+           .connectionStateStream(instanceId)
+@@ -1106,6 +1177,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+     _isStreaming = false;
+     _outboxCountSubscription?.cancel();
+     _outboxCountSubscription = null;
++    _agentSubscription?.cancel(); // ★ 新增
++    _agentSubscription = null; // ★ 新增
+     _timeoutTimer?.cancel();
+     _timeoutTimer = null;
+     _stallTimer?.cancel();
+diff --git a/lib/features/chat_room/widgets/chat_input_bar.dart b/lib/features/chat_room/widgets/chat_input_bar.dart
+index 0e6b953..2d78cd0 100644
+--- a/lib/features/chat_room/widgets/chat_input_bar.dart
++++ b/lib/features/chat_room/widgets/chat_input_bar.dart
+@@ -51,7 +51,10 @@ class _ChatInputBarState extends State<ChatInputBar> {
+         XiaSpacing.s2 + bottomInset + safeBottom,
+       ),
+       child: Row(
+-        crossAxisAlignment: CrossAxisAlignment.end,
++        // center (not end) so the 36×36 send button visually aligns with the
++        // input field's content area in the single-line default state. See
++        // component-spec-v2 §4.5.1.
++        crossAxisAlignment: CrossAxisAlignment.center,
+         children: [
+           Expanded(
+             child: TextField(
+diff --git a/lib/features/chat_room/widgets/thinking_indicator.dart b/lib/features/chat_room/widgets/thinking_indicator.dart
+index 7a583fa..8b96b91 100644
+--- a/lib/features/chat_room/widgets/thinking_indicator.dart
++++ b/lib/features/chat_room/widgets/thinking_indicator.dart
+@@ -1,10 +1,12 @@
+ import 'package:flutter/material.dart';
++import 'package:claw_hub/app/theme/agent_theme.dart';
+ import 'package:claw_hub/app/theme/tokens.dart';
+ 
+ /// Thinking indicator — three bouncing dots, matching ComponentSpec Section 4.3.
+ ///
+-/// Bubble: 20/20/8/20 radius (matches Agent bubble), surface bg, shadow-s.
+-/// Dots: 6×6, text3 color, 800ms bounce cycle, staggered delays.
++/// Bubble: 20/20/8/20 radius (matches Agent bubble), surface bg, border.
++/// Dots: 6×6, AgentTheme.of(context).primary (full opacity), 800ms bounce cycle,
++/// staggered delays.
+ class ThinkingIndicator extends StatefulWidget {
+   const ThinkingIndicator({super.key});
+ 
+@@ -33,6 +35,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
+ 
+   @override
+   Widget build(BuildContext context) {
++    final dotColor = AgentTheme.of(context).primary;
+     return Padding(
+       padding: const EdgeInsets.symmetric(
+         horizontal: XiaSpacing.pagePaddingH,
+@@ -40,21 +43,6 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
+       ),
+       child: Row(
+         children: [
+-          Container(
+-            width: 28,
+-            height: 28,
+-            decoration: BoxDecoration(
+-              color: XiaColors.accentMuted,
+-              borderRadius: BorderRadius.circular(XiaRadius.sm),
+-            ),
+-            alignment: Alignment.center,
+-            child: const Icon(
+-              Icons.psychology,
+-              size: 16,
+-              color: XiaColors.accent,
+-            ),
+-          ),
+-          const SizedBox(width: XiaSpacing.s2),
+           Container(
+             constraints: BoxConstraints(
+               maxWidth: MediaQuery.of(context).size.width * 0.7,
+@@ -73,11 +61,23 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
+             child: Row(
+               mainAxisSize: MainAxisSize.min,
+               children: [
+-                _BouncingDot(controller: _controller, delay: 0.0),
++                _BouncingDot(
++                  controller: _controller,
++                  delay: 0.0,
++                  dotColor: dotColor,
++                ),
+                 const SizedBox(width: 4),
+-                _BouncingDot(controller: _controller, delay: 0.15),
++                _BouncingDot(
++                  controller: _controller,
++                  delay: 0.15,
++                  dotColor: dotColor,
++                ),
+                 const SizedBox(width: 4),
+-                _BouncingDot(controller: _controller, delay: 0.3),
++                _BouncingDot(
++                  controller: _controller,
++                  delay: 0.3,
++                  dotColor: dotColor,
++                ),
+               ],
+             ),
+           ),
+@@ -90,8 +90,13 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
+ class _BouncingDot extends StatelessWidget {
+   final AnimationController controller;
+   final double delay; // seconds
++  final Color dotColor;
+ 
+-  const _BouncingDot({required this.controller, required this.delay});
++  const _BouncingDot({
++    required this.controller,
++    required this.delay,
++    required this.dotColor,
++  });
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -111,9 +116,9 @@ class _BouncingDot extends StatelessWidget {
+           child: Container(
+             width: 6,
+             height: 6,
+-            decoration: const BoxDecoration(
+-              // V2: violet (accent2) dots per ComponentSpec §4.3
+-              color: XiaColors.accent2,
++            decoration: BoxDecoration(
++              // Dot color from AgentTheme.of(context).primary (spec §4.3)
++              color: dotColor,
+               shape: BoxShape.circle,
+             ),
+           ),
+diff --git a/lib/features/instance_manager/widgets/instance_card.dart b/lib/features/instance_manager/widgets/instance_card.dart
+index cba2593..147c8d6 100644
+--- a/lib/features/instance_manager/widgets/instance_card.dart
++++ b/lib/features/instance_manager/widgets/instance_card.dart
+@@ -210,10 +210,12 @@ class _ActionBtn extends StatelessWidget {
+     return PressFeedback(
+       onTap: onTap,
+       builder: (child, isPressed) => AnimatedScale(
+-        // Scale is the primary visible feedback signal: surface2→surface3
+-        // color shift alone has only ~3% luminance delta (imperceptible),
+-        // and the danger variant doesn't change color at all on press.
+-        // Matches the HeaderButton pattern (scale 0.93) for consistency.
++        // Scale + accent border on press — the previous color-only change
++        // (surface2→surface3) had only ~3% luminance delta, imperceptible
++        // on a 36×36 button, and the danger variant had zero color change.
++        // The 1px accent border (matches _AddInstanceCard pattern in
++        // instance_list_page.dart:209-213) is the primary visible signal;
++        // scale 0.93 reinforces it.
+         scale: isPressed ? 0.93 : 1.0,
+         duration: XiaMotion.durationFast,
+         curve: XiaMotion.ease,
+@@ -225,10 +227,17 @@ class _ActionBtn extends StatelessWidget {
+           decoration: BoxDecoration(
+             color: danger
+                 ? (isPressed
+-                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.15)!
++                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.25)!
+                       : XiaColors.redMuted)
+                 : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
+             borderRadius: BorderRadius.circular(XiaRadius.sm),
++            border: isPressed
++                ? Border.all(
++                    color: danger ? XiaColors.red : XiaColors.accent,
++                    width: 1,
++                    strokeAlign: BorderSide.strokeAlignInside,
++                  )
++                : null,
+           ),
+           alignment: Alignment.center,
+           child: child,
+diff --git a/test/app/config/platform_info_test.dart b/test/app/config/platform_info_test.dart
+index 233cd58..f049b3b 100644
+--- a/test/app/config/platform_info_test.dart
++++ b/test/app/config/platform_info_test.dart
+@@ -1,7 +1,8 @@
+ import 'package:flutter/foundation.dart' show kIsWeb;
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:claw_hub/app/config/platform_info.dart';
+-import 'package:claw_hub/core/acl/gateway_protocol.dart' show ClientIds;
++import 'package:claw_hub/core/acl/gateway_protocol.dart'
++    show ClientIds, ConnectionConfig;
+ 
+ void main() {
+   group('platformOS', () {
+@@ -90,5 +91,22 @@ void main() {
+       const validFamilies = ['phone', 'desktop'];
+       expect(deviceFamily, isIn(validFamilies));
+     });
++
++    // =========================================================================
++    // Bug #1 anti-regression: deviceFamily default in ConnectionConfig
++    // After Bug #1 fix, the default deviceFamily is 'phone' so that
++    // buildConnectParams and buildV3SignaturePayload both use the same
++    // value (preventing DEVICE_AUTH_SIGNATURE_INVALID on the server).
++    // =========================================================================
++    test('ConnectionConfig default deviceFamily is "phone" (Bug #1 lock)', () {
++      final config = ConnectionConfig();
++      expect(
++        config.deviceFamily,
++        'phone',
++        reason:
++            'Bug #1 fix: default must be "phone" so wire and signing paths '
++            'always produce the same deviceFamily segment',
++      );
++    });
+   });
+ }
+diff --git a/test/app/notifications/notification_coordinator_test.dart b/test/app/notifications/notification_coordinator_test.dart
+index 16ca1fb..fd43cbe 100644
+--- a/test/app/notifications/notification_coordinator_test.dart
++++ b/test/app/notifications/notification_coordinator_test.dart
+@@ -669,6 +669,23 @@ void main() {
+         expect(service.shown, isEmpty);
+       },
+     );
++
++    test(
++      'connected -> recovering (flaky network) -> no connection-change notification',
++      () async {
++        // 弱网抖动时 WebSocket 断开后先进入 recovering，此时不应弹
++        // "虾连接已断开"通知。
++        final c = build();
++        await c.start();
++        gateway.connController.add(GatewayConnectionState.connected);
++        await _pump();
++        gateway.connController.add(GatewayConnectionState.recovering);
++        await _pump();
++        await c.dispose();
++
++        expect(service.shown, isEmpty);
++      },
++    );
+   });
+ }
+ 
+diff --git a/test/core/acl/connection_manager_device_token_test.dart b/test/core/acl/connection_manager_device_token_test.dart
+new file mode 100644
+index 0000000..ad4c641
+--- /dev/null
++++ b/test/core/acl/connection_manager_device_token_test.dart
+@@ -0,0 +1,287 @@
++import 'dart:convert';
++
++import 'package:claw_hub/core/acl/connection_manager.dart';
++import 'package:claw_hub/core/acl/gateway_protocol.dart';
++import 'package:claw_hub/core/acl/i_device_token_store.dart';
++import 'package:claw_hub/core/acl/i_gateway_client.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++import 'test_helpers.dart';
++
++// ---------------------------------------------------------------------------
++// Fake IDeviceTokenStore
++//
++// Minimal in-memory map implementation.  Used to verify ConnectionManager's
++// read/write contract without touching FlutterSecureStorage.
++// ---------------------------------------------------------------------------
++
++class _FakeDeviceTokenStore implements IDeviceTokenStore {
++  final Map<String, String> _store = {};
++  final List<String> savedInstances = [];
++  final List<String> deletedInstances = [];
++
++  /// Pre-populate the store to simulate a previously-paired device.
++  void seed(String instanceId, String deviceToken) {
++    _store[instanceId] = deviceToken;
++  }
++
++  @override
++  Future<void> save(String instanceId, String deviceToken) async {
++    _store[instanceId] = deviceToken;
++    savedInstances.add(instanceId);
++  }
++
++  @override
++  Future<String?> load(String instanceId) async {
++    final value = _store[instanceId];
++    if (value == null || value.isEmpty) return null;
++    return value;
++  }
++
++  @override
++  Future<void> delete(String instanceId) async {
++    _store.remove(instanceId);
++    deletedInstances.add(instanceId);
++  }
++}
++
++// ---------------------------------------------------------------------------
++// Mock dependencies (signPayload stub)
++// ---------------------------------------------------------------------------
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++void main() {
++  // Helper: extract auth.token from a sent connect frame.
++  String extractAuthToken(String sentFrame) {
++    final decoded = jsonDecode(sentFrame) as Map<String, dynamic>;
++    final params = decoded['params'] as Map<String, dynamic>;
++    final auth = params['auth'] as Map<String, dynamic>;
++    return auth['token'] as String;
++  }
++
++  group('ConnectionManager deviceToken integration (差距 #1)', () {
++    // ========================================================================
++    // SAVE on hello-ok
++    // ========================================================================
++    group('hello-ok with auth.deviceToken', () {
++      test('persists deviceToken to store on successful hello-ok', () async {
++        final ws = ControllableWebSocket.create();
++        final tokenStore = _FakeDeviceTokenStore();
++
++        final cm = ConnectionManager(
++          instanceId: 'inst-1',
++          gatewayUrl: 'ws://localhost:9999/ws',
++          token: 'pairing-code-xyz',
++          deviceId: 'test-device',
++          config: ConnectionConfig(),
++          webSocketFactory: (_) => ws.channel,
++          deviceTokenStore: tokenStore,
++        );
++
++        cm.connect();
++        await pumpMicrotasks();
++        ws.completeHandshake();
++        await pumpMicrotasks();
++
++        // Receive challenge → send connect request
++        ws.simulateServerFrame(challengeJson());
++        await pumpMicrotasks();
++        final reqId = extractReqId(ws.sentFrames.first);
++
++        // Server returns hello-ok with a deviceToken
++        ws.simulateServerFrame(helloOkWithDeviceTokenJson(reqId, 'dt-new-1'));
++        await pumpMicrotasks();
++
++        expect(cm.state, GatewayConnectionState.connected);
++        expect(
++          tokenStore.savedInstances,
++          ['inst-1'],
++          reason:
++              'ConnectionManager must persist auth.deviceToken to the store '
++              'on successful hello-ok (spec §2.2 务必持久化)',
++        );
++        expect(
++          await tokenStore.load('inst-1'),
++          'dt-new-1',
++          reason: 'the stored value must equal the issued deviceToken',
++        );
++
++        await cm.dispose();
++      });
++
++      test(
++        'does NOT call store.save when hello-ok has no auth.deviceToken',
++        () async {
++          final ws = ControllableWebSocket.create();
++          final tokenStore = _FakeDeviceTokenStore();
++
++          final cm = ConnectionManager(
++            instanceId: 'inst-1',
++            gatewayUrl: 'ws://localhost:9999/ws',
++            token: 'pairing-code-xyz',
++            deviceId: 'test-device',
++            config: ConnectionConfig(),
++            webSocketFactory: (_) => ws.channel,
++            deviceTokenStore: tokenStore,
++          );
++
++          cm.connect();
++          await pumpMicrotasks();
++          ws.completeHandshake();
++          await pumpMicrotasks();
++
++          ws.simulateServerFrame(challengeJson());
++          await pumpMicrotasks();
++          final reqId = extractReqId(ws.sentFrames.first);
++
++          // hello-ok without auth.deviceToken (the current real behavior
++          // of the spec'd payload, when no fresh token needs issuing).
++          ws.simulateServerFrame(helloOkJson(reqId));
++          await pumpMicrotasks();
++
++          expect(cm.state, GatewayConnectionState.connected);
++          expect(
++            tokenStore.savedInstances,
++            isEmpty,
++            reason:
++                'No save when the Gateway did not issue a new deviceToken '
++                '(reconnect-with-existing-token case)',
++          );
++
++          await cm.dispose();
++        },
++      );
++    });
++
++    // ========================================================================
++    // LOAD on connect
++    // ========================================================================
++    group('connect() prefers cached deviceToken over instance.tokenRef', () {
++      test(
++        'sends cached deviceToken in connect.auth.token when store has one',
++        () async {
++          final ws = ControllableWebSocket.create();
++          final tokenStore = _FakeDeviceTokenStore();
++          tokenStore.seed('inst-1', 'dt-cached-9');
++
++          final cm = ConnectionManager(
++            instanceId: 'inst-1',
++            gatewayUrl: 'ws://localhost:9999/ws',
++            // instance.tokenRef is the FIRST-TIME pairing code; the cached
++            // deviceToken must take precedence on subsequent reconnects.
++            token: 'pairing-code-xyz',
++            deviceId: 'test-device',
++            config: ConnectionConfig(),
++            webSocketFactory: (_) => ws.channel,
++            deviceTokenStore: tokenStore,
++          );
++
++          cm.connect();
++          await pumpMicrotasks();
++          ws.completeHandshake();
++          await pumpMicrotasks();
++
++          ws.simulateServerFrame(challengeJson());
++          await pumpMicrotasks();
++
++          // The connect frame's auth.token must be the cached deviceToken,
++          // not the original pairing code.
++          final sentToken = extractAuthToken(ws.sentFrames.first);
++          expect(
++            sentToken,
++            'dt-cached-9',
++            reason:
++                'Subsequent connects must use the cached deviceToken '
++                '(spec §2.2 后续重连复用该令牌)',
++          );
++          expect(
++            sentToken,
++            isNot('pairing-code-xyz'),
++            reason: 'must NOT fall back to the first-time pairing code',
++          );
++
++          await cm.dispose();
++        },
++      );
++
++      test(
++        'falls back to instance.tokenRef when store has no cached token',
++        () async {
++          final ws = ControllableWebSocket.create();
++          final tokenStore = _FakeDeviceTokenStore();
++          // No seed() — first-time pairing scenario.
++
++          final cm = ConnectionManager(
++            instanceId: 'inst-new',
++            gatewayUrl: 'ws://localhost:9999/ws',
++            token: 'pairing-code-abc',
++            deviceId: 'test-device',
++            config: ConnectionConfig(),
++            webSocketFactory: (_) => ws.channel,
++            deviceTokenStore: tokenStore,
++          );
++
++          cm.connect();
++          await pumpMicrotasks();
++          ws.completeHandshake();
++          await pumpMicrotasks();
++
++          ws.simulateServerFrame(challengeJson());
++          await pumpMicrotasks();
++
++          final sentToken = extractAuthToken(ws.sentFrames.first);
++          expect(
++            sentToken,
++            'pairing-code-abc',
++            reason:
++                'First-time pairing (no cached deviceToken) must use '
++                'instance.tokenRef as the bearer',
++          );
++
++          await cm.dispose();
++        },
++      );
++
++      test(
++        'falls back to instance.tokenRef when store is null (test convenience)',
++        () async {
++          // Backward-compat: existing tests construct ConnectionManager
++          // without passing a deviceTokenStore.  Behavior must not regress.
++          final ws = ControllableWebSocket.create();
++
++          final cm = ConnectionManager(
++            instanceId: 'inst-no-store',
++            gatewayUrl: 'ws://localhost:9999/ws',
++            token: 'pairing-code-xyz',
++            deviceId: 'test-device',
++            config: ConnectionConfig(),
++            webSocketFactory: (_) => ws.channel,
++            // deviceTokenStore intentionally omitted
++          );
++
++          cm.connect();
++          await pumpMicrotasks();
++          ws.completeHandshake();
++          await pumpMicrotasks();
++
++          ws.simulateServerFrame(challengeJson());
++          await pumpMicrotasks();
++
++          final sentToken = extractAuthToken(ws.sentFrames.first);
++          expect(
++            sentToken,
++            'pairing-code-xyz',
++            reason:
++                'When no deviceTokenStore is injected, ConnectionManager '
++                'must continue using instance.tokenRef (no regression)',
++          );
++
++          await cm.dispose();
++        },
++      );
++    });
++  });
++}
+diff --git a/test/core/acl/gateway_protocol_test.dart b/test/core/acl/gateway_protocol_test.dart
+index fab90e8..b232195 100644
+--- a/test/core/acl/gateway_protocol_test.dart
++++ b/test/core/acl/gateway_protocol_test.dart
+@@ -163,4 +163,139 @@ void main() {
+       expect(buffer.text, isEmpty);
+     });
+   });
++
++  // ============================================================================
++  // Bug #1: deviceFamily alignment between signature payload and connect wire
++  // spec §2.5 requires 11 pipe-separated segments, ending with deviceFamily.
++  // Signature path always includes `|phone|` (default); wire path used to skip
++  // the field when config.deviceFamily was null, causing the server-side
++  // signature reconstruction to mismatch and reject with
++  // DEVICE_AUTH_SIGNATURE_INVALID.
++  // ============================================================================
++  group('buildConnectParams deviceFamily alignment', () {
++    test('wire client.deviceFamily mirrors explicit config.deviceFamily', () {
++      final params = buildConnectParams(
++        token: 't',
++        deviceId: 'd',
++        config: ConnectionConfig(deviceFamily: 'phone'),
++      );
++      final client = params['client'] as Map<String, dynamic>;
++      expect(
++        client['deviceFamily'],
++        'phone',
++        reason: 'wire field must mirror the configured deviceFamily',
++      );
++    });
++
++    test(
++      'wire client.deviceFamily is always present (defaults to phone) — Bug #1',
++      () {
++        final params = buildConnectParams(
++          token: 't',
++          deviceId: 'd',
++          config: ConnectionConfig(),
++        );
++        final client = params['client'] as Map<String, dynamic>;
++        expect(
++          client.containsKey('deviceFamily'),
++          isTrue,
++          reason:
++              'wire must always include deviceFamily so the server-side '
++              'signature payload reconstruction matches the client payload',
++        );
++        expect(
++          client['deviceFamily'],
++          'phone',
++          reason: 'default deviceFamily must align with signing path default',
++        );
++      },
++    );
++
++    test('buildV3SignaturePayload includes default deviceFamily segment', () {
++      // Wire default must equal the signed-payload default. If the wire
++      // omits the field but the signature includes it, the server
++      // reconstructs a different payload and rejects the signature.
++      final payload = buildV3SignaturePayload(
++        deviceId: 'd',
++        clientId: 'openclaw-ios',
++        clientMode: 'ui',
++        role: 'operator',
++        scopes: const ['operator.read'],
++        signedAtMs: 1700000000000,
++        token: 't',
++        nonce: 'n',
++        platform: 'ios',
++        deviceFamily: 'phone',
++      );
++      // Format: "v3|...|{platform}|{deviceFamily}" — 11 segments,
++      // last one is 'phone' (the default).
++      final segments = payload.split('|');
++      expect(
++        segments.length,
++        11,
++        reason: 'spec §2.5 mandates 11 pipe-separated segments',
++      );
++      expect(
++        segments.last,
++        'phone',
++        reason: 'last segment is deviceFamily; must be present',
++      );
++    });
++  });
++
++  // ============================================================================
++  // Bug #3: ConnectionConfig default platform must be a valid OpenClaw spec
++  // platform (§2.3). The previous default `'flutter'` is a Flutter framework
++  // name, not a platform name. Production is unaffected (DI overrides with
++  // platformOS()), but mock/test paths benefit from a legal value so future
++  // server-side enum validation cannot reject the default.
++  // ============================================================================
++  group('ConnectionConfig defaults', () {
++    test('default platform is a valid OpenClaw spec §2.3 value — Bug #3', () {
++      // Spec §2.3 client.id enum + platformOS() values (DI production path).
++      // 'flutter' is intentionally NOT in this set — it's a framework name,
++      // not a platform.
++      const spec = {
++        // spec §2.3 client.id values
++        'webchat-ui',
++        'openclaw-control-ui',
++        'openclaw-tui',
++        'webchat',
++        'cli',
++        'gateway-client',
++        'openclaw-macos',
++        'openclaw-ios',
++        'openclaw-android',
++        'node-host',
++        'test',
++        'fingerprint',
++        'openclaw-probe',
++        // platformOS() values used by lib/app/di/providers.dart
++        'ios',
++        'android',
++        'macos',
++        'linux',
++        'windows',
++        'web',
++      };
++      expect(
++        ConnectionConfig().platform,
++        isIn(spec),
++        reason:
++            'default platform must be a valid OpenClaw spec value, '
++            'not a framework name like "flutter"',
++      );
++    });
++
++    test('ClientIds.forPlatform accepts the default platform', () {
++      final defaultPlatform = ConnectionConfig().platform;
++      expect(
++        () => ClientIds.forPlatform(defaultPlatform),
++        returnsNormally,
++        reason:
++            'ClientIds.forPlatform must handle any default platform value '
++            'via its switch default case',
++      );
++    });
++  });
+ }
+diff --git a/test/core/acl/secure_storage_device_token_store_test.dart b/test/core/acl/secure_storage_device_token_store_test.dart
+new file mode 100644
+index 0000000..877c903
+--- /dev/null
++++ b/test/core/acl/secure_storage_device_token_store_test.dart
+@@ -0,0 +1,163 @@
++import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:mocktail/mocktail.dart';
++
++// ---------------------------------------------------------------------------
++// Mock FlutterSecureStorage
++//
++// Mirrors the pattern used in ed25519_identity_provider_test.dart.
++// ---------------------------------------------------------------------------
++
++class _MockSecureStorage extends Mock implements FlutterSecureStorage {}
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++void main() {
++  group('SecureStorageDeviceTokenStore', () {
++    late _MockSecureStorage storage;
++    late SecureStorageDeviceTokenStore store;
++
++    setUp(() {
++      storage = _MockSecureStorage();
++      store = SecureStorageDeviceTokenStore(secureStorage: storage);
++    });
++
++    // ========================================================================
++    // save
++    // ========================================================================
++    group('save', () {
++      test('persists token under per-instance key', () async {
++        when(
++          () => storage.write(
++            key: any(named: 'key'),
++            value: any(named: 'value'),
++          ),
++        ).thenAnswer((_) async {});
++
++        await store.save('inst-1', 'dt-abc-123');
++
++        verify(
++          () => storage.write(
++            key: 'clawhub_device_token_inst-1',
++            value: 'dt-abc-123',
++          ),
++        ).called(1);
++      });
++
++      test('overwrites previous token for same instance', () async {
++        when(
++          () => storage.write(
++            key: any(named: 'key'),
++            value: any(named: 'value'),
++          ),
++        ).thenAnswer((_) async {});
++
++        await store.save('inst-1', 'dt-old');
++        await store.save('inst-1', 'dt-new');
++
++        // Both writes hit the same key — last write wins, consistent
++        // with §4.11 device.token.rotate semantics.
++        verify(
++          () => storage.write(
++            key: 'clawhub_device_token_inst-1',
++            value: 'dt-old',
++          ),
++        ).called(1);
++        verify(
++          () => storage.write(
++            key: 'clawhub_device_token_inst-1',
++            value: 'dt-new',
++          ),
++        ).called(1);
++      });
++
++      test('uses distinct keys for distinct instances', () async {
++        when(
++          () => storage.write(
++            key: any(named: 'key'),
++            value: any(named: 'value'),
++          ),
++        ).thenAnswer((_) async {});
++
++        await store.save('inst-A', 'dt-A');
++        await store.save('inst-B', 'dt-B');
++
++        verify(
++          () =>
++              storage.write(key: 'clawhub_device_token_inst-A', value: 'dt-A'),
++        ).called(1);
++        verify(
++          () =>
++              storage.write(key: 'clawhub_device_token_inst-B', value: 'dt-B'),
++        ).called(1);
++      });
++    });
++
++    // ========================================================================
++    // load
++    // ========================================================================
++    group('load', () {
++      test('returns stored token when present', () async {
++        when(
++          () => storage.read(key: 'clawhub_device_token_inst-1'),
++        ).thenAnswer((_) async => 'dt-abc-123');
++
++        final result = await store.load('inst-1');
++
++        expect(result, 'dt-abc-123');
++      });
++
++      test('returns null when storage is empty (first-time pairing)', () async {
++        when(
++          () => storage.read(key: 'clawhub_device_token_inst-new'),
++        ).thenAnswer((_) async => null);
++
++        final result = await store.load('inst-new');
++
++        expect(
++          result,
++          isNull,
++          reason:
++              'On first pairing, no cached deviceToken exists; '
++              'connect must fall back to instance.tokenRef',
++        );
++      });
++
++      test('returns null when stored value is empty string', () async {
++        when(
++          () => storage.read(key: 'clawhub_device_token_inst-1'),
++        ).thenAnswer((_) async => '');
++
++        final result = await store.load('inst-1');
++
++        expect(
++          result,
++          isNull,
++          reason:
++              'Empty string is treated as absent to avoid sending '
++              'an empty bearer token to the Gateway',
++        );
++      });
++    });
++
++    // ========================================================================
++    // delete
++    // ========================================================================
++    group('delete', () {
++      test('removes stored token', () async {
++        when(
++          () => storage.delete(key: any(named: 'key')),
++        ).thenAnswer((_) async {});
++
++        await store.delete('inst-1');
++
++        verify(
++          () => storage.delete(key: 'clawhub_device_token_inst-1'),
++        ).called(1);
++      });
++    });
++  });
++}
+diff --git a/test/core/acl/test_helpers.dart b/test/core/acl/test_helpers.dart
+index 37c520d..0a81ade 100644
+--- a/test/core/acl/test_helpers.dart
++++ b/test/core/acl/test_helpers.dart
+@@ -81,6 +81,18 @@ String helloOkJson(String id) =>
+     '{"type":"res","id":"$id","ok":true,'
+     '"payload":{"type":"hello-ok","protocol":4,"policy":{"tickIntervalMs":15000}}}';
+ 
++/// Build a `hello-ok` response that also carries a freshly issued
++/// `auth.deviceToken` (OpenClaw spec §2.2 — first pairing).
++///
++/// Used by deviceToken persistence tests in
++/// `connection_manager_device_token_test.dart` (差距 #1 fix).
++String helloOkWithDeviceTokenJson(String id, String deviceToken) =>
++    '{"type":"res","id":"$id","ok":true,'
++    '"payload":{"type":"hello-ok","protocol":4,'
++    '"auth":{"deviceToken":"$deviceToken","role":"operator",'
++    '"scopes":["operator.read","operator.write"]},'
++    '"policy":{"tickIntervalMs":15000}}}';
++
+ /// Extract the request ID from a sent JSON frame.
+ String extractReqId(String sentFrame) {
+   final m = RegExp(r'"id":"([^"]+)"').firstMatch(sentFrame);
+@@ -151,3 +163,25 @@ String agentLifecycleJson({
+ const String tickJson = '{"type":"event","event":"tick","payload":{}}';
+ 
+ const String shutdownJson = '{"type":"event","event":"shutdown","payload":{}}';
++
++/// Build a `chat.history` response frame.
++///
++/// Pass [cursor] OR [nextCursor] to verify the defensive read in
++/// `WsGatewayClient.fetchMessageHistory` (Bug #2). When both are
++/// provided, [nextCursor] wins (forward-compat with future Gateway
++/// versions that may switch to OpenAI-style `nextCursor` naming).
++String chatHistoryResponseJson({
++  required String id,
++  String? cursor,
++  String? nextCursor,
++  // ignore: avoid_unused_constructor_parameters
++  List<Map<String, dynamic>> messages = const [],
++}) {
++  final cursorField = cursor != null ? '"cursor":"$cursor",' : '';
++  final nextCursorField = nextCursor != null
++      ? '"nextCursor":"$nextCursor",'
++      : '';
++  return '{"type":"res","id":"$id","ok":true,'
++      '"payload":{"messages":[],$cursorField$nextCursorField'
++      '"hasMore":false}}';
++}
+diff --git a/test/core/acl/ws_gateway_client_test.dart b/test/core/acl/ws_gateway_client_test.dart
+index 5782307..9d1deb8 100644
+--- a/test/core/acl/ws_gateway_client_test.dart
++++ b/test/core/acl/ws_gateway_client_test.dart
+@@ -1585,4 +1585,87 @@ void _replayableConnectionStateTests() {
+       await state.dispose();
+     });
+   });
++
++  // ==========================================================================
++  // Bug #2: chat.history cursor field name — defensively read both
++  // 'cursor' and 'nextCursor' from response payload.
++  //
++  // spec §5.4 example uses 'cursor' but the client used to only read
++  // 'nextCursor', causing pagination to deadlock at page 2 (nextCursor
++  // was always null because the server was sending 'cursor').
++  // ==========================================================================
++  group('fetchMessageHistory pagination (Bug #2)', () {
++    /// Helper: send a chat.history request and inject a server response.
++    /// The 1st sent frame is the connect request (consumed by
++    /// connectAndHandshake); the 2nd sent frame is chat.history.
++    Future<({List<Message> messages, String? nextCursor})> sendHistory(
++      WsGatewayClient client,
++      ControllableWebSocket ws, {
++      String? cursor,
++      String? nextCursor,
++    }) async {
++      final future = client.fetchMessageHistory(
++        instanceId: 'test-instance',
++        agentId: 'a-1',
++      );
++      await pumpMicrotasks();
++      final reqId = extractReqId(ws.sentFrames[1]);
++      ws.simulateServerFrame(
++        chatHistoryResponseJson(
++          id: reqId,
++          cursor: cursor,
++          nextCursor: nextCursor,
++        ),
++      );
++      return future;
++    }
++
++    test('reads nextCursor from payload.nextCursor field', () async {
++      final (:client, :ws) = await connectAndHandshake();
++      final result = await sendHistory(client, ws, nextCursor: 'nc-1');
++      expect(result.nextCursor, 'nc-1');
++      await client.dispose();
++    });
++
++    test(
++      'falls back to payload.cursor when nextCursor absent (Bug #2)',
++      () async {
++        final (:client, :ws) = await connectAndHandshake();
++        final result = await sendHistory(client, ws, cursor: 'c-1');
++        expect(
++          result.nextCursor,
++          'c-1',
++          reason:
++              'must read "cursor" field per docs/technical/api-protocol.md §5.4',
++        );
++        await client.dispose();
++      },
++    );
++
++    test('prefers nextCursor when both present (forward-compat)', () async {
++      final (:client, :ws) = await connectAndHandshake();
++      final result = await sendHistory(
++        client,
++        ws,
++        nextCursor: 'nc-1',
++        cursor: 'c-1',
++      );
++      expect(
++        result.nextCursor,
++        'nc-1',
++        reason: 'nextCursor is the forward-compat field name; wins over cursor',
++      );
++      await client.dispose();
++    });
++
++    test(
++      'returns null when neither cursor nor nextCursor is present',
++      () async {
++        final (:client, :ws) = await connectAndHandshake();
++        final result = await sendHistory(client, ws);
++        expect(result.nextCursor, isNull);
++        await client.dispose();
++      },
++    );
++  });
+ }
+diff --git a/test/data/repositories/drift_agent_repo_watch_test.dart b/test/data/repositories/drift_agent_repo_watch_test.dart
+new file mode 100644
+index 0000000..79d201f
+--- /dev/null
++++ b/test/data/repositories/drift_agent_repo_watch_test.dart
+@@ -0,0 +1,133 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:drift/native.dart';
++import 'package:claw_hub/data/local/database/database.dart' as db;
++import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
++import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
++import 'package:claw_hub/domain/models/agent.dart';
++import 'package:claw_hub/domain/models/enums.dart';
++import 'package:claw_hub/domain/models/instance.dart';
++import 'package:claw_hub/domain/models/quick_command.dart';
++
++Future<db.AppDatabase> _createTestDb() async {
++  final database = db.AppDatabase(
++    NativeDatabase.memory(
++      setup: (sqlDb) {
++        sqlDb.execute('PRAGMA foreign_keys = ON');
++      },
++    ),
++  );
++  addTearDown(() => database.close());
++  return database;
++}
++
++void main() {
++  group('DriftAgentRepo.watchById', () {
++    late db.AppDatabase database;
++    late DriftAgentRepo agentRepo;
++    late DriftInstanceRepo instanceRepo;
++
++    setUp(() async {
++      database = await _createTestDb();
++      agentRepo = DriftAgentRepo(database);
++      instanceRepo = DriftInstanceRepo(database);
++
++      // Need an instance first for FK
++      await instanceRepo.save(
++        Instance(
++          id: 'inst-1',
++          name: 'Test',
++          gatewayUrl: 'ws://test:18789',
++          tokenRef: 'tok',
++          healthStatus: HealthStatus.online,
++        ),
++      );
++    });
++
++    test('subscribe emits current agent as seed event', () async {
++      await agentRepo.syncFromGateway('inst-1', [
++        Agent(
++          localId: 'local-1',
++          remoteId: 'r-1',
++          instanceId: 'inst-1',
++          name: '产品虾',
++          themeColor: '#6c5ce7',
++        ),
++      ]);
++
++      final stream = agentRepo.watchById('local-1');
++      final emitted = await stream.first;
++
++      expect(emitted, isNotNull);
++      expect(emitted!.localId, 'local-1');
++    });
++
++    test('subscribe to nonexistent localId emits null', () async {
++      final stream = agentRepo.watchById('nonexistent');
++      final emitted = await stream.first;
++
++      expect(emitted, isNull);
++    });
++
++    test('updateFullProfile emits agent with new quickCommands', () async {
++      await agentRepo.syncFromGateway('inst-1', [
++        Agent(
++          localId: 'local-1',
++          remoteId: 'r-1',
++          instanceId: 'inst-1',
++          name: '产品虾',
++          themeColor: '#6c5ce7',
++        ),
++      ]);
++
++      // Skip seed (first emit is current state)
++      final emitted = <Agent?>[];
++      final sub = agentRepo.watchById('local-1').skip(1).listen(emitted.add);
++
++      await agentRepo.updateFullProfile(
++        'local-1',
++        quickCommands: [
++          QuickCommand(
++            id: 'c1',
++            agentId: 'local-1',
++            label: '状态',
++            payload: '/status',
++            sortOrder: 0,
++          ),
++        ],
++      );
++
++      await Future<void>.delayed(const Duration(milliseconds: 50));
++      await sub.cancel();
++
++      expect(emitted.length, greaterThanOrEqualTo(1));
++      expect(emitted.last, isNotNull);
++      expect(emitted.last!.quickCommands.length, 1);
++      expect(emitted.last!.quickCommands.first.payload, '/status');
++    });
++
++    test('clearAvatar emits agent with avatarUrl=null', () async {
++      await agentRepo.syncFromGateway('inst-1', [
++        Agent(
++          localId: 'local-1',
++          remoteId: 'r-1',
++          instanceId: 'inst-1',
++          name: '产品虾',
++          themeColor: '#6c5ce7',
++          avatarUrl: '/path/to/avatar.png',
++        ),
++      ]);
++
++      final emitted = <Agent?>[];
++      final sub = agentRepo.watchById('local-1').skip(1).listen(emitted.add);
++
++      await agentRepo.clearAvatar('local-1');
++
++      await Future<void>.delayed(const Duration(milliseconds: 50));
++      await sub.cancel();
++
++      expect(emitted.length, greaterThanOrEqualTo(1));
++      expect(emitted.last, isNotNull);
++      expect(emitted.last!.avatarUrl, isNull);
++    });
++  });
++}
+diff --git a/test/data/repositories/in_memory_agent_repo_watch_test.dart b/test/data/repositories/in_memory_agent_repo_watch_test.dart
+new file mode 100644
+index 0000000..40c1262
+--- /dev/null
++++ b/test/data/repositories/in_memory_agent_repo_watch_test.dart
+@@ -0,0 +1,196 @@
++import 'dart:async';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:claw_hub/data/repositories/in_memory_repos.dart';
++import 'package:claw_hub/domain/models/agent.dart';
++import 'package:claw_hub/domain/models/quick_command.dart';
++
++Agent _agent({
++  String localId = 'local-1',
++  String remoteId = 'r-1',
++  String instanceId = 'inst-1',
++  String name = '产品虾',
++  List<QuickCommand>? quickCommands,
++}) => Agent(
++  localId: localId,
++  remoteId: remoteId,
++  instanceId: instanceId,
++  name: name,
++  themeColor: '#6c5ce7',
++  quickCommands: quickCommands ?? const [],
++);
++
++QuickCommand _cmd(
++  String id,
++  String label,
++  String payload, [
++  int sortOrder = 0,
++]) => QuickCommand(
++  id: id,
++  agentId: 'local-1',
++  label: label,
++  payload: payload,
++  sortOrder: sortOrder,
++);
++
++void main() {
++  group('InMemoryAgentRepo.watchById', () {
++    late InMemoryAgentRepo repo;
++
++    setUp(() {
++      repo = InMemoryAgentRepo();
++    });
++
++    tearDown(() async {
++      await repo.dispose();
++    });
++
++    test('subscribe emits current agent as seed event', () async {
++      await repo.syncFromGateway('inst-1', [_agent()]);
++
++      final stream = repo.watchById('local-1');
++      final emitted = await stream.first;
++
++      expect(emitted, isNotNull);
++      expect(emitted!.localId, 'local-1');
++      expect(emitted.name, '产品虾');
++    });
++
++    test('subscribe to nonexistent localId emits null', () async {
++      final stream = repo.watchById('nonexistent');
++      final emitted = await stream.first;
++
++      expect(emitted, isNull);
++    });
++
++    test(
++      'updateFullProfile with new quickCommands emits updated agent',
++      () async {
++        await repo.syncFromGateway('inst-1', [_agent()]);
++
++        final emitted = <Agent>[];
++        final sub = repo.watchById('local-1').skip(1).listen((a) {
++          if (a != null) emitted.add(a);
++        });
++        // 等 async* generator 完成 seed yield 并订阅 _agentsChanged.stream
++        await Future<void>.delayed(const Duration(milliseconds: 10));
++
++        await repo.updateFullProfile(
++          'local-1',
++          quickCommands: [_cmd('c1', '状态', '/status', 0)],
++        );
++
++        await Future<void>.delayed(const Duration(milliseconds: 10));
++        await sub.cancel();
++
++        expect(emitted.length, greaterThanOrEqualTo(1));
++        final last = emitted.last;
++        expect(last.quickCommands.length, 1);
++        expect(last.quickCommands.first.payload, '/status');
++      },
++    );
++
++    test('clearAvatar emits agent with avatarUrl=null', () async {
++      await repo.syncFromGateway('inst-1', [
++        _agent().copyWith(avatarUrl: '/path/to/avatar.png'),
++      ]);
++
++      final emitted = <Agent>[];
++      final sub = repo.watchById('local-1').skip(1).listen((a) {
++        if (a != null) emitted.add(a);
++      });
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++
++      await repo.clearAvatar('local-1');
++
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++      await sub.cancel();
++
++      expect(emitted.length, greaterThanOrEqualTo(1));
++      expect(emitted.last.avatarUrl, isNull);
++    });
++
++    test('togglePin emits agent with flipped isPinned', () async {
++      await repo.syncFromGateway('inst-1', [_agent()]);
++
++      final emitted = <Agent>[];
++      final sub = repo.watchById('local-1').skip(1).listen((a) {
++        if (a != null) emitted.add(a);
++      });
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++
++      await repo.togglePin('local-1');
++
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++      await sub.cancel();
++
++      expect(emitted.length, greaterThanOrEqualTo(1));
++      expect(emitted.last.isPinned, isTrue);
++    });
++
++    test('syncFromGateway emits upserted agents', () async {
++      final emitted = <Agent?>[];
++      final sub = repo.watchById('local-1').listen(emitted.add);
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++
++      await repo.syncFromGateway('inst-1', [_agent()]);
++
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++      await sub.cancel();
++
++      // seed (null) + upsert (agent) = 2 emits
++      expect(
++        emitted.length,
++        greaterThanOrEqualTo(2),
++        reason: 'syncFromGateway 应 emit seed + upsert',
++      );
++      expect(emitted.first, isNull, reason: 'seed 在 sync 之前订阅,应为 null');
++      final last = emitted.last;
++      expect(last, isNotNull);
++      expect(last!.localId, 'local-1');
++    });
++
++    test('updateLocalProfile emits agent with new nickname', () async {
++      await repo.syncFromGateway('inst-1', [_agent()]);
++
++      final emitted = <Agent>[];
++      final sub = repo.watchById('local-1').skip(1).listen((a) {
++        if (a != null) emitted.add(a);
++      });
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++
++      await repo.updateLocalProfile('local-1', nickname: '小虾');
++
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++      await sub.cancel();
++
++      expect(emitted.length, greaterThanOrEqualTo(1));
++      expect(emitted.last.nickname, '小虾');
++    });
++
++    test('multiple subscribers all receive emits (broadcast)', () async {
++      await repo.syncFromGateway('inst-1', [_agent()]);
++
++      final sub1 = <Agent>[];
++      final sub2 = <Agent>[];
++      final s1 = repo.watchById('local-1').skip(1).listen((a) {
++        if (a != null) sub1.add(a);
++      });
++      final s2 = repo.watchById('local-1').skip(1).listen((a) {
++        if (a != null) sub2.add(a);
++      });
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++
++      await repo.updateLocalProfile('local-1', nickname: 'test');
++
++      await Future<void>.delayed(const Duration(milliseconds: 10));
++      await s1.cancel();
++      await s2.cancel();
++
++      expect(sub1.length, greaterThanOrEqualTo(1));
++      expect(sub2.length, greaterThanOrEqualTo(1));
++      expect(sub1.last.nickname, 'test');
++      expect(sub2.last.nickname, 'test');
++    });
++  });
++}
+diff --git a/test/domain/models/notification_event_test.dart b/test/domain/models/notification_event_test.dart
+index 9d5907f..f26922f 100644
+--- a/test/domain/models/notification_event_test.dart
++++ b/test/domain/models/notification_event_test.dart
+@@ -67,7 +67,7 @@ void main() {
+       expect(e.toState, NotificationConnectionState.reconnecting);
+     });
+ 
+-    test('isOnlineDrop is true when online -> non-online', () {
++    test('isOnlineDrop is true only when online -> offline', () {
+       expect(
+         ConnectionChangeEvent(
+           instanceId: 'i',
+@@ -86,6 +86,16 @@ void main() {
+         ).isOnlineDrop,
+         isFalse,
+       );
++      // reconnecting 是自动重连的中间状态，不应视为掉线。
++      expect(
++        ConnectionChangeEvent(
++          instanceId: 'i',
++          instanceName: 'n',
++          fromState: NotificationConnectionState.online,
++          toState: NotificationConnectionState.reconnecting,
++        ).isOnlineDrop,
++        isFalse,
++      );
+     });
+   });
+ 
+diff --git a/test/domain/usecases/evaluate_notification_test.dart b/test/domain/usecases/evaluate_notification_test.dart
+index aaeba20..6e413a0 100644
+--- a/test/domain/usecases/evaluate_notification_test.dart
++++ b/test/domain/usecases/evaluate_notification_test.dart
+@@ -176,6 +176,24 @@ void main() {
+       },
+     );
+ 
++    test(
++      'connection change: online -> reconnecting, switch on -> drop (noise)',
++      () {
++        final decision = usecase.evaluate(
++          ConnectionChangeEvent(
++            instanceId: 'i',
++            instanceName: '家里',
++            fromState: NotificationConnectionState.online,
++            toState: NotificationConnectionState.reconnecting,
++          ),
++          _prefs(),
++          DateTime(2026, 6, 20, 12),
++        );
++        // reconnecting 是自动重连的中间状态，不应视为掉线通知。
++        expect(decision, isA<DroppedDecision>());
++      },
++    );
++
+     test('connection change switch off -> drop', () {
+       final decision = usecase.evaluate(
+         ConnectionChangeEvent(
+diff --git a/test/features/chat_room/chat_view_model_watch_by_id_test.dart b/test/features/chat_room/chat_view_model_watch_by_id_test.dart
+new file mode 100644
+index 0000000..cae4cd4
+--- /dev/null
++++ b/test/features/chat_room/chat_view_model_watch_by_id_test.dart
+@@ -0,0 +1,239 @@
++// US-021 follow-up: ChatViewModel 应订阅 IAgentRepo.watchById，
++// 任何 DB 写入（本地 updateFullProfile / updateLocalProfile / Gateway
++// syncFromGateway）触发 emit 后，自动同步 _agent，使 UI 经 vm.agent
++// getter 立即看到最新值（quickCommands / nickname 等）—— 无需发消息
++// 触发 reloadMessages 才看到刷新。
++//
++// 4 个测试覆盖：
++// 1. local save 触发 vm.agent 更新
++// 2. nickname 改动触发 vm.agent 更新
++// 3. dispose 后订阅取消
++// 4. watchById stream 抛错时 init 不崩溃
++import 'dart:async';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:mocktail/mocktail.dart';
++import 'package:claw_hub/core/acl/mock_gateway_client.dart';
++import 'package:claw_hub/core/i_achievement_checker.dart';
++import 'package:claw_hub/data/repositories/in_memory_repos.dart';
++import 'package:claw_hub/domain/models/agent.dart';
++import 'package:claw_hub/domain/models/enums.dart';
++import 'package:claw_hub/domain/models/instance.dart';
++import 'package:claw_hub/domain/models/quick_command.dart';
++import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
++import 'package:claw_hub/domain/usecases/send_message.dart';
++import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
++
++class _MockAchievementChecker extends Mock implements IAchievementChecker {}
++
++class _MockAgentRepo extends Mock implements IAgentRepo {}
++
++const _agentId = 'local-1';
++const _instanceId = 'inst-1';
++const _remoteId = 'r-1';
++
++Agent _activeAgent({List<QuickCommand>? quickCommands}) => Agent(
++  localId: _agentId,
++  remoteId: _remoteId,
++  instanceId: _instanceId,
++  name: '产品虾',
++  themeColor: '#6c5ce7',
++  quickCommands: quickCommands ?? const [],
++);
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  late InMemoryAgentRepo agentRepo;
++  late InMemoryMessageRepo messageRepo;
++  late InMemoryConversationRepo conversationRepo;
++  late InMemoryInstanceRepo instanceRepo;
++  late MockGatewayClient gateway;
++
++  setUp(() async {
++    agentRepo = InMemoryAgentRepo();
++    messageRepo = InMemoryMessageRepo();
++    conversationRepo = InMemoryConversationRepo();
++    instanceRepo = InMemoryInstanceRepo();
++    gateway = MockGatewayClient();
++
++    await instanceRepo.save(
++      Instance(
++        id: _instanceId,
++        name: 'Test',
++        gatewayUrl: 'wss://test.example.com:443',
++        tokenRef: 'test-token-ref',
++        healthStatus: HealthStatus.online,
++        isLocalNetwork: false,
++      ),
++    );
++  });
++
++  ChatViewModel createViewModel() {
++    return ChatViewModel(
++      agentRepo: agentRepo,
++      conversationRepo: conversationRepo,
++      messageRepo: messageRepo,
++      instanceRepo: instanceRepo,
++      gatewayClient: gateway,
++      sendMessageUseCase: SendMessageUseCase(
++        messageRepo: messageRepo,
++        conversationRepo: conversationRepo,
++        instanceRepo: instanceRepo,
++        gatewayClient: gateway,
++      ),
++      instanceId: _instanceId,
++      agentId: _agentId,
++      achievementChecker: _MockAchievementChecker(),
++      flushDelay: Duration.zero,
++    );
++  }
++
++  group('ChatViewModel.watchById reactivity', () {
++    test('init() subscribes to watchById (covers bug: local profile save '
++        'must reflect immediately in chat room)', () async {
++      await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
++
++      final vm = createViewModel();
++      await vm.init();
++
++      expect(vm.agent, isNotNull);
++      expect(vm.agent!.quickCommands, isEmpty);
++
++      // 模拟 AgentConfigPage 保存快捷指令
++      await agentRepo.updateFullProfile(
++        _agentId,
++        quickCommands: [
++          QuickCommand(
++            id: 'c1',
++            agentId: _agentId,
++            label: '状态',
++            payload: '/status',
++            sortOrder: 0,
++          ),
++        ],
++      );
++
++      // 关键: 不需要发消息, vm.agent 应该已经反映新值
++      expect(
++        vm.agent!.quickCommands.length,
++        1,
++        reason: 'watchById 应让 vm.agent 在保存后立刻反映新 quickCommands',
++      );
++      expect(vm.agent!.quickCommands.first.payload, '/status');
++      // ★ state.quickCommands 镜像必须同步,否则 ChatRoomPage.build()
++      //   不会 rebuild(Riverpod state.== dedup)。
++      expect(
++        vm.state.quickCommands.length,
++        1,
++        reason:
++            'state.quickCommands must update so ChatRoomPage.build() re-runs',
++      );
++      expect(vm.state.quickCommands.first.payload, '/status');
++    });
++
++    test(
++      'state.quickCommands changes when watchById emits new quickCommands '
++      '(regression: Riverpod == dedup would otherwise suppress rebuild)',
++      () async {
++        await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
++        final vm = createViewModel();
++        await vm.init();
++        final beforeState = vm.state;
++        expect(beforeState.quickCommands, isEmpty);
++
++        await agentRepo.updateFullProfile(
++          _agentId,
++          quickCommands: [
++            QuickCommand(
++              id: 'c1',
++              agentId: _agentId,
++              label: 'X',
++              payload: '/x',
++              sortOrder: 0,
++            ),
++          ],
++        );
++
++        // 关键断言: state 引用必须不同 (Riverpod 会触发 rebuild)
++        expect(
++          identical(vm.state, beforeState),
++          isFalse,
++          reason: 'state must be a new instance so Riverpod notifies listeners',
++        );
++        expect(vm.state.quickCommands.length, 1);
++        expect(vm.state.quickCommands.first.payload, '/x');
++      },
++    );
++
++    test('init() subscribes to watchById for nickname change', () async {
++      await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
++
++      final vm = createViewModel();
++      await vm.init();
++
++      expect(vm.agent!.nickname, isNull);
++
++      await agentRepo.updateLocalProfile(_agentId, nickname: '小虾');
++
++      expect(vm.agent!.nickname, '小虾');
++    });
++
++    test('dispose() cancels agent subscription', () async {
++      await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
++
++      final vm = createViewModel();
++      await vm.init();
++      vm.dispose();
++
++      // dispose 后再更新, vm.agent 不应再变化
++      final agentBefore = vm.agent;
++      await agentRepo.updateLocalProfile(_agentId, nickname: 'after-dispose');
++
++      expect(
++        vm.agent,
++        same(agentBefore),
++        reason: 'dispose 后订阅取消, vm.agent 不再变',
++      );
++    });
++
++    test(
++      'watchById error does not crash init or other subscriptions',
++      () async {
++        // 用 mocktail 模拟 watchById 抛异常
++        final mockRepo = _MockAgentRepo();
++        when(
++          () => mockRepo.getById(_agentId),
++        ).thenAnswer((_) async => _activeAgent());
++        when(() => mockRepo.watchById(_agentId)).thenAnswer(
++          (_) => Stream<Agent?>.error(Exception('simulated stream error')),
++        );
++
++        final vm = ChatViewModel(
++          agentRepo: mockRepo,
++          conversationRepo: conversationRepo,
++          messageRepo: messageRepo,
++          instanceRepo: instanceRepo,
++          gatewayClient: gateway,
++          sendMessageUseCase: SendMessageUseCase(
++            messageRepo: messageRepo,
++            conversationRepo: conversationRepo,
++            instanceRepo: instanceRepo,
++            gatewayClient: gateway,
++          ),
++          instanceId: _instanceId,
++          agentId: _agentId,
++          achievementChecker: _MockAchievementChecker(),
++          flushDelay: Duration.zero,
++        );
++
++        // init 应不崩溃 (Law 8: catch 必有 debugPrint, 不影响其他订阅)
++        await vm.init();
++
++        // agent 已加载
++        expect(vm.agent, isNotNull);
++
++        vm.dispose();
++      },
++    );
++  });
++}
+diff --git a/test/features/chat_room/thinking_indicator_test.dart b/test/features/chat_room/thinking_indicator_test.dart
+index bf8c22e..6b33335 100644
+--- a/test/features/chat_room/thinking_indicator_test.dart
++++ b/test/features/chat_room/thinking_indicator_test.dart
+@@ -1,22 +1,25 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_test/flutter_test.dart';
++import 'package:claw_hub/app/theme/agent_theme.dart';
+ import 'package:claw_hub/features/chat_room/widgets/thinking_indicator.dart';
+ 
+ void main() {
+   group('ThinkingIndicator', () {
+-    Widget buildIndicator() {
+-      return const MaterialApp(
+-        home: Scaffold(
+-          body: ThinkingIndicator(),
+-        ),
++    Widget buildIndicator({AgentTheme? agentTheme}) {
++      return MaterialApp(
++        theme: ThemeData(extensions: agentTheme != null ? [agentTheme] : []),
++        home: const Scaffold(body: ThinkingIndicator()),
+       );
+     }
+ 
+-    testWidgets('renders psychology icon indicating AI thinking', (tester) async {
+-      await tester.pumpWidget(buildIndicator());
++    testWidgets(
++      'does NOT render psychology avatar icon (spec §4.3: bubble+dots only)',
++      (tester) async {
++        await tester.pumpWidget(buildIndicator());
+ 
+-      expect(find.byIcon(Icons.psychology), findsOneWidget);
+-    });
++        expect(find.byIcon(Icons.psychology), findsNothing);
++      },
++    );
+ 
+     testWidgets('renders three bouncing dots inside bubble', (tester) async {
+       await tester.pumpWidget(buildIndicator());
+@@ -39,8 +42,54 @@ void main() {
+ 
+       // Pump forward to exercise the animation controller (now 800ms cycle)
+       await tester.pump(const Duration(milliseconds: 300));
+-      // Widget should still be present after animation ticks
+-      expect(find.byIcon(Icons.psychology), findsOneWidget);
++      // Three dots should still be present after animation ticks
++      expect(dotFinder, findsNWidgets(3));
++    });
++
++    testWidgets('dots use AgentTheme primary color when present', (
++      tester,
++    ) async {
++      await tester.pumpWidget(
++        buildIndicator(
++          agentTheme: const AgentTheme(primary: Color(0xFF5F9B96)),
++        ),
++      );
++
++      // Find dot Containers by BoxDecoration.shape == BoxShape.circle (only the
++      // bouncing dots have circular decoration; the bubble Container has
++      // BorderRadius, not shape).
++      final dotFinder = find.byWidgetPredicate(
++        (w) =>
++            w is Container &&
++            w.decoration is BoxDecoration &&
++            (w.decoration as BoxDecoration).shape == BoxShape.circle,
++      );
++      expect(dotFinder, findsNWidgets(3));
++      for (final element in dotFinder.evaluate()) {
++        final container = element.widget as Container;
++        final decoration = container.decoration as BoxDecoration;
++        expect(decoration.color, const Color(0xFF5F9B96));
++      }
+     });
++
++    testWidgets(
++      'dots fall back to sapphire (#4F83FF) when no AgentTheme in scope',
++      (tester) async {
++        await tester.pumpWidget(buildIndicator()); // no agentTheme
++
++        final dotFinder = find.byWidgetPredicate(
++          (w) =>
++              w is Container &&
++              w.decoration is BoxDecoration &&
++              (w.decoration as BoxDecoration).shape == BoxShape.circle,
++        );
++        expect(dotFinder, findsNWidgets(3));
++        for (final element in dotFinder.evaluate()) {
++          final container = element.widget as Container;
++          final decoration = container.decoration as BoxDecoration;
++          expect(decoration.color, const Color(0xFF4F83FF)); // V2 sapphire
++        }
++      },
++    );
+   });
+ }
+diff --git a/test/features/instance_manager/instance_card_test.dart b/test/features/instance_manager/instance_card_test.dart
+index 5761692..128de9b 100644
+--- a/test/features/instance_manager/instance_card_test.dart
++++ b/test/features/instance_manager/instance_card_test.dart
+@@ -19,6 +19,24 @@ Widget _wrap(Widget child) {
+   );
+ }
+ 
++/// Predicate: true iff the widget is an [AnimatedScale] whose direct child
++/// is an [AnimatedContainer] that in turn holds an [Icon] matching [icon].
++///
++/// Walks down through [AnimatedContainer.child] only — the action button
++/// places the icon as the AnimatedContainer's child via PressFeedback's
++/// `builder` parameter. This uniquely identifies the _ActionBtn's scale
++/// wrapper (vs. the outer InstanceCard's AnimatedScale, whose child is a
++/// plain Container, not an AnimatedContainer).
++bool Function(Widget) _wrapsIconInScale(IconData icon) {
++  return (Widget w) {
++    if (w is! AnimatedScale) return false;
++    final container = w.child;
++    if (container is! AnimatedContainer) return false;
++    final child = container.child;
++    return child is Icon && child.icon == icon;
++  };
++}
++
+ /// ProviderScope override that injects a test [ConnectionOrchestrator].
+ Widget _wrapWithOrchestrator(
+   Widget child, {
+@@ -154,6 +172,8 @@ class _NoopAgentRepo implements IAgentRepo {
+   }) async {}
+   @override
+   Future<void> deleteByInstanceId(String instanceId) async {}
++  @override
++  Stream<Agent?> watchById(String localId) => const Stream<Agent?>.empty();
+ }
+ 
+ void main() {
+@@ -378,16 +398,18 @@ void main() {
+         _wrap(InstanceCard(instance: testInstance, onTap: () {})),
+       );
+ 
++      // Verify the _ActionBtn wraps its AnimatedContainer in an
++      // AnimatedScale. We walk the tree manually via byWidgetPredicate
++      // because the outer InstanceCard also has an AnimatedScale (from
++      // PressFeedback's automatic scale handling), so naive ancestor
++      // finders would match BOTH and fail findsOneWidget.
+       expect(
+-        find.ancestor(
+-          of: find.byIcon(Icons.refresh),
+-          matching: find.byType(AnimatedScale),
+-        ),
++        find.byWidgetPredicate(_wrapsIconInScale(Icons.refresh)),
+         findsOneWidget,
+         reason:
+-            'The refresh (reconnect) button must scale on press. '
+-            'Color-only feedback (surface2→surface3) is below the '
+-            'human-perception threshold (~3% delta).',
++            'The action button must scale on press. Color-only feedback '
++            '(surface2→surface3) is below the human-perception threshold '
++            '(~3% delta).',
+       );
+     });
+ 
+@@ -405,15 +427,167 @@ void main() {
+       );
+ 
+       expect(
+-        find.ancestor(
+-          of: find.byIcon(Icons.delete_outline),
+-          matching: find.byType(AnimatedScale),
+-        ),
++        find.byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline)),
+         findsOneWidget,
+         reason:
+             'The delete button must scale on press. '
+             'Currently the danger variant has zero press feedback.',
+       );
+     });
++
++    testWidgets('refresh button scale factor decreases mid-press', (
++      tester,
++    ) async {
++      // Stronger guarantee than "AnimatedScale exists": verify the scale
++      // factor actually changes during a press gesture. Catches a future
++      // refactor that wraps the AnimatedContainer in an unused AnimatedScale.
++      // Use a fake orchestrator because the real one opens a WebSocket on
++      // tap, which would fail in the test environment.
++      final orch = _TestOrchestrator();
++      await tester.pumpWidget(
++        _wrapWithOrchestrator(
++          InstanceCard(instance: testInstance, onTap: () {}),
++          orchestrator: orch,
++        ),
++      );
++
++      AnimatedScale readInnerScale() =>
++          find
++                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
++                  .evaluate()
++                  .single
++                  .widget
++              as AnimatedScale;
++
++      expect(
++        readInnerScale().scale,
++        equals(1.0),
++        reason: 'Initial (idle) scale must be 1.0',
++      );
++
++      final gesture = await tester.startGesture(
++        tester.getCenter(find.byIcon(Icons.refresh)),
++      );
++      await tester.pump(
++        XiaMotion.durationFast + const Duration(milliseconds: 50),
++      );
++
++      expect(
++        readInnerScale().scale,
++        lessThan(1.0),
++        reason:
++            'While pressed, the inner scale must be < 1.0 so the user '
++            'perceives the press.',
++      );
++
++      await gesture.up();
++      await tester.pump(
++        XiaMotion.durationFast + const Duration(milliseconds: 50),
++      );
++      expect(
++        readInnerScale().scale,
++        equals(1.0),
++        reason: 'After release, scale must return to 1.0',
++      );
++    });
++
++    testWidgets('refresh button shows accent border on press', (tester) async {
++      // The PRIMARY visible feedback signal — color-only or scale-only
++      // changes are too subtle on a 36×36 button. A 1px accent border
++      // (matching _AddInstanceCard pattern) is unambiguous on a real
++      // device. Without this, the user has no way to know the tap
++      // registered.
++      final orch = _TestOrchestrator();
++      await tester.pumpWidget(
++        _wrapWithOrchestrator(
++          InstanceCard(instance: testInstance, onTap: () {}),
++          orchestrator: orch,
++        ),
++      );
++
++      AnimatedScale readInnerScale() =>
++          find
++                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
++                  .evaluate()
++                  .single
++                  .widget
++              as AnimatedScale;
++
++      // Idle: no border, surface2 background.
++      final idle = readInnerScale().child as AnimatedContainer;
++      expect(idle.decoration, isA<BoxDecoration>());
++      expect(
++        (idle.decoration as BoxDecoration).border,
++        isNull,
++        reason: 'Idle state must not have a border (avoids 1px layout shift)',
++      );
++      expect(
++        (idle.decoration as BoxDecoration).color,
++        equals(XiaColors.surface2),
++      );
++
++      // Press: 1px accent border.
++      final gesture = await tester.startGesture(
++        tester.getCenter(find.byIcon(Icons.refresh)),
++      );
++      await tester.pump(
++        XiaMotion.durationFast + const Duration(milliseconds: 50),
++      );
++
++      final pressed = readInnerScale().child as AnimatedContainer;
++      final pressedBorder =
++          (pressed.decoration as BoxDecoration).border as Border;
++      expect(
++        pressedBorder.top.color,
++        equals(XiaColors.accent),
++        reason: 'Pressed state must show accent (bright blue) border',
++      );
++
++      await gesture.up();
++    });
++
++    testWidgets('delete button shows red border on press', (tester) async {
++      // The danger variant must also get a clearly visible feedback signal
++      // (red border, not just a tiny scale change). Before the fix, the
++      // delete button had zero press feedback.
++      await tester.pumpWidget(
++        _wrap(
++          InstanceCard(instance: testInstance, onTap: () {}, onDelete: () {}),
++        ),
++      );
++
++      AnimatedScale readInnerScale() =>
++          find
++                  .byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline))
++                  .evaluate()
++                  .single
++                  .widget
++              as AnimatedScale;
++
++      final idle = readInnerScale().child as AnimatedContainer;
++      expect(
++        (idle.decoration as BoxDecoration).border,
++        isNull,
++        reason: 'Idle state must not have a border (avoids 1px layout shift)',
++      );
++
++      final gesture = await tester.startGesture(
++        tester.getCenter(find.byIcon(Icons.delete_outline)),
++      );
++      await tester.pump(
++        XiaMotion.durationFast + const Duration(milliseconds: 50),
++      );
++
++      final pressed = readInnerScale().child as AnimatedContainer;
++      final pressedBorder =
++          (pressed.decoration as BoxDecoration).border as Border;
++      expect(
++        pressedBorder.top.color,
++        equals(XiaColors.red),
++        reason: 'Pressed delete button must show red border',
++      );
++
++      await gesture.up();
++    });
+   });
+ }
+
+=== UNCOMMITTED WORKING TREE (HEAD...working) ===
+diff --git a/lib/domain/models/agent.dart b/lib/domain/models/agent.dart
+index aa0d944..e64c53a 100644
+--- a/lib/domain/models/agent.dart
++++ b/lib/domain/models/agent.dart
+@@ -50,6 +50,48 @@ class Agent {
+   /// US-021: Agent 是否已被用户主动隐藏（v2 预留，v1 恒为 false）。
+   bool get isHidden => hiddenAt != null;
+ 
++  /// Content-aware equality — true iff two Agents agree on every user-visible
++  /// field, not just identity ([localId]/[removedAt]/[hiddenAt]).
++  ///
++  /// Differs from [operator ==] (identity + tombstone flags only) by also
++  /// comparing [nickname], [themeColor], [avatarUrl], [description],
++  /// [quickCommands], [createdAt], and the non-identity scalars. Used by
++  /// reactive UI layers (Riverpod state) to dedup correctly when [Agent] is
++  /// replaced with a content-updated copy from the DB.
++  ///
++  /// Excludes [isPinned] deliberately — pinning is a list-view concern (handled
++  /// by `agentsProvider` sort), not a chat-relevant content field.
++  bool contentEquals(Agent other) {
++    if (identical(this, other)) return true;
++    return localId == other.localId &&
++        remoteId == other.remoteId &&
++        instanceId == other.instanceId &&
++        name == other.name &&
++        nickname == other.nickname &&
++        avatarUrl == other.avatarUrl &&
++        themeColor == other.themeColor &&
++        description == other.description &&
++        _quickCommandsEqual(quickCommands, other.quickCommands) &&
++        createdAt == other.createdAt &&
++        removedAt == other.removedAt &&
++        hiddenAt == other.hiddenAt;
++  }
++
++  /// Element-wise equality for [quickCommands] lists. Hand-rolled to comply
++  /// with Law 1 (domain layer must have zero Flutter imports — `listEquals`
++  /// from `package:flutter/foundation.dart` is unavailable here).
++  static bool _quickCommandsEqual(
++    List<QuickCommand> a,
++    List<QuickCommand> b,
++  ) {
++    if (identical(a, b)) return true;
++    if (a.length != b.length) return false;
++    for (var i = 0; i < a.length; i++) {
++      if (a[i] != b[i]) return false;
++    }
++    return true;
++  }
++
+   void _validate() {
+     if (name.trim().isEmpty) {
+       throw ArgumentError('Agent 名称不能为空');
+diff --git a/lib/features/agent_profile/agent_config_page.dart b/lib/features/agent_profile/agent_config_page.dart
+index 3111e09..a7130f3 100644
+--- a/lib/features/agent_profile/agent_config_page.dart
++++ b/lib/features/agent_profile/agent_config_page.dart
+@@ -338,9 +338,10 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
+     };
+ 
+     // US-021 v1.1: tombstoned agent 不进入配置表单。
++    // Step 6: 直接读 vm.agent.isRemoved (mirror ChatRoomPage Step 3 模式)。
+     // ConfigPage 没有 source 字段（始终从 Profile 上下文进入），source 传 null。
+     // data 可空 —— init 中途失败时仍渲染「已移除」核心信息。
+-    if (state.isAgentRemoved) {
++    if (vm.agent?.isRemoved ?? false) {
+       return AgentRemovedPlaceholder(
+         agentName: detail?.agent.displayName,
+         source: null,
+diff --git a/lib/features/agent_profile/agent_profile_page.dart b/lib/features/agent_profile/agent_profile_page.dart
+index 6e87252..0fdc735 100644
+--- a/lib/features/agent_profile/agent_profile_page.dart
++++ b/lib/features/agent_profile/agent_profile_page.dart
+@@ -60,9 +60,12 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
+     final theme = Theme.of(context);
+ 
+     // US-021 v1.1: tombstoned agent 显示占位页（与 ChatRoom AC8 同模式）。
++    // Step 6: 直接读 vm.agent.isRemoved —— 不再依赖 state.isAgentRemoved
++    // 字段。看似绕过 ref.watch，但 _setAgent 调用会同步 bump
++    // state.contentRevision 触发本 build 重建，getter 拿到的是最新 _agent。
+     // data 可空 —— init 中途失败时 detailLoadState 仍为 LoadInProgress /
+     // LoadError，agentName=null，placeholder 仍渲染「已移除」核心信息。
+-    if (state.isAgentRemoved) {
++    if (vm.agent?.isRemoved ?? false) {
+       final data = switch (state.detailLoadState) {
+         LoadData<AgentDetailData>(:final value) => value,
+         _ => null,
+diff --git a/lib/features/agent_profile/viewmodels/agent_profile_view_model.dart b/lib/features/agent_profile/viewmodels/agent_profile_view_model.dart
+index 64d88e0..9abe67e 100644
+--- a/lib/features/agent_profile/viewmodels/agent_profile_view_model.dart
++++ b/lib/features/agent_profile/viewmodels/agent_profile_view_model.dart
+@@ -72,6 +72,11 @@ class AgentDetailData {
+ ///
+ /// 同时服务 AgentProfilePage（消费 [detailLoadState]）和
+ /// AgentConfigPage（消费 [isSaving]/[saveError]/[saveSuccess]）。
++///
++/// 2026-06-26 refactor: US-021 tombstone 检测从 `isAgentRemoved: bool` 字段
++/// 迁移到 `vm.agent.isRemoved` 直读 —— 配合 `Agent.contentEquals` 让
++/// Riverpod dedup 自然放行内容变更。`contentRevision` 字段保留作为
++/// rebuild 触发器（`_setAgent` 调用时 bump），与 ChatSessionState 同模式。
+ class AgentProfileState {
+   final LoadState<AgentDetailData> detailLoadState;
+   final bool isSaving;
+@@ -79,10 +84,13 @@ class AgentProfileState {
+   final bool saveSuccess;
+   final List<Achievement> newUnlocks; // freshly unlocked this session
+ 
+-  /// US-021 v1.1: 当前 agent 是否已被 Gateway 端删除（tombstoned）。
+-  /// 响应式字段 —— 与 ChatSessionState.isAgentRemoved 模式一致。
+-  /// 任何 `_agent =` 写入点必须同步此字段（_syncAgentRemoved helper）。
+-  final bool isAgentRemoved;
++  /// Monotonic counter bumped whenever [_agent] changes in a content-visible
++  /// way (post [Agent.contentEquals] filter). UI reads `vm.agent` directly for
++  /// tombstone + content data; this field exists to drive Riverpod's
++  /// `ref.watch` rebuild when content changes bypass identity-only
++  /// `Agent.==` dedup (tombstone transitions, nickname/themeColor changes,
++  /// profile save reflects).
++  final int contentRevision;
+ 
+   const AgentProfileState({
+     this.detailLoadState = const LoadInProgress(),
+@@ -90,7 +98,7 @@ class AgentProfileState {
+     this.saveError,
+     this.saveSuccess = false,
+     this.newUnlocks = const [],
+-    this.isAgentRemoved = false,
++    this.contentRevision = 0,
+   });
+ 
+   /// copyWith 使用 [CopyWithSentinel] 区分 "未传参" 和 "显式传 null"，
+@@ -101,7 +109,7 @@ class AgentProfileState {
+     Object? saveError = CopyWithSentinel.instance,
+     bool? saveSuccess,
+     List<Achievement>? newUnlocks,
+-    bool? isAgentRemoved,
++    int? contentRevision,
+   }) {
+     return AgentProfileState(
+       detailLoadState: detailLoadState ?? this.detailLoadState,
+@@ -109,7 +117,7 @@ class AgentProfileState {
+       saveError: copyWithNullable(saveError, this.saveError),
+       saveSuccess: saveSuccess ?? this.saveSuccess,
+       newUnlocks: newUnlocks ?? this.newUnlocks,
+-      isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
++      contentRevision: contentRevision ?? this.contentRevision,
+     );
+   }
+ 
+@@ -122,7 +130,7 @@ class AgentProfileState {
+           saveError == other.saveError &&
+           saveSuccess == other.saveSuccess &&
+           newUnlocks == other.newUnlocks &&
+-          isAgentRemoved == other.isAgentRemoved;
++          contentRevision == other.contentRevision;
+ 
+   @override
+   int get hashCode => Object.hash(
+@@ -131,7 +139,7 @@ class AgentProfileState {
+     saveError,
+     saveSuccess,
+     newUnlocks,
+-    isAgentRemoved,
++    contentRevision,
+   );
+ }
+ 
+@@ -156,22 +164,38 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
+   /// 用于 write guard 在不重新查库的前提下判断 tombstone 状态。
+   Agent? _agent;
+ 
+-  /// US-021 v1.1: 同步 _agent 的 tombstone 状态到 state.isAgentRemoved。
+-  /// 必须在每个 `_agent =` 写入点调用一次（SSOT）。
+-  void _syncAgentRemoved() {
+-    _updateState((s) => s.copyWith(isAgentRemoved: _agent?.isRemoved ?? false));
++  /// Public read-only view of [_agent] for UI consumers (e.g., AgentProfilePage
++  /// / AgentConfigPage reading `vm.agent.isRemoved` for tombstone detection).
++  /// 与 ChatViewModel.agent getter 同模式 —— UI 看似绕过 ref.watch，但
++  /// [_setAgent] 调用会同步 bump [AgentProfileState.contentRevision]，
++  /// 触发 Riverpod 重建，build() 中 getter 拿到的是最新 [_agent]。
++  Agent? get agent => _agent;
++
++  /// 写入 [_agent] 并 bump [AgentProfileState.contentRevision] —— 替换了
++  /// 之前的 `_agent = X; _syncAgentRemoved();` 双行模式（US-021 v1.1）。
++  /// 必须把每个 `_agent =` 写入点放进来，否则 contentRevision 不 bump，
++  /// ticker 触发的 tombstone 翻转不会驱动 UI 重建。
++  void _setAgent(Agent? agent) {
++    _agent = agent;
++    _updateState((s) => s.copyWith(contentRevision: s.contentRevision + 1));
+   }
+ 
++  /// 测试专用 hook:直接写入 [_agent] + bump [contentRevision]，不触发完整
++  /// refresh 链路。Widget 测试用它构造特定 tombstone 状态(详见
++  /// `agent_profile_page_test.dart` 模板)。生产代码请走 `init()` /
++  /// `refreshAgent()`。
++  @visibleForTesting
++  void debugSetAgent(Agent? agent) => _setAgent(agent);
++
+   /// US-021 v1.1: 响应式重查入口。provider 侧 `ref.listen(agentSyncTickerProvider)`
+   /// 在 agents 同步完成后调用，把最新 tombstone 状态写进 state。
+   Future<void> refreshAgent() async {
+     try {
+-      _agent = await _agentRepo.getById(agentId);
++      _setAgent(await _agentRepo.getById(agentId));
+     } catch (e, st) {
+       debugPrint('[AgentProfileViewModel] refreshAgent failed: $e\n$st');
+       return;
+     }
+-    _syncAgentRemoved();
+   }
+ 
+   /// BUG B 修复入口:暴露 agent 的 instanceId,让 provider 层的 ticker
+@@ -221,8 +245,9 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
+       final agent = await _agentRepo.getById(agentId);
+       if (agent == null) throw AgentNotFoundError(agentId);
+       // US-021 v1.1: 缓存 _agent 并同步 tombstone 状态（SSOT）。
+-      _agent = agent;
+-      _syncAgentRemoved();
++      // Step 6: 走 _setAgent —— 顺带 bump contentRevision 触发 UI rebuild，
++      // 不再单独调 _syncAgentRemoved (helper 已删)。
++      _setAgent(agent);
+ 
+       // The four detail-loads below are independent (instance + counts +
+       // stats + activity) and only need the already-resolved agent. Run
+@@ -258,12 +283,12 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
+       );
+     } catch (error, stackTrace) {
+       // US-021: 详情加载失败时不应继续显示 tombstone 占位页，否则用户看不到
+-      // 错误信息。重置 isAgentRemoved 让 UI 回退到 LoadError 状态。
++      // 错误信息。_setAgent(null) 清掉 _agent 缓存 + bump contentRevision，
++      // UI 重建后 vm.agent?.isRemoved ?? false = false，回退到 LoadError
++      // 而不是上一轮的 tombstone 占位页。
++      _setAgent(null);
+       _updateState(
+-        (s) => s.copyWith(
+-          detailLoadState: LoadError(error, stackTrace),
+-          isAgentRemoved: false,
+-        ),
++        (s) => s.copyWith(detailLoadState: LoadError(error, stackTrace)),
+       );
+     }
+   }
+diff --git a/lib/features/chat_room/chat_room_page.dart b/lib/features/chat_room/chat_room_page.dart
+index bbfad80..54fbb7a 100644
+--- a/lib/features/chat_room/chat_room_page.dart
++++ b/lib/features/chat_room/chat_room_page.dart
+@@ -141,12 +141,13 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
+     final vm = ref.read(chatViewModelProvider(params).notifier);
+     final agent = vm.agent;
+     // US-021 AC8: agent 已被 Gateway 删除（tombstoned）时不进入聊天界面。
+-    // 用 session.isAgentRemoved（响应式字段）而非 vm.agent（_agent 是非响应式
+-    // 缓存，后台 sync tombstone 后不会更新）—— refreshAgent() 与所有 _agent
+-    // 写入点会同步此字段，state 变化经 ref.watch 触发本 build 重建。
++    // Step 3: 直接读 vm.agent.isRemoved —— 不再依赖 session 的 tombstone 标志字段
++    // 字段。看似绕过 ref.watch，但 [_setAgent] 会同步 bump
++    // session.contentRevision，state 变化经 ref.watch 触发本 build 重建，
++    // build() 中 vm.agent getter 拿到的是最新 _agent（含最新 isRemoved）。
+     // US-021 v1.2: 迁移到 AgentRemovedPlaceholder widget，与 AgentProfilePage /
+     // AgentConfigPage 共用同一份占位页（避免三处文案/样式 drift）。
+-    if (session.isAgentRemoved) {
++    if (agent?.isRemoved ?? false) {
+       return AgentRemovedPlaceholder(
+         agentName: agent?.displayName,
+         source: widget.source,
+diff --git a/lib/features/chat_room/providers/chat_providers.dart b/lib/features/chat_room/providers/chat_providers.dart
+index fe4afca..f1b6006 100644
+--- a/lib/features/chat_room/providers/chat_providers.dart
++++ b/lib/features/chat_room/providers/chat_providers.dart
+@@ -68,8 +68,9 @@ final chatViewModelProvider =
+       // US-021 AC8 响应式：agents 同步完成后（含 tombstone/复活）重查 agent。
+       // 用户停在 ChatRoom 期间，后台 syncFromGateway 可能 tombstone 当前
+       // agent —— 不 listen 则占位页无法响应式出现（_agent 是非响应式缓存）。
+-      // refreshAgent 把最新 tombstone 状态写进 state.isAgentRemoved，UI 经
+-      // ref.watch(chatViewModelProvider) 自然重建。与 agentListProvider /
++      // refreshAgent 走 _setAgent 路径更新 _agent + bump contentRevision，
++      // UI 经 ref.watch(chatViewModelProvider) 自然重建后读
++      // vm.agent.isRemoved 触发占位页。与 agentListProvider /
+       // conversationListProvider 同模式（均 watch 此 ticker）。
+       //
+       // BUG B 修复:ticker = StateProvider<String?> 携带被同步的 instanceId。
+diff --git a/lib/features/chat_room/viewmodels/chat_view_model.dart b/lib/features/chat_room/viewmodels/chat_view_model.dart
+index 4239702..13b3b80 100644
+--- a/lib/features/chat_room/viewmodels/chat_view_model.dart
++++ b/lib/features/chat_room/viewmodels/chat_view_model.dart
+@@ -10,7 +10,6 @@ import 'package:claw_hub/domain/models/conversation.dart';
+ import 'package:claw_hub/domain/models/enums.dart';
+ import 'package:claw_hub/domain/models/message.dart';
+ import 'package:claw_hub/domain/models/message_status.dart';
+-import 'package:claw_hub/domain/models/quick_command.dart';
+ import 'package:claw_hub/domain/models/tool_call.dart';
+ import 'package:claw_hub/domain/repositories/repositories.dart';
+ import 'package:claw_hub/core/i_achievement_checker.dart';
+@@ -65,24 +64,15 @@ class ChatSessionState {
+   /// 使用 [CopyWithSentinel] 以支持显式清空。
+   final String? highlightedQuery;
+ 
+-  /// US-021 AC8: 当前 agent 是否已被 Gateway 端删除（tombstoned）。
++  /// Monotonic counter bumped whenever [_agent] changes in a content-visible
++  /// way (post [Agent.contentEquals] filter). UI reads `vm.agent` directly for
++  /// the actual values; this field exists to drive Riverpod's `ref.watch`
++  /// rebuild when content changes bypass identity-only `Agent.==` dedup
++  /// (nickname / themeColor / quickCommands / tombstone transitions).
+   ///
+-  /// 这是 ChatSessionState 的响应式字段 —— 与 [_agent]（私有缓存，
+-  /// 非响应式）解耦。后台 sync tombstone 时由 [refreshAgent]（监听
+-  /// agentSyncTickerProvider）刷新此字段，UI 通过 ref.watch 自然重建、
+-  /// 渲染"已移除"占位页。
+-  ///
+-  /// 不把整个 [Agent] 放入 state：Agent.== 仅比较 localId（不含 removedAt），
+-  /// tombstone 后 state 看似不变 → Riverpod 不通知重建 → AC8 占位页失效。
+-  /// 故用独立 bool 驱动，所有 [_agent] 写入点必须同步此字段。
+-  final bool isAgentRemoved;
+-
+-  /// 同步于 vm.agent.quickCommands —— 任意 DB 写入触发 rebuild，让 UI 在
+-  /// ChatRoomPage.build() 中重新读取 vm.agent.quickCommands 拿到新值。
+-  /// 不放进 == 比较会导致 Riverpod 状态去重不通知 UI rebuild（仅
+-  /// isAgentRemoved 变更才 dedup 不命中，quickCommands/nickname 等字段变更
+-  /// 完全无 rebuild 信号）。
+-  final List<QuickCommand> quickCommands;
++  /// 替换了之前的 `agentRevision`（无差别 bump，包括 seed-event 重放）。
++  /// 现在只有真实内容变更才会 bump，seed event 被 contentEquals 过滤掉。
++  final int contentRevision;
+ 
+   const ChatSessionState({
+     this.messages = const LoadInProgress(),
+@@ -94,8 +84,7 @@ class ChatSessionState {
+     this.retryFeedback,
+     this.highlightedMessageId,
+     this.highlightedQuery,
+-    this.isAgentRemoved = false,
+-    this.quickCommands = const [],
++    this.contentRevision = 0,
+   });
+ 
+   ChatSessionState copyWith({
+@@ -110,8 +99,7 @@ class ChatSessionState {
+     Object? retryFeedback = CopyWithSentinel.instance,
+     Object? highlightedMessageId = CopyWithSentinel.instance,
+     Object? highlightedQuery = CopyWithSentinel.instance,
+-    bool? isAgentRemoved,
+-    List<QuickCommand>? quickCommands,
++    int? contentRevision,
+   }) {
+     return ChatSessionState(
+       messages: messages ?? this.messages,
+@@ -129,8 +117,7 @@ class ChatSessionState {
+         highlightedQuery,
+         this.highlightedQuery,
+       ),
+-      isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
+-      quickCommands: quickCommands ?? this.quickCommands,
++      contentRevision: contentRevision ?? this.contentRevision,
+     );
+   }
+ 
+@@ -147,8 +134,7 @@ class ChatSessionState {
+           retryFeedback == other.retryFeedback &&
+           highlightedMessageId == other.highlightedMessageId &&
+           highlightedQuery == other.highlightedQuery &&
+-          isAgentRemoved == other.isAgentRemoved &&
+-          quickCommands == other.quickCommands;
++          contentRevision == other.contentRevision;
+ 
+   @override
+   int get hashCode => Object.hash(
+@@ -161,8 +147,7 @@ class ChatSessionState {
+     retryFeedback,
+     highlightedMessageId,
+     highlightedQuery,
+-    isAgentRemoved,
+-    quickCommands,
++    contentRevision,
+   );
+ }
+ 
+@@ -323,15 +308,22 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+   /// The loaded agent (null until [init] completes).
+   Agent? get agent => _agent;
+ 
+-  /// US-021: 把当前 [_agent] 的 tombstone 状态同步进 [ChatSessionState]。
+-  ///
+-  /// 必须在**每个** `_agent =` 写入点之后调用，使 `state.isAgentRemoved`
+-  /// 始终反映最新缓存。AC8 占位页靠此字段响应式重建 —— 若漏调某写入点，
+-  /// 该路径下占位页会与真实状态脱节。
+-  void _syncAgentRemoved() {
+-    _updateState((s) => s.copyWith(isAgentRemoved: _agent?.isRemoved ?? false));
++  /// Stores the latest agent snapshot and publishes the state fields derived
++  /// from it. Keep all [_agent] writes behind this helper so tombstone state
++  /// and non-identity agent updates stay in sync.
++  void _setAgent(Agent? agent) {
++    _agent = agent;
++    _updateState((s) => s.copyWith(contentRevision: s.contentRevision + 1));
+   }
+ 
++  /// 测试专用 hook:直接写入 [_agent] + bump [contentRevision]，不触发完整
++  /// init/refresh 链路。Widget 测试用它绕过 7 个 stream 订阅构造一个特定
++  /// tombstone 状态(详见 `agent_profile_page_test.dart` 模板)。
++  ///
++  /// 生产代码请走 `init()` / `refreshAgent()` —— 它们会自动建立订阅 + 重查。
++  @visibleForTesting
++  void debugSetAgent(Agent? agent) => _setAgent(agent);
++
+   late final String _conversationId = Conversation.generateId(
+     instanceId,
+     agentId,
+@@ -346,11 +338,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+   Future<void> _init() async {
+     try {
+       // 1. Look up the agent
+-      _agent = await _agentRepo.getById(agentId);
+-      _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（null → false）
+-      _updateState(
+-        (s) => s.copyWith(quickCommands: _agent?.quickCommands ?? const []),
+-      ); // ★ 响应式镜像 quickCommands（避免 Riverpod == dedup）
++      _setAgent(await _agentRepo.getById(agentId));
+       if (_agent == null) {
+         debugPrint(
+           '[ChatViewModel] Agent not found: agentId=$agentId, '
+@@ -381,11 +369,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+ 
+       // ★ 3.5 订阅 agent 响应式 stream
+       // seed event（Drift .watchSingleOrNull() 订阅时立即 emit 当前行）
+-      // 会把 _agent 重写为同值并触发 _syncAgentRemoved() —— 因
+-      // ChatSessionState.copyWith 等价检测，state 写入是 no-op，不触发
+-      // UI 重建。无须额外 .where() 过滤（且 Agent.== 仅比 localId/
+-      // removedAt/hiddenAt 三个身份字段，filter 反而会误丢 quickCommands
+-      // / nickname 等字段变更）。
++      // 携带与 [_agent] 完全相同的内容。用 [Agent.contentEquals]（Step 1）
++      // 过滤掉这种 no-op emit，避免 contentRevision 在 init 同步阶段被误增
++      // （旧逻辑下 revision 会从 1 跳到 2，对应一次无意义的 UI rebuild）。
++      // contentEquals 仍能正确放行所有真实的内容变更（nickname / themeColor /
++      // quickCommands / tombstone 翻转等）。
+       // 包装在 try 中：mocktail 未 stub 的 watchById 可能返回 null，
+       // 真实实现 (InMemory / Drift) 不会。失败只丢响应式刷新，
+       // 不影响其余 6 个 stream 订阅。
+@@ -393,15 +381,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+         final agentStream = _agentRepo.watchById(agentId);
+         _agentSubscription = agentStream.listen(
+           (agent) {
+-            _agent = agent;
+-            _syncAgentRemoved();
+-            // ★ 同步 quickCommands 到 state,确保非 identity 字段
+-            // (quickCommands/nickname/themeColor 等) 变更时 Riverpod
+-            // 不会因 state.== 而抑制 UI rebuild。
+-            _updateState(
+-              (s) =>
+-                  s.copyWith(quickCommands: agent?.quickCommands ?? const []),
+-            );
++            final current = _agent;
++            // - current == null：首次进入，跳过比较直接接收
++            // - agent == null：DB 端删除/消失，必须更新 _agent 让 UI 读到的 isRemoved 从 true 变 false（复活）或 tombstone 后保持 null
++            // - 内容不同：真实变更，走 _setAgent
++            // - 内容相同：seed event 或重放，跳过
++            if (current == null ||
++                agent == null ||
++                !current.contentEquals(agent)) {
++              _setAgent(agent);
++            }
+           },
+           onError: (error, stackTrace) {
+             // Law 8: catch 必有 debugPrint
+@@ -648,12 +637,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+       // retry instead of instantly returning the failed future.
+       _initFuture = null;
+       // Signal to send() that the agent is unavailable (shows LoadError).
+-      _agent = null;
+-      // US-021 v1.1: 显式调 _syncAgentRemoved() 重置 isAgentRemoved = false，
+-      // 避免上轮 tombstone 状态残留导致 AC8 占位页错乱。
+-      // 与 init() line 314 / send() line 634 / refreshAgent() line 878 的
+-      // `_agent =` 写入点同模式，SSOT 单一来源。
+-      _syncAgentRemoved();
++      // _setAgent(null) 同步清掉 _agent 缓存 + bump contentRevision，UI
++      // 重建后 vm.agent?.isRemoved ?? false = false，回退到 LoadError 而
++      // 不是上一轮的 tombstone 占位页。
++      _setAgent(null);
+     }
+   }
+ 
+@@ -745,8 +732,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+         );
+         return;
+       }
+-      _agent = freshAgent;
+-      _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（send 重查后状态可能变）
++      _setAgent(freshAgent);
+     }
+ 
+     // Start a fresh streaming subscription for this send — any stale
+@@ -976,25 +962,25 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+   ///
+   /// 由 provider 侧 `ref.listen(agentSyncTickerProvider)` 在 agents 同步
+   /// 完成后调用。用户在 ChatRoom 停留期间，后台 [syncFromGateway] 可能
+-  /// 把 agent tombstone（远端删除）或复活（远端重新出现）—— 此方法把
+-  /// 该变化反映到 `state.isAgentRemoved`，使 AC8 占位页响应式重建。
++  /// 把 agent tombstone（远端删除）或复活（远端重新出现）—— 此方法走
++  /// `_setAgent` 路径更新 _agent 缓存 + bump contentRevision，UI 重建
++  /// 后读 vm.agent.isRemoved 触发 AC8 占位页。
+   ///
+   /// US-021 v1.2 简化：去掉 `if (initFuture == null) return;` 早退守卫和
+   /// `await initFuture` 等待逻辑。refreshAgent 直接独立 fetch agent —— 与
+   /// init() 的 fetch 完全独立（init 走 tombstone 短路路径，refreshAgent
+-  /// 走 ticker 驱动路径），两者并发时最后一次写入生效，`_syncAgentRemoved`
++  /// 走 ticker 驱动路径），两者并发时最后一次写入生效，`_setAgent`
+   /// 保证 state 反映最终结果。`initFuture` 守卫是过度防御 —— ticker 监听器
+   /// 只在 provider body 中注册，provider body 必先调 `vm.init()`，所以
+   /// 实际不会到达 initFuture == null 路径。简化后代码更清晰,边界路径行为
+   /// 也更可预测（即使 init 尚未完成也会 fetch 并同步 tombstone 状态）。
+   Future<void> refreshAgent() async {
+     try {
+-      _agent = await _agentRepo.getById(agentId);
++      _setAgent(await _agentRepo.getById(agentId));
+     } catch (e, st) {
+       debugPrint('[ChatViewModel] refreshAgent getById failed: $e\n$st');
+       return;
+     }
+-    _syncAgentRemoved();
+   }
+ 
+   /// BUG C 修复入口:在 ticker 命中本实例时同时设 tombstone-suspect 标志
+@@ -1042,8 +1028,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+ 
+     final agent = await _agentRepo.getById(agentId);
+     if (agent == null || agent.isRemoved) {
+-      _agent = agent;
+-      _syncAgentRemoved();
++      _setAgent(agent);
+       _updateState((s) => s.copyWith(retryFeedback: 'Agent 已被删除，无法重试'));
+       return;
+     }
+@@ -1141,12 +1126,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
+     _streamBuffer.clear();
+     _lastPublishedLength = 0;
+     _initFuture = null;
+-    _agent = null;
++    _setAgent(null);
+     _updateState(
+       (s) => s.copyWith(
+         messages: const LoadInProgress(),
+         streamingText: '',
+-        isAgentRemoved: false, // US-021: retry 重置 tombstone 状态，init() 后会再同步
+       ),
+     );
+     await init();
+diff --git a/lib/features/instance_manager/widgets/instance_card.dart b/lib/features/instance_manager/widgets/instance_card.dart
+index 147c8d6..4bd893d 100644
+--- a/lib/features/instance_manager/widgets/instance_card.dart
++++ b/lib/features/instance_manager/widgets/instance_card.dart
+@@ -209,39 +209,32 @@ class _ActionBtn extends StatelessWidget {
+   Widget build(BuildContext context) {
+     return PressFeedback(
+       onTap: onTap,
+-      builder: (child, isPressed) => AnimatedScale(
+-        // Scale + accent border on press — the previous color-only change
+-        // (surface2→surface3) had only ~3% luminance delta, imperceptible
+-        // on a 36×36 button, and the danger variant had zero color change.
+-        // The 1px accent border (matches _AddInstanceCard pattern in
+-        // instance_list_page.dart:209-213) is the primary visible signal;
+-        // scale 0.93 reinforces it.
+-        scale: isPressed ? 0.93 : 1.0,
++      builder: (child, isPressed) => AnimatedContainer(
++        // Press feedback uses the accent border as the primary visible signal.
++        // The previous color-only change (surface2→surface3) had only ~3%
++        // luminance delta, imperceptible on a 36×36 button, and the danger
++        // variant had zero color change.
+         duration: XiaMotion.durationFast,
+         curve: XiaMotion.ease,
+-        child: AnimatedContainer(
+-          duration: XiaMotion.durationFast,
+-          curve: XiaMotion.ease,
+-          width: 36,
+-          height: 36,
+-          decoration: BoxDecoration(
+-            color: danger
+-                ? (isPressed
+-                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.25)!
+-                      : XiaColors.redMuted)
+-                : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
+-            borderRadius: BorderRadius.circular(XiaRadius.sm),
+-            border: isPressed
+-                ? Border.all(
+-                    color: danger ? XiaColors.red : XiaColors.accent,
+-                    width: 1,
+-                    strokeAlign: BorderSide.strokeAlignInside,
+-                  )
+-                : null,
+-          ),
+-          alignment: Alignment.center,
+-          child: child,
++        width: 36,
++        height: 36,
++        decoration: BoxDecoration(
++          color: danger
++              ? (isPressed
++                    ? Color.lerp(XiaColors.redMuted, Colors.black, 0.25)!
++                    : XiaColors.redMuted)
++              : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
++          borderRadius: BorderRadius.circular(XiaRadius.sm),
++          border: isPressed
++              ? Border.all(
++                  color: danger ? XiaColors.red : XiaColors.accent,
++                  width: 1,
++                  strokeAlign: BorderSide.strokeAlignInside,
++                )
++              : null,
+         ),
++        alignment: Alignment.center,
++        child: child,
+       ),
+       child: Icon(
+         icon,
+diff --git a/test/core/acl/connection_manager_device_token_test.dart b/test/core/acl/connection_manager_device_token_test.dart
+index ad4c641..d4da315 100644
+--- a/test/core/acl/connection_manager_device_token_test.dart
++++ b/test/core/acl/connection_manager_device_token_test.dart
+@@ -18,7 +18,6 @@ import 'test_helpers.dart';
+ class _FakeDeviceTokenStore implements IDeviceTokenStore {
+   final Map<String, String> _store = {};
+   final List<String> savedInstances = [];
+-  final List<String> deletedInstances = [];
+ 
+   /// Pre-populate the store to simulate a previously-paired device.
+   void seed(String instanceId, String deviceToken) {
+@@ -41,14 +40,9 @@ class _FakeDeviceTokenStore implements IDeviceTokenStore {
+   @override
+   Future<void> delete(String instanceId) async {
+     _store.remove(instanceId);
+-    deletedInstances.add(instanceId);
+   }
+ }
+ 
+-// ---------------------------------------------------------------------------
+-// Mock dependencies (signPayload stub)
+-// ---------------------------------------------------------------------------
+-
+ // ---------------------------------------------------------------------------
+ // Tests
+ // ---------------------------------------------------------------------------
+diff --git a/test/core/acl/test_helpers.dart b/test/core/acl/test_helpers.dart
+index 0a81ade..d65dea5 100644
+--- a/test/core/acl/test_helpers.dart
++++ b/test/core/acl/test_helpers.dart
+@@ -174,8 +174,6 @@ String chatHistoryResponseJson({
+   required String id,
+   String? cursor,
+   String? nextCursor,
+-  // ignore: avoid_unused_constructor_parameters
+-  List<Map<String, dynamic>> messages = const [],
+ }) {
+   final cursorField = cursor != null ? '"cursor":"$cursor",' : '';
+   final nextCursorField = nextCursor != null
+diff --git a/test/domain/models/agent_test.dart b/test/domain/models/agent_test.dart
+index 24f5524..c01f652 100644
+--- a/test/domain/models/agent_test.dart
++++ b/test/domain/models/agent_test.dart
+@@ -1,5 +1,6 @@
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:claw_hub/domain/models/agent.dart';
++import 'package:claw_hub/domain/models/quick_command.dart';
+ 
+ void main() {
+   group('Agent', () {
+@@ -348,4 +349,153 @@ void main() {
+       expect(set.length, 2);
+     });
+   });
++
++  // 2026-06-26 refactor: 引入 contentEquals 弥补 operator == 只比身份字段的盲区。
++  // 当用户改昵称 / 主题色 / 快捷指令等"内容"字段时，operator == 仍然相等
++  // （同 localId），导致 Riverpod dedup 抑制 UI rebuild。ChatViewModel 当前
++  // 用 contentRevision 计数器（bumped by _setAgent post-contentEquals filter）
++  // 驱动 ref.watch 重建；这里守护的 contentEquals 不变量是这条信号链可靠的前提。
++  //
++  // 这里守护 4 条不变量：
++  //   1) operator == 保持身份-only 语义（不改）
++  //   2) contentEquals 比所有用户可见字段
++  //   3) operator == vs contentEquals 在内容变更场景下输出不同
++  //   4) tombstone 状态翻转两边都检测
++  group('Agent.contentEquals', () {
++    Agent base({
++      String nickname = '小虾',
++      String avatarUrl = 'avatars/agent-a1.png',
++      String themeColor = '#6c5ce7',
++      List<QuickCommand>? quickCommands,
++      int? createdAt,
++      int? removedAt,
++      int? hiddenAt,
++    }) =>
++        Agent(
++          localId: 'local-a1',
++          remoteId: 'r1',
++          instanceId: 'inst-001',
++          name: '产品虾',
++          nickname: nickname,
++          avatarUrl: avatarUrl,
++          themeColor: themeColor,
++          quickCommands: quickCommands ?? const [],
++          createdAt: createdAt ?? 1719000000,
++          removedAt: removedAt,
++          hiddenAt: hiddenAt,
++        );
++
++    test('不变量 1: operator == 对同身份不同内容返回 true（守住 == 不被改写）', () {
++      // nickname 变了但 localId 没变 → == 应仍然 true（防 reviewer 误把 ==
++      // 改成 contentEquals 后导致 Set/Map 折叠出问题）
++      final a = base(nickname: '小虾');
++      final b = base(nickname: '改名后的虾');
++      expect(a == b, isTrue,
++          reason: 'operator == 仍是身份-only；改动内容字段不应改变 ==');
++    });
++
++    test('不变量 2: contentEquals 对所有字段相同的两个 Agent 返回 true', () {
++      final a = base();
++      final b = base();
++      expect(a.contentEquals(b), isTrue);
++      expect(b.contentEquals(a), isTrue);
++    });
++
++    test('不变量 2: contentEquals 对 identical(this, other) 走快速路径', () {
++      final a = base();
++      expect(a.contentEquals(a), isTrue);
++    });
++
++    test('内容变更: nickname 差异应被 contentEquals 检出', () {
++      final a = base(nickname: '小虾');
++      final b = base(nickname: '改名后的虾');
++      expect(a.contentEquals(b), isFalse);
++    });
++
++    test('内容变更: themeColor 差异应被 contentEquals 检出', () {
++      final a = base(themeColor: '#6c5ce7');
++      final b = base(themeColor: '#FF0000');
++      expect(a.contentEquals(b), isFalse);
++    });
++
++    test('内容变更: avatarUrl 差异应被 contentEquals 检出', () {
++      final a = base(avatarUrl: 'avatars/a.png');
++      final b = base(avatarUrl: 'avatars/b.png');
++      expect(a.contentEquals(b), isFalse);
++    });
++
++    test('内容变更: createdAt 差异应被 contentEquals 检出（避免 silent drift）', () {
++      final a = base(createdAt: 1719000000);
++      final b = base(createdAt: 1719000001);
++      expect(a.contentEquals(b), isFalse);
++    });
++
++    test('内容变更: quickCommands 长度差异应被 contentEquals 检出', () {
++      final a = base(quickCommands: const []);
++      final b = base(
++        quickCommands: [
++          QuickCommand(
++            id: 'qc-1',
++            agentId: 'local-a1',
++            label: '状态',
++            payload: '/status',
++          ),
++        ],
++      );
++      expect(a.contentEquals(b), isFalse);
++    });
++
++    test('内容变更: quickCommands 元素 id 不同应被 contentEquals 检出', () {
++      // 注: QuickCommand.== 只比 id（与 Agent.== 同种"身份-only"盲区）。
++      // Agent.contentEquals 因此只能检出元素级 id 差异，无法检出同 id
++      // 内部的 label/payload/sortOrder 变更——后者是 QuickCommand 的债，
++      // 不在本次 Step 1 范围。
++      final a = base(
++        quickCommands: [
++          QuickCommand(
++            id: 'qc-1',
++            agentId: 'local-a1',
++            label: '状态',
++            payload: '/status',
++          ),
++        ],
++      );
++      final b = base(
++        quickCommands: [
++          QuickCommand(
++            id: 'qc-2', // 不同 id → 元素不相等
++            agentId: 'local-a1',
++            label: '状态',
++            payload: '/status',
++          ),
++        ],
++      );
++      expect(a.contentEquals(b), isFalse);
++    });
++
++    test('不变量 3: 内容变更时 == 与 contentEquals 必须输出相反结果', () {
++      // 关键不变量：nickname 变化后 operator == 仍 true（dedup 抑制 rebuild 是
++      // 现有问题），但 contentEquals 返回 false（dedup 应该放行）。这两个不
++      // 等式是修复方案的根本依据。
++      final a = base(nickname: '小虾');
++      final b = base(nickname: '改名后的虾');
++      expect(a == b, isTrue,
++          reason: 'operator == 应仍 true（身份未变）');
++      expect(a.contentEquals(b), isFalse,
++          reason: 'contentEquals 应 false（昵称已变）');
++    });
++
++    test('不变量 4: removedAt 翻转（tombstone 转换）应被 contentEquals 检出', () {
++      final alive = base();
++      final tombstoned = base(removedAt: 1719200000000);
++      expect(alive.contentEquals(tombstoned), isFalse);
++      expect(tombstoned.contentEquals(alive), isFalse);
++    });
++
++    test('不变量 4: hiddenAt 翻转应被 contentEquals 检出', () {
++      final visible = base();
++      final hidden = base(hiddenAt: 1719300000000);
++      expect(visible.contentEquals(hidden), isFalse);
++    });
++  });
+ }
+diff --git a/test/features/agent_profile/agent_config_page_test.dart b/test/features/agent_profile/agent_config_page_test.dart
+index 538baad..ca670d5 100644
+--- a/test/features/agent_profile/agent_config_page_test.dart
++++ b/test/features/agent_profile/agent_config_page_test.dart
+@@ -227,7 +227,7 @@ void main() {
+       });
+     });
+ 
+-    testWidgets('renders AgentRemovedPlaceholder when isAgentRemoved is true', (
++    testWidgets('renders AgentRemovedPlaceholder when vm.agent.isRemoved is true', (
+       tester,
+     ) async {
+       await tester.pumpWidget(
+@@ -245,7 +245,17 @@ void main() {
+                 avatarStorageService: avatarStorageService,
+                 agentId: 'local-1',
+               );
+-              vm.state = vm.state.copyWith(isAgentRemoved: true);
++              // Step 6: 用 debugSetAgent 注入 tombstoned agent。
++              vm.debugSetAgent(
++                Agent(
++                  localId: 'local-1',
++                  remoteId: 'remote-1',
++                  instanceId: 'inst-1',
++                  name: '产品虾',
++                  themeColor: '#6c5ce7',
++                  removedAt: 1719200000000,
++                ),
++              );
+               return vm;
+             }),
+           ],
+@@ -259,7 +269,7 @@ void main() {
+       expect(find.byType(TextFormField), findsNothing);
+     });
+ 
+-    testWidgets('renders config form normally when isAgentRemoved is false', (
++    testWidgets('renders config form normally when vm.agent.isRemoved is false', (
+       tester,
+     ) async {
+       await tester.pumpWidget(buildPage());
+diff --git a/test/features/agent_profile/agent_profile_page_test.dart b/test/features/agent_profile/agent_profile_page_test.dart
+index e08c21f..4af4f29 100644
+--- a/test/features/agent_profile/agent_profile_page_test.dart
++++ b/test/features/agent_profile/agent_profile_page_test.dart
+@@ -143,7 +143,7 @@ void main() {
+       expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+     });
+ 
+-    testWidgets('renders AgentRemovedPlaceholder when isAgentRemoved is true', (
++    testWidgets('renders AgentRemovedPlaceholder when vm.agent.isRemoved is true', (
+       tester,
+     ) async {
+       await tester.pumpWidget(
+@@ -161,7 +161,20 @@ void main() {
+                 avatarStorageService: avatarStorageService,
+                 agentId: 'local-1',
+               );
+-              vm.state = vm.state.copyWith(isAgentRemoved: true);
++              // Step 6: 用 debugSetAgent 注入 tombstoned agent，UI 经
++              // vm.agent.isRemoved 触发占位页分支。不调 refresh() 避免
++              // 触发 4 个 detail loader（test 不关心它们）。
++              vm.debugSetAgent(
++                Agent(
++                  localId: 'local-1',
++                  remoteId: 'remote-1',
++                  instanceId: 'inst-1',
++                  name: '产品虾',
++                  description: '产品规划、需求分析',
++                  themeColor: '#6c5ce7',
++                  removedAt: 1719200000000,
++                ),
++              );
+               return vm;
+             }),
+           ],
+@@ -173,7 +186,7 @@ void main() {
+       expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
+     });
+ 
+-    testWidgets('renders profile normally when isAgentRemoved is false', (
++    testWidgets('renders profile normally when vm.agent.isRemoved is false', (
+       tester,
+     ) async {
+       await tester.pumpWidget(buildPage());
+diff --git a/test/features/agent_profile/providers/agent_profile_provider_test.dart b/test/features/agent_profile/providers/agent_profile_provider_test.dart
+index 1c53df4..45af8e7 100644
+--- a/test/features/agent_profile/providers/agent_profile_provider_test.dart
++++ b/test/features/agent_profile/providers/agent_profile_provider_test.dart
+@@ -229,8 +229,8 @@ void main() {
+     },
+   );
+ 
+-  test('ticker bump also updates isAgentRemoved when agent becomes tombstoned '
+-      'between init and sync', () async {
++  test('ticker bump also updates vm.agent.isRemoved when agent becomes '
++      'tombstoned between init and sync', () async {
+     var calls = 0;
+     when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+       calls++;
+@@ -245,7 +245,7 @@ void main() {
+     );
+     await waitForInitComplete(container);
+ 
+-    expect(vm.state.isAgentRemoved, isFalse);
++    expect(vm.agent?.isRemoved ?? false, isFalse);
+ 
+     // BUG B 修复后 ticker 携带本 instanceId 触发 listener
+     container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
+@@ -254,7 +254,7 @@ void main() {
+     await Future<void>.delayed(Duration.zero);
+ 
+     expect(
+-      vm.state.isAgentRemoved,
++      vm.agent?.isRemoved ?? false,
+       isTrue,
+       reason: 'ticker → refreshAgent → refreshAgent 应捕获后台 tombstone',
+     );
+@@ -282,7 +282,7 @@ void main() {
+       await Future<void>.delayed(Duration.zero);
+       await Future<void>.delayed(Duration.zero);
+ 
+-      expect(vm.state.isAgentRemoved, isFalse);
++      expect(vm.agent?.isRemoved ?? false, isFalse);
+       expect(calls, greaterThan(1));
+     },
+   );
+diff --git a/test/features/agent_profile/viewmodels/agent_profile_view_model_test.dart b/test/features/agent_profile/viewmodels/agent_profile_view_model_test.dart
+index ea4d3bc..36e4502 100644
+--- a/test/features/agent_profile/viewmodels/agent_profile_view_model_test.dart
++++ b/test/features/agent_profile/viewmodels/agent_profile_view_model_test.dart
+@@ -768,7 +768,8 @@ void main() {
+     });
+ 
+     // ============================================================
+-    // US-021 v1.1: AgentProfileState.isAgentRemoved + write guards
++    // US-021 v1.1: AgentProfileState tombstone via vm.agent + write guards
++    // Step 6 改造: 不再依赖 state.isAgentRemoved 字段,改读 vm.agent.isRemoved。
+     // ============================================================
+     group('US-021 tombstone reactive state', () {
+       final tombAgent = Agent(
+@@ -780,19 +781,19 @@ void main() {
+         removedAt: 1719200000000,
+       );
+ 
+-      test('isAgentRemoved defaults to false on fresh VM', () {
++      test('vm.agent defaults to null on fresh VM', () {
+         final vm = createVM();
+         expect(
+-          vm.state.isAgentRemoved,
++          vm.agent?.isRemoved ?? false,
+           isFalse,
+           reason:
+-              '新建 VM 时 isAgentRemoved 必须为 false，'
++              '新建 VM 时 vm.agent 必须为 null（init 尚未跑），'
+               '避免初始化前误显示 tombstone 占位页',
+         );
+       });
+ 
+       test(
+-        'refresh() syncs isAgentRemoved=true when agent is tombstoned',
++        'refresh() syncs vm.agent.isRemoved=true when agent is tombstoned',
+         () async {
+           when(
+             () => agentRepo.getById('local-1'),
+@@ -808,11 +809,11 @@ void main() {
+           await vm.init();
+ 
+           expect(
+-            vm.state.isAgentRemoved,
++            vm.agent?.isRemoved ?? false,
+             isTrue,
+             reason:
+                 'init 时若 agent 已是 tombstone 状态，'
+-                'isAgentRemoved 必须同步为 true，驱动占位页',
++                'vm.agent.isRemoved 必须同步为 true，驱动占位页',
+           );
+         },
+       );
+@@ -831,7 +832,7 @@ void main() {
+ 
+         final vm = createVM();
+         await vm.init();
+-        expect(vm.state.isAgentRemoved, isTrue); // sanity
++        expect(vm.agent?.isRemoved ?? false, isTrue); // sanity
+ 
+         await vm.saveProfile(nickname: 'ignored');
+ 
+@@ -871,7 +872,7 @@ void main() {
+ 
+         final vm = createVM();
+         await vm.init();
+-        expect(vm.state.isAgentRemoved, isTrue); // sanity
++        expect(vm.agent?.isRemoved ?? false, isTrue); // sanity
+ 
+         await vm.updateAvatar(Uint8List.fromList([1, 2, 3]));
+ 
+@@ -901,7 +902,7 @@ void main() {
+ 
+         final vm = createVM();
+         await vm.init();
+-        expect(vm.state.isAgentRemoved, isTrue); // sanity
++        expect(vm.agent?.isRemoved ?? false, isTrue); // sanity
+ 
+         await vm.removeAvatar();
+ 
+@@ -913,7 +914,7 @@ void main() {
+       });
+ 
+       test('refreshAgent reacts to backend sync: '
+-          'tombstoned-then-revived updates isAgentRemoved', () async {
++          'tombstoned-then-revived updates vm.agent.isRemoved', () async {
+         // init 时是 alive agent
+         when(
+           () => agentRepo.getById('local-1'),
+@@ -927,7 +928,7 @@ void main() {
+ 
+         final vm = createVM();
+         await vm.init();
+-        expect(vm.state.isAgentRemoved, isFalse);
++        expect(vm.agent?.isRemoved ?? false, isFalse);
+ 
+         // 后台 sync 把 agent tombstone 了
+         when(
+@@ -935,7 +936,7 @@ void main() {
+         ).thenAnswer((_) async => tombAgent);
+         await vm.refreshAgent();
+         expect(
+-          vm.state.isAgentRemoved,
++          vm.agent?.isRemoved ?? false,
+           isTrue,
+           reason: 'refreshAgent 应在 sync 后捕获到 tombstone 状态',
+         );
+@@ -946,7 +947,7 @@ void main() {
+         ).thenAnswer((_) async => testAgent);
+         await vm.refreshAgent();
+         expect(
+-          vm.state.isAgentRemoved,
++          vm.agent?.isRemoved ?? false,
+           isFalse,
+           reason: '复活后 refreshAgent 必须清除 tombstone 标记',
+         );
+@@ -956,7 +957,7 @@ void main() {
+           'surfaces saveError for UX feedback', () async {
+         final vm = createVM();
+         // 不调 init，_agent 为 null
+-        expect(vm.state.isAgentRemoved, isFalse);
++        expect(vm.agent?.isRemoved ?? false, isFalse);
+ 
+         await vm.saveProfile(nickname: 'ignored');
+ 
+@@ -1018,9 +1019,9 @@ void main() {
+       });
+ 
+       test(
+-        'refresh() resets isAgentRemoved=false on error so LoadError shows',
++        'refresh() clears vm.agent on error so LoadError shows',
+         () async {
+-          // init 时 agent 是 tombstoned，isAgentRemoved=true
++          // init 时 agent 是 tombstoned，vm.agent.isRemoved=true
+           when(
+             () => agentRepo.getById('local-1'),
+           ).thenAnswer((_) async => tombAgent);
+@@ -1033,7 +1034,7 @@ void main() {
+ 
+           final vm = createVM();
+           await vm.init();
+-          expect(vm.state.isAgentRemoved, isTrue);
++          expect(vm.agent?.isRemoved ?? false, isTrue);
+ 
+           // refresh 时 getById 抛异常
+           when(
+@@ -1043,7 +1044,7 @@ void main() {
+ 
+           expect(vm.state.detailLoadState, isA<LoadError>());
+           expect(
+-            vm.state.isAgentRemoved,
++            vm.agent?.isRemoved ?? false,
+             isFalse,
+             reason: '详情加载失败时不应继续显示 tombstone 占位页',
+           );
+diff --git a/test/features/chat_room/chat_room_tombstone_guard_test.dart b/test/features/chat_room/chat_room_tombstone_guard_test.dart
+index de6ff6b..ad8af45 100644
+--- a/test/features/chat_room/chat_room_tombstone_guard_test.dart
++++ b/test/features/chat_room/chat_room_tombstone_guard_test.dart
+@@ -2,11 +2,15 @@
+ // 不渲染聊天界面，而是显示"已移除"占位页（统一使用 AgentRemovedPlaceholder
+ // widget,与 AgentProfilePage / AgentConfigPage 一致 —— US-021 v1.2 迁移）。
+ //
+-// 用 stub 子类 override `agent` getter + 预置 state.isAgentRemoved，**不调用
+-// vm.init()** —— init() 会订阅 MockGatewayClient 的流，而 overrideWith 无法
+-// 注册 onDispose（StateNotifier debugIsMounted 限制），流订阅泄漏会导致
+-// tearDownAll 挂起。guard 路径只读 session.isAgentRemoved 就早退，不会触发
+-// 任何流/定时器，故 stub 无需 init。
++// Step 4 改造:tombstone 不再用 state.isAgentRemoved bool 字段，改读
++// vm.agent.isRemoved。stub 直接 override `agent` getter 返回预设 Agent
++// (含或不含 removedAt) —— ChatRoomPage 的 guard 直接读 agent.isRemoved
++// 触发占位页分支,无需再预置 state。
++//
++// 用 stub 子类 override `agent` getter，**不调用 vm.init()** —— init()
++// 会订阅 MockGatewayClient 的流，而 overrideWith 无法注册 onDispose
++// （StateNotifier debugIsMounted 限制），流订阅泄漏会导致 tearDownAll
++// 挂起。guard 路径只读 vm.agent.isRemoved 就早退，不会触发任何流/定时器。
+ import 'package:flutter/material.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:flutter_test/flutter_test.dart';
+@@ -25,11 +29,13 @@ class _MockAchievementChecker extends Mock implements IAchievementChecker {}
+ 
+ const _key = (instanceId: 'inst-1', agentId: 'local-1');
+ 
+-/// Stub ChatViewModel：override `agent` 返回预设值（供占位页 displayName），
+-/// 并预置 state.isAgentRemoved 模拟 tombstone。不调 init()，无流订阅。
++/// Stub ChatViewModel：override `agent` 返回预设值（供占位页 displayName）
++/// 模拟 tombstone 状态。Step 4: 不再预置 state.isAgentRemoved —— UI 改读
++/// vm.agent.isRemoved,agent 自身的 removedAt 字段就是 tombstone 信号。
++/// 不调 init()，无流订阅。
+ class _StubAgentVm extends ChatViewModel {
+   final Agent? _stubAgent;
+-  _StubAgentVm(this._stubAgent, {required bool isRemoved})
++  _StubAgentVm(this._stubAgent)
+     : super(
+         agentRepo: InMemoryAgentRepo(),
+         conversationRepo: InMemoryConversationRepo(),
+@@ -45,11 +51,7 @@ class _StubAgentVm extends ChatViewModel {
+         instanceId: 'inst-1',
+         agentId: 'local-1',
+         achievementChecker: _MockAchievementChecker(),
+-      ) {
+-    // 预置响应式 tombstone 状态 —— 生产代码由 refreshAgent / _agent 写入点
+-    // 同步；stub 不走 init，故直接设 state 模拟"已 tombstone"快照。
+-    state = ChatSessionState(isAgentRemoved: isRemoved);
+-  }
++      );
+ 
+   @override
+   Agent? get agent => _stubAgent;
+@@ -67,7 +69,6 @@ void main() {
+         themeColor: '#6c5ce7',
+         removedAt: 1719200000000,
+       ),
+-      isRemoved: true,
+     );
+ 
+     await tester.pumpWidget(
+@@ -107,7 +108,6 @@ void main() {
+         themeColor: '#6c5ce7',
+         // 无 removedAt —— active
+       ),
+-      isRemoved: false,
+     );
+ 
+     await tester.pumpWidget(
+diff --git a/test/features/chat_room/chat_view_model_init_fail_tombstone_test.dart b/test/features/chat_room/chat_view_model_init_fail_tombstone_test.dart
+index 0089863..8306951 100644
+--- a/test/features/chat_room/chat_view_model_init_fail_tombstone_test.dart
++++ b/test/features/chat_room/chat_view_model_init_fail_tombstone_test.dart
+@@ -1,16 +1,18 @@
+-// US-021 AC8 robustness: verify init failure path resets state.isAgentRemoved
+-// to false, preventing stale tombstone state from prior sync from triggering
+-// the AC8 placeholder after a failed init.
++// US-021 AC8 robustness: verify init failure path resets tombstone state,
++// preventing stale tombstone state from prior sync from triggering the
++// AC8 placeholder after a failed init.
++//
++// Step 4 改造:tombstone 不再用 state.isAgentRemoved bool 字段，改读
++// vm.agent.isRemoved。init 失败的 catch 块必须 _setAgent(null) 清掉缓存，
++// 否则 build() 拿到的 vm.agent 还是上轮 tombstoned agent → 错乱占位页。
+ //
+ // Failure scenario (from code review #4):
+-//   1. init succeeds with tombstoned agent → isAgentRemoved = true
++//   1. init succeeds with tombstoned agent → vm.agent.isRemoved = true
+ //   2. sync un-tombstones agent in DB
+ //   3. subsequent init fails (transient DB error)
+-//   4. catch block sets _agent = null but skips _syncAgentRemoved()
+-//   5. AC8 placeholder renders for now-live agent → bug
+-//
+-// This test fixes the catch block to call _syncAgentRemoved() so step 4
+-// is impossible.
++//   4. catch block 只 _setAgent(null) —— 关键回归点
++//   5. UI 重建后 vm.agent?.isRemoved ?? false = false，回退到 LoadError 而不是
++//      上轮 tombstone 占位页
+ 
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:mocktail/mocktail.dart';
+@@ -76,7 +78,7 @@ void main() {
+     );
+   }
+ 
+-  test('init failure resets isAgentRemoved to false even when prior '
++  test('init failure clears _agent cache even when prior '
+       'tombstone state was true', () async {
+     // Arrange: VM constructor pattern from chat_view_model.dart:start_chat
+     await instanceRepo.save(
+@@ -92,12 +94,11 @@ void main() {
+ 
+     final vm = createViewModel();
+ 
+-    // Force prior state.isAgentRemoved = true (simulate prior sync tombstone).
+-    // 这是上轮 sync 把 agent 标记 tombstone 的快照残留 —— 测试在 init 失败
+-    // 时 catch 块是否把此 stale true 重置回 false。
+-    vm.state = vm.state.copyWith(isAgentRemoved: true);
++    // 强制 vm._agent = tombstoned agent（模拟上轮 sync 把 agent tombstone 后
++    // 留下的快照残留）。Step 4: 用 debugSetAgent 替代旧的 copyWith(isAgentRemoved:true)
++    vm.debugSetAgent(_tombstonedAgent());
+     expect(
+-      vm.state.isAgentRemoved,
++      vm.agent?.isRemoved,
+       isTrue,
+       reason: 'sanity: 预设上轮 tombstone 状态成功',
+     );
+@@ -111,14 +112,13 @@ void main() {
+     // 会抛异常，进入 catch 块。
+     await vm.init();
+ 
+-    // Assert: state.isAgentRemoved 必须重置为 false（不残留上轮 true）。
++    // Assert: catch 块 _setAgent(null) 必须清掉 _agent 缓存（不残留上轮 tombstone）。
+     expect(
+-      vm.state.isAgentRemoved,
+-      isFalse,
++      vm.agent,
++      isNull,
+       reason:
+-          'init 失败时 catch 块必须调 _syncAgentRemoved() 重置 '
+-          'isAgentRemoved，避免上轮 tombstone 状态残留导致 AC8 '
+-          '占位页错乱',
++          'init 失败时 catch 块必须 _setAgent(null) 清掉 vm.agent 缓存，'
++          '避免上轮 tombstone 状态残留导致 AC8 占位页错乱',
+     );
+   });
+ 
+@@ -137,11 +137,11 @@ void main() {
+     final vm = createViewModel();
+     await vm.init();
+ 
+-    // Sanity: tombstone 状态已同步
++    // Sanity: tombstone 状态已同步 —— Step 4 改读 vm.agent.isRemoved
+     expect(
+-      vm.state.isAgentRemoved,
++      vm.agent?.isRemoved,
+       isTrue,
+-      reason: 'init 必须把 isRemoved agent 同步到 state.isAgentRemoved',
++      reason: 'init 必须把 isRemoved agent 同步到 vm._agent',
+     );
+ 
+     // Critical: 不应创建 dangling conversation 行
+diff --git a/test/features/chat_room/chat_view_model_refresh_agent_test.dart b/test/features/chat_room/chat_view_model_refresh_agent_test.dart
+index b8ac196..d215edd 100644
+--- a/test/features/chat_room/chat_view_model_refresh_agent_test.dart
++++ b/test/features/chat_room/chat_view_model_refresh_agent_test.dart
+@@ -1,9 +1,15 @@
+ // US-021 AC8 响应式修复：验证 refreshAgent() 把后台 sync 的 tombstone 状态
+-// 同步进 ChatSessionState.isAgentRemoved —— 这是占位页能响应式重建的根因修复。
++// 同步进 vm._agent —— UI 经 ref.watch(chatViewModelProvider) 触发 rebuild 后
++// 读 vm.agent.isRemoved 显示占位页。
++//
++// Step 4 改造:tombstone 不再用 state.isAgentRemoved bool 字段，改读
++// vm.agent.isRemoved。refreshAgent 内部走 _setAgent 路径更新 _agent +
++// bump contentRevision,本测试断言改为验证 vm.agent.isRemoved 而非
++// state.isAgentRemoved。
+ //
+ // 场景：用户停在 ChatRoom，后台 syncFromGateway 把 agent 标记 tombstone。
+ // provider 侧 ref.listen(agentSyncTickerProvider) 调 vm.refreshAgent()，
+-// VM 重查 DB 并更新 state.isAgentRemoved → UI 重建显示占位页。
++// VM 重查 DB 并更新 vm._agent → contentRevision bump → UI 重建显示占位页。
+ //
+ // 用 mocktail mock IAgentRepo：可精确控制 getById 在多次调用中返回的 agent
+ // 状态（active / tombstoned / null），不受 InMemoryAgentRepo（legacy，未实现
+@@ -96,7 +102,7 @@ void main() {
+ 
+   group('ChatViewModel.refreshAgent (US-021 AC8 响应式)', () {
+     test(
+-      'WHEN agent was active at init THEN isAgentRemoved is false',
++      'WHEN agent was active at init THEN vm.agent.isRemoved is false',
+       () async {
+         await setupInstance();
+         when(
+@@ -105,12 +111,12 @@ void main() {
+         final vm = createViewModel();
+         await vm.init();
+ 
+-        expect(vm.state.isAgentRemoved, isFalse);
++        expect(vm.agent?.isRemoved ?? false, isFalse);
+       },
+     );
+ 
+     test('WHEN agent is tombstoned in DB after init THEN refreshAgent sets '
+-        'isAgentRemoved=true', () async {
++        'vm.agent.isRemoved=true', () async {
+       await setupInstance();
+       // init 时 active；refreshAgent 重查时已 tombstone
+       when(
+@@ -118,7 +124,7 @@ void main() {
+       ).thenAnswer((_) async => _activeAgent());
+       final vm = createViewModel();
+       await vm.init();
+-      expect(vm.state.isAgentRemoved, isFalse);
++      expect(vm.agent?.isRemoved ?? false, isFalse);
+ 
+       when(
+         () => agentRepo.getById(_agentId),
+@@ -127,23 +133,23 @@ void main() {
+       await vm.refreshAgent();
+ 
+       expect(
+-        vm.state.isAgentRemoved,
++        vm.agent?.isRemoved ?? false,
+         isTrue,
+         reason:
+-            'refreshAgent 应把后台 tombstone 同步进 state，'
++            'refreshAgent 应把后台 tombstone 同步进 vm._agent，'
+             '使 AC8 占位页响应式出现',
+       );
+     });
+ 
+     test('WHEN tombstoned agent reappears on Gateway THEN refreshAgent '
+-        'clears isAgentRemoved=false (复活)', () async {
++        'clears vm.agent.isRemoved=false (复活)', () async {
+       await setupInstance();
+       when(
+         () => agentRepo.getById(_agentId),
+       ).thenAnswer((_) async => _tombstonedAgent());
+       final vm = createViewModel();
+       await vm.init();
+-      expect(vm.state.isAgentRemoved, isTrue);
++      expect(vm.agent?.isRemoved ?? false, isTrue);
+ 
+       when(
+         () => agentRepo.getById(_agentId),
+@@ -151,14 +157,14 @@ void main() {
+       await vm.refreshAgent();
+ 
+       expect(
+-        vm.state.isAgentRemoved,
++        vm.agent?.isRemoved ?? false,
+         isFalse,
+         reason: '复活后 refreshAgent 应清除 tombstone 标记',
+       );
+     });
+ 
+     test('WHEN init has not started AND agent is tombstoned THEN refreshAgent '
+-        'still syncs isAgentRemoved=true (US-021 v1.2 简化)', () async {
++        'still syncs vm.agent.isRemoved=true (US-021 v1.2 简化)', () async {
+       await setupInstance();
+       // init 未启动（_initFuture 仍为 null），后台 sync 已 tombstone。
+       // 简化后 refreshAgent 不再等 initFuture,直接 fetch + 同步 tombstone。
+@@ -170,12 +176,12 @@ void main() {
+ 
+       await vm.refreshAgent();
+ 
+-      expect(vm.state.isAgentRemoved, isTrue);
++      expect(vm.agent?.isRemoved ?? false, isTrue);
+       verify(() => agentRepo.getById(_agentId)).called(1);
+     });
+ 
+     test('WHEN agent becomes null in DB after init THEN refreshAgent sets '
+-        'isAgentRemoved=false (agent not found ≠ tombstoned)', () async {
++        'vm.agent.isRemoved=false (agent not found ≠ tombstoned)', () async {
+       await setupInstance();
+       when(
+         () => agentRepo.getById(_agentId),
+@@ -187,7 +193,7 @@ void main() {
+       await vm.refreshAgent();
+ 
+       expect(
+-        vm.state.isAgentRemoved,
++        vm.agent?.isRemoved ?? false,
+         isFalse,
+         reason: 'agent 查不到（null）不是 tombstone —— 不应误显示占位页',
+       );
+@@ -201,12 +207,12 @@ void main() {
+       ).thenAnswer((_) async => _activeAgent());
+       final vm = createViewModel();
+       await vm.init();
+-      expect(vm.state.isAgentRemoved, isFalse);
++      expect(vm.agent?.isRemoved ?? false, isFalse);
+ 
+       when(() => agentRepo.getById(_agentId)).thenThrow(Exception('DB error'));
+       await expectLater(vm.refreshAgent(), completes);
+ 
+-      expect(vm.state.isAgentRemoved, isFalse);
++      expect(vm.agent?.isRemoved ?? false, isFalse);
+     });
+   });
+ }
+diff --git a/test/features/chat_room/chat_view_model_watch_by_id_test.dart b/test/features/chat_room/chat_view_model_watch_by_id_test.dart
+index cae4cd4..d2f2fce 100644
+--- a/test/features/chat_room/chat_view_model_watch_by_id_test.dart
++++ b/test/features/chat_room/chat_view_model_watch_by_id_test.dart
+@@ -88,6 +88,18 @@ void main() {
+     );
+   }
+ 
++  group('ChatSessionState equality', () {
++    test('includes content revision (sole rebuild trigger after Step 4)', () {
++      // Step 4: tombstone 不再是独立 bool 字段，UI 改读 vm.agent.isRemoved。
++      // contentRevision 是唯一驱动 ref.watch rebuild 的"agent 变化"信号。
++      expect(
++        const ChatSessionState(contentRevision: 1),
++        isNot(const ChatSessionState(contentRevision: 2)),
++        reason: 'agent data changes must bump contentRevision to bypass dedup',
++      );
++    });
++  });
++
+   group('ChatViewModel.watchById reactivity', () {
+     test('init() subscribes to watchById (covers bug: local profile save '
+         'must reflect immediately in chat room)', () async {
+@@ -120,26 +132,30 @@ void main() {
+         reason: 'watchById 应让 vm.agent 在保存后立刻反映新 quickCommands',
+       );
+       expect(vm.agent!.quickCommands.first.payload, '/status');
+-      // ★ state.quickCommands 镜像必须同步,否则 ChatRoomPage.build()
+-      //   不会 rebuild(Riverpod state.== dedup)。
++      // ★ state.contentRevision 必须递增,否则 ChatRoomPage.build()
++      //   不会 rebuild(Riverpod state.== dedup)。UI 实际读取 vm.agent。
++      // Step 2: 此时已经走完 init (revision=1) + updateFullProfile
++      // 触发一次 watchById 真实内容变更 (revision=2)。若 filter 失效，
++      // seed event 会让 init 阶段多 bump 一次，revision=3。
+       expect(
+-        vm.state.quickCommands.length,
+-        1,
++        vm.state.contentRevision,
++        equals(2),
+         reason:
+-            'state.quickCommands must update so ChatRoomPage.build() re-runs',
++            'After init (1) + one real content change via updateFullProfile '
++            '(+1), revision must be exactly 2. If >2, the contentEquals '
++            'filter is letting the seed event through.',
+       );
+-      expect(vm.state.quickCommands.first.payload, '/status');
+     });
+ 
+     test(
+-      'state.quickCommands changes when watchById emits new quickCommands '
++      'state.contentRevision changes when watchById emits non-identity agent fields '
+       '(regression: Riverpod == dedup would otherwise suppress rebuild)',
+       () async {
+         await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
+         final vm = createViewModel();
+         await vm.init();
+         final beforeState = vm.state;
+-        expect(beforeState.quickCommands, isEmpty);
++        final beforeRevision = beforeState.contentRevision;
+ 
+         await agentRepo.updateFullProfile(
+           _agentId,
+@@ -160,8 +176,11 @@ void main() {
+           isFalse,
+           reason: 'state must be a new instance so Riverpod notifies listeners',
+         );
+-        expect(vm.state.quickCommands.length, 1);
+-        expect(vm.state.quickCommands.first.payload, '/x');
++        // Step 2: 断言精确化 —— 必须是 beforeRevision + 1（一次 bump），
++        // 而不是 greaterThan（多次 bump 也能过）。过滤后真实内容变更只
++        // 触发一次 _setAgent，revision 应恰好 +1。
++        expect(vm.state.contentRevision, equals(beforeRevision + 1));
++        expect(vm.agent!.quickCommands.first.payload, '/x');
+       },
+     );
+ 
+@@ -178,6 +197,43 @@ void main() {
+       expect(vm.agent!.nickname, '小虾');
+     });
+ 
++    test(
++      'seed event with identical content does NOT bump contentRevision '
++      '(Step 2: contentEquals filter suppresses no-op emits)',
++      () async {
++        await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
++
++        final vm = createViewModel();
++        await vm.init();
++
++        // init() 已经走完 _setAgent(getById) + watchById seed 两条路径。
++        // 若 filter 生效，revision 应该是 1（一次 _setAgent）。
++        // 若 filter 失效（旧逻辑），revision 会是 2（init + seed 各 bump 一次）。
++        final revisionAfterInit = vm.state.contentRevision;
++        expect(
++          revisionAfterInit,
++          equals(1),
++          reason:
++              'After init, only one _setAgent call should have fired. '
++              'If this is >1, the contentEquals filter on watchById is broken.',
++        );
++
++        // 手动 emit 一次内容完全相同的 agent（模拟 Drift watchSingleOrNull
++        // 在某些时序下重发 seed）。filter 应再次抑制。
++        await agentRepo.updateLocalProfile(_agentId, nickname: null);
++        // updateLocalProfile 即便参数相同也会 emit（仓库实现细节），关键是
++        // 我们的 filter 应确保相同内容不触发 _setAgent 链路。
++        expect(
++          vm.state.contentRevision,
++          equals(revisionAfterInit),
++          reason:
++              'A content-equal emit must be filtered out; contentRevision '
++              'must NOT bump (was: '
++              '$revisionAfterInit, now: ${vm.state.contentRevision})',
++        );
++      },
++    );
++
+     test('dispose() cancels agent subscription', () async {
+       await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
+ 
+diff --git a/test/features/chat_room/providers/chat_providers_test.dart b/test/features/chat_room/providers/chat_providers_test.dart
+index 73ed1b4..332e17f 100644
+--- a/test/features/chat_room/providers/chat_providers_test.dart
++++ b/test/features/chat_room/providers/chat_providers_test.dart
+@@ -249,7 +249,7 @@ void main() {
+ 
+       // 如果异常从 fire-and-forget 监听器泄漏，测试框架会捕获到未处理异步错误。
+       // 此处断言 VM 仍在工作且状态未因异常而损坏。
+-      expect(vm.state.isAgentRemoved, isFalse);
++      expect(vm.agent?.isRemoved ?? false, isFalse);
+       expect(calls, greaterThan(1));
+     },
+   );
+@@ -257,7 +257,7 @@ void main() {
+   // US-021 v1.2 修复:refreshAgent 简化后,必须在 init() 未启动时
+   // (initFuture == null) 也能从 ticker 同步 tombstone 状态。原实现
+   // `if (initFuture == null) return;` 会让 init 未跑的窗口期内
+-  // isAgentRemoved 维持 false,用户看到的是普通 ChatRoom UI。
++  // vm._agent 维持 null,用户看到的是普通 ChatRoom UI 而不是占位页。
+   //
+   // 直接构造 ChatViewModel (绕过 provider 的自动 init 调用) 来模拟
+   // "refreshAgent 在 init 之前被调用"的场景。
+@@ -293,12 +293,12 @@ void main() {
+       achievementChecker: _MockAchievementChecker(),
+       flushDelay: Duration.zero,
+     );
+-    expect(vm.state.isAgentRemoved, isFalse);
++    expect(vm.agent?.isRemoved ?? false, isFalse);
+ 
+     await vm.refreshAgent();
+ 
+     expect(
+-      vm.state.isAgentRemoved,
++      vm.agent?.isRemoved ?? false,
+       isTrue,
+       reason:
+           'initFuture == null 时,refreshAgent 不能早退,'
+diff --git a/test/features/instance_manager/instance_card_test.dart b/test/features/instance_manager/instance_card_test.dart
+index 128de9b..27f5a36 100644
+--- a/test/features/instance_manager/instance_card_test.dart
++++ b/test/features/instance_manager/instance_card_test.dart
+@@ -19,20 +19,15 @@ Widget _wrap(Widget child) {
+   );
+ }
+ 
+-/// Predicate: true iff the widget is an [AnimatedScale] whose direct child
+-/// is an [AnimatedContainer] that in turn holds an [Icon] matching [icon].
++/// Predicate: true iff the widget is an [AnimatedContainer] whose direct child
++/// is an [Icon] matching [icon].
+ ///
+-/// Walks down through [AnimatedContainer.child] only — the action button
+-/// places the icon as the AnimatedContainer's child via PressFeedback's
+-/// `builder` parameter. This uniquely identifies the _ActionBtn's scale
+-/// wrapper (vs. the outer InstanceCard's AnimatedScale, whose child is a
+-/// plain Container, not an AnimatedContainer).
+-bool Function(Widget) _wrapsIconInScale(IconData icon) {
++/// This uniquely identifies the _ActionBtn's animated container; the outer
++/// InstanceCard's press animation wraps a plain Container, not an Icon.
++bool Function(Widget) _actionButtonContainerFor(IconData icon) {
+   return (Widget w) {
+-    if (w is! AnimatedScale) return false;
+-    final container = w.child;
+-    if (container is! AnimatedContainer) return false;
+-    final child = container.child;
++    if (w is! AnimatedContainer) return false;
++    final child = w.child;
+     return child is Icon && child.icon == icon;
+   };
+ }
+@@ -387,110 +382,6 @@ void main() {
+       expect(find.text('等待审批'), findsNothing);
+     });
+ 
+-    testWidgets('refresh button scales on press for visible feedback', (
+-      tester,
+-    ) async {
+-      // Bug fix: surface2(0xFF15171E) → surface3(0xFF1C1F28) alone has only
+-      // ~3% luminance delta, imperceptible on a phone. The action button
+-      // must combine a scale animation (per HeaderButton pattern) so the
+-      // press is visually obvious.
+-      await tester.pumpWidget(
+-        _wrap(InstanceCard(instance: testInstance, onTap: () {})),
+-      );
+-
+-      // Verify the _ActionBtn wraps its AnimatedContainer in an
+-      // AnimatedScale. We walk the tree manually via byWidgetPredicate
+-      // because the outer InstanceCard also has an AnimatedScale (from
+-      // PressFeedback's automatic scale handling), so naive ancestor
+-      // finders would match BOTH and fail findsOneWidget.
+-      expect(
+-        find.byWidgetPredicate(_wrapsIconInScale(Icons.refresh)),
+-        findsOneWidget,
+-        reason:
+-            'The action button must scale on press. Color-only feedback '
+-            '(surface2→surface3) is below the human-perception threshold '
+-            '(~3% delta).',
+-      );
+-    });
+-
+-    testWidgets('delete button scales on press for visible feedback', (
+-      tester,
+-    ) async {
+-      // Same root cause as the refresh button: the danger variant of
+-      // _ActionBtn does not change color at all on press (always redMuted),
+-      // and has no scale animation. Without these, the delete button has
+-      // literally zero press feedback.
+-      await tester.pumpWidget(
+-        _wrap(
+-          InstanceCard(instance: testInstance, onTap: () {}, onDelete: () {}),
+-        ),
+-      );
+-
+-      expect(
+-        find.byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline)),
+-        findsOneWidget,
+-        reason:
+-            'The delete button must scale on press. '
+-            'Currently the danger variant has zero press feedback.',
+-      );
+-    });
+-
+-    testWidgets('refresh button scale factor decreases mid-press', (
+-      tester,
+-    ) async {
+-      // Stronger guarantee than "AnimatedScale exists": verify the scale
+-      // factor actually changes during a press gesture. Catches a future
+-      // refactor that wraps the AnimatedContainer in an unused AnimatedScale.
+-      // Use a fake orchestrator because the real one opens a WebSocket on
+-      // tap, which would fail in the test environment.
+-      final orch = _TestOrchestrator();
+-      await tester.pumpWidget(
+-        _wrapWithOrchestrator(
+-          InstanceCard(instance: testInstance, onTap: () {}),
+-          orchestrator: orch,
+-        ),
+-      );
+-
+-      AnimatedScale readInnerScale() =>
+-          find
+-                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
+-                  .evaluate()
+-                  .single
+-                  .widget
+-              as AnimatedScale;
+-
+-      expect(
+-        readInnerScale().scale,
+-        equals(1.0),
+-        reason: 'Initial (idle) scale must be 1.0',
+-      );
+-
+-      final gesture = await tester.startGesture(
+-        tester.getCenter(find.byIcon(Icons.refresh)),
+-      );
+-      await tester.pump(
+-        XiaMotion.durationFast + const Duration(milliseconds: 50),
+-      );
+-
+-      expect(
+-        readInnerScale().scale,
+-        lessThan(1.0),
+-        reason:
+-            'While pressed, the inner scale must be < 1.0 so the user '
+-            'perceives the press.',
+-      );
+-
+-      await gesture.up();
+-      await tester.pump(
+-        XiaMotion.durationFast + const Duration(milliseconds: 50),
+-      );
+-      expect(
+-        readInnerScale().scale,
+-        equals(1.0),
+-        reason: 'After release, scale must return to 1.0',
+-      );
+-    });
+-
+     testWidgets('refresh button shows accent border on press', (tester) async {
+       // The PRIMARY visible feedback signal — color-only or scale-only
+       // changes are too subtle on a 36×36 button. A 1px accent border
+@@ -505,16 +396,16 @@ void main() {
+         ),
+       );
+ 
+-      AnimatedScale readInnerScale() =>
++      AnimatedContainer readActionContainer() =>
+           find
+-                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
++                  .byWidgetPredicate(_actionButtonContainerFor(Icons.refresh))
+                   .evaluate()
+                   .single
+                   .widget
+-              as AnimatedScale;
++              as AnimatedContainer;
+ 
+       // Idle: no border, surface2 background.
+-      final idle = readInnerScale().child as AnimatedContainer;
++      final idle = readActionContainer();
+       expect(idle.decoration, isA<BoxDecoration>());
+       expect(
+         (idle.decoration as BoxDecoration).border,
+@@ -534,7 +425,7 @@ void main() {
+         XiaMotion.durationFast + const Duration(milliseconds: 50),
+       );
+ 
+-      final pressed = readInnerScale().child as AnimatedContainer;
++      final pressed = readActionContainer();
+       final pressedBorder =
+           (pressed.decoration as BoxDecoration).border as Border;
+       expect(
+@@ -556,15 +447,17 @@ void main() {
+         ),
+       );
+ 
+-      AnimatedScale readInnerScale() =>
++      AnimatedContainer readActionContainer() =>
+           find
+-                  .byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline))
++                  .byWidgetPredicate(
++                    _actionButtonContainerFor(Icons.delete_outline),
++                  )
+                   .evaluate()
+                   .single
+                   .widget
+-              as AnimatedScale;
++              as AnimatedContainer;
+ 
+-      final idle = readInnerScale().child as AnimatedContainer;
++      final idle = readActionContainer();
+       expect(
+         (idle.decoration as BoxDecoration).border,
+         isNull,
+@@ -578,7 +471,7 @@ void main() {
+         XiaMotion.durationFast + const Duration(milliseconds: 50),
+       );
+ 
+-      final pressed = readInnerScale().child as AnimatedContainer;
++      final pressed = readActionContainer();
+       final pressedBorder =
+           (pressed.decoration as BoxDecoration).border as Border;
+       expect(
+diff --git a/test/integration/agent_tombstone_lifecycle_test.dart b/test/integration/agent_tombstone_lifecycle_test.dart
+index 7aa5d8d..e020510 100644
+--- a/test/integration/agent_tombstone_lifecycle_test.dart
++++ b/test/integration/agent_tombstone_lifecycle_test.dart
+@@ -359,11 +359,14 @@ void main() {
+         );
+         searchVm.dispose();
+ 
+-        // ---- 6. ChatViewModel.isAgentRemoved flips to true after tombstone ----
++        // ---- 6. ChatViewModel.vm.agent.isRemoved flips to true after tombstone ----
++        // Step 4 改造: tombstone 检测改读 vm.agent.isRemoved (而非
++        // state.isAgentRemoved)。本测试验证端到端 init() 链路：_setAgent
++        // 写入 _agent 后，UI 经 vm.agent.isRemoved 看到 true → 占位页渲染。
+         // 用真实 DriftAgentRepo + InMemoryConversationRepo（VM.init 不需要
+         // 真实 conversation 表） + MockGatewayClient（避免开真实 WebSocket）。
+-        // 关键路径：refreshAgent() 重查 DriftAgentRepo.getById → 拿到
+-        // isRemoved=true → _syncAgentRemoved() → state.isAgentRemoved=true。
++        // 关键路径：init() 走 _agentRepo.getById → 拿到已 tombstone 的 agent
++        // → _setAgent(agent) → vm._agent.isRemoved = true。
+         final chatVm = ChatViewModel(
+           agentRepo: agentRepo,
+           conversationRepo: InMemoryConversationRepo(),
+@@ -381,13 +384,11 @@ void main() {
+           agentId: 'local-a',
+         );
+         await chatVm.init();
+-        // init() 走 _agentRepo.getById → 拿到已 tombstone 的 agent
+-        // → _syncAgentRemoved() → state.isAgentRemoved = true
+         expect(
+-          chatVm.state.isAgentRemoved,
++          chatVm.agent?.isRemoved ?? false,
+           isTrue,
+           reason:
+-              'ChatViewModel.init() 后 state.isAgentRemoved 必须同步 '
++              'ChatViewModel.init() 后 vm.agent.isRemoved 必须同步 '
+               'DriftAgentRepo 中 A 的 tombstone 状态（AC8 占位页契约）',
+         );
+         chatVm.dispose();

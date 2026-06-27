@@ -50,6 +50,48 @@ class Agent {
   /// US-021: Agent 是否已被用户主动隐藏（v2 预留，v1 恒为 false）。
   bool get isHidden => hiddenAt != null;
 
+  /// Content-aware equality — true iff two Agents agree on every user-visible
+  /// field, not just identity ([localId]/[removedAt]/[hiddenAt]).
+  ///
+  /// Differs from [operator ==] (identity + tombstone flags only) by also
+  /// comparing [nickname], [themeColor], [avatarUrl], [description],
+  /// [quickCommands], [createdAt], and the non-identity scalars. Used by
+  /// reactive UI layers (Riverpod state) to dedup correctly when [Agent] is
+  /// replaced with a content-updated copy from the DB.
+  ///
+  /// Excludes [isPinned] deliberately — pinning is a list-view concern (handled
+  /// by `agentsProvider` sort), not a chat-relevant content field.
+  bool contentEquals(Agent other) {
+    if (identical(this, other)) return true;
+    return localId == other.localId &&
+        remoteId == other.remoteId &&
+        instanceId == other.instanceId &&
+        name == other.name &&
+        nickname == other.nickname &&
+        avatarUrl == other.avatarUrl &&
+        themeColor == other.themeColor &&
+        description == other.description &&
+        _quickCommandsEqual(quickCommands, other.quickCommands) &&
+        createdAt == other.createdAt &&
+        removedAt == other.removedAt &&
+        hiddenAt == other.hiddenAt;
+  }
+
+  /// Element-wise equality for [quickCommands] lists. Hand-rolled to comply
+  /// with Law 1 (domain layer must have zero Flutter imports — the framework
+  /// listEquals helper from foundation.dart is unavailable here).
+  ///
+  /// 注意：使用 [QuickCommand.contentEquals] 而非 `!=` ——`QuickCommand.==`
+  /// 只比 id，会漏掉同 id 内部 label / payload / sortOrder 的变更。
+  static bool _quickCommandsEqual(List<QuickCommand> a, List<QuickCommand> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!a[i].contentEquals(b[i])) return false;
+    }
+    return true;
+  }
+
   void _validate() {
     if (name.trim().isEmpty) {
       throw ArgumentError('Agent 名称不能为空');
@@ -109,19 +151,50 @@ class Agent {
     );
   }
 
+  // Finding #7 (2026-06-27 重构): [operator ==] 与 [hashCode] 仅基于
+  // [localId]，与 [QuickCommand.==] 对齐。两层 equality 的分工：
+  //
+  // - [operator ==] / [hashCode] (identity-only) → Set/Map dedup。
+  //   「同 localId = 同一 Agent」；tombstone / hidden / nickname / themeColor
+  //   等都是 Agent 的**属性**，不参与身份判定。
+  // - [contentEquals] (content-aware) → reactive dedup，用于
+  //   [_setAgent] 内容变更检测 + Riverpod watch 的 contentRevision bump。
+  //   「同内容 = 应放行 UI rebuild」，tombstone 翻转必须被检出。
+  //
+  // 历史：早期 == 含 {localId, removedAt, hiddenAt}，目的让 tombstone 转换
+  // 让 Riverpod dedup 自然放行。但这条路径已被 contentEquals + contentRevision
+  // 计数器替代（ChatSessionState.contentRevision / AgentProfileState.contentRevision），
+  // == 只留 identity-only 更清晰，且与项目其他 value object 风格一致。
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is Agent &&
           runtimeType == other.runtimeType &&
-          localId == other.localId &&
-          removedAt == other.removedAt &&
-          hiddenAt == other.hiddenAt;
+          localId == other.localId;
 
   @override
-  int get hashCode => Object.hash(localId, removedAt, hiddenAt);
+  int get hashCode => localId.hashCode;
 
   @override
   String toString() =>
       'Agent(localId: $localId, remoteId: $remoteId, instanceId: $instanceId, name: $name, description: $description)';
+}
+
+/// Finding #9 (2026-06-27 重构): 把 `agent?.isRemoved ?? false` 模式统一抽到
+/// domain 层，UI / VM 调用方改用 `agent.isTombstoned` 即可，省去重复的
+/// null 兜底。null 与「未删除」同义 —— 未加载的 agent 不应被视为 tombstone
+/// （否则错误地显示占位页）。
+///
+/// 替换点：
+/// - `lib/features/chat_room/chat_room_page.dart:150`
+/// - `lib/features/agent_profile/agent_profile_page.dart:68`
+/// - `lib/features/agent_profile/agent_config_page.dart:344`
+///
+/// 不替换 `lib/features/agent_profile/viewmodels/agent_profile_view_model.dart`
+/// 内的 `_agent!.isRemoved`（saveProfile/updateAvatar/removeAvatar 三处）：
+/// 这三处 `_agent` 已在前置 `if (_agent == null) return;` 早退后访问，
+/// 业务语义是「已加载的 agent 是否 tombstone」，与 extension 的 null 兜底语义
+/// 不同。统一替换会损害可读性。
+extension AgentTombstonedExt on Agent? {
+  bool get isTombstoned => this?.isRemoved ?? false;
 }

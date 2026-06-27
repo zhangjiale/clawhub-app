@@ -143,37 +143,53 @@ void main() {
       expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
     });
 
-    testWidgets('renders AgentRemovedPlaceholder when isAgentRemoved is true', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            agentProfileViewModelProvider('local-1').overrideWith((ref) {
-              final vm = AgentProfileViewModel(
-                agentRepo: agentRepo,
-                instanceRepo: instanceRepo,
-                messageRepo: messageRepo,
-                activityRepo: activityRepo,
-                evaluateAchievements: EvaluateAchievementsUseCase(
-                  achievementRepo,
-                ),
-                avatarStorageService: avatarStorageService,
-                agentId: 'local-1',
-              );
-              vm.state = vm.state.copyWith(isAgentRemoved: true);
-              return vm;
-            }),
-          ],
-          child: const MaterialApp(home: AgentProfilePage(agentId: 'local-1')),
-        ),
-      );
-      await tester.pump();
-      expect(find.byType(AgentRemovedPlaceholder), findsOneWidget);
-      expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
-    });
+    testWidgets(
+      'renders AgentRemovedPlaceholder when vm.agent.isRemoved is true',
+      (tester) async {
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              agentProfileViewModelProvider('local-1').overrideWith((ref) {
+                final vm = AgentProfileViewModel(
+                  agentRepo: agentRepo,
+                  instanceRepo: instanceRepo,
+                  messageRepo: messageRepo,
+                  activityRepo: activityRepo,
+                  evaluateAchievements: EvaluateAchievementsUseCase(
+                    achievementRepo,
+                  ),
+                  avatarStorageService: avatarStorageService,
+                  agentId: 'local-1',
+                );
+                // Step 6: 用 debugSetAgent 注入 tombstoned agent，UI 经
+                // vm.agent.isRemoved 触发占位页分支。不调 refresh() 避免
+                // 触发 4 个 detail loader（test 不关心它们）。
+                vm.debugSetAgent(
+                  Agent(
+                    localId: 'local-1',
+                    remoteId: 'remote-1',
+                    instanceId: 'inst-1',
+                    name: '产品虾',
+                    description: '产品规划、需求分析',
+                    themeColor: '#6c5ce7',
+                    removedAt: 1719200000000,
+                  ),
+                );
+                return vm;
+              }),
+            ],
+            child: const MaterialApp(
+              home: AgentProfilePage(agentId: 'local-1'),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(find.byType(AgentRemovedPlaceholder), findsOneWidget);
+        expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
+      },
+    );
 
-    testWidgets('renders profile normally when isAgentRemoved is false', (
+    testWidgets('renders profile normally when vm.agent.isRemoved is false', (
       tester,
     ) async {
       await tester.pumpWidget(buildPage());

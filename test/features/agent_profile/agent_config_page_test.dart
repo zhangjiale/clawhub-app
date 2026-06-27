@@ -227,45 +227,57 @@ void main() {
       });
     });
 
-    testWidgets('renders AgentRemovedPlaceholder when isAgentRemoved is true', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            agentProfileViewModelProvider('local-1').overrideWith((ref) {
-              final vm = AgentProfileViewModel(
-                agentRepo: agentRepo,
-                instanceRepo: instanceRepo,
-                messageRepo: messageRepo,
-                activityRepo: activityRepo,
-                evaluateAchievements: EvaluateAchievementsUseCase(
-                  achievementRepo,
-                ),
-                avatarStorageService: avatarStorageService,
-                agentId: 'local-1',
-              );
-              vm.state = vm.state.copyWith(isAgentRemoved: true);
-              return vm;
-            }),
-          ],
-          child: const MaterialApp(home: AgentConfigPage(agentId: 'local-1')),
-        ),
-      );
-      await tester.pump();
-      expect(find.byType(AgentRemovedPlaceholder), findsOneWidget);
-      expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
-      // Config form must NOT render in tombstone state
-      expect(find.byType(TextFormField), findsNothing);
-    });
+    testWidgets(
+      'renders AgentRemovedPlaceholder when vm.agent.isRemoved is true',
+      (tester) async {
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              agentProfileViewModelProvider('local-1').overrideWith((ref) {
+                final vm = AgentProfileViewModel(
+                  agentRepo: agentRepo,
+                  instanceRepo: instanceRepo,
+                  messageRepo: messageRepo,
+                  activityRepo: activityRepo,
+                  evaluateAchievements: EvaluateAchievementsUseCase(
+                    achievementRepo,
+                  ),
+                  avatarStorageService: avatarStorageService,
+                  agentId: 'local-1',
+                );
+                // Step 6: 用 debugSetAgent 注入 tombstoned agent。
+                vm.debugSetAgent(
+                  Agent(
+                    localId: 'local-1',
+                    remoteId: 'remote-1',
+                    instanceId: 'inst-1',
+                    name: '产品虾',
+                    themeColor: '#6c5ce7',
+                    removedAt: 1719200000000,
+                  ),
+                );
+                return vm;
+              }),
+            ],
+            child: const MaterialApp(home: AgentConfigPage(agentId: 'local-1')),
+          ),
+        );
+        await tester.pump();
+        expect(find.byType(AgentRemovedPlaceholder), findsOneWidget);
+        expect(find.text('该 Agent 已从 Gateway 移除'), findsOneWidget);
+        // Config form must NOT render in tombstone state
+        expect(find.byType(TextFormField), findsNothing);
+      },
+    );
 
-    testWidgets('renders config form normally when isAgentRemoved is false', (
-      tester,
-    ) async {
-      await tester.pumpWidget(buildPage());
-      await tester.pumpAndSettle();
-      expect(find.byType(AgentRemovedPlaceholder), findsNothing);
-      expect(find.byType(TextFormField), findsOneWidget);
-    });
+    testWidgets(
+      'renders config form normally when vm.agent.isRemoved is false',
+      (tester) async {
+        await tester.pumpWidget(buildPage());
+        await tester.pumpAndSettle();
+        expect(find.byType(AgentRemovedPlaceholder), findsNothing);
+        expect(find.byType(TextFormField), findsOneWidget);
+      },
+    );
   });
 }

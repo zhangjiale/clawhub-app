@@ -82,8 +82,12 @@ class InMemoryInstanceRepo implements IInstanceRepo {
 /// 内存版 Agent 仓库
 class InMemoryAgentRepo implements IAgentRepo {
   final Map<String, Agent> _store = {}; // localId -> Agent
-  final Map<String, Agent> _byCompositeKey =
-      {}; // "instanceId:remoteId" -> Agent
+
+  /// Agent 变更广播 — 任何 mutation path 写入后 emit 当前 agent（仿
+  /// InMemoryMessageRepo._messagesChanged 模式）。watchById 订阅者收到 emit 后
+  /// 可立即拿到最新值，实现响应式刷新。
+  final StreamController<Agent> _agentsChanged =
+      StreamController<Agent>.broadcast();
 
   /// Shared sort comparator: pinned first, then by name.
   int _compareAgents(Agent a, Agent b) {
@@ -96,9 +100,6 @@ class InMemoryAgentRepo implements IAgentRepo {
     list.sort(_compareAgents);
     return list;
   }
-
-  String _compositeKey(String instanceId, String remoteId) =>
-      '$instanceId:$remoteId';
 
   @override
   Future<List<Agent>> getByInstanceId(String instanceId) async {
@@ -143,13 +144,44 @@ class InMemoryAgentRepo implements IAgentRepo {
 
   @override
   Future<Agent?> findByCompositeKey(String instanceId, String remoteId) async {
-    return _byCompositeKey[_compositeKey(instanceId, remoteId)];
+    // O(n) scan — in-memory repo is test/dev only, store size is bounded
+    // by per-instance agent count (typically <100), so an index is overkill.
+    for (final agent in _store.values) {
+      if (agent.instanceId == instanceId && agent.remoteId == remoteId) {
+        return agent;
+      }
+    }
+    return null;
   }
 
-  /// Add or update an agent in both indexes.
+  /// Add or update an agent in [_store] and notify stream subscribers.
   void _putAgent(Agent agent) {
     _store[agent.localId] = agent;
-    _byCompositeKey[_compositeKey(agent.instanceId, agent.remoteId)] = agent;
+    if (!_agentsChanged.isClosed) _agentsChanged.add(agent);
+  }
+
+  Agent _rebuildAgent(
+    Agent agent, {
+    String? name,
+    String? description,
+    int? removedAt,
+    bool clearRemovedAt = false,
+  }) {
+    return Agent(
+      localId: agent.localId,
+      remoteId: agent.remoteId,
+      instanceId: agent.instanceId,
+      name: name ?? agent.name,
+      nickname: agent.nickname,
+      avatarUrl: agent.avatarUrl,
+      themeColor: agent.themeColor,
+      description: description ?? agent.description,
+      isPinned: agent.isPinned,
+      quickCommands: agent.quickCommands,
+      createdAt: agent.createdAt,
+      removedAt: clearRemovedAt ? null : (removedAt ?? agent.removedAt),
+      hiddenAt: agent.hiddenAt,
+    );
   }
 
   @override
@@ -158,26 +190,55 @@ class InMemoryAgentRepo implements IAgentRepo {
     List<Agent> remoteAgents,
   ) async {
     final results = <Agent>[];
+    final remoteIds = remoteAgents.map((a) => a.remoteId).toSet();
+
     for (final remote in remoteAgents) {
       final existing = await findByCompositeKey(instanceId, remote.remoteId);
       if (existing != null) {
-        // Update existing agent while preserving local customizations
-        final updated = existing.copyWith(
+        // Update existing agent while preserving local customizations and revive
+        // tombstoned agents that reappear in the Gateway response.
+        final updated = _rebuildAgent(
+          existing,
           name: remote.name,
           description: remote.description,
-          // Preserve local customizations
-          nickname: existing.nickname,
-          avatarUrl: existing.avatarUrl,
-          themeColor: existing.themeColor,
+          clearRemovedAt: true,
         );
         _putAgent(updated);
         results.add(updated);
       } else {
-        // New agent
-        _putAgent(remote);
-        results.add(remote);
+        // New agent — ensure sync-created agents are alive even if the caller's
+        // fixture accidentally carries tombstone fields.
+        final inserted = Agent(
+          localId: remote.localId,
+          remoteId: remote.remoteId,
+          instanceId: remote.instanceId,
+          name: remote.name,
+          nickname: remote.nickname,
+          avatarUrl: remote.avatarUrl,
+          themeColor: remote.themeColor,
+          description: remote.description,
+          isPinned: remote.isPinned,
+          quickCommands: remote.quickCommands,
+          createdAt: remote.createdAt,
+          removedAt: remote.removedAt,
+          hiddenAt: remote.hiddenAt,
+        );
+        _putAgent(inserted);
+        results.add(inserted);
       }
     }
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final localAgents = _store.values
+        .where((a) => a.instanceId == instanceId)
+        .toList();
+    for (final local in localAgents) {
+      if (local.removedAt != null) continue;
+      if (remoteIds.isEmpty || !remoteIds.contains(local.remoteId)) {
+        _putAgent(_rebuildAgent(local, removedAt: now));
+      }
+    }
+
     return results;
   }
 
@@ -256,12 +317,60 @@ class InMemoryAgentRepo implements IAgentRepo {
 
   @override
   Future<void> deleteByInstanceId(String instanceId) async {
-    final toRemove = _store.values
-        .where((a) => a.instanceId == instanceId)
+    // US-021 + IAgentRepo.watchById contract: subscribers must observe
+    // deletion (null emission).  Drift implementation gets this via the
+    // SQL DELETE statement automatically; in-memory must synthesize a
+    // change event per removed localId so watchById re-evaluates.
+    final removedLocalIds = _store.entries
+        .where((e) => e.value.instanceId == instanceId)
+        .map((e) => e.key)
         .toList();
-    for (final agent in toRemove) {
-      _store.remove(agent.localId);
-      _byCompositeKey.remove(_compositeKey(agent.instanceId, agent.remoteId));
+    _store.removeWhere((_, agent) => agent.instanceId == instanceId);
+    if (!_agentsChanged.isClosed) {
+      for (final localId in removedLocalIds) {
+        // Synthetic marker — only its [localId] is meaningful: watchById's
+        // `where(changed.localId == localId)` matches it, then the
+        // subsequent `.map((_) => _store[localId])` yields null because the
+        // agent is no longer in [_store].  Other fields are placeholder
+        // values satisfying [Agent._validate].
+        _agentsChanged.add(_deleteMarker(localId));
+      }
+    }
+  }
+
+  /// Synthetic [Agent] used solely to fire watchById after a bulk delete.
+  /// The marker is never stored in [_store] — it only carries [localId]
+  /// past the filter, where the subsequent `.map(_ => _store[localId])`
+  /// re-reads and yields null.
+  ///
+  /// [name] must be non-empty after trim (Agent._validate, agent.dart:97);
+  /// `'__delete_marker__'` is a stable, recognizable placeholder that will
+  /// never collide with real agent names.
+  static Agent _deleteMarker(String localId) => Agent(
+    localId: localId,
+    remoteId: '',
+    instanceId: '',
+    name: '__delete_marker__',
+    themeColor: '#000000',
+  );
+
+  @override
+  Stream<Agent?> watchById(String localId) async* {
+    // Seed event: 立即 emit 当前值（仿 Drift .watchSingleOrNull() 行为）。
+    yield _store[localId];
+    // 后续变化: filter 该 localId 的 emit。
+    // 用 yield* 委托给 transformed stream 而非 await for:
+    // .where().map() 产生的 single-subscription stream 取消语义更明确,
+    // 外层 listen cancel 时内部 subscription 的 cancel future 立即完成。
+    yield* _agentsChanged.stream
+        .where((changed) => changed.localId == localId)
+        .map((_) => _store[localId]);
+  }
+
+  /// 关闭内部 stream controller（测试 cleanup + 未来真实 dispose 路径）。
+  Future<void> dispose() async {
+    if (!_agentsChanged.isClosed) {
+      await _agentsChanged.close();
     }
   }
 }

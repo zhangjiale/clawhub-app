@@ -51,7 +51,10 @@ class _ChatInputBarState extends State<ChatInputBar> {
         XiaSpacing.s2 + bottomInset + safeBottom,
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+        // center (not end) so the 36×36 send button visually aligns with the
+        // input field's content area in the single-line default state. See
+        // component-spec-v2 §4.5.1.
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: TextField(

@@ -9,6 +9,7 @@ import 'connection_manager.dart';
 import 'device_identity.dart';
 import 'gateway_protocol.dart';
 import 'i_device_identity_provider.dart';
+import 'i_device_token_store.dart';
 import 'i_gateway_client.dart';
 import 'replayable_connection_state.dart';
 
@@ -51,6 +52,13 @@ class WsGatewayClient implements IGatewayClient {
   /// never be blocked by device-info read failures.
   final Future<String?> Function()? _modelIdentifierLoader;
 
+  /// Optional: persist the issued deviceToken (差距 #1 fix, spec §2.2).
+  /// When null (no DI injection), ConnectionManager falls back to using
+  /// the constructor-provided `instance.tokenRef` for every connect —
+  /// first-time pairing path on every reconnect, which forces a full
+  /// re-pair each time.  Production should always inject.
+  final IDeviceTokenStore? _deviceTokenStore;
+
   /// 创建 WebSocket Gateway 客户端。
   ///
   /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
@@ -61,17 +69,23 @@ class WsGatewayClient implements IGatewayClient {
   ///
   /// [webSocketFactory] 和 [timerFactory] 仅供测试注入，
   /// 生产环境留空即可（委托 [ConnectionManager] 默认行为）。
+  ///
+  /// [deviceTokenStore] 持久化 Gateway 签发的 deviceToken；后续重连
+  /// 时优先复用缓存令牌（spec §2.2）。当未注入时，退化为每次连接
+  /// 都使用 `instance.tokenRef`（每次都走配对流程）。
   WsGatewayClient({
     required IDeviceIdentityProvider identityProvider,
     ConnectionConfig? config,
     WebSocketChannel Function(Uri)? webSocketFactory,
     TimerFactory? timerFactory,
     Future<String?> Function()? modelIdentifierLoader,
+    IDeviceTokenStore? deviceTokenStore,
   }) : _identityProvider = identityProvider,
        _config = config ?? ConnectionConfig(),
        _webSocketFactory = webSocketFactory,
        _timerFactory = timerFactory,
-       _modelIdentifierLoader = modelIdentifierLoader;
+       _modelIdentifierLoader = modelIdentifierLoader,
+       _deviceTokenStore = deviceTokenStore;
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -190,6 +204,7 @@ class WsGatewayClient implements IGatewayClient {
         config: config,
         webSocketFactory: _webSocketFactory,
         timerFactory: _timerFactory,
+        deviceTokenStore: _deviceTokenStore,
       );
 
       // 复用已有的流控制器（若有），否则创建新的
@@ -364,9 +379,48 @@ class WsGatewayClient implements IGatewayClient {
             .map((json) => _parseMessage(json))
             .toList() ??
         [];
-    final nextCursor = res.payload?['nextCursor'] as String?;
+    // Bug #2 fix: server spec uses 'cursor' (docs/technical/api-protocol.md
+    // §5.4) but the client used to only read 'nextCursor', causing pagination
+    // to deadlock at page 2. Read 'nextCursor' first (forward-compat with
+    // future Gateway versions) and fall back to 'cursor'.
+    final p = res.payload;
+    final nextCursor = p?['nextCursor'] as String? ?? p?['cursor'] as String?;
 
     return (messages: messages, nextCursor: nextCursor);
+  }
+
+  /// 轮换当前实例的 cached deviceToken。
+  ///
+  /// 成功时把 Gateway 返回的新 token 持久化到 IDeviceTokenStore。
+  Future<void> rotateDeviceToken(String instanceId) async {
+    final manager = _requireManager(instanceId);
+    final res = await manager.sendRequest(Methods.deviceTokenRotate, const {});
+    if (!res.ok) {
+      throw Exception(
+        'Device token rotate failed: ${res.error?.message ?? "unknown"}',
+      );
+    }
+    final token =
+        res.payload?['deviceToken'] as String? ??
+        res.payload?['token'] as String?;
+    if (token == null || token.isEmpty) {
+      throw StateError('device.token.rotate response missing deviceToken');
+    }
+    await _deviceTokenStore?.save(instanceId, token);
+  }
+
+  /// 撤销当前实例的 cached deviceToken。
+  ///
+  /// 成功时从 IDeviceTokenStore 删除本实例 token。
+  Future<void> revokeDeviceToken(String instanceId) async {
+    final manager = _requireManager(instanceId);
+    final res = await manager.sendRequest(Methods.deviceTokenRevoke, const {});
+    if (!res.ok) {
+      throw Exception(
+        'Device token revoke failed: ${res.error?.message ?? "unknown"}',
+      );
+    }
+    await _deviceTokenStore?.delete(instanceId);
   }
 
   @override
@@ -771,12 +825,17 @@ class WsGatewayClient implements IGatewayClient {
     if (rawCommands != null) {
       for (var i = 0; i < rawCommands.length; i++) {
         final cmd = rawCommands[i] as Map<String, dynamic>;
+        final label = cmd['label'] as String? ?? '';
+        final payload = cmd['payload'] as String? ?? '';
+        final commandId = cmd['id'] as String?;
         quickCommands.add(
           QuickCommand(
-            id: _uuid.v4(),
+            id: commandId != null && commandId.isNotEmpty
+                ? commandId
+                : '$remoteId:$i:${label.trim()}:${payload.trim()}',
             agentId: remoteId,
-            label: cmd['label'] as String? ?? '',
-            payload: cmd['payload'] as String? ?? '',
+            label: label,
+            payload: payload,
             sortOrder: i,
           ),
         );

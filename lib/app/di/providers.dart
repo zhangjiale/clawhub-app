@@ -5,8 +5,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
+import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
+import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/data/services/avatar_storage_service.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
@@ -56,15 +58,32 @@ import 'package:claw_hub/data/services/local_notification_service.dart';
 /// 成功后写入被同步的 instanceId。
 ///
 /// [agentListProvider] / [conversationListProvider] 通过 watch 此值在
-/// 任意实例同步完成后自动 refresh UI（rebuild 行为兼容旧 int 计数器）。
+/// 任意实例同步完成后自动 refresh UI。每次 sync 都递增 [revision]，即使
+/// 连续两次同步同一个 instanceId，也会产生不相等的新值，避免 Riverpod
+/// 因同值写入去重而丢掉第二次通知。
 ///
-/// Chat / AgentProfile 的 ticker listener 在 BUG B 修复后必须按
-/// `state == self.instanceId` 过滤再触发本实例的 refreshAgent —— 否则
+/// Chat / AgentProfile 的 ticker listener 必须按
+/// `tick.instanceId == self.instanceId` 过滤再触发本实例的 refreshAgent —— 否则
 /// 任意实例 sync 会导致所有 active ChatRoom/Profile 页面的
 /// `_agentRepo.getById()` 被重查一次（N 个实例 × 1 sync = N 次冗余 read）。
-///
-/// 类型 `String?` 携带最近被同步的 instanceId,初始 null。
-final agentSyncTickerProvider = StateProvider<String?>((ref) => null);
+class AgentSyncTick {
+  final int revision;
+  final String instanceId;
+
+  const AgentSyncTick({required this.revision, required this.instanceId});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AgentSyncTick &&
+          revision == other.revision &&
+          instanceId == other.instanceId;
+
+  @override
+  int get hashCode => Object.hash(revision, instanceId);
+}
+
+final agentSyncTickerProvider = StateProvider<AgentSyncTick?>((ref) => null);
 
 /// Outbox 冲刷完成信号 — [OutboxProcessor.flushOutbox] 成功发送至少一条消息后递增。
 ///
@@ -184,6 +203,17 @@ final deviceIdentityProvider = Provider<IDeviceIdentityProvider>((ref) {
   );
 });
 
+/// 设备令牌（deviceToken）存储 — 持久化 Gateway 签发的设备令牌（差距 #1）。
+///
+/// 后续重连时优先复用缓存令牌（spec §2.2 后续重连复用该令牌），
+/// 避免重复走 device.pair 审批流程。
+/// 可通过 override 注入 fake 以进行单元测试。
+final deviceTokenStoreProvider = Provider<IDeviceTokenStore>((ref) {
+  return SecureStorageDeviceTokenStore(
+    secureStorage: const FlutterSecureStorage(),
+  );
+});
+
 /// Cached device model identifier — the platform channel call only needs
 /// to happen once per app lifetime. Injecting a FutureProvider keeps the
 /// loader's expensive call (10–50ms iOS/Android) out of every reconnect.
@@ -218,6 +248,8 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
     // 设备型号在 DI 容器启动时解析一次并缓存,connect 时只读取缓存值,
     // 避免每次 reconnect 都重新走 platform channel(10-50ms 阻塞)。
     modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
+    // 差距 #1: 持久化 deviceToken，后续重连优先复用。
+    deviceTokenStore: ref.watch(deviceTokenStoreProvider),
   );
   ref.onDispose(() => client.dispose());
   return client;
@@ -284,7 +316,11 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
         case AgentsSyncedEvent(:final instanceId):
           // ticker 携带被同步的 instanceId,让 chat/agent_profile 的
           // listener 能按实例过滤（BUG B 修复,避免跨实例 N+1 getById）。
-          ref.read(agentSyncTickerProvider.notifier).state = instanceId;
+          final notifier = ref.read(agentSyncTickerProvider.notifier);
+          notifier.state = AgentSyncTick(
+            revision: (notifier.state?.revision ?? 0) + 1,
+            instanceId: instanceId,
+          );
         case PairingInfoChangedEvent(:final instanceId, :final info):
           final notifier = ref.read(pairingInfoProvider.notifier);
           final newMap = Map<String, GatewayPairingInfo>.from(notifier.state);

@@ -176,6 +176,24 @@ void main() {
       },
     );
 
+    test(
+      'connection change: online -> reconnecting, switch on -> drop (noise)',
+      () {
+        final decision = usecase.evaluate(
+          ConnectionChangeEvent(
+            instanceId: 'i',
+            instanceName: '家里',
+            fromState: NotificationConnectionState.online,
+            toState: NotificationConnectionState.reconnecting,
+          ),
+          _prefs(),
+          DateTime(2026, 6, 20, 12),
+        );
+        // reconnecting 是自动重连的中间状态，不应视为掉线通知。
+        expect(decision, isA<DroppedDecision>());
+      },
+    );
+
     test('connection change switch off -> drop', () {
       final decision = usecase.evaluate(
         ConnectionChangeEvent(

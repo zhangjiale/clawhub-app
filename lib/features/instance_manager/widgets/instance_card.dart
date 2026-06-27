@@ -205,31 +205,64 @@ class _ActionBtn extends StatelessWidget {
 
   const _ActionBtn({required this.icon, this.onTap, this.danger = false});
 
+  // Cached decorations — `PressFeedback.builder` fires on every press/release,
+  // so building a fresh BoxDecoration on each call allocates on the tap hot
+  // path. Both danger × pressed variants are precomputed and shared across all
+  // _ActionBtn instances. Color.lerp isn't const so we use static final.
+  static final BoxDecoration _idleNormal = BoxDecoration(
+    color: XiaColors.surface2,
+    borderRadius: _radius,
+  );
+  static final BoxDecoration _idleDanger = BoxDecoration(
+    color: XiaColors.redMuted,
+    borderRadius: _radius,
+  );
+  static final BoxDecoration _pressedNormal = BoxDecoration(
+    color: XiaColors.surface3,
+    borderRadius: _radius,
+    border: Border.all(
+      color: XiaColors.accent,
+      width: 1,
+      strokeAlign: BorderSide.strokeAlignInside,
+    ),
+  );
+  static final BoxDecoration _pressedDanger = BoxDecoration(
+    color: Color.lerp(XiaColors.redMuted, Colors.black, 0.25)!,
+    borderRadius: _radius,
+    border: Border.all(
+      color: XiaColors.red,
+      width: 1,
+      strokeAlign: BorderSide.strokeAlignInside,
+    ),
+  );
+  static const _radius = BorderRadius.all(Radius.circular(XiaRadius.sm));
+
   @override
   Widget build(BuildContext context) {
     return PressFeedback(
       onTap: onTap,
       builder: (child, isPressed) => AnimatedScale(
-        // Scale is the primary visible feedback signal: surface2→surface3
-        // color shift alone has only ~3% luminance delta (imperceptible),
-        // and the danger variant doesn't change color at all on press.
-        // Matches the HeaderButton pattern (scale 0.93) for consistency.
-        scale: isPressed ? 0.93 : 1.0,
+        // PressFeedback in builder mode IGNORES its own `scale` param
+        // (press_feedback_buttons.dart:120-149), so the 0.97 scale must
+        // be applied here manually — without it, 36×36 buttons have only
+        // the border / color change for feedback, imperceptible on dark
+        // OLED or bright sunlight (instance_manager/instance_card_test.dart
+        // 'scale guard' regression).
+        scale: isPressed ? 0.97 : 1.0,
         duration: XiaMotion.durationFast,
         curve: XiaMotion.ease,
         child: AnimatedContainer(
+          // Press feedback uses the accent border as the primary visible signal.
+          // The previous color-only change (surface2→surface3) had only ~3%
+          // luminance delta, imperceptible on a 36×36 button, and the danger
+          // variant had zero color change.
           duration: XiaMotion.durationFast,
           curve: XiaMotion.ease,
           width: 36,
           height: 36,
-          decoration: BoxDecoration(
-            color: danger
-                ? (isPressed
-                      ? Color.lerp(XiaColors.redMuted, Colors.black, 0.15)!
-                      : XiaColors.redMuted)
-                : (isPressed ? XiaColors.surface3 : XiaColors.surface2),
-            borderRadius: BorderRadius.circular(XiaRadius.sm),
-          ),
+          decoration: isPressed
+              ? (danger ? _pressedDanger : _pressedNormal)
+              : (danger ? _idleDanger : _idleNormal),
           alignment: Alignment.center,
           child: child,
         ),

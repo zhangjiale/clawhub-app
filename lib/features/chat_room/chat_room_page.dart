@@ -10,6 +10,7 @@ import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
@@ -141,12 +142,13 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final vm = ref.read(chatViewModelProvider(params).notifier);
     final agent = vm.agent;
     // US-021 AC8: agent 已被 Gateway 删除（tombstoned）时不进入聊天界面。
-    // 用 session.isAgentRemoved（响应式字段）而非 vm.agent（_agent 是非响应式
-    // 缓存，后台 sync tombstone 后不会更新）—— refreshAgent() 与所有 _agent
-    // 写入点会同步此字段，state 变化经 ref.watch 触发本 build 重建。
+    // Step 3: 直接读 vm.agent.isRemoved —— 不再依赖 session 的 tombstone 标志字段
+    // 字段。看似绕过 ref.watch，但 [_setAgent] 会同步 bump
+    // session.contentRevision，state 变化经 ref.watch 触发本 build 重建，
+    // build() 中 vm.agent getter 拿到的是最新 _agent（含最新 isRemoved）。
     // US-021 v1.2: 迁移到 AgentRemovedPlaceholder widget，与 AgentProfilePage /
     // AgentConfigPage 共用同一份占位页（避免三处文案/样式 drift）。
-    if (session.isAgentRemoved) {
+    if (agent.isTombstoned) {
       return AgentRemovedPlaceholder(
         agentName: agent?.displayName,
         source: widget.source,

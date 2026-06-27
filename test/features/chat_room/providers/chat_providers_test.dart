@@ -151,7 +151,11 @@ void main() {
 
       // BUG B 修复:ticker 携带 instanceId,listener 过滤本实例才触发。
       // bump 时指定与 VM 相同的 instanceId → refreshAgent 应被调。
-      container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
+      final notifier = container.read(agentSyncTickerProvider.notifier);
+      notifier.state = AgentSyncTick(
+        revision: (notifier.state?.revision ?? 0) + 1,
+        instanceId: 'inst-1',
+      );
       await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
@@ -195,7 +199,11 @@ void main() {
       expect(calls, 1, reason: 'init 阶段 getById 调 1 次');
 
       // bump ticker 携带**不同**的 instanceId('inst-2'),本 VM 应跳过
-      container.read(agentSyncTickerProvider.notifier).state = 'inst-2';
+      final notifier = container.read(agentSyncTickerProvider.notifier);
+      notifier.state = AgentSyncTick(
+        revision: (notifier.state?.revision ?? 0) + 1,
+        instanceId: 'inst-2',
+      );
       await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
@@ -242,22 +250,77 @@ void main() {
 
       // 触发 refreshAgent，内部 getById 会抛异常。
       // ticker 携带本实例 instanceId 才能命中 listener 过滤。
-      container.read(agentSyncTickerProvider.notifier).state = 'inst-1';
+      final notifier = container.read(agentSyncTickerProvider.notifier);
+      notifier.state = AgentSyncTick(
+        revision: (notifier.state?.revision ?? 0) + 1,
+        instanceId: 'inst-1',
+      );
       await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
 
       // 如果异常从 fire-and-forget 监听器泄漏，测试框架会捕获到未处理异步错误。
       // 此处断言 VM 仍在工作且状态未因异常而损坏。
-      expect(vm.state.isAgentRemoved, isFalse);
+      expect(vm.agent?.isRemoved ?? false, isFalse);
       expect(calls, greaterThan(1));
     },
   );
 
-  // US-021 v1.2 修复:refreshAgent 简化后,必须在 init() 未启动时
-  // (initFuture == null) 也能从 ticker 同步 tombstone 状态。原实现
+  test(
+    'consecutive same-instance sync ticks both trigger refreshAgent',
+    () async {
+      var calls = 0;
+      when(() => agentRepo.getById('local-a')).thenAnswer((_) async {
+        calls++;
+        return activeAgent;
+      });
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'wss://test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+
+      final container = createContainer();
+      container.read(
+        chatViewModelProvider((instanceId: 'inst-1', agentId: 'local-a')),
+      );
+      await waitForInitComplete(container);
+      expect(calls, 1, reason: 'init 阶段 getById 调 1 次');
+
+      final notifier = container.read(agentSyncTickerProvider.notifier);
+      notifier.state = AgentSyncTick(
+        revision: (notifier.state?.revision ?? 0) + 1,
+        instanceId: 'inst-1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      notifier.state = AgentSyncTick(
+        revision: (notifier.state?.revision ?? 0) + 1,
+        instanceId: 'inst-1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        calls,
+        3,
+        reason:
+            '连续两次同实例 sync 都必须触发 refreshAgent；'
+            '旧 String? ticker 第二次同值写入会被 Riverpod 去重。',
+      );
+    },
+  );
+
   // `if (initFuture == null) return;` 会让 init 未跑的窗口期内
-  // isAgentRemoved 维持 false,用户看到的是普通 ChatRoom UI。
+  // vm._agent 维持 null,用户看到的是普通 ChatRoom UI 而不是占位页。
   //
   // 直接构造 ChatViewModel (绕过 provider 的自动 init 调用) 来模拟
   // "refreshAgent 在 init 之前被调用"的场景。
@@ -293,12 +356,12 @@ void main() {
       achievementChecker: _MockAchievementChecker(),
       flushDelay: Duration.zero,
     );
-    expect(vm.state.isAgentRemoved, isFalse);
+    expect(vm.agent?.isRemoved ?? false, isFalse);
 
     await vm.refreshAgent();
 
     expect(
-      vm.state.isAgentRemoved,
+      vm.agent?.isRemoved ?? false,
       isTrue,
       reason:
           'initFuture == null 时,refreshAgent 不能早退,'

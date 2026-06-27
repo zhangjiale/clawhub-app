@@ -359,11 +359,14 @@ void main() {
         );
         searchVm.dispose();
 
-        // ---- 6. ChatViewModel.isAgentRemoved flips to true after tombstone ----
+        // ---- 6. ChatViewModel.vm.agent.isRemoved flips to true after tombstone ----
+        // Step 4 改造: tombstone 检测改读 vm.agent.isRemoved (而非
+        // state.isAgentRemoved)。本测试验证端到端 init() 链路：_setAgent
+        // 写入 _agent 后，UI 经 vm.agent.isRemoved 看到 true → 占位页渲染。
         // 用真实 DriftAgentRepo + InMemoryConversationRepo（VM.init 不需要
         // 真实 conversation 表） + MockGatewayClient（避免开真实 WebSocket）。
-        // 关键路径：refreshAgent() 重查 DriftAgentRepo.getById → 拿到
-        // isRemoved=true → _syncAgentRemoved() → state.isAgentRemoved=true。
+        // 关键路径：init() 走 _agentRepo.getById → 拿到已 tombstone 的 agent
+        // → _setAgent(agent) → vm._agent.isRemoved = true。
         final chatVm = ChatViewModel(
           agentRepo: agentRepo,
           conversationRepo: InMemoryConversationRepo(),
@@ -381,13 +384,11 @@ void main() {
           agentId: 'local-a',
         );
         await chatVm.init();
-        // init() 走 _agentRepo.getById → 拿到已 tombstone 的 agent
-        // → _syncAgentRemoved() → state.isAgentRemoved = true
         expect(
-          chatVm.state.isAgentRemoved,
+          chatVm.agent?.isRemoved ?? false,
           isTrue,
           reason:
-              'ChatViewModel.init() 后 state.isAgentRemoved 必须同步 '
+              'ChatViewModel.init() 后 vm.agent.isRemoved 必须同步 '
               'DriftAgentRepo 中 A 的 tombstone 状态（AC8 占位页契约）',
         );
         chatVm.dispose();

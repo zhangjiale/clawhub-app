@@ -669,6 +669,51 @@ void main() {
         expect(service.shown, isEmpty);
       },
     );
+
+    test(
+      'connected -> recovering (flaky network) -> no connection-change notification',
+      () async {
+        // 弱网抖动时 WebSocket 断开后先进入 recovering，此时不应弹
+        // "虾连接已断开"通知。
+        final c = build();
+        await c.start();
+        gateway.connController.add(GatewayConnectionState.connected);
+        await _pump();
+        gateway.connController.add(GatewayConnectionState.recovering);
+        await _pump();
+        await c.dispose();
+
+        expect(service.shown, isEmpty);
+      },
+    );
+
+    // Bug 3 修复回归测试：在线 → 短暂恢复 → 重连耗尽（终态 offline）
+    // 走完后必须弹"虾连接已断开"推送通知。
+    test('online -> recovering -> reconnectExhausted '
+        '(reconnect exhausted after transient recovery) '
+        '-> connection notification shown', () async {
+      final c = build();
+      await c.start();
+      // 1. 首态 connected → 不发通知
+      gateway.connController.add(GatewayConnectionState.connected);
+      await _pump();
+      // 2. 弱网抖动 → recovering（reconnecting）→ 仍非掉线终态，不发
+      gateway.connController.add(GatewayConnectionState.recovering);
+      await _pump();
+      // 3. 重连预算耗尽 → reconnectExhausted (mapped to offline) → 必须发
+      gateway.connController.add(GatewayConnectionState.reconnectExhausted);
+      await _pump();
+      await c.dispose();
+
+      expect(service.shown.length, 1);
+      expect(service.shown.first.channel, NotificationChannelId.connection);
+      expect(service.shown.first.title, contains('家里'));
+      expect(
+        service.shown.first.title,
+        contains('断开'),
+        reason: '短暂恢复失败后的终态掉线必须发推送（原 gate 漏掉此路径）',
+      );
+    });
   });
 }
 

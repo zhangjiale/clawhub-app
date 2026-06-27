@@ -85,8 +85,9 @@ class Methods {
   static const String sessionsList = 'sessions.list';
   static const String sessionsResolve = 'sessions.resolve';
   static const String sessionsCreate = 'sessions.create';
-  static const String sessionsSend = 'sessions.send';
   static const String health = 'health';
+  static const String deviceTokenRotate = 'device.token.rotate';
+  static const String deviceTokenRevoke = 'device.token.revoke';
 }
 
 /// 协议定义的事件名（对齐 OpenClaw Gateway v2026.6.6 实测）。
@@ -152,9 +153,10 @@ Map<String, dynamic> buildConnectParams({
   if (config.clientDisplayName != null) {
     client['displayName'] = config.clientDisplayName;
   }
-  if (config.deviceFamily != null) {
-    client['deviceFamily'] = config.deviceFamily;
-  }
+  // deviceFamily is non-nullable on ConnectionConfig (default 'phone')
+  // and is part of the v3 signature payload — always write to wire so
+  // the server-side signature reconstruction matches the client payload.
+  client['deviceFamily'] = config.deviceFamily;
   if (config.modelIdentifier != null) {
     client['modelIdentifier'] = config.modelIdentifier;
   }
@@ -202,6 +204,17 @@ String buildV3SignaturePayload({
   required String platform,
   String deviceFamily = 'phone',
 }) {
+  // Light defense: spec §2.5 mandates an 11-segment pipe-separated
+  // payload with a non-empty deviceFamily at the end. A null/empty
+  // deviceFamily would emit a literal "|null|" or "||" segment, which
+  // the server-side parser would reject. ConnectionConfig defaults
+  // deviceFamily to 'phone' so this only fires if a caller explicitly
+  // nulls the field — fail-fast in dev/test, no runtime cost in release.
+  assert(
+    deviceFamily.isNotEmpty,
+    'deviceFamily must be a non-empty string — DI must inject a '
+    'platformOS()-derived value (e.g. "phone" or "desktop")',
+  );
   final scopesStr = scopes.join(',');
   return 'v3|$deviceId|$clientId|$clientMode|$role|$scopesStr'
       '|$signedAtMs|$token|$nonce|${platform.toLowerCase()}|${deviceFamily.toLowerCase()}';
@@ -559,7 +572,16 @@ String? resolveAgentId(String sessionKey, Map<String, String> mapping) {
 class ConnectionConfig {
   final String locale;
   final String platform;
-  final String? deviceFamily;
+
+  /// Device family (e.g. `phone`, `desktop`). Non-nullable with default
+  /// `'phone'` so that [buildConnectParams] always writes a non-null
+  /// deviceFamily field on the wire — matching the v3 signature payload
+  /// (which always includes the deviceFamily segment per spec §2.5).
+  /// This is Bug #1 fix: previously nullable default caused the wire
+  /// field to be omitted while the signed payload still contained
+  /// `|phone|`, so the server-side signature reconstruction mismatched
+  /// and the connection was rejected with DEVICE_AUTH_SIGNATURE_INVALID.
+  final String deviceFamily;
   final String? modelIdentifier;
   final String? clientDisplayName;
   final String clientVersion;
@@ -572,8 +594,18 @@ class ConnectionConfig {
 
   ConnectionConfig({
     this.locale = 'zh-CN',
-    this.platform = 'flutter',
-    this.deviceFamily,
+
+    /// Default platform string. Spec §2.3 lists valid `client.id` enum
+    /// values; 'flutter' is a framework name, not a platform. The DI path
+    /// in `lib/app/di/providers.dart` always overrides this with the real
+    /// OS string from [platformOS], so the default only matters for mock
+    /// and unit-test paths. Picked 'web' because:
+    ///  - it's a legal [platformOS] return value (kIsWeb branch);
+    ///  - it routes to 'gateway-client' via [ClientIds.forPlatform]
+    ///    (same as the old 'flutter' default).
+    /// See Bug #3 in `docs/technical/api-protocol.md` audit history.
+    this.platform = 'web',
+    this.deviceFamily = 'phone',
     this.modelIdentifier,
     this.clientDisplayName,
     this.clientVersion = '1.0.0',
@@ -590,7 +622,7 @@ class ConnectionConfig {
   ConnectionConfig copyWith({
     String? locale,
     String? platform,
-    Object? deviceFamily = CopyWithSentinel.instance,
+    String? deviceFamily,
     Object? modelIdentifier = CopyWithSentinel.instance,
     Object? clientDisplayName = CopyWithSentinel.instance,
     String? clientVersion,
@@ -604,7 +636,7 @@ class ConnectionConfig {
     return ConnectionConfig(
       locale: locale ?? this.locale,
       platform: platform ?? this.platform,
-      deviceFamily: copyWithNullable(deviceFamily, this.deviceFamily),
+      deviceFamily: deviceFamily ?? this.deviceFamily,
       modelIdentifier: copyWithNullable(modelIdentifier, this.modelIdentifier),
       clientDisplayName: copyWithNullable(
         clientDisplayName,
