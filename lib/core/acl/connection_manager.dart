@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
@@ -37,6 +38,45 @@ class ConnectionManager {
 
   /// 服务端 tick 间隔（毫秒），由 hello-ok.policy.tickIntervalMs 设置
   int _tickIntervalMs = 15000;
+
+  /// Gap #2: 服务端 maxPayload 上限（字节），由 hello-ok.policy.maxPayload 设置。
+  /// 客户端在 [sendRequest] 序列化前守门，超过此大小抛 [PayloadTooLargeException]。
+  /// 默认 25MB（spec §2.2 默认值），hello-ok 到达后用 policy 字段覆盖。
+  int _maxPayloadBytes = defaultMaxPayloadBytes;
+
+  /// Gap #2: 服务端 maxBufferedBytes 上限（字节），由 hello-ok.policy.maxBufferedBytes
+  /// 设置。当前实现仅记录供诊断使用；后续可作为出站缓冲监控阈值。
+  /// 默认 50MB（spec §2.2 默认值）。
+  int _maxBufferedBytes = defaultMaxBufferedBytes;
+
+  /// Test/diagnostic read of the effective maxPayload cap. The value is
+  /// negotiated from hello-ok.policy.maxPayload at connect time, falling
+  /// back to [defaultMaxPayloadBytes] (25MB) when the server omits the
+  /// field. Used by tests to assert policy parsing without driving a
+  /// full sendRequest cycle.
+  @visibleForTesting
+  int get maxPayloadBytesForTesting => _maxPayloadBytes;
+
+  /// Test/diagnostic read of the effective maxBufferedBytes cap. See
+  /// [maxPayloadBytesForTesting] for the negotiation semantics.
+  @visibleForTesting
+  int get maxBufferedBytesForTesting => _maxBufferedBytes;
+
+  /// Set of event types the Gateway declared it will push, populated
+  /// from `hello-ok.features.events` (spec §2.2 / Gap #3).
+  ///
+  /// Empty until the first hello-ok handshake completes; stays empty
+  /// forever for old Gateway builds that don't send `features`.  UI can
+  /// check `supportedEvents.contains('chat')` to decide whether to
+  /// render a "Gateway doesn't push chat events" fallback.
+  Set<String> _supportedEvents = const <String>{};
+
+  /// Read-only view of [supportedEvents].
+  ///
+  /// Returns an [UnmodifiableSetView] so callers cannot mutate the
+  /// internal set through the getter.  See [supportedEvents] for
+  /// semantics.
+  Set<String> get supportedEvents => Set.unmodifiable(_supportedEvents);
 
   // --- WebSocket ---
   WebSocketChannel? _channel;
@@ -106,6 +146,72 @@ class ConnectionManager {
   /// V3 signature payload, `auth.token` — all live inside [_doConnect]
   /// and are guaranteed to see the resolved value; this is a safety net.
   String _effectiveToken = '';
+
+  /// Gap #5: detect clock drift between server and client using
+  /// `tick.payload.ts` (spec §2.8).
+  ///
+  /// Records the signed drift into [_lastObservedClockDriftMs] for
+  /// diagnostic UIs / provider reads.  If the magnitude exceeds
+  /// [_clockDriftWarningThresholdMs] (default 5000), emits a
+  /// [debugPrint] warning so release builds retain a breadcrumb
+  /// for DEVICE_AUTH_SIGNATURE_EXPIRED root-cause analysis.
+  ///
+  /// Silent on missing/invalid ts — old Gateway builds don't send
+  /// the field and we must remain backward-compatible.
+  void _detectClockDrift(Map<String, dynamic>? payload) {
+    if (payload == null) return;
+    final tsRaw = payload['ts'];
+    if (tsRaw is! int) return;
+
+    final serverTs = tsRaw;
+    final clientTs = DateTime.now().millisecondsSinceEpoch;
+    final drift = serverTs - clientTs;
+    _lastObservedClockDriftMs = drift;
+
+    if (drift.abs() >= _clockDriftWarningThresholdMs) {
+      debugPrint(
+        '[CM] Clock drift detected for $_instanceId: '
+        'serverTs=$serverTs, clientTs=$clientTs, '
+        'drift=${drift}ms (threshold ${_clockDriftWarningThresholdMs}ms). '
+        'If you see DEVICE_AUTH_SIGNATURE_EXPIRED, this is the likely cause.',
+      );
+    }
+  }
+
+  /// Gap #1+: per-connection flag that gates the single allowed
+  /// deviceToken retry on AUTH_TOKEN_MISMATCH (spec §A.9).
+  ///
+  /// Set true when the first AUTH_TOKEN_MISMATCH triggers a retry;
+  /// reset to false on successful hello-ok so a later session can
+  /// retry again if it hits the same race.  Limits retry count to 1
+  /// per connection attempt, matching the spec's "尝试一次" wording.
+  bool _hasAttemptedDeviceTokenRetry = false;
+
+  /// Test-only read of the retry-budget flag.  See the field docstring
+  /// for semantics.
+  @visibleForTesting
+  bool get hasAttemptedDeviceTokenRetryForTesting =>
+      _hasAttemptedDeviceTokenRetry;
+
+  /// Gap #5: most recently observed clock drift in milliseconds, signed
+  /// (server - client).  `null` until the first `tick` event with
+  /// `payload.ts` arrives.
+  ///
+  /// Drift > [_clockDriftWarningThresholdMs] (default 5000) is also
+  /// logged via [debugPrint] so release builds retain a diagnostic
+  /// breadcrumb for DEVICE_AUTH_SIGNATURE_EXPIRED root-cause analysis.
+  int? _lastObservedClockDriftMs;
+
+  /// Threshold (ms) above which a drift is considered worth warning
+  /// about.  5 seconds is small enough to catch real clock problems
+  /// (NTP drift is typically < 1s) but large enough to ignore normal
+  /// round-trip jitter between server and client.
+  static const int _clockDriftWarningThresholdMs = 5000;
+
+  /// Test-only read of [_lastObservedClockDriftMs].  Returns `null`
+  /// until the first `tick` with `payload.ts` arrives.
+  @visibleForTesting
+  int? get lastObservedClockDriftMsForTesting => _lastObservedClockDriftMs;
 
   /// Test-only read of the resolved bearer token.  Used by the
   /// `_effectiveToken initialized to constructor token` regression test
@@ -202,6 +308,25 @@ class ConnectionManager {
 
     final id = _uuid.v4();
     final requestJson = buildRequest(id: id, method: method, params: params);
+
+    // Gap #2: client-side guard against payloads larger than the
+    // server-declared maxPayload (spec §2.2 + §3.5). Without this,
+    // serialising a 100MB chat message and writing it to the socket
+    // would either be accepted (and OOM us) or rejected by the server
+    // with a `payload.large` event that we'd silently drop — either
+    // way the user sees "message disappeared". Throwing here gives
+    // the ViewModel a typed error to surface.
+    final payloadSize = utf8.encode(requestJson).length;
+    if (payloadSize > _maxPayloadBytes) {
+      throw PayloadTooLargeException(
+        message:
+            'Request $method payload size $payloadSize exceeds '
+            'maxPayload $_maxPayloadBytes',
+        actualSize: payloadSize,
+        maxSize: _maxPayloadBytes,
+      );
+    }
+
     final completer = Completer<ResponseFrame>();
     _pendingRequests[id] = completer;
 
@@ -370,6 +495,14 @@ class ConnectionManager {
   // 内部：事件处理
   // ---------------------------------------------------------------------------
 
+  /// Test-only entry point that exercises [_handleEvent] without driving a
+  /// real WebSocket frame.  Used by Gap #4 shutdown tests to inject events
+  /// in pre-conditions where the channel has already been torn down
+  /// (e.g. after [disconnect] or after forcing a terminal state).
+  @visibleForTesting
+  void handleEventForTesting(String event, Map<String, dynamic>? payload) =>
+      _handleEvent(event, payload);
+
   void _handleEvent(String event, Map<String, dynamic>? payload) {
     switch (event) {
       case Events.connectChallenge:
@@ -381,10 +514,18 @@ class ConnectionManager {
 
       case Events.tick:
         _resetTickTimeout();
+        // Gap #5: tick.payload.ts carries the server's epoch ms
+        // (spec §2.8).  Compare with local clock and warn if drift
+        // exceeds the threshold.  Silent if ts is absent — old Gateway
+        // builds don't send it and we must remain backward-compatible.
+        _detectClockDrift(payload);
 
       case Events.shutdown:
-        debugPrint('[CM] Gateway shutdown for $_instanceId');
-        _setState(GatewayConnectionState.disconnected);
+        // Gap #4: server-initiated graceful shutdown (spec §2.6) —
+        // server is expected to be ready again immediately, so skip
+        // the exponential backoff used for network failures and
+        // reconnect at once.  See [_handleGracefulShutdown].
+        _handleGracefulShutdown();
 
       case Events.chat:
       case Events.agent:
@@ -509,6 +650,29 @@ class ConnectionManager {
         final policy = payload['policy'] as Map<String, dynamic>?;
         if (policy != null) {
           _tickIntervalMs = policy['tickIntervalMs'] as int? ?? 15000;
+          // Gap #2: read maxPayload / maxBufferedBytes from hello-ok
+          // (spec §2.2). If the server omits either field, keep our
+          // pre-handshake default (defaultMaxPayloadBytes /
+          // defaultMaxBufferedBytes) — degrading to 25MB / 50MB is
+          // strictly safer than disabling the limit.
+          _maxPayloadBytes =
+              policy['maxPayload'] as int? ?? defaultMaxPayloadBytes;
+          _maxBufferedBytes =
+              policy['maxBufferedBytes'] as int? ?? defaultMaxBufferedBytes;
+        }
+
+        // Gap #3: read features.events (spec §2.2).  Old Gateway builds
+        // don't send `features` at all — keep the empty set as the
+        // backward-compat default.  Schema-drift defense: filter to
+        // strings only so a future Gateway that sends rich event
+        // descriptors (e.g. `{"name": "chat", "version": 2}`) doesn't
+        // crash the parse (same spirit as F-1 `details` type guard).
+        final features = payload['features'] as Map<String, dynamic>?;
+        final eventsRaw = features?['events'];
+        if (eventsRaw is List) {
+          _supportedEvents = eventsRaw.whereType<String>().toSet();
+        } else {
+          _supportedEvents = const <String>{};
         }
 
         // Routine connect-success trace — gated to keep release logs clean
@@ -542,6 +706,9 @@ class ConnectionManager {
         }
 
         _resetTickTimeout();
+        // Gap #1+: reset the per-session retry budget on successful
+        // hello-ok so a future AUTH_TOKEN_MISMATCH can retry again.
+        _hasAttemptedDeviceTokenRetry = false;
       } else {
         _handleAuthFailure('Unexpected hello payload type: $payloadType');
       }
@@ -566,6 +733,18 @@ class ConnectionManager {
             (e, st) =>
                 debugPrint('[CM] _handleDeviceIdMismatch error: $e\n$st'),
           ),
+        );
+      } else if (errorCode == 'AUTH_TOKEN_MISMATCH' &&
+          _canRetryAuthTokenMismatch(res.error!)) {
+        // Gap #1+: spec §A.9 allows ONE retry using the cached
+        // deviceToken when the server signals
+        // `canRetryWithDeviceToken=true`.  Retry budget tracked by
+        // [_hasAttemptedDeviceTokenRetry] — cleared on hello-ok so a
+        // future session can retry again.
+        unawaited(
+          _handleAuthTokenMismatchRetry().catchError((e, st) {
+            debugPrint('[CM] _handleAuthTokenMismatchRetry error: $e\n$st');
+          }),
         );
       } else {
         _handleAuthFailure(
@@ -642,11 +821,142 @@ class ConnectionManager {
     );
   }
 
+  /// Gap #1+: returns true iff the AUTH_TOKEN_MISMATCH error is
+  /// retryable per spec §A.9 — server explicitly opts in via
+  /// `details.canRetryWithDeviceToken == true`, AND the client still
+  /// has a retry budget (`_hasAttemptedDeviceTokenRetry == false`).
+  ///
+  /// F-1 type guard: details may be null or a non-Map value; both
+  /// collapse to "no hint" → fail closed (no retry).
+  bool _canRetryAuthTokenMismatch(ProtocolError error) {
+    if (_hasAttemptedDeviceTokenRetry) return false;
+    final details = error.details;
+    if (details == null) return false;
+    final hint = details['canRetryWithDeviceToken'];
+    return hint == true;
+  }
+
+  /// Gap #1+: handle the retry side of AUTH_TOKEN_MISMATCH (spec §A.9).
+  ///
+  /// Mirrors [_handleGracefulShutdown]'s "reconnect at once, no backoff"
+  /// pattern — server has signalled it can accept a retry, so we
+  /// immediately try again using the cached deviceToken
+  /// ([_resolveBearerToken] re-reads from [_deviceTokenStore] on the
+  /// next [_doConnect]).
+  ///
+  /// Limitation: we don't yet have `isLocalNetwork` / `tlsFingerprint`
+  /// fields on [ConnectionConfig] (see F-3), so the trust check is
+  /// delegated to the server's `canRetryWithDeviceToken` flag.  If
+  /// the server is misconfigured and always returns canRetry=true,
+  /// we'd loop forever — guarded by [_hasAttemptedDeviceTokenRetry]
+  /// limiting us to 1 retry per connect attempt, and that flag resets
+  /// only on successful hello-ok.
+  Future<void> _handleAuthTokenMismatchRetry() async {
+    debugPrint(
+      '[CM] AUTH_TOKEN_MISMATCH for $_instanceId — retrying with cached '
+      'deviceToken (spec §A.9)',
+    );
+    _hasAttemptedDeviceTokenRetry = true;
+
+    _failAllPending('AUTH_TOKEN_MISMATCH (retrying)');
+    _cancelTimers();
+    // Must await — _scheduleDoConnect(0) will fire another _doConnect
+    // which re-listens on _channel.stream. If the existing subscription
+    // isn't cancelled first, _doConnect races with the close path and
+    // gets "Stream has already been listened to". Mirrors the await
+    // pattern in [_handleGracefulShutdown].
+    await _closeWebSocket().catchError((error, stackTrace) {
+      debugPrint(
+        '[CM] Error closing WebSocket during AUTH_TOKEN_MISMATCH retry: '
+        '$error\n$stackTrace',
+      );
+    });
+
+    // Don't paper over a user-initiated disconnect.
+    if (_intentionalDisconnect) return;
+
+    _setState(GatewayConnectionState.disconnected);
+    _scheduleDoConnect(
+      delaySeconds: 0,
+      reason: 'AUTH_TOKEN_MISMATCH retry',
+      timerRef: 'reconnect',
+    );
+  }
+
   void _schedulePairingRetry() {
     _scheduleDoConnect(
       delaySeconds: _pairingRetrySeconds,
       reason: 'pairing retry',
       timerRef: 'pairingRetry',
+    );
+  }
+
+  /// 处理 spec §2.6 server-initiated graceful shutdown.
+  ///
+  /// 与"网络瞬断"+"对端崩溃"区分：服务端 shutdown 是**主动的、可预期的**，
+  /// 服务端 ready 后即可用（滚动重启、维护窗口），应立即重连而非
+  /// 走通用 1→30s 退避。否则用户等完整退避链，体验糟糕。
+  ///
+  /// 关键约束：
+  /// - 不退避（[Duration.zero] 而不是 [_retryStrategy.delayForAttempt]）
+  /// - 不递增 [_reconnectAttempt]，避免反复 graceful shutdown 触发
+  ///   [GatewayConnectionState.reconnectExhausted]（滚动重启会循环 shutdown）
+  /// - 用户主动 disconnect 期间收到 shutdown → 不重连（实例已删除不该复活）
+  /// - 终态（authFailed / pairingRequired / reconnectExhausted）期间收到
+  ///   shutdown → 不重连（终端错误不该被覆盖）
+  Future<void> _handleGracefulShutdown() async {
+    debugPrint(
+      '[CM] Graceful shutdown for $_instanceId — reconnecting immediately',
+    );
+
+    if (_intentionalDisconnect) {
+      debugPrint(
+        '[CM] Ignoring shutdown for $_instanceId '
+        '(intentional disconnect)',
+      );
+      return;
+    }
+
+    // Pre-check terminal state BEFORE we mutate to disconnected — otherwise
+    // our own _setState(disconnected) below would make _state.isTerminal
+    // true and we'd skip the reconnect we actually want to perform.
+    // Genuine terminal states (authFailed / pairingRequired /
+    // reconnectExhausted) must NOT be papered over by a shutdown event;
+    // the user needs to see the underlying error.
+    if (_state.isTerminal) {
+      debugPrint(
+        '[CM] Graceful shutdown skipped for $_instanceId '
+        '(terminal state: $_state)',
+      );
+      return;
+    }
+
+    _failAllPending('Gateway graceful shutdown');
+    _setState(GatewayConnectionState.disconnected);
+
+    // Best-effort tear-down of the existing channel.  The close path is
+    // async; any error here must not block the immediate reconnect.
+    await _closeWebSocket().catchError((error, stackTrace) {
+      debugPrint(
+        '[CM] Error closing WebSocket during graceful shutdown: '
+        '$error\n$stackTrace',
+      );
+    });
+
+    // Re-check after the await: disconnect()/dispose() may have fired
+    // while we were awaiting close.  No terminal-state re-check here —
+    // our own disconnected is non-actionable (we want to reconnect), and
+    // any other terminal would only be reachable if an error path ran
+    // during _closeWebSocket(), which is already logged above.
+    if (_intentionalDisconnect) return;
+
+    // Schedule immediate reconnect — no backoff, no attempt increment.
+    // Using [_scheduleDoConnect] (not [_scheduleReconnect]) because the
+    // latter would increment _reconnectAttempt via its onFire callback.
+    _scheduleDoConnect(
+      delaySeconds: 0,
+      reason: 'graceful shutdown reconnect',
+      timerRef: 'reconnect',
     );
   }
 

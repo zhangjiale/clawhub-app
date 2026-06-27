@@ -250,6 +250,18 @@ void main() {
     });
   });
 
+  // NOTE: F-2 (scopes sort in signature payload) was rolled back.
+  // Reason: server reconstructs signature from wire-order scopes
+  // (spec §2.2, server code at api-protocol.md:1321 reads
+  // `connectParams.scopes` directly without sorting). Sorting only
+  // the signature but not the wire array produces a SHA256 mismatch
+  // → DEVICE_AUTH_SIGNATURE_INVALID rejection.
+  //
+  // Safe direction would require sorting BOTH wire + signature, but
+  // that's a wire-format change requiring spec team coordination
+  // (server may expect canonical order on its wire side too).
+  // Tracked in docs/technical/acl-protocol-gaps.md "F-2 rollback".
+
   // ============================================================================
   // Bug #3: ConnectionConfig default platform must be a valid OpenClaw spec
   // platform (§2.3). The previous default `'flutter'` is a Flutter framework
@@ -302,6 +314,110 @@ void main() {
         reason:
             'ClientIds.forPlatform must handle any default platform value '
             'via its switch default case',
+      );
+    });
+  });
+
+  // ============================================================================
+  // F-1: ProtocolError.details must survive non-Map server payloads.
+  //
+  // The OpenClaw spec lets the server return string/int values in
+  // `error.details` for some error codes (e.g. AUTH_TOKEN_MISMATCH uses
+  // `"details": "retry_with_device_token"`). The previous `as Map` cast
+  // crashed with TypeError, taking down the connect handshake. The fix
+  // narrows the cast to Map only — non-Map payloads yield null details
+  // and a debugPrint, preserving the contract that `details?['...']` is
+  // always safe.
+  // ============================================================================
+  group('ProtocolError.fromJson details type guard', () {
+    test('parses Map-typed details as before (backward compat)', () {
+      final err = ProtocolError.fromJson({
+        'code': 'NOT_PAIRED',
+        'message': 'Pairing required',
+        'details': {'requestId': 'req-1', 'deviceId': 'dev-1'},
+      });
+      expect(err.code, 'NOT_PAIRED');
+      expect(err.message, 'Pairing required');
+      expect(err.details, isA<Map<String, dynamic>>());
+      expect(err.details!['requestId'], 'req-1');
+    });
+
+    test('survives String-typed details without throwing', () {
+      // Real-world: AUTH_TOKEN_MISMATCH returns a string hint
+      final err = ProtocolError.fromJson({
+        'code': 'AUTH_TOKEN_MISMATCH',
+        'message': 'Token mismatch',
+        'details': 'retry_with_device_token',
+      });
+      expect(err.code, 'AUTH_TOKEN_MISMATCH');
+      expect(
+        err.details,
+        isNull,
+        reason: 'non-Map details must coerce to null, not crash',
+      );
+    });
+
+    test('survives int-typed details without throwing', () {
+      final err = ProtocolError.fromJson({
+        'code': 'RATE_LIMITED',
+        'message': 'Too many requests',
+        'details': 42,
+      });
+      expect(err.details, isNull);
+    });
+
+    test('missing details stays null', () {
+      final err = ProtocolError.fromJson({
+        'code': 'UNKNOWN',
+        'message': 'Something',
+      });
+      expect(err.details, isNull);
+    });
+
+    test('null details stays null', () {
+      final err = ProtocolError.fromJson({
+        'code': 'UNKNOWN',
+        'message': 'Something',
+        'details': null,
+      });
+      expect(err.details, isNull);
+    });
+  });
+
+  // ============================================================================
+  // Gap #6: payload.large diagnostic event parsing (spec §2.7).
+  //
+  // The Gateway emits `payload.large` when an incoming request exceeds
+  // `policy.maxPayload`. We surface this as a [LargePayloadNotice] for
+  // the UI to display. Parser must tolerate missing fields so a partial
+  // server response doesn't crash the diagnostic path.
+  // ============================================================================
+  group('parseLargePayloadEvent (Gap #6)', () {
+    test('parses a fully-populated payload', () {
+      final notice = parseLargePayloadEvent({
+        'sessionKey': 'agent:r-1:main',
+        'size': 30_000_000,
+        'limit': 26_214_400,
+      });
+      expect(notice.sessionKey, 'agent:r-1:main');
+      expect(notice.size, 30_000_000);
+      expect(notice.limit, 26_214_400);
+    });
+
+    test('coerces missing fields to zeros / empty string', () {
+      final notice = parseLargePayloadEvent({});
+      expect(notice.sessionKey, '');
+      expect(notice.size, 0);
+      expect(notice.limit, 0);
+    });
+
+    test('exposes the Events.payloadLarge constant as the wire event name', () {
+      expect(
+        Events.payloadLarge,
+        'payload.large',
+        reason:
+            'wire name must match spec §2.7 verbatim — gateway validates '
+            'the event name on dispatch',
       );
     });
   });

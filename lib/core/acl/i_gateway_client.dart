@@ -1,6 +1,8 @@
 import '../../domain/models/models.dart';
 import 'gateway_protocol.dart';
 
+export 'gateway_protocol.dart' show LargePayloadNotice;
+
 /// Gateway 防腐层接口契约
 /// 对齐: 架构 vFinal 5.1 (网关防腐层与连接状态机)
 ///
@@ -70,6 +72,16 @@ abstract class IGatewayClient {
   /// 被拒绝时，流中会发出包含 requestId 等信息的 [GatewayPairingInfo]。
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId);
 
+  /// Gap #6: 获取 payload.large 诊断流（spec §2.7）。
+  ///
+  /// 当客户端向 Gateway 发送的请求超过 `policy.maxPayload` 限制时，
+  /// Gateway 主动发出 `payload.large` 事件；本流将解析后的 [LargePayloadNotice]
+  /// 转发给上层，UI 可订阅此流展示"消息太大，请缩减内容"等用户提示。
+  ///
+  /// 默认实现返回空流 — MockGatewayClient 与早期实现不需要处理该事件。
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+      const Stream<LargePayloadNotice>.empty();
+
   /// 释放所有资源
   Future<void> dispose();
 }
@@ -112,6 +124,30 @@ class NotConnectedException implements Exception {
   const NotConnectedException(this.message);
   @override
   String toString() => 'NotConnectedException: $message';
+}
+
+/// Gap #2: 请求体超过 `policy.maxPayload` 时由 [ConnectionManager.sendRequest]
+/// 抛出。客户端在序列化前守门（spec §2.2 + §3.5），避免 OOM。
+///
+/// 此类异常不可恢复 — 调用方应缩小请求负载后重试，或提示用户精简内容。
+class PayloadTooLargeException implements Exception {
+  final String message;
+
+  /// 实际负载字节数（UTF-8 编码后）。
+  final int actualSize;
+
+  /// 当时生效的 maxPayload 上限。
+  final int maxSize;
+
+  const PayloadTooLargeException({
+    required this.message,
+    required this.actualSize,
+    required this.maxSize,
+  });
+
+  @override
+  String toString() =>
+      'PayloadTooLargeException: $message (actual=$actualSize, max=$maxSize)';
 }
 
 /// Gateway 设备配对信息 — 当连接因 PAIRING_REQUIRED 被拒绝时由 Gateway 返回。

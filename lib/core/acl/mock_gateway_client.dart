@@ -25,6 +25,11 @@ class MockGatewayClient implements IGatewayClient {
   final Map<String, StreamController<StreamingEvent>> _streamingControllers =
       {};
 
+  /// Gap #6: per-instance diagnostic stream for `payload.large` notices.
+  /// Cache mirrors [_streamingControllers] — same scope/cleanup pattern.
+  final Map<String, StreamController<LargePayloadNotice>>
+  _largePayloadControllers = {};
+
   List<Map<String, dynamic>> _mockAgents = [];
   List<Map<String, dynamic>> _mockInstances = [];
   bool _loaded = false;
@@ -314,6 +319,16 @@ class MockGatewayClient implements IGatewayClient {
   }
 
   @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) {
+    // Gap #6: mock never triggers payload-too-large conditions, but we
+    // still need a real broadcast stream so subscribers don't get a
+    // different Stream.empty() instance per call (which would silently
+    // drop events from late subscribers).  Cache one controller per
+    // instance, like the other stream accessors.
+    return _getOrCreateLargePayloadController(instanceId).stream;
+  }
+
+  @override
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId) {
     // Mock 环境永不触发配对流程。
     // asBroadcastStream delivers null to every subscriber, survives hot-reload
@@ -334,6 +349,15 @@ class MockGatewayClient implements IGatewayClient {
     return _streamingControllers.putIfAbsent(
       instanceId,
       () => StreamController<StreamingEvent>.broadcast(),
+    );
+  }
+
+  StreamController<LargePayloadNotice> _getOrCreateLargePayloadController(
+    String instanceId,
+  ) {
+    return _largePayloadControllers.putIfAbsent(
+      instanceId,
+      () => StreamController<LargePayloadNotice>.broadcast(),
     );
   }
 
@@ -358,6 +382,9 @@ class MockGatewayClient implements IGatewayClient {
     for (final c in _streamingControllers.values) {
       await c.close();
     }
+    for (final c in _largePayloadControllers.values) {
+      await c.close();
+    }
     // Clear maps so that subsequent _getOrCreateXxxController calls
     // (via putIfAbsent) create fresh controllers instead of returning
     // the closed ones.
@@ -365,5 +392,6 @@ class MockGatewayClient implements IGatewayClient {
     _messageControllers.clear();
     _toolCallControllers.clear();
     _streamingControllers.clear();
+    _largePayloadControllers.clear();
   }
 }

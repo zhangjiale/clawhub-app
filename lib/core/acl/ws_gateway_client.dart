@@ -515,6 +515,14 @@ class WsGatewayClient implements IGatewayClient {
   }
 
   @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) {
+    // Gap #6: diagnostic stream for over-sized payloads (spec §2.7).
+    // Use _getOrCreateControllers so callers can subscribe even before
+    // connect() (e.g. UI eagerly wires a SnackBar listener at app start).
+    return _getOrCreateControllers(instanceId).largePayloadCtrl.stream;
+  }
+
+  @override
   Future<void> dispose() async {
     _isDisposed = true;
     _connecting.clear();
@@ -542,6 +550,9 @@ class WsGatewayClient implements IGatewayClient {
       if (!conn.streamingCtrl.isClosed) {
         await conn.streamingCtrl.close();
       }
+      if (!conn.largePayloadCtrl.isClosed) {
+        await conn.largePayloadCtrl.close();
+      }
     }
     _connections.clear();
     _streamingBuffers.clear();
@@ -568,6 +579,24 @@ class WsGatewayClient implements IGatewayClient {
 
       case Events.agent:
         _onAgentEvent(instanceId, conn, payload);
+
+      case Events.payloadLarge:
+        // Gap #6: Gateway told us we sent an over-sized payload. Surface
+        // it on the diagnostic stream so the UI can show a user-visible
+        // hint instead of silently dropping the message. Wrap in try/catch
+        // so a downstream listener exception doesn't break the router
+        // (which would also affect chat/agent events on the same channel).
+        try {
+          final notice = parseLargePayloadEvent(payload);
+          if (!conn.largePayloadCtrl.isClosed) {
+            conn.largePayloadCtrl.add(notice);
+          }
+        } catch (error, stackTrace) {
+          debugPrint(
+            '[WsGateway] Failed to handle payload.large for $instanceId: '
+            '$error\n$stackTrace',
+          );
+        }
 
       default:
         break;
@@ -858,7 +887,9 @@ class WsGatewayClient implements IGatewayClient {
         remoteId;
 
     final description =
-        json['description'] as String? ?? identity?['description'] as String?;
+        json['description'] as String? ??
+        identity?['description'] as String? ??
+        identity?['name'] as String?;
 
     return Agent(
       localId: _uuid.v4(),
@@ -1064,6 +1095,13 @@ class _InstanceConnection {
   final StreamController<ToolCall> toolCallCtrl;
   final StreamController<GatewayPairingInfo?> pairingInfoCtrl;
   final StreamController<StreamingEvent> streamingCtrl;
+
+  /// Gap #6: per-instance diagnostic stream for `payload.large` events
+  /// emitted by the Gateway when the client sends an over-sized payload.
+  /// Surfaced via [IGatewayClient.largePayloadNoticeStream] so the UI
+  /// layer can show a user-visible hint instead of silently failing.
+  final StreamController<LargePayloadNotice> largePayloadCtrl =
+      StreamController<LargePayloadNotice>.broadcast();
 
   StreamSubscription<EventFrame>? _eventSub;
   StreamSubscription<GatewayConnectionState>? _stateSub;

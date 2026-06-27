@@ -13,6 +13,7 @@ import 'package:claw_hub/domain/models/enums.dart'
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
+import 'package:claw_hub/domain/models/agent.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'test_helpers.dart';
@@ -499,6 +500,64 @@ void main() {
       final second = await fetchQuickCommandIds(agentRemoteId: 'remote-b');
 
       expect(first.single, isNot(second.single));
+    });
+  });
+
+  // ==========================================================================
+  // fetchAgents() — bio field parsing (协议 §A.6 实测 vs §5.2 示意图)
+  // ==========================================================================
+  group('fetchAgents bio field parsing', () {
+    Future<Agent> fetchSingleAgent(String agentJson) async {
+      final (:client, :ws) = await connectAndHandshake();
+      final future = client.fetchAgents('test-instance');
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.last);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId","ok":true,'
+        '"payload":{"agents":[$agentJson]}}',
+      );
+      final agents = await future;
+      await client.dispose();
+      return agents.single;
+    }
+
+    test('reads bio from identity.name when top-level description is absent '
+        '(real Gateway v2026.x.x — protocol doc §A.6 实测验证)', () async {
+      // 实测捕获的响应片段（来自本次诊断）：
+      // agent_b43ae25f name="旅行规划师" identity.name="行程规划与旅行规划"
+      final agent = await fetchSingleAgent(
+        '{"id":"agent_b43ae25f","name":"旅行规划师",'
+        '"identity":{"name":"行程规划与旅行规划"}}',
+      );
+      expect(agent.name, '旅行规划师');
+      expect(agent.description, '行程规划与旅行规划');
+    });
+
+    test('prefers top-level description over identity.name '
+        '(backward compat with §5.2 示意图)', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"a1","name":"A",'
+        '"description":"top-level description wins",'
+        '"identity":{"name":"identity name"}}',
+      );
+      expect(agent.description, 'top-level description wins');
+    });
+
+    test('falls back to identity.description when no top-level description '
+        'and no identity.name (legacy v3 Gateway 兼容)', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"a1","name":"A",'
+        '"identity":{"description":"role description"}}',
+      );
+      expect(agent.description, 'role description');
+    });
+
+    test('description is null when no bio source is present '
+        '(default agent "main" — no identity block)', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"main","workspace":"/path/to/workspace"}',
+      );
+      expect(agent.description, isNull);
     });
   });
   group('device token lifecycle RPCs', () {
@@ -1762,5 +1821,66 @@ void _replayableConnectionStateTests() {
         await client.dispose();
       },
     );
+  });
+
+  // ============================================================================
+  // Gap #6: payload.large diagnostic event (spec §2.7).
+  //
+  // When the Gateway rejects an over-sized payload, it pushes a
+  // `payload.large` event with sessionKey/size/limit. WsGatewayClient must
+  // parse it and emit a LargePayloadNotice on the per-instance diagnostic
+  // stream so the UI can show a user-visible hint instead of silently
+  // failing the message.
+  // ============================================================================
+  group('payload.large diagnostic event (Gap #6)', () {
+    test('emits LargePayloadNotice on largePayloadNoticeStream', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final noticeFuture = client
+          .largePayloadNoticeStream('test-instance')
+          .first;
+
+      ws.simulateServerFrame(
+        '{"type":"event","event":"payload.large",'
+        '"payload":{"sessionKey":"agent:r-1:main",'
+        '"size":31457280,"limit":26214400}}',
+      );
+      await pumpMicrotasks();
+
+      final notice = await noticeFuture;
+      expect(notice.sessionKey, 'agent:r-1:main');
+      expect(notice.size, 31457280);
+      expect(notice.limit, 26214400);
+
+      await client.dispose();
+    });
+
+    test('stream tolerates a payload.large with missing fields', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final noticeFuture = client
+          .largePayloadNoticeStream('test-instance')
+          .first;
+
+      // Server variant: missing sessionKey/size/limit — parser coerces
+      // to defaults instead of crashing the diagnostic path.
+      ws.simulateServerFrame(
+        '{"type":"event","event":"payload.large","payload":{}}',
+      );
+      await pumpMicrotasks();
+
+      final notice = await noticeFuture;
+      expect(notice.sessionKey, '');
+      expect(notice.size, 0);
+      expect(notice.limit, 0);
+
+      await client.dispose();
+    });
+
+    // NOTE: The third test case (IGatewayClient default impl returns
+    // Stream.empty) was removed — the default impl is `=> const
+    // Stream.empty()` and is trivially correct.  The two tests above
+    // cover the actual production path: WsGatewayClient parses and
+    // emits the notice, and tolerates partial server payloads.
   });
 }

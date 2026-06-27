@@ -29,6 +29,19 @@ const requestTimeoutMs = 30000;
 /// 预握手 tick 间隔（毫秒）
 const preHandshakeTickIntervalMs = 30000;
 
+/// Gap #2: 默认 maxPayload（spec §2.2 = 26_214_400 bytes / 25MB）。
+///
+/// 在 hello-ok.policy.maxPayload 缺失或 hello-ok 还未到达时用作降级值。
+/// 客户端在 [ConnectionManager.sendRequest] 序列化前守门，超过此大小
+/// 抛 [PayloadTooLargeException]，避免 OOM。
+const defaultMaxPayloadBytes = 26214400;
+
+/// Gap #2: 默认 maxBufferedBytes（spec §2.2 = 52_428_800 bytes / 50MB）。
+///
+/// Gateway 限制出站缓冲区的总字节数；客户端用来判断何时停止读 WebSocket
+/// 防止内存爆。
+const defaultMaxBufferedBytes = 52428800;
+
 // ============================================================================
 // 连接参数常量（对齐 docs/technical/api-protocol.md §2.2–2.4）
 // ============================================================================
@@ -104,6 +117,12 @@ class Events {
   static const String presence = 'presence';
   static const String health = 'health';
   static const String shutdown = 'shutdown';
+
+  /// Gap #6: diagnostic event emitted by the Gateway when an incoming
+  /// payload exceeds `policy.maxPayload`. The client surfaces this as a
+  /// [LargePayloadNotice] on the diagnostic stream so the UI can show
+  /// a user-visible hint ("message too large, reduce size"). Spec §2.7.
+  static const String payloadLarge = 'payload.large';
 }
 
 // ============================================================================
@@ -324,13 +343,24 @@ class ProtocolError {
     this.details,
   });
 
-  factory ProtocolError.fromJson(Map<String, dynamic> json) => ProtocolError(
-    code: json['code'] as String? ?? 'UNKNOWN',
-    message: json['message'] as String? ?? 'Unknown error',
-    retryable: json['retryable'] as bool?,
-    retryAfterMs: json['retryAfterMs'] as int?,
-    details: json['details'] as Map<String, dynamic>?,
-  );
+  factory ProtocolError.fromJson(Map<String, dynamic> json) {
+    // F-1: details may be a non-Map value (e.g. AUTH_TOKEN_MISMATCH returns
+    // `"details": "retry_with_device_token"` per spec §A.9). The previous
+    // `as Map<String, dynamic>?` cast crashed with TypeError on those,
+    // taking down the connect handshake. Narrow to Map only; non-Map payloads
+    // coerce to null so downstream `details?['...']` stays safe.
+    final rawDetails = json['details'];
+    final details = rawDetails is Map
+        ? Map<String, dynamic>.from(rawDetails)
+        : null;
+    return ProtocolError(
+      code: json['code'] as String? ?? 'UNKNOWN',
+      message: json['message'] as String? ?? 'Unknown error',
+      retryable: json['retryable'] as bool?,
+      retryAfterMs: json['retryAfterMs'] as int?,
+      details: details,
+    );
+  }
 }
 
 // ============================================================================
@@ -494,6 +524,43 @@ class StreamingDelta extends StreamingEvent {
 /// 流式结束信号。
 class StreamingDone extends StreamingEvent {
   const StreamingDone({required super.agentId});
+}
+
+// ============================================================================
+// 诊断事件（公开类，跨 agent 路由）
+// ============================================================================
+
+/// Gap #6: payload.large 事件的解析结果（spec §2.7）。
+///
+/// 当客户端发出超过 `policy.maxPayload` 的请求时，Gateway 主动发此事件
+/// 给客户端，告知"这条消息被拒收"。客户端应通过 [IGatewayClient] 上的
+/// 诊断 stream 转发给 UI 层，让用户知道消息没成功（而不是静默失败）。
+///
+/// 字段对齐 spec §2.7 描述：
+/// - [sessionKey]: 关联的会话 key（用于回查是哪条消息被拒）
+/// - [size]: 实际负载字节数
+/// - [limit]: Gateway 的 maxPayload 上限（客户端可用来做文案"超过 X 上限"）
+class LargePayloadNotice {
+  final String sessionKey;
+  final int size;
+  final int limit;
+
+  const LargePayloadNotice({
+    required this.sessionKey,
+    required this.size,
+    required this.limit,
+  });
+}
+
+/// 从 `payload.large` 事件的 payload 中解析 [LargePayloadNotice]。
+///
+/// 容错策略：缺失字段降级为 0 / 空串，调用方决定如何展示。
+LargePayloadNotice parseLargePayloadEvent(Map<String, dynamic> payload) {
+  return LargePayloadNotice(
+    sessionKey: payload['sessionKey'] as String? ?? '',
+    size: payload['size'] as int? ?? 0,
+    limit: payload['limit'] as int? ?? 0,
+  );
 }
 
 // ============================================================================

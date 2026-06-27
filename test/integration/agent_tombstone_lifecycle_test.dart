@@ -80,6 +80,9 @@ class _MutableFetchGatewayClient implements IGatewayClient {
   @override
   Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
       throw UnimplementedError();
+  @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+      throw UnimplementedError();
 }
 
 Future<db.AppDatabase> _createDb() async {

@@ -269,6 +269,37 @@ final scopesStr = sortedScopes.join(',');
 
 ---
 
+**⚠️ ROLLBACK (2026-06-27)** — 上述修法**实测破坏签名一致性**。
+
+**真实症状**：在真实 Gateway 上启用 F-2 后立即报 `DEVICE_AUTH_SIGNATURE_INVALID`：
+```
+INVALID_REQUEST / DEVICE_AUTH_SIGNATURE_INVALID / device-signature
+```
+
+**根因**：服务端从 wire-order 重建签名（spec §2.2，server 端参考实现在
+`api-protocol.md:1321` 直接读 `connectParams.scopes` 数组不排序）。我
+们 sort 了 `buildV3SignaturePayload` 内部的 scopes 字符串，但 wire 的
+`params.scopes` 数组仍是 `operatorScopes` 默认顺序
+`[admin, read, write, approvals, pairing]`：
+- wire 字符串（server 重建用）：`admin,read,write,approvals,pairing`
+- 签名 payload 字符串（client 签名用）：`admin,approvals,pairing,read,write`
+- SHA256 不匹配 → 拒
+
+**结论**：单边 sort 签名 payload 不安全 — 必须**wire + signature 同
+时 sort**才能保证 server 重建与 client 签名一致。但 wire sort 改变
+了对外协议字段顺序，是 breaking change，需 spec 团队协调。
+
+**当前状态**：F-2 实现已回滚，4 个 F-2 测试已删除，ACL 测试套件
+恢复 213/213 通过。doc 建议保留作为"已知理论风险，不修"。
+
+**未来若需修复**：
+1. 与 spec 团队确认服务端是否也期望 sorted scopes
+2. 若 server 已 sort → 仅 sort signature（当前修法）
+3. 若 server 未 sort → 同时 sort wire + signature（破坏性）
+4. 若 server 期望完全相同顺序 → 维持现状，文档化 operatorScopes 必须按 canonical 顺序定义
+
+---
+
 ### F-3 — DI 路径 desktop 平台 deviceFamily
 
 **严重度**：🔵 P3（spec 不明确，但 production 未测）
