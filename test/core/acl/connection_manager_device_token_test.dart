@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:claw_hub/core/acl/connection_manager.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_token_store.dart';
@@ -17,8 +15,6 @@ import 'test_helpers.dart';
 
 class _FakeDeviceTokenStore implements IDeviceTokenStore {
   final Map<String, String> _store = {};
-  final List<String> savedInstances = [];
-  final List<String> deletedInstances = [];
 
   /// Pre-populate the store to simulate a previously-paired device.
   void seed(String instanceId, String deviceToken) {
@@ -28,7 +24,6 @@ class _FakeDeviceTokenStore implements IDeviceTokenStore {
   @override
   Future<void> save(String instanceId, String deviceToken) async {
     _store[instanceId] = deviceToken;
-    savedInstances.add(instanceId);
   }
 
   @override
@@ -41,27 +36,14 @@ class _FakeDeviceTokenStore implements IDeviceTokenStore {
   @override
   Future<void> delete(String instanceId) async {
     _store.remove(instanceId);
-    deletedInstances.add(instanceId);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Mock dependencies (signPayload stub)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 void main() {
-  // Helper: extract auth.token from a sent connect frame.
-  String extractAuthToken(String sentFrame) {
-    final decoded = jsonDecode(sentFrame) as Map<String, dynamic>;
-    final params = decoded['params'] as Map<String, dynamic>;
-    final auth = params['auth'] as Map<String, dynamic>;
-    return auth['token'] as String;
-  }
-
   group('ConnectionManager deviceToken integration (差距 #1)', () {
     // ========================================================================
     // SAVE on hello-ok
@@ -97,8 +79,8 @@ void main() {
 
         expect(cm.state, GatewayConnectionState.connected);
         expect(
-          tokenStore.savedInstances,
-          ['inst-1'],
+          tokenStore._store,
+          {'inst-1': 'dt-new-1'},
           reason:
               'ConnectionManager must persist auth.deviceToken to the store '
               'on successful hello-ok (spec §2.2 务必持久化)',
@@ -144,7 +126,7 @@ void main() {
 
           expect(cm.state, GatewayConnectionState.connected);
           expect(
-            tokenStore.savedInstances,
+            tokenStore._store,
             isEmpty,
             reason:
                 'No save when the Gateway did not issue a new deviceToken '
@@ -280,6 +262,79 @@ void main() {
           );
 
           await cm.dispose();
+        },
+      );
+    });
+
+    // ========================================================================
+    // Bug #6 regression — _effectiveToken constructor safety net
+    // ========================================================================
+    //
+    // Today the three legitimate read sites for _effectiveToken — URL
+    // query, V3 signature payload, connect.auth.token — all live inside
+    // _doConnect and are guaranteed to see the resolved value, so a
+    // default of '' would never be observed in production.  But if a
+    // future refactor moves a read pre-_doConnect (debug log, public
+    // getter, pre-connect handshake probe), seeing the pairing code is
+    // far safer than seeing '' (which would silently produce URL query
+    // 'token=', an empty V3 signature input, and `auth.token: ''`).
+
+    group('_effectiveToken constructor safety net (Bug #6)', () {
+      test('is seeded to the constructor token at construction time', () async {
+        final ws = ControllableWebSocket.create();
+
+        final cm = ConnectionManager(
+          instanceId: 'inst-1',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'pairing-code-xyz',
+          deviceId: 'test-device',
+          config: ConnectionConfig(),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        expect(
+          cm.effectiveTokenForTesting,
+          'pairing-code-xyz',
+          reason:
+              '_effectiveToken must be seeded to the constructor token '
+              'at construction time, so a pre-_doConnect read returns '
+              'the pairing code rather than the latent empty string.',
+        );
+
+        await cm.dispose();
+      });
+
+      test(
+        'each instance sees its own token (no static / class-level caching)',
+        () async {
+          // Defensive — if a future refactor hoists _effectiveToken to a
+          // static for "convenience", a second construction would observe
+          // the previous instance's token.
+          final ws1 = ControllableWebSocket.create();
+          final ws2 = ControllableWebSocket.create();
+
+          final cm1 = ConnectionManager(
+            instanceId: 'inst-1',
+            gatewayUrl: 'ws://localhost:9999/ws',
+            token: 'pairing-code-xyz',
+            deviceId: 'test-device',
+            config: ConnectionConfig(),
+            webSocketFactory: (_) => ws1.channel,
+          );
+          final cm2 = ConnectionManager(
+            instanceId: 'inst-2',
+            gatewayUrl: 'ws://localhost:9999/ws',
+            token: 'pairing-code-abc',
+            deviceId: 'test-device',
+            config: ConnectionConfig(),
+            webSocketFactory: (_) => ws2.channel,
+          );
+
+          expect(cm1.effectiveTokenForTesting, 'pairing-code-xyz');
+          expect(cm2.effectiveTokenForTesting, 'pairing-code-abc');
+
+          await cm1.dispose();
+          await cm2.dispose();
         },
       );
     });

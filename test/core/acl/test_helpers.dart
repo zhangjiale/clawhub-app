@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -99,6 +100,14 @@ String extractReqId(String sentFrame) {
   return m!.group(1)!;
 }
 
+/// Extract the bearer token from `params.auth.token` in a sent connect frame.
+String extractAuthToken(String sentFrame) {
+  final decoded = jsonDecode(sentFrame) as Map<String, dynamic>;
+  final params = decoded['params'] as Map<String, dynamic>;
+  final auth = params['auth'] as Map<String, dynamic>;
+  return auth['token'] as String;
+}
+
 /// Build a `chat` event frame with `state: "delta"` (Gateway v2026.6.6).
 String chatDeltaJson({
   String sessionKey = 'agent:r-1:main',
@@ -174,8 +183,6 @@ String chatHistoryResponseJson({
   required String id,
   String? cursor,
   String? nextCursor,
-  // ignore: avoid_unused_constructor_parameters
-  List<Map<String, dynamic>> messages = const [],
 }) {
   final cursorField = cursor != null ? '"cursor":"$cursor",' : '';
   final nextCursorField = nextCursor != null

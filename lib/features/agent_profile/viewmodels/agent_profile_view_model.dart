@@ -14,6 +14,7 @@ import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
+import 'package:claw_hub/features/_shared/agent_reactive_state.dart';
 
 /// Result bundle for [AgentProfileViewModel._safeEvaluateAchievements],
 /// separated from the public state class so the best-effort helper can
@@ -72,6 +73,11 @@ class AgentDetailData {
 ///
 /// 同时服务 AgentProfilePage（消费 [detailLoadState]）和
 /// AgentConfigPage（消费 [isSaving]/[saveError]/[saveSuccess]）。
+///
+/// 2026-06-26 refactor: US-021 tombstone 检测从 `isAgentRemoved: bool` 字段
+/// 迁移到 `vm.agent.isRemoved` 直读 —— 配合 `Agent.contentEquals` 让
+/// Riverpod dedup 自然放行内容变更。`contentRevision` 字段保留作为
+/// rebuild 触发器（`_setAgent` 调用时 bump），与 ChatSessionState 同模式。
 class AgentProfileState {
   final LoadState<AgentDetailData> detailLoadState;
   final bool isSaving;
@@ -79,10 +85,13 @@ class AgentProfileState {
   final bool saveSuccess;
   final List<Achievement> newUnlocks; // freshly unlocked this session
 
-  /// US-021 v1.1: 当前 agent 是否已被 Gateway 端删除（tombstoned）。
-  /// 响应式字段 —— 与 ChatSessionState.isAgentRemoved 模式一致。
-  /// 任何 `_agent =` 写入点必须同步此字段（_syncAgentRemoved helper）。
-  final bool isAgentRemoved;
+  /// Monotonic counter bumped whenever [_agent] changes in a content-visible
+  /// way (post [Agent.contentEquals] filter). UI reads `vm.agent` directly for
+  /// tombstone + content data; this field exists to drive Riverpod's
+  /// `ref.watch` rebuild when content changes bypass identity-only
+  /// `Agent.==` dedup (tombstone transitions, nickname/themeColor changes,
+  /// profile save reflects).
+  final int contentRevision;
 
   const AgentProfileState({
     this.detailLoadState = const LoadInProgress(),
@@ -90,7 +99,7 @@ class AgentProfileState {
     this.saveError,
     this.saveSuccess = false,
     this.newUnlocks = const [],
-    this.isAgentRemoved = false,
+    this.contentRevision = 0,
   });
 
   /// copyWith 使用 [CopyWithSentinel] 区分 "未传参" 和 "显式传 null"，
@@ -101,7 +110,7 @@ class AgentProfileState {
     Object? saveError = CopyWithSentinel.instance,
     bool? saveSuccess,
     List<Achievement>? newUnlocks,
-    bool? isAgentRemoved,
+    int? contentRevision,
   }) {
     return AgentProfileState(
       detailLoadState: detailLoadState ?? this.detailLoadState,
@@ -109,7 +118,7 @@ class AgentProfileState {
       saveError: copyWithNullable(saveError, this.saveError),
       saveSuccess: saveSuccess ?? this.saveSuccess,
       newUnlocks: newUnlocks ?? this.newUnlocks,
-      isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
+      contentRevision: contentRevision ?? this.contentRevision,
     );
   }
 
@@ -122,7 +131,7 @@ class AgentProfileState {
           saveError == other.saveError &&
           saveSuccess == other.saveSuccess &&
           newUnlocks == other.newUnlocks &&
-          isAgentRemoved == other.isAgentRemoved;
+          contentRevision == other.contentRevision;
 
   @override
   int get hashCode => Object.hash(
@@ -131,7 +140,7 @@ class AgentProfileState {
     saveError,
     saveSuccess,
     newUnlocks,
-    isAgentRemoved,
+    contentRevision,
   );
 }
 
@@ -143,7 +152,8 @@ class AgentProfileState {
 ///
 /// Agent 数据通过 [AgentProfileState.detailLoadState] 暴露给 UI 层，
 /// 不再使用单独的 `agent` getter —— Config 页直接从 state 读取初始表单值。
-class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
+class AgentProfileViewModel extends StateNotifier<AgentProfileState>
+    with AgentReactiveState {
   final IAgentRepo _agentRepo;
   final IInstanceRepo _instanceRepo;
   final IMessageRepo _messageRepo;
@@ -152,26 +162,52 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   final IAvatarStorageService _avatarStorageService;
   final String agentId;
 
-  /// US-021 v1.1: 私有缓存，与 ChatViewModel._agent 模式一致。
-  /// 用于 write guard 在不重新查库的前提下判断 tombstone 状态。
-  Agent? _agent;
+  /// Public read-only view of [_agent] for UI consumers — 由
+  /// [AgentReactiveState] mixin 提供 (Finding #8 重构)。
+  // (agent getter 由 mixin 暴露)
 
-  /// US-021 v1.1: 同步 _agent 的 tombstone 状态到 state.isAgentRemoved。
-  /// 必须在每个 `_agent =` 写入点调用一次（SSOT）。
-  void _syncAgentRemoved() {
-    _updateState((s) => s.copyWith(isAgentRemoved: _agent?.isRemoved ?? false));
+  /// [AgentReactiveState] mixin 钩子：写入新 agent 后 bump
+  /// [AgentProfileState.contentRevision]，驱动 Riverpod ref.watch 触发本
+  /// build 重建。守卫逻辑（contentEquals 过滤同内容 emit）由 mixin 内的
+  /// [setAgent] 负责。
+  @override
+  void onAgentUpdated() {
+    _updateState((s) => s.copyWith(contentRevision: s.contentRevision + 1));
   }
 
   /// US-021 v1.1: 响应式重查入口。provider 侧 `ref.listen(agentSyncTickerProvider)`
   /// 在 agents 同步完成后调用，把最新 tombstone 状态写进 state。
   Future<void> refreshAgent() async {
+    final freshAgent = await _loadFreshAgentForRefresh();
+    if (freshAgent == null) return;
+    setAgent(freshAgent);
+    final detail = state.detailLoadState;
+    if (detail is LoadData<AgentDetailData>) {
+      final current = detail.value;
+      _updateState(
+        (s) => s.copyWith(
+          detailLoadState: LoadData(
+            AgentDetailData(
+              agent: freshAgent,
+              instance: current.instance,
+              messageCount: current.messageCount,
+              stats: current.stats,
+              achievements: current.achievements,
+              dailyActivity: current.dailyActivity,
+            ),
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<Agent?> _loadFreshAgentForRefresh() async {
     try {
-      _agent = await _agentRepo.getById(agentId);
+      return await _agentRepo.getById(agentId);
     } catch (e, st) {
       debugPrint('[AgentProfileViewModel] refreshAgent failed: $e\n$st');
-      return;
+      return null;
     }
-    _syncAgentRemoved();
   }
 
   /// BUG B 修复入口:暴露 agent 的 instanceId,让 provider 层的 ticker
@@ -181,7 +217,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   /// 返回 null 当 [_agent] 尚未加载（init 未完成或 agent 在 DB 中不存在）。
   /// ticker 监听器在 null 时跳过 — 下次 sync tick 会再 fire,届时 _agent
   /// 必然已就绪。
-  String? get instanceId => _agent?.instanceId;
+  String? get instanceId => agent?.instanceId;
 
   /// Optional callback invoked when an avatar file needs cache eviction.
   ///
@@ -221,8 +257,9 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
       final agent = await _agentRepo.getById(agentId);
       if (agent == null) throw AgentNotFoundError(agentId);
       // US-021 v1.1: 缓存 _agent 并同步 tombstone 状态（SSOT）。
-      _agent = agent;
-      _syncAgentRemoved();
+      // Step 6: 走 setAgent —— 顺带 bump contentRevision 触发 UI rebuild，
+      // 不再单独调 _syncAgentRemoved (helper 已删)。
+      setAgent(agent);
 
       // The four detail-loads below are independent (instance + counts +
       // stats + activity) and only need the already-resolved agent. Run
@@ -258,12 +295,12 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
       );
     } catch (error, stackTrace) {
       // US-021: 详情加载失败时不应继续显示 tombstone 占位页，否则用户看不到
-      // 错误信息。重置 isAgentRemoved 让 UI 回退到 LoadError 状态。
+      // 错误信息。setAgent(null) 清掉 _agent 缓存 + bump contentRevision，
+      // UI 重建后 vm.agent.isTombstoned = false，回退到 LoadError
+      // 而不是上一轮的 tombstone 占位页。
+      setAgent(null);
       _updateState(
-        (s) => s.copyWith(
-          detailLoadState: LoadError(error, stackTrace),
-          isAgentRemoved: false,
-        ),
+        (s) => s.copyWith(detailLoadState: LoadError(error, stackTrace)),
       );
     }
   }
@@ -323,14 +360,14 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
     // 或状态未知时用户仍能编辑/保存，造成 DB 与 Gateway 不一致。
     // US-021 v1.2 修复：阻断必须 surface saveError，否则 UI 看不到反馈。
     // 区分 null（未加载）和 tombstoned（已删除）两条文案。
-    if (_agent == null) {
+    if (agent == null) {
       debugPrint(
         '[AgentProfileViewModel] saveProfile blocked: agent not loaded',
       );
       _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
       return;
     }
-    if (_agent!.isRemoved) {
+    if (agent!.isRemoved) {
       debugPrint(
         '[AgentProfileViewModel] saveProfile blocked: agent tombstoned',
       );
@@ -367,14 +404,14 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   Future<void> updateAvatar(Uint8List imageBytes) async {
     // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝写入头像。
     // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
-    if (_agent == null) {
+    if (agent == null) {
       debugPrint(
         '[AgentProfileViewModel] updateAvatar blocked: agent not loaded',
       );
       _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
       return;
     }
-    if (_agent!.isRemoved) {
+    if (agent!.isRemoved) {
       debugPrint(
         '[AgentProfileViewModel] updateAvatar blocked: agent tombstoned',
       );
@@ -416,14 +453,14 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState> {
   Future<void> removeAvatar() async {
     // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝清除头像（同样不会触达 DB）。
     // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
-    if (_agent == null) {
+    if (agent == null) {
       debugPrint(
         '[AgentProfileViewModel] removeAvatar blocked: agent not loaded',
       );
       _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
       return;
     }
-    if (_agent!.isRemoved) {
+    if (agent!.isRemoved) {
       debugPrint(
         '[AgentProfileViewModel] removeAvatar blocked: agent tombstoned',
       );

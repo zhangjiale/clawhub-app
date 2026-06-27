@@ -19,21 +19,34 @@ Widget _wrap(Widget child) {
   );
 }
 
-/// Predicate: true iff the widget is an [AnimatedScale] whose direct child
-/// is an [AnimatedContainer] that in turn holds an [Icon] matching [icon].
+/// Predicate: true iff the widget is an [AnimatedContainer] whose direct child
+/// is an [Icon] matching [icon].
 ///
-/// Walks down through [AnimatedContainer.child] only — the action button
-/// places the icon as the AnimatedContainer's child via PressFeedback's
-/// `builder` parameter. This uniquely identifies the _ActionBtn's scale
-/// wrapper (vs. the outer InstanceCard's AnimatedScale, whose child is a
-/// plain Container, not an AnimatedContainer).
-bool Function(Widget) _wrapsIconInScale(IconData icon) {
+/// This uniquely identifies the _ActionBtn's animated container; the outer
+/// InstanceCard's press animation wraps a plain Container, not an Icon.
+bool Function(Widget) _actionButtonContainerFor(IconData icon) {
+  return (Widget w) {
+    if (w is! AnimatedContainer) return false;
+    final child = w.child;
+    return child is Icon && child.icon == icon;
+  };
+}
+
+/// Predicate: true iff the widget is an [AnimatedScale] wrapping an
+/// [AnimatedContainer] whose direct child is an [Icon] matching [icon].
+///
+/// Bug #4 regression — PressFeedback in builder mode ignores its own
+/// `scale` param (press_feedback_buttons.dart:120-149), so the _ActionBtn
+/// wraps the AnimatedContainer in an explicit AnimatedScale. This predicate
+/// targets that wrapper so a future refactor that drops the scale cannot
+/// silently regress the press-feedback contract.
+bool Function(Widget) _actionButtonScaleFor(IconData icon) {
   return (Widget w) {
     if (w is! AnimatedScale) return false;
-    final container = w.child;
-    if (container is! AnimatedContainer) return false;
-    final child = container.child;
-    return child is Icon && child.icon == icon;
+    final inner = w.child;
+    if (inner is! AnimatedContainer) return false;
+    final ic = inner.child;
+    return ic is Icon && ic.icon == icon;
   };
 }
 
@@ -387,110 +400,6 @@ void main() {
       expect(find.text('等待审批'), findsNothing);
     });
 
-    testWidgets('refresh button scales on press for visible feedback', (
-      tester,
-    ) async {
-      // Bug fix: surface2(0xFF15171E) → surface3(0xFF1C1F28) alone has only
-      // ~3% luminance delta, imperceptible on a phone. The action button
-      // must combine a scale animation (per HeaderButton pattern) so the
-      // press is visually obvious.
-      await tester.pumpWidget(
-        _wrap(InstanceCard(instance: testInstance, onTap: () {})),
-      );
-
-      // Verify the _ActionBtn wraps its AnimatedContainer in an
-      // AnimatedScale. We walk the tree manually via byWidgetPredicate
-      // because the outer InstanceCard also has an AnimatedScale (from
-      // PressFeedback's automatic scale handling), so naive ancestor
-      // finders would match BOTH and fail findsOneWidget.
-      expect(
-        find.byWidgetPredicate(_wrapsIconInScale(Icons.refresh)),
-        findsOneWidget,
-        reason:
-            'The action button must scale on press. Color-only feedback '
-            '(surface2→surface3) is below the human-perception threshold '
-            '(~3% delta).',
-      );
-    });
-
-    testWidgets('delete button scales on press for visible feedback', (
-      tester,
-    ) async {
-      // Same root cause as the refresh button: the danger variant of
-      // _ActionBtn does not change color at all on press (always redMuted),
-      // and has no scale animation. Without these, the delete button has
-      // literally zero press feedback.
-      await tester.pumpWidget(
-        _wrap(
-          InstanceCard(instance: testInstance, onTap: () {}, onDelete: () {}),
-        ),
-      );
-
-      expect(
-        find.byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline)),
-        findsOneWidget,
-        reason:
-            'The delete button must scale on press. '
-            'Currently the danger variant has zero press feedback.',
-      );
-    });
-
-    testWidgets('refresh button scale factor decreases mid-press', (
-      tester,
-    ) async {
-      // Stronger guarantee than "AnimatedScale exists": verify the scale
-      // factor actually changes during a press gesture. Catches a future
-      // refactor that wraps the AnimatedContainer in an unused AnimatedScale.
-      // Use a fake orchestrator because the real one opens a WebSocket on
-      // tap, which would fail in the test environment.
-      final orch = _TestOrchestrator();
-      await tester.pumpWidget(
-        _wrapWithOrchestrator(
-          InstanceCard(instance: testInstance, onTap: () {}),
-          orchestrator: orch,
-        ),
-      );
-
-      AnimatedScale readInnerScale() =>
-          find
-                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
-                  .evaluate()
-                  .single
-                  .widget
-              as AnimatedScale;
-
-      expect(
-        readInnerScale().scale,
-        equals(1.0),
-        reason: 'Initial (idle) scale must be 1.0',
-      );
-
-      final gesture = await tester.startGesture(
-        tester.getCenter(find.byIcon(Icons.refresh)),
-      );
-      await tester.pump(
-        XiaMotion.durationFast + const Duration(milliseconds: 50),
-      );
-
-      expect(
-        readInnerScale().scale,
-        lessThan(1.0),
-        reason:
-            'While pressed, the inner scale must be < 1.0 so the user '
-            'perceives the press.',
-      );
-
-      await gesture.up();
-      await tester.pump(
-        XiaMotion.durationFast + const Duration(milliseconds: 50),
-      );
-      expect(
-        readInnerScale().scale,
-        equals(1.0),
-        reason: 'After release, scale must return to 1.0',
-      );
-    });
-
     testWidgets('refresh button shows accent border on press', (tester) async {
       // The PRIMARY visible feedback signal — color-only or scale-only
       // changes are too subtle on a 36×36 button. A 1px accent border
@@ -505,16 +414,16 @@ void main() {
         ),
       );
 
-      AnimatedScale readInnerScale() =>
+      AnimatedContainer readActionContainer() =>
           find
-                  .byWidgetPredicate(_wrapsIconInScale(Icons.refresh))
+                  .byWidgetPredicate(_actionButtonContainerFor(Icons.refresh))
                   .evaluate()
                   .single
                   .widget
-              as AnimatedScale;
+              as AnimatedContainer;
 
       // Idle: no border, surface2 background.
-      final idle = readInnerScale().child as AnimatedContainer;
+      final idle = readActionContainer();
       expect(idle.decoration, isA<BoxDecoration>());
       expect(
         (idle.decoration as BoxDecoration).border,
@@ -534,7 +443,7 @@ void main() {
         XiaMotion.durationFast + const Duration(milliseconds: 50),
       );
 
-      final pressed = readInnerScale().child as AnimatedContainer;
+      final pressed = readActionContainer();
       final pressedBorder =
           (pressed.decoration as BoxDecoration).border as Border;
       expect(
@@ -556,15 +465,17 @@ void main() {
         ),
       );
 
-      AnimatedScale readInnerScale() =>
+      AnimatedContainer readActionContainer() =>
           find
-                  .byWidgetPredicate(_wrapsIconInScale(Icons.delete_outline))
+                  .byWidgetPredicate(
+                    _actionButtonContainerFor(Icons.delete_outline),
+                  )
                   .evaluate()
                   .single
                   .widget
-              as AnimatedScale;
+              as AnimatedContainer;
 
-      final idle = readInnerScale().child as AnimatedContainer;
+      final idle = readActionContainer();
       expect(
         (idle.decoration as BoxDecoration).border,
         isNull,
@@ -578,7 +489,7 @@ void main() {
         XiaMotion.durationFast + const Duration(milliseconds: 50),
       );
 
-      final pressed = readInnerScale().child as AnimatedContainer;
+      final pressed = readActionContainer();
       final pressedBorder =
           (pressed.decoration as BoxDecoration).border as Border;
       expect(
@@ -589,5 +500,109 @@ void main() {
 
       await gesture.up();
     });
+
+    // ========================================================================
+    // Bug #4 regression — AnimatedScale 0.97 on press
+    // ========================================================================
+    //
+    // PressFeedback in `builder:` mode IGNORES its own `scale` parameter
+    // (press_feedback_buttons.dart:120-149).  The _ActionBtn wraps the
+    // AnimatedContainer in an explicit AnimatedScale to restore the
+    // tactile press feedback that the spec requires.  Without this wrapper,
+    // the 36×36 button has only border / color feedback, imperceptible
+    // on dark OLED or bright sunlight.
+    //
+    // These two tests guard the scale wrapper so a future refactor that
+    // drops the AnimatedScale (or moves back to non-builder PressFeedback
+    // without re-asserting the scale) cannot silently regress.
+
+    testWidgets(
+      'refresh button wraps AnimatedContainer in AnimatedScale (Bug #4)',
+      (tester) async {
+        final orch = _TestOrchestrator();
+        await tester.pumpWidget(
+          _wrapWithOrchestrator(
+            InstanceCard(instance: testInstance, onTap: () {}),
+            orchestrator: orch,
+          ),
+        );
+
+        AnimatedScale readActionScale() =>
+            find
+                    .byWidgetPredicate(_actionButtonScaleFor(Icons.refresh))
+                    .evaluate()
+                    .single
+                    .widget
+                as AnimatedScale;
+
+        // Idle: scale must be 1.0 — no visual shrink at rest.
+        final idle = readActionScale();
+        expect(
+          idle.scale,
+          equals(1.0),
+          reason: 'Idle AnimatedScale must be 1.0 (no shrink at rest)',
+        );
+
+        // Press: scale must shrink to 0.97.
+        final gesture = await tester.startGesture(
+          tester.getCenter(find.byIcon(Icons.refresh)),
+        );
+        await tester.pump(
+          XiaMotion.durationFast + const Duration(milliseconds: 50),
+        );
+
+        final pressed = readActionScale();
+        expect(
+          pressed.scale,
+          equals(0.97),
+          reason:
+              'Pressed AnimatedScale must be 0.97 — restores tactile '
+              'press feedback that the 36×36 button needs (border / color '
+              'alone is imperceptible on dark OLED / bright sunlight).',
+        );
+
+        await gesture.up();
+      },
+    );
+
+    testWidgets(
+      'delete button wraps AnimatedContainer in AnimatedScale (Bug #4)',
+      (tester) async {
+        await tester.pumpWidget(
+          _wrap(
+            InstanceCard(instance: testInstance, onTap: () {}, onDelete: () {}),
+          ),
+        );
+
+        AnimatedScale readActionScale() =>
+            find
+                    .byWidgetPredicate(
+                      _actionButtonScaleFor(Icons.delete_outline),
+                    )
+                    .evaluate()
+                    .single
+                    .widget
+                as AnimatedScale;
+
+        final idle = readActionScale();
+        expect(idle.scale, equals(1.0));
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(find.byIcon(Icons.delete_outline)),
+        );
+        await tester.pump(
+          XiaMotion.durationFast + const Duration(milliseconds: 50),
+        );
+
+        final pressed = readActionScale();
+        expect(
+          pressed.scale,
+          equals(0.97),
+          reason: 'Delete button must also have 0.97 scale on press',
+        );
+
+        await gesture.up();
+      },
+    );
   });
 }

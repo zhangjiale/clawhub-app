@@ -10,11 +10,11 @@ import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
-import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
+import 'package:claw_hub/features/_shared/agent_reactive_state.dart';
 
 /// The agent's thinking/waiting state — mutually exclusive states that
 /// replace the previous (isThinking, timeout) boolean pair.
@@ -65,24 +65,15 @@ class ChatSessionState {
   /// 使用 [CopyWithSentinel] 以支持显式清空。
   final String? highlightedQuery;
 
-  /// US-021 AC8: 当前 agent 是否已被 Gateway 端删除（tombstoned）。
+  /// Monotonic counter bumped whenever [_agent] changes in a content-visible
+  /// way (post [Agent.contentEquals] filter). UI reads `vm.agent` directly for
+  /// the actual values; this field exists to drive Riverpod's `ref.watch`
+  /// rebuild when content changes bypass identity-only `Agent.==` dedup
+  /// (nickname / themeColor / quickCommands / tombstone transitions).
   ///
-  /// 这是 ChatSessionState 的响应式字段 —— 与 [_agent]（私有缓存，
-  /// 非响应式）解耦。后台 sync tombstone 时由 [refreshAgent]（监听
-  /// agentSyncTickerProvider）刷新此字段，UI 通过 ref.watch 自然重建、
-  /// 渲染"已移除"占位页。
-  ///
-  /// 不把整个 [Agent] 放入 state：Agent.== 仅比较 localId（不含 removedAt），
-  /// tombstone 后 state 看似不变 → Riverpod 不通知重建 → AC8 占位页失效。
-  /// 故用独立 bool 驱动，所有 [_agent] 写入点必须同步此字段。
-  final bool isAgentRemoved;
-
-  /// 同步于 vm.agent.quickCommands —— 任意 DB 写入触发 rebuild，让 UI 在
-  /// ChatRoomPage.build() 中重新读取 vm.agent.quickCommands 拿到新值。
-  /// 不放进 == 比较会导致 Riverpod 状态去重不通知 UI rebuild（仅
-  /// isAgentRemoved 变更才 dedup 不命中，quickCommands/nickname 等字段变更
-  /// 完全无 rebuild 信号）。
-  final List<QuickCommand> quickCommands;
+  /// 替换了之前的 `agentRevision`（无差别 bump，包括 seed-event 重放）。
+  /// 现在只有真实内容变更才会 bump，seed event 被 contentEquals 过滤掉。
+  final int contentRevision;
 
   const ChatSessionState({
     this.messages = const LoadInProgress(),
@@ -94,8 +85,7 @@ class ChatSessionState {
     this.retryFeedback,
     this.highlightedMessageId,
     this.highlightedQuery,
-    this.isAgentRemoved = false,
-    this.quickCommands = const [],
+    this.contentRevision = 0,
   });
 
   ChatSessionState copyWith({
@@ -110,8 +100,7 @@ class ChatSessionState {
     Object? retryFeedback = CopyWithSentinel.instance,
     Object? highlightedMessageId = CopyWithSentinel.instance,
     Object? highlightedQuery = CopyWithSentinel.instance,
-    bool? isAgentRemoved,
-    List<QuickCommand>? quickCommands,
+    int? contentRevision,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -129,8 +118,7 @@ class ChatSessionState {
         highlightedQuery,
         this.highlightedQuery,
       ),
-      isAgentRemoved: isAgentRemoved ?? this.isAgentRemoved,
-      quickCommands: quickCommands ?? this.quickCommands,
+      contentRevision: contentRevision ?? this.contentRevision,
     );
   }
 
@@ -147,8 +135,7 @@ class ChatSessionState {
           retryFeedback == other.retryFeedback &&
           highlightedMessageId == other.highlightedMessageId &&
           highlightedQuery == other.highlightedQuery &&
-          isAgentRemoved == other.isAgentRemoved &&
-          quickCommands == other.quickCommands;
+          contentRevision == other.contentRevision;
 
   @override
   int get hashCode => Object.hash(
@@ -161,8 +148,7 @@ class ChatSessionState {
     retryFeedback,
     highlightedMessageId,
     highlightedQuery,
-    isAgentRemoved,
-    quickCommands,
+    contentRevision,
   );
 }
 
@@ -181,7 +167,8 @@ class ChatSessionState {
 /// Extends [StateNotifier] so the UI observes one cohesive
 /// [ChatSessionState] via Riverpod's [ref.watch] — no manual
 /// listener or setState bridge needed.
-class ChatViewModel extends StateNotifier<ChatSessionState> {
+class ChatViewModel extends StateNotifier<ChatSessionState>
+    with AgentReactiveState {
   final IAgentRepo _agentRepo;
   final IConversationRepo _conversationRepo;
   final IMessageRepo _messageRepo;
@@ -199,6 +186,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   StreamSubscription<int>? _outboxCountSubscription;
   Timer? _timeoutTimer;
   Timer? _stallTimer;
+
+  /// Bug 2 修复: 标记 [_initStreamsAndHistory] 是否已完成。
+  /// - tombstone init 后为 false（早退未订阅）
+  /// - refreshAgent 检测到 tombstone→alive 转换时调一次 [_initStreamsAndHistory]，
+  ///   之后保持 true 直到 [_teardownSubscriptions]
+  bool _streamsInitialized = false;
+
+  /// 仅供测试: 暴露 [_streamsInitialized] 状态用于断言 stream 订阅是否建立。
+  /// 生产代码请走 [init] / [refreshAgent] / [send] 等公共方法。
+  @visibleForTesting
+  bool get streamsInitializedForTesting => _streamsInitialized;
 
   /// Overall response timer — starts once on [send], never reset by deltas.
   /// Guarantees the user sees a timeout even when the Gateway trickles data
@@ -220,7 +218,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
   /// Debounce timer for throttled state writes.
   Timer? _flushTimer;
-  Agent? _agent;
 
   /// 响应式 agent 订阅 —— _init() 中订阅 watchById(agentId) stream，
   /// 任何 DB 写入（本地保存 / Gateway sync）触发 emit 后自动同步 _agent，
@@ -293,6 +290,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   /// 由 [loadHighlightWindow] 设置，在 [clearHighlight] 或 2 秒后清除。
   bool _highlightActive = false;
 
+  Message? _pendingPreviewMessage;
+  Timer? _previewCoalesceTimer;
+  Timer? _messageReloadCoalesceTimer;
+
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
 
@@ -320,16 +321,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
        _achievementChecker = achievementChecker,
        super(const ChatSessionState());
 
-  /// The loaded agent (null until [init] completes).
-  Agent? get agent => _agent;
+  /// The loaded agent — 由 [AgentReactiveState] mixin 提供 (Finding #8 重构)。
+  /// 写入走后调 `setAgent(...)`；null 转换与内容变更触发 [onAgentUpdated]。
+  /// UI 通过 `vm.agent` getter 直接读最新 _agent（含 tombstone 状态）。
+  // (agent getter 由 mixin 暴露)
 
-  /// US-021: 把当前 [_agent] 的 tombstone 状态同步进 [ChatSessionState]。
-  ///
-  /// 必须在**每个** `_agent =` 写入点之后调用，使 `state.isAgentRemoved`
-  /// 始终反映最新缓存。AC8 占位页靠此字段响应式重建 —— 若漏调某写入点，
-  /// 该路径下占位页会与真实状态脱节。
-  void _syncAgentRemoved() {
-    _updateState((s) => s.copyWith(isAgentRemoved: _agent?.isRemoved ?? false));
+  /// [AgentReactiveState] mixin 钩子：写入新 agent 后 bump ChatSessionState
+  /// 的 contentRevision，驱动 Riverpod ref.watch 触发本 build 重建。
+  /// 守卫逻辑（contentEquals 过滤同内容 emit）由 mixin 内的 [setAgent] 负责。
+  @override
+  void onAgentUpdated() {
+    _updateState((s) => s.copyWith(contentRevision: s.contentRevision + 1));
   }
 
   late final String _conversationId = Conversation.generateId(
@@ -346,12 +348,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   Future<void> _init() async {
     try {
       // 1. Look up the agent
-      _agent = await _agentRepo.getById(agentId);
-      _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（null → false）
-      _updateState(
-        (s) => s.copyWith(quickCommands: _agent?.quickCommands ?? const []),
-      ); // ★ 响应式镜像 quickCommands（避免 Riverpod == dedup）
-      if (_agent == null) {
+      final agent = await _agentRepo.getById(agentId);
+      setAgent(agent);
+      if (agent == null) {
         debugPrint(
           '[ChatViewModel] Agent not found: agentId=$agentId, '
           'instanceId=$instanceId — chat unavailable.',
@@ -365,7 +364,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       // conversation 行、不加载消息历史。占位页（AC8）正确显示的同时
       // 避免:(a) 浪费 5 个 stream 订阅资源,(b) revive 后 _initFuture 已
       // cache 导致无法干净重订阅,(c) DB 中残留幽灵 conversation 行。
-      if (_agent!.isRemoved) {
+      // Bug 2 修复: revive 路径由 [refreshAgent] 检测 tombstone→alive 转换
+      // 后调一次 [_initStreamsAndHistory]，避开 _initFuture 缓存。
+      if (agent.isRemoved) {
         debugPrint(
           '[ChatViewModel] Agent tombstoned: agentId=$agentId, '
           'instanceId=$instanceId — short-circuit init.',
@@ -373,6 +374,40 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         return;
       }
 
+      await _initStreamsAndHistory(agent);
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
+      );
+      // Tear down any subscriptions that were set up before the failure
+      // so a subsequent retry() or send() starts from a clean slate.
+      _teardownSubscriptions();
+      // Clear the cached future so the next init() / send() call will
+      // retry instead of instantly returning the failed future.
+      _initFuture = null;
+      // Signal to send() that the agent is unavailable (shows LoadError).
+      // setAgent(null) 同步清掉 _agent 缓存 + bump contentRevision，UI
+      // 重建后 vm.agent.isTombstoned = false，回退到 LoadError 而
+      // 不是上一轮的 tombstone 占位页。
+      setAgent(null);
+    }
+  }
+
+  /// Bug 2 修复: 把 [_init] 中 tombstone early-return 之后的 stream / history
+  /// 订阅代码抽到这里。两条调用路径:
+  ///
+  /// 1. [_init] 在确认 agent alive 后调一次（首启动）
+  /// 2. [refreshAgent] 检测到 tombstone→alive 转换时调一次（复活）
+  ///
+  /// 之所以单独抽出，是因为 [_init] 走 _initFuture 缓存，tombstone 早退后
+  /// 第二次调 init() 不会重跑；而 refreshAgent 不经 _initFuture 缓存，必须
+  /// 显式触发订阅。两条路径的代码完全一致 —— 抽出避免漂移。
+  ///
+  /// 内部 try/catch：失败时 _teardownSubscriptions 防止半订阅状态。
+  /// 成功末尾 [_streamsInitialized] = true，让 refreshAgent 后续不再
+  /// 重复触发（alive→alive 是 no-op）。
+  Future<void> _initStreamsAndHistory(Agent activeAgent) async {
+    try {
       // 2. Get or create conversation (idempotent)
       await _conversationRepo.getOrCreate(instanceId, agentId);
 
@@ -380,37 +415,27 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       await _loadMessages();
 
       // ★ 3.5 订阅 agent 响应式 stream
-      // seed event（Drift .watchSingleOrNull() 订阅时立即 emit 当前行）
-      // 会把 _agent 重写为同值并触发 _syncAgentRemoved() —— 因
-      // ChatSessionState.copyWith 等价检测，state 写入是 no-op，不触发
-      // UI 重建。无须额外 .where() 过滤（且 Agent.== 仅比 localId/
-      // removedAt/hiddenAt 三个身份字段，filter 反而会误丢 quickCommands
-      // / nickname 等字段变更）。
+      // [setAgent] 内部 [Agent.contentEquals] 守卫过滤掉 Drift
+      // `.watchSingleOrNull()` 的 seed event（与已有 [_agent] 内容完全相同），
+      // 避免 contentRevision 在 init 同步阶段被误增（旧逻辑 revision 从 1
+      // 跳到 2，对应一次无意义的 UI rebuild）。null 转换（tombstone / 复活）
+      // 和真实内容变更（nickname / themeColor / quickCommands）正确放行。
       // 包装在 try 中：mocktail 未 stub 的 watchById 可能返回 null，
       // 真实实现 (InMemory / Drift) 不会。失败只丢响应式刷新，
       // 不影响其余 6 个 stream 订阅。
       try {
-        final agentStream = _agentRepo.watchById(agentId);
-        _agentSubscription = agentStream.listen(
-          (agent) {
-            _agent = agent;
-            _syncAgentRemoved();
-            // ★ 同步 quickCommands 到 state,确保非 identity 字段
-            // (quickCommands/nickname/themeColor 等) 变更时 Riverpod
-            // 不会因 state.== 而抑制 UI rebuild。
-            _updateState(
-              (s) =>
-                  s.copyWith(quickCommands: agent?.quickCommands ?? const []),
+        _agentSubscription = _agentRepo
+            .watchById(agentId)
+            .listen(
+              setAgent,
+              onError: (error, stackTrace) {
+                // Law 8: catch 必有 debugPrint
+                debugPrint(
+                  '[ChatViewModel] watchById error for $agentId: '
+                  '$error\n$stackTrace',
+                );
+              },
             );
-          },
-          onError: (error, stackTrace) {
-            // Law 8: catch 必有 debugPrint
-            debugPrint(
-              '[ChatViewModel] watchById error for $agentId: '
-              '$error\n$stackTrace',
-            );
-          },
-        );
       } catch (error, stackTrace) {
         // Law 8: catch 必有 debugPrint
         debugPrint(
@@ -484,7 +509,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               // msg.agentId is empty only when the Gateway omits it (legacy
               // v3 fallback); in that case we process the message rather
               // than silently dropping it.
-              final agentRemoteId = _agent?.remoteId;
+              final agentRemoteId = activeAgent.remoteId;
               if (agentRemoteId != null &&
                   msg.agentId.isNotEmpty &&
                   msg.agentId != agentRemoteId) {
@@ -538,10 +563,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               // 此前 updateLastMessage 仅在用户发送时被调用，导致预览永远
               // 停留在「我」的最后一条消息，掩盖了 Agent 的最新回复。
               // 这里用与 SendMessageUseCase 相同的预览规则，保证两侧一致。
-              await _updateConversationPreview(fixedMsg);
+              _scheduleConversationPreviewUpdate(fixedMsg);
               // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
               if (!_highlightActive) {
-                await _loadMessages();
+                _scheduleMessagesReload();
               }
               if (fixedMsg.role == MessageRole.agent) {
                 // Clear streaming text when the final message lands —
@@ -588,7 +613,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
       // 6. Fetch message history from Gateway (best-effort).
       //    Placed AFTER real-time subscriptions so that events arriving
       //    during the fetch RTT are captured, not lost.
-      final remoteId = _agent!.remoteId;
+      final remoteId = activeAgent.remoteId;
       try {
         final history = await _gatewayClient.fetchMessageHistory(
           instanceId: instanceId,
@@ -637,23 +662,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
               );
             },
           );
+
+      _streamsInitialized = true;
     } catch (error, stackTrace) {
       debugPrint(
-        '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
+        '[ChatViewModel] _initStreamsAndHistory failed for '
+        '$instanceId/$agentId: $error\n$stackTrace',
       );
-      // Tear down any subscriptions that were set up before the failure
-      // so a subsequent retry() or send() starts from a clean slate.
+      // 防止半订阅状态:失败时清空所有已建立的 subscription，
+      // 下次 _init / refreshAgent 再重试。
       _teardownSubscriptions();
-      // Clear the cached future so the next init() / send() call will
-      // retry instead of instantly returning the failed future.
-      _initFuture = null;
-      // Signal to send() that the agent is unavailable (shows LoadError).
-      _agent = null;
-      // US-021 v1.1: 显式调 _syncAgentRemoved() 重置 isAgentRemoved = false，
-      // 避免上轮 tombstone 状态残留导致 AC8 占位页错乱。
-      // 与 init() line 314 / send() line 634 / refreshAgent() line 878 的
-      // `_agent =` 写入点同模式，SSOT 单一来源。
-      _syncAgentRemoved();
     }
   }
 
@@ -684,7 +702,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
     await init();
 
-    if (_agent == null) {
+    if (agent == null) {
       _updateState(
         (s) => s.copyWith(
           messages: LoadError(
@@ -704,7 +722,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     // US-021: 缓存的 _agent 已被 init 标记为 tombstoned → 早退。
     // init 在 agent.isRemoved 时已短退 (line 329-335),后续 send 看到
     // _agent.isRemoved=true 不应继续发消息,直接 LoadError。
-    if (_agent!.isRemoved) {
+    if (agent!.isRemoved) {
       _updateState(
         (s) => s.copyWith(
           messages: LoadError(
@@ -745,8 +763,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
         );
         return;
       }
-      _agent = freshAgent;
-      _syncAgentRemoved(); // US-021: 同步 isAgentRemoved（send 重查后状态可能变）
+      setAgent(freshAgent);
     }
 
     // Start a fresh streaming subscription for this send — any stale
@@ -757,7 +774,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
     final sentMessage = await _sendMessageUseCase.execute(
       instanceId: instanceId,
-      agent: _agent!,
+      agent: agent!,
       content: text,
       type: MessageType.text,
     );
@@ -810,7 +827,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   void _startStreaming() {
     _streamingSubscription?.cancel();
 
-    final agentRemoteId = _agent!.remoteId;
+    final agentRemoteId = agent!.remoteId;
     _streamingSubscription = _gatewayClient
         .streamingDeltaStream(instanceId)
         .listen(
@@ -953,6 +970,29 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     }
   }
 
+  void _scheduleConversationPreviewUpdate(Message message) {
+    if (message.type == MessageType.toolCall) return;
+    if (_pendingPreviewMessage == null ||
+        message.timestamp >= _pendingPreviewMessage!.timestamp) {
+      _pendingPreviewMessage = message;
+    }
+    _previewCoalesceTimer?.cancel();
+    _previewCoalesceTimer = Timer(Duration.zero, () {
+      final pending = _pendingPreviewMessage;
+      _pendingPreviewMessage = null;
+      if (pending == null || !mounted) return;
+      unawaited(_updateConversationPreview(pending));
+    });
+  }
+
+  void _scheduleMessagesReload() {
+    _messageReloadCoalesceTimer?.cancel();
+    _messageReloadCoalesceTimer = Timer(Duration.zero, () {
+      if (!mounted || _highlightActive) return;
+      unawaited(_loadMessages());
+    });
+  }
+
   /// 重载消息列表。供 [chatViewModelProvider] 响应
   /// [outboxFlushTickerProvider]（OutboxProcessor 后台冲刷完成信号）时调用，
   /// 替代重建 ViewModel。
@@ -976,25 +1016,35 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
   ///
   /// 由 provider 侧 `ref.listen(agentSyncTickerProvider)` 在 agents 同步
   /// 完成后调用。用户在 ChatRoom 停留期间，后台 [syncFromGateway] 可能
-  /// 把 agent tombstone（远端删除）或复活（远端重新出现）—— 此方法把
-  /// 该变化反映到 `state.isAgentRemoved`，使 AC8 占位页响应式重建。
+  /// 把 agent tombstone（远端删除）或复活（远端重新出现）—— 此方法走
+  /// `setAgent` 路径更新 _agent 缓存 + bump contentRevision，UI 重建
+  /// 后读 vm.agent.isRemoved 触发 AC8 占位页。
   ///
   /// US-021 v1.2 简化：去掉 `if (initFuture == null) return;` 早退守卫和
   /// `await initFuture` 等待逻辑。refreshAgent 直接独立 fetch agent —— 与
   /// init() 的 fetch 完全独立（init 走 tombstone 短路路径，refreshAgent
-  /// 走 ticker 驱动路径），两者并发时最后一次写入生效，`_syncAgentRemoved`
+  /// 走 ticker 驱动路径），两者并发时最后一次写入生效，`setAgent`
   /// 保证 state 反映最终结果。`initFuture` 守卫是过度防御 —— ticker 监听器
   /// 只在 provider body 中注册，provider body 必先调 `vm.init()`，所以
   /// 实际不会到达 initFuture == null 路径。简化后代码更清晰,边界路径行为
   /// 也更可预测（即使 init 尚未完成也会 fetch 并同步 tombstone 状态）。
   Future<void> refreshAgent() async {
     try {
-      _agent = await _agentRepo.getById(agentId);
+      setAgent(await _agentRepo.getById(agentId));
     } catch (e, st) {
       debugPrint('[ChatViewModel] refreshAgent getById failed: $e\n$st');
       return;
     }
-    _syncAgentRemoved();
+    // Bug 2 修复: tombstone→alive 复活路径。如果 [_streamsInitialized] 仍
+    // 为 false（说明之前的 [_init] 在 tombstone 上早退），且当前 agent 已
+    // 复活，立即补建 6 个 stream 订阅。否则 ChatRoom 显示正常聊天但流全断，
+    // 用户收不到入站 agent 回复和连接状态驱动的 reload。
+    final currentAgent = agent;
+    if (!_streamsInitialized &&
+        currentAgent != null &&
+        !currentAgent.isRemoved) {
+      await _initStreamsAndHistory(currentAgent);
+    }
   }
 
   /// BUG C 修复入口:在 ticker 命中本实例时同时设 tombstone-suspect 标志
@@ -1042,8 +1092,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
 
     final agent = await _agentRepo.getById(agentId);
     if (agent == null || agent.isRemoved) {
-      _agent = agent;
-      _syncAgentRemoved();
+      setAgent(agent);
       _updateState((s) => s.copyWith(retryFeedback: 'Agent 已被删除，无法重试'));
       return;
     }
@@ -1141,13 +1190,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _streamBuffer.clear();
     _lastPublishedLength = 0;
     _initFuture = null;
-    _agent = null;
+    setAgent(null);
     _updateState(
-      (s) => s.copyWith(
-        messages: const LoadInProgress(),
-        streamingText: '',
-        isAgentRemoved: false, // US-021: retry 重置 tombstone 状态，init() 后会再同步
-      ),
+      (s) => s.copyWith(messages: const LoadInProgress(), streamingText: ''),
     );
     await init();
   }
@@ -1187,5 +1232,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState> {
     _overallTimeoutTimer = null;
     _flushTimer?.cancel();
     _flushTimer = null;
+    _pendingPreviewMessage = null;
+    _previewCoalesceTimer?.cancel();
+    _previewCoalesceTimer = null;
+    _messageReloadCoalesceTimer?.cancel();
+    _messageReloadCoalesceTimer = null;
+    // Bug 2 修复: 同步 [_streamsInitialized] 让 refreshAgent 知道
+    // 下次 tombstone→alive 转换时需要重新订阅。
+    _streamsInitialized = false;
   }
 }

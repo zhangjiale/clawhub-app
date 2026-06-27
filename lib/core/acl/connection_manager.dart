@@ -92,18 +92,26 @@ class ConnectionManager {
   /// 并在 hello-ok 时把新签发的令牌落盘（spec §2.2 / §4.11）。
   final IDeviceTokenStore? _deviceTokenStore;
 
-  /// Effective bearer token used for this connect attempt.
+  /// Effective bearer token used for the current connect attempt.
   ///
-  /// Computed at the start of each [_doConnect] call:
-  /// 1. If [_deviceTokenStore] is non-null, try `load(_instanceId)`.
-  /// 2. If a cached token is returned, use it (subsequent-reconnect path,
-  ///    spec §2.2 后续重连复用该令牌).
-  /// 3. Otherwise fall back to the constructor-provided [_token]
-  ///    (first-time pairing code path).
+  /// Resolved once at the start of [_doConnect] by [_resolveBearerToken]
+  /// and read by [onConnectChallenge] for the V3 signature payload and the
+  /// `connect.auth.token` field (all three sites must match).  Lifecycle:
+  /// refreshed at the top of each [_doConnect]; stale after the connect
+  /// completes but never read post-connect.
   ///
-  /// Read by both [onConnectChallenge] (for the V3 signature payload) and
-  /// the connect request body (`auth.token`).
+  /// Seeded to [token] in the constructor so that a misordered read
+  /// (e.g. a future debug log or public getter) sees the pairing code
+  /// instead of `''`.  The three legitimate read sites — URL query,
+  /// V3 signature payload, `auth.token` — all live inside [_doConnect]
+  /// and are guaranteed to see the resolved value; this is a safety net.
   String _effectiveToken = '';
+
+  /// Test-only read of the resolved bearer token.  Used by the
+  /// `_effectiveToken initialized to constructor token` regression test
+  /// to verify the constructor-side seeding without forcing a connect.
+  @visibleForTesting
+  String get effectiveTokenForTesting => _effectiveToken;
 
   /// WebSocket 创建工厂 — 可注入以在测试中替换 WebSocket。
   final WebSocketChannel Function(Uri) _webSocketFactory;
@@ -142,8 +150,9 @@ class ConnectionManager {
        _createTimer = timerFactory ?? Timer.new,
        _uuid = uuid ?? const Uuid() {
     _connectionStateController.add(GatewayConnectionState.disconnected);
-    // Default to the constructor-provided token; overridden in _doConnect
-    // when a cached deviceToken is available.
+    // Seed _effectiveToken to the constructor-provided pairing code so a
+    // pre-_doConnect read returns [token] instead of ''. See the field
+    // docstring for the read-site guarantees.
     _effectiveToken = token;
   }
 
@@ -223,6 +232,36 @@ class ConnectionManager {
   // 内部：连接与握手
   // ---------------------------------------------------------------------------
 
+  /// 解析本次 connect 使用的 bearer token（差距 #1）。
+  ///
+  /// 优先级：[IDeviceTokenStore.load] 返回的缓存 deviceToken（spec §2.2
+  /// 后续重连复用）→ 构造时传入的 [_token]（首次配对 pairing code）。
+  /// 加载失败不会抛 — 静默回退到 [_token]，并在 debug 日志中记录原因。
+  Future<String> _resolveBearerToken() async {
+    if (_deviceTokenStore == null) return _token;
+    try {
+      final cached = await _deviceTokenStore!.load(_instanceId);
+      if (cached != null && cached.isNotEmpty) {
+        // Cache-hit is a routine success-path trace on the reconnect hot
+        // path — gate behind kDebugMode so release logs don't carry it
+        // on every reconnect.  Error path below stays unconditional.
+        if (kDebugMode) {
+          debugPrint(
+            '[CM] Using cached deviceToken for $_instanceId '
+            '(spec §2.2 reconnect path)',
+          );
+        }
+        return cached;
+      }
+    } catch (e, st) {
+      debugPrint(
+        '[CM] deviceTokenStore.load failed for $_instanceId: $e\n'
+        'Falling back to instance.tokenRef.\n$st',
+      );
+    }
+    return _token;
+  }
+
   Future<void> _doConnect() async {
     if (_inDoConnect) return;
     _inDoConnect = true;
@@ -230,28 +269,10 @@ class ConnectionManager {
     _setState(GatewayConnectionState.connecting);
 
     try {
-      // Resolve the bearer token for this connect attempt.
-      // 差距 #1: prefer the cached deviceToken over the original pairing
-      // code (spec §2.2 后续重连复用该令牌).  Falls back to [_token]
-      // when no store is injected or no cached value exists.
-      _effectiveToken = _token;
-      if (_deviceTokenStore != null) {
-        try {
-          final cached = await _deviceTokenStore.load(_instanceId);
-          if (cached != null && cached.isNotEmpty) {
-            _effectiveToken = cached;
-            debugPrint(
-              '[CM] Using cached deviceToken for $_instanceId '
-              '(spec §2.2 reconnect path)',
-            );
-          }
-        } catch (e, st) {
-          debugPrint(
-            '[CM] deviceTokenStore.load failed for $_instanceId: $e\n'
-            'Falling back to instance.tokenRef.\n$st',
-          );
-        }
-      }
+      // Resolve the bearer token for this connect attempt and stash it for
+      // [onConnectChallenge] to read (URL query + V3 signature + auth.token
+      // must all match).  See [_resolveBearerToken] for the policy.
+      _effectiveToken = await _resolveBearerToken();
 
       final originalUri = Uri.parse(_gatewayUrl);
       // Validate the scheme early — web_socket_channel wraps permanent
@@ -490,9 +511,13 @@ class ConnectionManager {
           _tickIntervalMs = policy['tickIntervalMs'] as int? ?? 15000;
         }
 
-        debugPrint(
-          '[CM] Connected to $_instanceId (protocol: ${payload['protocol']})',
-        );
+        // Routine connect-success trace — gated to keep release logs clean
+        // on the reconnect hot path.  Error logs elsewhere stay unconditional.
+        if (kDebugMode) {
+          debugPrint(
+            '[CM] Connected to $_instanceId (protocol: ${payload['protocol']})',
+          );
+        }
 
         // 差距 #1: persist the issued deviceToken (spec §2.2 务必持久化).
         // Best-effort — a failed save doesn't break the current connection;

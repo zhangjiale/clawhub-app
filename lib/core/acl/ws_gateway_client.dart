@@ -383,11 +383,44 @@ class WsGatewayClient implements IGatewayClient {
     // §5.4) but the client used to only read 'nextCursor', causing pagination
     // to deadlock at page 2. Read 'nextCursor' first (forward-compat with
     // future Gateway versions) and fall back to 'cursor'.
-    final nextCursor =
-        res.payload?['nextCursor'] as String? ??
-        res.payload?['cursor'] as String?;
+    final p = res.payload;
+    final nextCursor = p?['nextCursor'] as String? ?? p?['cursor'] as String?;
 
     return (messages: messages, nextCursor: nextCursor);
+  }
+
+  /// 轮换当前实例的 cached deviceToken。
+  ///
+  /// 成功时把 Gateway 返回的新 token 持久化到 IDeviceTokenStore。
+  Future<void> rotateDeviceToken(String instanceId) async {
+    final manager = _requireManager(instanceId);
+    final res = await manager.sendRequest(Methods.deviceTokenRotate, const {});
+    if (!res.ok) {
+      throw Exception(
+        'Device token rotate failed: ${res.error?.message ?? "unknown"}',
+      );
+    }
+    final token =
+        res.payload?['deviceToken'] as String? ??
+        res.payload?['token'] as String?;
+    if (token == null || token.isEmpty) {
+      throw StateError('device.token.rotate response missing deviceToken');
+    }
+    await _deviceTokenStore?.save(instanceId, token);
+  }
+
+  /// 撤销当前实例的 cached deviceToken。
+  ///
+  /// 成功时从 IDeviceTokenStore 删除本实例 token。
+  Future<void> revokeDeviceToken(String instanceId) async {
+    final manager = _requireManager(instanceId);
+    final res = await manager.sendRequest(Methods.deviceTokenRevoke, const {});
+    if (!res.ok) {
+      throw Exception(
+        'Device token revoke failed: ${res.error?.message ?? "unknown"}',
+      );
+    }
+    await _deviceTokenStore?.delete(instanceId);
   }
 
   @override
@@ -792,12 +825,17 @@ class WsGatewayClient implements IGatewayClient {
     if (rawCommands != null) {
       for (var i = 0; i < rawCommands.length; i++) {
         final cmd = rawCommands[i] as Map<String, dynamic>;
+        final label = cmd['label'] as String? ?? '';
+        final payload = cmd['payload'] as String? ?? '';
+        final commandId = cmd['id'] as String?;
         quickCommands.add(
           QuickCommand(
-            id: _uuid.v4(),
+            id: commandId != null && commandId.isNotEmpty
+                ? commandId
+                : '$remoteId:$i:${label.trim()}:${payload.trim()}',
             agentId: remoteId,
-            label: cmd['label'] as String? ?? '',
-            payload: cmd['payload'] as String? ?? '',
+            label: label,
+            payload: payload,
             sortOrder: i,
           ),
         );

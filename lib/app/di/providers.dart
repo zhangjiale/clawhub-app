@@ -58,15 +58,32 @@ import 'package:claw_hub/data/services/local_notification_service.dart';
 /// 成功后写入被同步的 instanceId。
 ///
 /// [agentListProvider] / [conversationListProvider] 通过 watch 此值在
-/// 任意实例同步完成后自动 refresh UI（rebuild 行为兼容旧 int 计数器）。
+/// 任意实例同步完成后自动 refresh UI。每次 sync 都递增 [revision]，即使
+/// 连续两次同步同一个 instanceId，也会产生不相等的新值，避免 Riverpod
+/// 因同值写入去重而丢掉第二次通知。
 ///
-/// Chat / AgentProfile 的 ticker listener 在 BUG B 修复后必须按
-/// `state == self.instanceId` 过滤再触发本实例的 refreshAgent —— 否则
+/// Chat / AgentProfile 的 ticker listener 必须按
+/// `tick.instanceId == self.instanceId` 过滤再触发本实例的 refreshAgent —— 否则
 /// 任意实例 sync 会导致所有 active ChatRoom/Profile 页面的
 /// `_agentRepo.getById()` 被重查一次（N 个实例 × 1 sync = N 次冗余 read）。
-///
-/// 类型 `String?` 携带最近被同步的 instanceId,初始 null。
-final agentSyncTickerProvider = StateProvider<String?>((ref) => null);
+class AgentSyncTick {
+  final int revision;
+  final String instanceId;
+
+  const AgentSyncTick({required this.revision, required this.instanceId});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AgentSyncTick &&
+          revision == other.revision &&
+          instanceId == other.instanceId;
+
+  @override
+  int get hashCode => Object.hash(revision, instanceId);
+}
+
+final agentSyncTickerProvider = StateProvider<AgentSyncTick?>((ref) => null);
 
 /// Outbox 冲刷完成信号 — [OutboxProcessor.flushOutbox] 成功发送至少一条消息后递增。
 ///
@@ -299,7 +316,11 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
         case AgentsSyncedEvent(:final instanceId):
           // ticker 携带被同步的 instanceId,让 chat/agent_profile 的
           // listener 能按实例过滤（BUG B 修复,避免跨实例 N+1 getById）。
-          ref.read(agentSyncTickerProvider.notifier).state = instanceId;
+          final notifier = ref.read(agentSyncTickerProvider.notifier);
+          notifier.state = AgentSyncTick(
+            revision: (notifier.state?.revision ?? 0) + 1,
+            instanceId: instanceId,
+          );
         case PairingInfoChangedEvent(:final instanceId, :final info):
           final notifier = ref.read(pairingInfoProvider.notifier);
           final newMap = Map<String, GatewayPairingInfo>.from(notifier.state);

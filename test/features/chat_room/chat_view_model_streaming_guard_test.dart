@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/instance.dart';
+import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
@@ -143,6 +144,28 @@ class _CountingGetByConversationRepo extends InMemoryMessageRepo {
   }
 }
 
+class _CountingConversationRepo extends InMemoryConversationRepo {
+  int updateLastMessageCallCount = 0;
+
+  @override
+  Future<Conversation> updateLastMessage({
+    required String conversationId,
+    required String messageId,
+    required String preview,
+    required int timestamp,
+    required MessageRole role,
+  }) {
+    updateLastMessageCallCount++;
+    return super.updateLastMessage(
+      conversationId: conversationId,
+      messageId: messageId,
+      preview: preview,
+      timestamp: timestamp,
+      role: role,
+    );
+  }
+}
+
 void main() {
   group('ChatViewModel streaming guard (clear-cache tick safety)', () {
     late InMemoryAgentRepo agentRepo;
@@ -152,16 +175,20 @@ void main() {
     late _ControllableStreamsGateway gateway;
     late IAchievementChecker achievementChecker;
 
-    ChatViewModel createViewModel(InMemoryMessageRepo repo) {
+    ChatViewModel createViewModel(
+      InMemoryMessageRepo repo, {
+      InMemoryConversationRepo? conversationOverride,
+    }) {
+      final conversations = conversationOverride ?? conversationRepo;
       return ChatViewModel(
         agentRepo: agentRepo,
-        conversationRepo: conversationRepo,
+        conversationRepo: conversations,
         messageRepo: repo,
         instanceRepo: instanceRepo,
         gatewayClient: gateway,
         sendMessageUseCase: SendMessageUseCase(
           messageRepo: repo,
-          conversationRepo: conversationRepo,
+          conversationRepo: conversations,
           instanceRepo: instanceRepo,
           gatewayClient: gateway,
         ),
@@ -172,7 +199,10 @@ void main() {
       );
     }
 
-    Future<ChatViewModel> setupAndInit(InMemoryMessageRepo repo) async {
+    Future<ChatViewModel> setupAndInit(
+      InMemoryMessageRepo repo, {
+      InMemoryConversationRepo? conversationOverride,
+    }) async {
       final agent = Agent(
         localId: 'local-1',
         remoteId: 'r-1',
@@ -191,7 +221,10 @@ void main() {
           isLocalNetwork: false,
         ),
       );
-      final vm = createViewModel(repo);
+      final vm = createViewModel(
+        repo,
+        conversationOverride: conversationOverride,
+      );
       await vm.init();
       return vm;
     }
@@ -456,6 +489,59 @@ void main() {
       );
       vm.dispose();
     });
+
+    test(
+      'rapid incoming messages coalesce preview update and message reload',
+      () async {
+        final countingMessages = _CountingGetByConversationRepo();
+        final countingConversations = _CountingConversationRepo();
+        final vm = await setupAndInit(
+          countingMessages,
+          conversationOverride: countingConversations,
+        );
+        final baselineLoads = countingMessages.getByConversationCallCount;
+
+        for (var i = 0; i < 3; i++) {
+          gateway.emitMessage(
+            'inst-1',
+            Message(
+              clientId: 'reply-$i',
+              serverId: null,
+              conversationId: '',
+              agentId: 'r-1',
+              role: MessageRole.agent,
+              content: '回复 $i',
+              type: MessageType.text,
+              status: MessageStatus.delivered,
+              logicalClock: i + 1,
+              timestamp: i + 1,
+            ),
+          );
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        final data = vm.state.messages as LoadData<List<Message>>;
+        expect(
+          data.value.map((m) => m.clientId),
+          containsAll(['reply-0', 'reply-1', 'reply-2']),
+        );
+        expect(
+          countingMessages.getByConversationCallCount - baselineLoads,
+          1,
+          reason: '同一事件循环内的多条入站消息应合并为一次全量 reload',
+        );
+        expect(
+          countingConversations.updateLastMessageCallCount,
+          1,
+          reason: 'conversation preview 只需要写最终最新一条消息',
+        );
+        final conversation = await countingConversations.getById(
+          Conversation.generateId('inst-1', 'local-1'),
+        );
+        expect(conversation!.lastMessageId, 'reply-2');
+        vm.dispose();
+      },
+    );
 
     test(
       'connected seed does NOT trigger redundant reloadMessages on cold start',

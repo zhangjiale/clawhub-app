@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 import 'package:claw_hub/features/agent_profile/widgets/profile_header.dart';
@@ -60,9 +61,12 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
     final theme = Theme.of(context);
 
     // US-021 v1.1: tombstoned agent 显示占位页（与 ChatRoom AC8 同模式）。
+    // Step 6: 直接读 vm.agent.isRemoved —— 不再依赖 state.isAgentRemoved
+    // 字段。看似绕过 ref.watch，但 _setAgent 调用会同步 bump
+    // state.contentRevision 触发本 build 重建，getter 拿到的是最新 _agent。
     // data 可空 —— init 中途失败时 detailLoadState 仍为 LoadInProgress /
     // LoadError，agentName=null，placeholder 仍渲染「已移除」核心信息。
-    if (state.isAgentRemoved) {
+    if (vm.agent.isTombstoned) {
       final data = switch (state.detailLoadState) {
         LoadData<AgentDetailData>(:final value) => value,
         _ => null,

@@ -2,11 +2,15 @@
 // 不渲染聊天界面，而是显示"已移除"占位页（统一使用 AgentRemovedPlaceholder
 // widget,与 AgentProfilePage / AgentConfigPage 一致 —— US-021 v1.2 迁移）。
 //
-// 用 stub 子类 override `agent` getter + 预置 state.isAgentRemoved，**不调用
-// vm.init()** —— init() 会订阅 MockGatewayClient 的流，而 overrideWith 无法
-// 注册 onDispose（StateNotifier debugIsMounted 限制），流订阅泄漏会导致
-// tearDownAll 挂起。guard 路径只读 session.isAgentRemoved 就早退，不会触发
-// 任何流/定时器，故 stub 无需 init。
+// Step 4 改造:tombstone 不再用 state.isAgentRemoved bool 字段，改读
+// vm.agent.isRemoved。stub 直接 override `agent` getter 返回预设 Agent
+// (含或不含 removedAt) —— ChatRoomPage 的 guard 直接读 agent.isRemoved
+// 触发占位页分支,无需再预置 state。
+//
+// 用 stub 子类 override `agent` getter，**不调用 vm.init()** —— init()
+// 会订阅 MockGatewayClient 的流，而 overrideWith 无法注册 onDispose
+// （StateNotifier debugIsMounted 限制），流订阅泄漏会导致 tearDownAll
+// 挂起。guard 路径只读 vm.agent.isRemoved 就早退，不会触发任何流/定时器。
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -25,11 +29,13 @@ class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
 const _key = (instanceId: 'inst-1', agentId: 'local-1');
 
-/// Stub ChatViewModel：override `agent` 返回预设值（供占位页 displayName），
-/// 并预置 state.isAgentRemoved 模拟 tombstone。不调 init()，无流订阅。
+/// Stub ChatViewModel：override `agent` 返回预设值（供占位页 displayName）
+/// 模拟 tombstone 状态。Step 4: 不再预置 state.isAgentRemoved —— UI 改读
+/// vm.agent.isRemoved,agent 自身的 removedAt 字段就是 tombstone 信号。
+/// 不调 init()，无流订阅。
 class _StubAgentVm extends ChatViewModel {
   final Agent? _stubAgent;
-  _StubAgentVm(this._stubAgent, {required bool isRemoved})
+  _StubAgentVm(this._stubAgent)
     : super(
         agentRepo: InMemoryAgentRepo(),
         conversationRepo: InMemoryConversationRepo(),
@@ -45,11 +51,7 @@ class _StubAgentVm extends ChatViewModel {
         instanceId: 'inst-1',
         agentId: 'local-1',
         achievementChecker: _MockAchievementChecker(),
-      ) {
-    // 预置响应式 tombstone 状态 —— 生产代码由 refreshAgent / _agent 写入点
-    // 同步；stub 不走 init，故直接设 state 模拟"已 tombstone"快照。
-    state = ChatSessionState(isAgentRemoved: isRemoved);
-  }
+      );
 
   @override
   Agent? get agent => _stubAgent;
@@ -67,7 +69,6 @@ void main() {
         themeColor: '#6c5ce7',
         removedAt: 1719200000000,
       ),
-      isRemoved: true,
     );
 
     await tester.pumpWidget(
@@ -107,7 +108,6 @@ void main() {
         themeColor: '#6c5ce7',
         // 无 removedAt —— active
       ),
-      isRemoved: false,
     );
 
     await tester.pumpWidget(

@@ -88,6 +88,18 @@ void main() {
     );
   }
 
+  group('ChatSessionState equality', () {
+    test('includes content revision (sole rebuild trigger after Step 4)', () {
+      // Step 4: tombstone 不再是独立 bool 字段，UI 改读 vm.agent.isRemoved。
+      // contentRevision 是唯一驱动 ref.watch rebuild 的"agent 变化"信号。
+      expect(
+        const ChatSessionState(contentRevision: 1),
+        isNot(const ChatSessionState(contentRevision: 2)),
+        reason: 'agent data changes must bump contentRevision to bypass dedup',
+      );
+    });
+  });
+
   group('ChatViewModel.watchById reactivity', () {
     test('init() subscribes to watchById (covers bug: local profile save '
         'must reflect immediately in chat room)', () async {
@@ -120,26 +132,30 @@ void main() {
         reason: 'watchById 应让 vm.agent 在保存后立刻反映新 quickCommands',
       );
       expect(vm.agent!.quickCommands.first.payload, '/status');
-      // ★ state.quickCommands 镜像必须同步,否则 ChatRoomPage.build()
-      //   不会 rebuild(Riverpod state.== dedup)。
+      // ★ state.contentRevision 必须递增,否则 ChatRoomPage.build()
+      //   不会 rebuild(Riverpod state.== dedup)。UI 实际读取 vm.agent。
+      // Step 2: 此时已经走完 init (revision=1) + updateFullProfile
+      // 触发一次 watchById 真实内容变更 (revision=2)。若 filter 失效，
+      // seed event 会让 init 阶段多 bump 一次，revision=3。
       expect(
-        vm.state.quickCommands.length,
-        1,
+        vm.state.contentRevision,
+        equals(2),
         reason:
-            'state.quickCommands must update so ChatRoomPage.build() re-runs',
+            'After init (1) + one real content change via updateFullProfile '
+            '(+1), revision must be exactly 2. If >2, the contentEquals '
+            'filter is letting the seed event through.',
       );
-      expect(vm.state.quickCommands.first.payload, '/status');
     });
 
     test(
-      'state.quickCommands changes when watchById emits new quickCommands '
+      'state.contentRevision changes when watchById emits non-identity agent fields '
       '(regression: Riverpod == dedup would otherwise suppress rebuild)',
       () async {
         await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
         final vm = createViewModel();
         await vm.init();
         final beforeState = vm.state;
-        expect(beforeState.quickCommands, isEmpty);
+        final beforeRevision = beforeState.contentRevision;
 
         await agentRepo.updateFullProfile(
           _agentId,
@@ -160,8 +176,11 @@ void main() {
           isFalse,
           reason: 'state must be a new instance so Riverpod notifies listeners',
         );
-        expect(vm.state.quickCommands.length, 1);
-        expect(vm.state.quickCommands.first.payload, '/x');
+        // Step 2: 断言精确化 —— 必须是 beforeRevision + 1（一次 bump），
+        // 而不是 greaterThan（多次 bump 也能过）。过滤后真实内容变更只
+        // 触发一次 _setAgent，revision 应恰好 +1。
+        expect(vm.state.contentRevision, equals(beforeRevision + 1));
+        expect(vm.agent!.quickCommands.first.payload, '/x');
       },
     );
 
@@ -176,6 +195,40 @@ void main() {
       await agentRepo.updateLocalProfile(_agentId, nickname: '小虾');
 
       expect(vm.agent!.nickname, '小虾');
+    });
+
+    test('seed event with identical content does NOT bump contentRevision '
+        '(Step 2: contentEquals filter suppresses no-op emits)', () async {
+      await agentRepo.syncFromGateway(_instanceId, [_activeAgent()]);
+
+      final vm = createViewModel();
+      await vm.init();
+
+      // init() 已经走完 _setAgent(getById) + watchById seed 两条路径。
+      // 若 filter 生效，revision 应该是 1（一次 _setAgent）。
+      // 若 filter 失效（旧逻辑），revision 会是 2（init + seed 各 bump 一次）。
+      final revisionAfterInit = vm.state.contentRevision;
+      expect(
+        revisionAfterInit,
+        equals(1),
+        reason:
+            'After init, only one _setAgent call should have fired. '
+            'If this is >1, the contentEquals filter on watchById is broken.',
+      );
+
+      // 手动 emit 一次内容完全相同的 agent（模拟 Drift watchSingleOrNull
+      // 在某些时序下重发 seed）。filter 应再次抑制。
+      await agentRepo.updateLocalProfile(_agentId, nickname: null);
+      // updateLocalProfile 即便参数相同也会 emit（仓库实现细节），关键是
+      // 我们的 filter 应确保相同内容不触发 _setAgent 链路。
+      expect(
+        vm.state.contentRevision,
+        equals(revisionAfterInit),
+        reason:
+            'A content-equal emit must be filtered out; contentRevision '
+            'must NOT bump (was: '
+            '$revisionAfterInit, now: ${vm.state.contentRevision})',
+      );
     });
 
     test('dispose() cancels agent subscription', () async {

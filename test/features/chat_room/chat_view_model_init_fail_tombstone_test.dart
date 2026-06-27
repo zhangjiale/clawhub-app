@@ -1,16 +1,18 @@
-// US-021 AC8 robustness: verify init failure path resets state.isAgentRemoved
-// to false, preventing stale tombstone state from prior sync from triggering
-// the AC8 placeholder after a failed init.
+// US-021 AC8 robustness: verify init failure path resets tombstone state,
+// preventing stale tombstone state from prior sync from triggering the
+// AC8 placeholder after a failed init.
+//
+// Step 4 改造:tombstone 不再用 state.isAgentRemoved bool 字段，改读
+// vm.agent.isRemoved。init 失败的 catch 块必须 _setAgent(null) 清掉缓存，
+// 否则 build() 拿到的 vm.agent 还是上轮 tombstoned agent → 错乱占位页。
 //
 // Failure scenario (from code review #4):
-//   1. init succeeds with tombstoned agent → isAgentRemoved = true
+//   1. init succeeds with tombstoned agent → vm.agent.isRemoved = true
 //   2. sync un-tombstones agent in DB
 //   3. subsequent init fails (transient DB error)
-//   4. catch block sets _agent = null but skips _syncAgentRemoved()
-//   5. AC8 placeholder renders for now-live agent → bug
-//
-// This test fixes the catch block to call _syncAgentRemoved() so step 4
-// is impossible.
+//   4. catch block 只 _setAgent(null) —— 关键回归点
+//   5. UI 重建后 vm.agent?.isRemoved ?? false = false，回退到 LoadError 而不是
+//      上轮 tombstone 占位页
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -76,7 +78,7 @@ void main() {
     );
   }
 
-  test('init failure resets isAgentRemoved to false even when prior '
+  test('init failure clears _agent cache even when prior '
       'tombstone state was true', () async {
     // Arrange: VM constructor pattern from chat_view_model.dart:start_chat
     await instanceRepo.save(
@@ -92,15 +94,10 @@ void main() {
 
     final vm = createViewModel();
 
-    // Force prior state.isAgentRemoved = true (simulate prior sync tombstone).
-    // 这是上轮 sync 把 agent 标记 tombstone 的快照残留 —— 测试在 init 失败
-    // 时 catch 块是否把此 stale true 重置回 false。
-    vm.state = vm.state.copyWith(isAgentRemoved: true);
-    expect(
-      vm.state.isAgentRemoved,
-      isTrue,
-      reason: 'sanity: 预设上轮 tombstone 状态成功',
-    );
+    // 强制 vm._agent = tombstoned agent（模拟上轮 sync 把 agent tombstone 后
+    // 留下的快照残留）。Step 4: 用 debugSetAgent 替代旧的 copyWith(isAgentRemoved:true)
+    vm.debugSetAgent(_tombstonedAgent());
+    expect(vm.agent?.isRemoved, isTrue, reason: 'sanity: 预设上轮 tombstone 状态成功');
 
     // 配置 next init() 调用 getById 时抛 transient DB error。
     when(
@@ -111,14 +108,13 @@ void main() {
     // 会抛异常，进入 catch 块。
     await vm.init();
 
-    // Assert: state.isAgentRemoved 必须重置为 false（不残留上轮 true）。
+    // Assert: catch 块 _setAgent(null) 必须清掉 _agent 缓存（不残留上轮 tombstone）。
     expect(
-      vm.state.isAgentRemoved,
-      isFalse,
+      vm.agent,
+      isNull,
       reason:
-          'init 失败时 catch 块必须调 _syncAgentRemoved() 重置 '
-          'isAgentRemoved，避免上轮 tombstone 状态残留导致 AC8 '
-          '占位页错乱',
+          'init 失败时 catch 块必须 _setAgent(null) 清掉 vm.agent 缓存，'
+          '避免上轮 tombstone 状态残留导致 AC8 占位页错乱',
     );
   });
 
@@ -137,11 +133,11 @@ void main() {
     final vm = createViewModel();
     await vm.init();
 
-    // Sanity: tombstone 状态已同步
+    // Sanity: tombstone 状态已同步 —— Step 4 改读 vm.agent.isRemoved
     expect(
-      vm.state.isAgentRemoved,
+      vm.agent?.isRemoved,
       isTrue,
-      reason: 'init 必须把 isRemoved agent 同步到 state.isAgentRemoved',
+      reason: 'init 必须把 isRemoved agent 同步到 vm._agent',
     );
 
     // Critical: 不应创建 dangling conversation 行

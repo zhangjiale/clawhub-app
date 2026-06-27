@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:claw_hub/core/acl/device_identity.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
+import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/replayable_connection_state.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
@@ -55,9 +57,22 @@ class FakeDeviceIdentityProvider implements IDeviceIdentityProvider {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers (specific to WsGatewayClient tests)
-// ---------------------------------------------------------------------------
+class FakeDeviceTokenStore implements IDeviceTokenStore {
+  final Map<String, String> values = {};
+
+  @override
+  Future<void> save(String instanceId, String deviceToken) async {
+    values[instanceId] = deviceToken;
+  }
+
+  @override
+  Future<String?> load(String instanceId) async => values[instanceId];
+
+  @override
+  Future<void> delete(String instanceId) async {
+    values.remove(instanceId);
+  }
+}
 
 /// A minimal [Instance] for testing.
 Instance testInstance({
@@ -72,11 +87,12 @@ Instance testInstance({
 /// for event injection. `connect()` is intentionally not awaited because it
 /// blocks on `manager.connect()`.
 Future<({WsGatewayClient client, ControllableWebSocket ws})>
-connectAndHandshake() async {
+connectAndHandshake({FakeDeviceTokenStore? deviceTokenStore}) async {
   final ws = ControllableWebSocket.ready();
   final client = WsGatewayClient(
     identityProvider: FakeDeviceIdentityProvider(),
     webSocketFactory: (_) => ws.channel,
+    deviceTokenStore: deviceTokenStore,
   );
 
   unawaited(client.connect(testInstance()));
@@ -445,9 +461,88 @@ void main() {
     );
   });
 
-  // ==========================================================================
-  // Stream access without connect
-  // ==========================================================================
+  group('fetchAgents quickCommands identity', () {
+    Future<List<String>> fetchQuickCommandIds({
+      String? commandId,
+      String agentRemoteId = 'remote-a',
+    }) async {
+      final (:client, :ws) = await connectAndHandshake();
+      final future = client.fetchAgents('test-instance');
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.last);
+      final idField = commandId == null ? '' : '"id":"$commandId",';
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId","ok":true,'
+        '"payload":{"agents":[{"id":"$agentRemoteId","name":"A",'
+        '"quickCommands":[{$idField"label":"状态","payload":"/status"}]}]}}',
+      );
+      final agents = await future;
+      await client.dispose();
+      return agents.single.quickCommands.map((c) => c.id).toList();
+    }
+
+    test('derives stable IDs when Gateway omits quickCommand id', () async {
+      final first = await fetchQuickCommandIds();
+      final second = await fetchQuickCommandIds();
+
+      expect(first, second);
+    });
+
+    test('preserves Gateway-provided quickCommand id', () async {
+      final ids = await fetchQuickCommandIds(commandId: 'server-cmd-1');
+
+      expect(ids, ['server-cmd-1']);
+    });
+
+    test('stable fallback IDs are scoped by remote agent id', () async {
+      final first = await fetchQuickCommandIds(agentRemoteId: 'remote-a');
+      final second = await fetchQuickCommandIds(agentRemoteId: 'remote-b');
+
+      expect(first.single, isNot(second.single));
+    });
+  });
+  group('device token lifecycle RPCs', () {
+    test('rotateDeviceToken saves token returned by Gateway', () async {
+      final store = FakeDeviceTokenStore();
+      final (:client, :ws) = await connectAndHandshake(deviceTokenStore: store);
+
+      final future = client.rotateDeviceToken('test-instance');
+      await pumpMicrotasks();
+      final req = ws.sentFrames.last;
+      final decoded = jsonDecode(req) as Map<String, dynamic>;
+      expect(decoded['method'], Methods.deviceTokenRotate);
+      final reqId = decoded['id'] as String;
+
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId","ok":true,'
+        '"payload":{"deviceToken":"dt-rotated"}}',
+      );
+      await future;
+
+      expect(store.values['test-instance'], 'dt-rotated');
+      await client.dispose();
+    });
+
+    test('revokeDeviceToken deletes token after successful revoke', () async {
+      final store = FakeDeviceTokenStore()..values['test-instance'] = 'dt-old';
+      final (:client, :ws) = await connectAndHandshake(deviceTokenStore: store);
+
+      final future = client.revokeDeviceToken('test-instance');
+      await pumpMicrotasks();
+      final req = ws.sentFrames.last;
+      final decoded = jsonDecode(req) as Map<String, dynamic>;
+      expect(decoded['method'], Methods.deviceTokenRevoke);
+      final reqId = decoded['id'] as String;
+
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId","ok":true,"payload":{}}',
+      );
+      await future;
+
+      expect(store.values.containsKey('test-instance'), isFalse);
+      await client.dispose();
+    });
+  });
   group('Stream access without connect', () {
     test('connectionStateStream works before connect', () async {
       final client = WsGatewayClient(

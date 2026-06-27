@@ -97,6 +97,42 @@ void main() {
         isFalse,
       );
     });
+
+    // Bug 3 修复回归测试：reconnecting → offline（即短暂恢复失败后放弃，
+    // reconnectExhausted 终态）必须视为掉线推送。原 gate 漏掉此路径，
+    // 用户收不到"连接真挂了"通知。
+    test('isOnlineDrop: reconnecting -> offline IS a drop '
+        '(reconnect exhausted after transient recovery)', () {
+      // 前置: 短暂恢复失败 → reconnecting → reconnectExhausted (=offline)
+      // 走完后，coordinator 的 _lastConnState 已记录 reconnecting，
+      // 第二次转换的 isOnlineDrop 必须为 true。
+      expect(
+        ConnectionChangeEvent(
+          instanceId: 'i',
+          instanceName: 'n',
+          fromState: NotificationConnectionState.reconnecting,
+          toState: NotificationConnectionState.offline,
+        ).isOnlineDrop,
+        isTrue,
+        reason:
+            '短暂恢复失败后的终态掉线必须推送（原 gate fromState.isOnline '
+            '会漏掉这条路径）',
+      );
+    });
+
+    test('isOnlineDrop: offline -> online is NOT a drop '
+        '(reconnect success should not re-fire drop)', () {
+      // 边界: 用户已收到掉线通知，后续恢复不应再发掉线通知。
+      expect(
+        ConnectionChangeEvent(
+          instanceId: 'i',
+          instanceName: 'n',
+          fromState: NotificationConnectionState.offline,
+          toState: NotificationConnectionState.online,
+        ).isOnlineDrop,
+        isFalse,
+      );
+    });
   });
 
   group('NotificationConnectionState', () {

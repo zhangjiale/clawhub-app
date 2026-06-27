@@ -768,7 +768,8 @@ void main() {
     });
 
     // ============================================================
-    // US-021 v1.1: AgentProfileState.isAgentRemoved + write guards
+    // US-021 v1.1: AgentProfileState tombstone via vm.agent + write guards
+    // Step 6 改造: 不再依赖 state.isAgentRemoved 字段,改读 vm.agent.isRemoved。
     // ============================================================
     group('US-021 tombstone reactive state', () {
       final tombAgent = Agent(
@@ -780,19 +781,19 @@ void main() {
         removedAt: 1719200000000,
       );
 
-      test('isAgentRemoved defaults to false on fresh VM', () {
+      test('vm.agent defaults to null on fresh VM', () {
         final vm = createVM();
         expect(
-          vm.state.isAgentRemoved,
+          vm.agent?.isRemoved ?? false,
           isFalse,
           reason:
-              '新建 VM 时 isAgentRemoved 必须为 false，'
+              '新建 VM 时 vm.agent 必须为 null（init 尚未跑），'
               '避免初始化前误显示 tombstone 占位页',
         );
       });
 
       test(
-        'refresh() syncs isAgentRemoved=true when agent is tombstoned',
+        'refresh() syncs vm.agent.isRemoved=true when agent is tombstoned',
         () async {
           when(
             () => agentRepo.getById('local-1'),
@@ -808,11 +809,11 @@ void main() {
           await vm.init();
 
           expect(
-            vm.state.isAgentRemoved,
+            vm.agent?.isRemoved ?? false,
             isTrue,
             reason:
                 'init 时若 agent 已是 tombstone 状态，'
-                'isAgentRemoved 必须同步为 true，驱动占位页',
+                'vm.agent.isRemoved 必须同步为 true，驱动占位页',
           );
         },
       );
@@ -831,7 +832,7 @@ void main() {
 
         final vm = createVM();
         await vm.init();
-        expect(vm.state.isAgentRemoved, isTrue); // sanity
+        expect(vm.agent?.isRemoved ?? false, isTrue); // sanity
 
         await vm.saveProfile(nickname: 'ignored');
 
@@ -871,7 +872,7 @@ void main() {
 
         final vm = createVM();
         await vm.init();
-        expect(vm.state.isAgentRemoved, isTrue); // sanity
+        expect(vm.agent?.isRemoved ?? false, isTrue); // sanity
 
         await vm.updateAvatar(Uint8List.fromList([1, 2, 3]));
 
@@ -901,7 +902,7 @@ void main() {
 
         final vm = createVM();
         await vm.init();
-        expect(vm.state.isAgentRemoved, isTrue); // sanity
+        expect(vm.agent?.isRemoved ?? false, isTrue); // sanity
 
         await vm.removeAvatar();
 
@@ -913,7 +914,7 @@ void main() {
       });
 
       test('refreshAgent reacts to backend sync: '
-          'tombstoned-then-revived updates isAgentRemoved', () async {
+          'tombstoned-then-revived updates vm.agent.isRemoved', () async {
         // init 时是 alive agent
         when(
           () => agentRepo.getById('local-1'),
@@ -927,7 +928,7 @@ void main() {
 
         final vm = createVM();
         await vm.init();
-        expect(vm.state.isAgentRemoved, isFalse);
+        expect(vm.agent?.isRemoved ?? false, isFalse);
 
         // 后台 sync 把 agent tombstone 了
         when(
@@ -935,7 +936,7 @@ void main() {
         ).thenAnswer((_) async => tombAgent);
         await vm.refreshAgent();
         expect(
-          vm.state.isAgentRemoved,
+          vm.agent?.isRemoved ?? false,
           isTrue,
           reason: 'refreshAgent 应在 sync 后捕获到 tombstone 状态',
         );
@@ -946,17 +947,56 @@ void main() {
         ).thenAnswer((_) async => testAgent);
         await vm.refreshAgent();
         expect(
-          vm.state.isAgentRemoved,
+          vm.agent?.isRemoved ?? false,
           isFalse,
           reason: '复活后 refreshAgent 必须清除 tombstone 标记',
         );
       });
 
+      test(
+        'refreshAgent updates loaded detailLoadState agent without reloading stats',
+        () async {
+          final updatedAgent = testAgent.copyWith(nickname: '同步后的昵称');
+          when(
+            () => agentRepo.getById('local-1'),
+          ).thenAnswer((_) async => testAgent);
+          when(
+            () => instanceRepo.getById('inst-1'),
+          ).thenAnswer((_) async => null);
+          when(
+            () => messageRepo.getMessageCount('local-1'),
+          ).thenAnswer((_) async => 7);
+
+          final vm = createVM();
+          await vm.init();
+          final before =
+              (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+          expect(before.agent.nickname, isNull);
+          expect(before.messageCount, 7);
+
+          when(
+            () => agentRepo.getById('local-1'),
+          ).thenAnswer((_) async => updatedAgent);
+          await vm.refreshAgent();
+
+          expect(vm.agent?.nickname, '同步后的昵称');
+          final after =
+              (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+          expect(after.agent.nickname, '同步后的昵称');
+          expect(
+            after.messageCount,
+            7,
+            reason: 'refreshAgent 只替换 agent，不重跑统计查询',
+          );
+          verify(() => messageRepo.getMessageCount('local-1')).called(1);
+        },
+      );
+
       test('saveProfile blocked when _agent is null (init failed/not loaded) '
           'surfaces saveError for UX feedback', () async {
         final vm = createVM();
         // 不调 init，_agent 为 null
-        expect(vm.state.isAgentRemoved, isFalse);
+        expect(vm.agent?.isRemoved ?? false, isFalse);
 
         await vm.saveProfile(nickname: 'ignored');
 
@@ -1017,38 +1057,35 @@ void main() {
         );
       });
 
-      test(
-        'refresh() resets isAgentRemoved=false on error so LoadError shows',
-        () async {
-          // init 时 agent 是 tombstoned，isAgentRemoved=true
-          when(
-            () => agentRepo.getById('local-1'),
-          ).thenAnswer((_) async => tombAgent);
-          when(
-            () => instanceRepo.getById('inst-1'),
-          ).thenAnswer((_) async => null);
-          when(
-            () => messageRepo.getMessageCount('local-1'),
-          ).thenAnswer((_) async => 0);
+      test('refresh() clears vm.agent on error so LoadError shows', () async {
+        // init 时 agent 是 tombstoned，vm.agent.isRemoved=true
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => tombAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
 
-          final vm = createVM();
-          await vm.init();
-          expect(vm.state.isAgentRemoved, isTrue);
+        final vm = createVM();
+        await vm.init();
+        expect(vm.agent?.isRemoved ?? false, isTrue);
 
-          // refresh 时 getById 抛异常
-          when(
-            () => agentRepo.getById('local-1'),
-          ).thenThrow(Exception('DB error'));
-          await vm.refresh();
+        // refresh 时 getById 抛异常
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenThrow(Exception('DB error'));
+        await vm.refresh();
 
-          expect(vm.state.detailLoadState, isA<LoadError>());
-          expect(
-            vm.state.isAgentRemoved,
-            isFalse,
-            reason: '详情加载失败时不应继续显示 tombstone 占位页',
-          );
-        },
-      );
+        expect(vm.state.detailLoadState, isA<LoadError>());
+        expect(
+          vm.agent?.isRemoved ?? false,
+          isFalse,
+          reason: '详情加载失败时不应继续显示 tombstone 占位页',
+        );
+      });
     });
   });
 }

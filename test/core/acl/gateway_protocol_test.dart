@@ -4,6 +4,13 @@ import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('device token lifecycle method constants', () {
+    test('defines rotate and revoke method names from spec §4.11', () {
+      expect(Methods.deviceTokenRotate, 'device.token.rotate');
+      expect(Methods.deviceTokenRevoke, 'device.token.revoke');
+    });
+  });
+
   group('buildChatSendRequest', () {
     test('should include idempotencyKey in the request params', () {
       const id = 'req-001';

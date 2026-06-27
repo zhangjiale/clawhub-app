@@ -85,8 +85,9 @@ class Methods {
   static const String sessionsList = 'sessions.list';
   static const String sessionsResolve = 'sessions.resolve';
   static const String sessionsCreate = 'sessions.create';
-  static const String sessionsSend = 'sessions.send';
   static const String health = 'health';
+  static const String deviceTokenRotate = 'device.token.rotate';
+  static const String deviceTokenRevoke = 'device.token.revoke';
 }
 
 /// 协议定义的事件名（对齐 OpenClaw Gateway v2026.6.6 实测）。

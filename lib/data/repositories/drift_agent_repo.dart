@@ -82,10 +82,10 @@ class DriftAgentRepo implements IAgentRepo {
   Stream<Agent?> watchById(String localId) {
     // Drift .watchSingleOrNull()：订阅时立即 emit 当前行（如果存在），后续每次
     // 该行 commit 触发 emit。不存在的 localId 立即 emit null 并保持 open。
-    return _database.getAgentByLocalId(localId).watchSingleOrNull().map((row) {
-      if (row == null) return null;
-      return AgentMapper.toDomain(row);
-    });
+    return _database
+        .getAgentByLocalId(localId)
+        .watchSingleOrNull()
+        .map((row) => row == null ? null : AgentMapper.toDomain(row));
   }
 
   @override

@@ -55,8 +55,10 @@ const _maxSummaryChars = 50;
 /// 3. 命中 DND 时段 ([isInDnd]) → [DndSuppressedDecision]
 /// 4. 否则 → [ShowDecision] (摘要已截断 ≤50 字)
 ///
-/// 连接变化事件额外规则：仅 [ConnectionChangeEvent.isOnlineDrop] (在线→非在线)
-/// 视为可通知；重连成功等转换视为噪音丢弃，避免弱网抖动刷屏。
+/// 连接变化事件额外规则：仅 [ConnectionChangeEvent.isOnlineDrop] (任意非离线
+/// 状态 → offline，含 reconnecting→offline 的重连耗尽终态) 视为可通知；其他
+/// 转换（重连成功、短暂的 online↔reconnecting 抖动）视为噪音丢弃，避免
+/// 弱网刷屏。
 class EvaluateNotificationUseCase {
   const EvaluateNotificationUseCase();
 

@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
@@ -338,9 +339,10 @@ class _AgentConfigPageState extends ConsumerState<AgentConfigPage> {
     };
 
     // US-021 v1.1: tombstoned agent 不进入配置表单。
+    // Step 6: 直接读 vm.agent.isRemoved (mirror ChatRoomPage Step 3 模式)。
     // ConfigPage 没有 source 字段（始终从 Profile 上下文进入），source 传 null。
     // data 可空 —— init 中途失败时仍渲染「已移除」核心信息。
-    if (state.isAgentRemoved) {
+    if (vm.agent.isTombstoned) {
       return AgentRemovedPlaceholder(
         agentName: detail?.agent.displayName,
         source: null,

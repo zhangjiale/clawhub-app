@@ -128,13 +128,20 @@ class ConnectionChangeEvent extends NotificationEvent {
     required this.toState,
   });
 
-  /// 是否为"掉线"——从在线变为离线终态，是用户最关心的连接变化通知场景。
+  /// 是否为"掉线"——任意非离线状态变为离线终态，是用户最关心的连接变化
+  /// 通知场景。
   ///
-  /// 注意：中间状态 [NotificationConnectionState.reconnecting]（如 WebSocket
-  /// 断开后进入的 recovering/connecting/authenticating）不计入掉线，避免
-  /// 弱网抖动时每次短暂重连都弹出"虾连接已断开"通知。
+  /// 覆盖三种掉线路径：
+  /// - [NotificationConnectionState.online] → offline（直接掉线）
+  /// - [NotificationConnectionState.reconnecting] → offline（短暂恢复后
+  ///   重连预算耗尽进入 `reconnectExhausted` 终态 —— 此时 user 已经经历
+  ///   "一会儿能连一会儿不能连"的挣扎，最终连接真挂了，必须通知）
+  ///
+  /// 中间过渡（online → reconnecting、reconnecting → online、offline → online）
+  /// 不计入掉线，避免弱网抖动刷屏；同状态不发事件（coordinator 层过滤）。
   bool get isOnlineDrop =>
-      fromState.isOnline && toState == NotificationConnectionState.offline;
+      fromState != NotificationConnectionState.offline &&
+      toState == NotificationConnectionState.offline;
 
   @override
   bool operator ==(Object other) =>

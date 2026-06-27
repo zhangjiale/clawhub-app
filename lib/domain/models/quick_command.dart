@@ -34,6 +34,22 @@ class QuickCommand {
     return a.sortOrder.compareTo(b.sortOrder);
   }
 
+  /// Content-aware equality — true iff two QuickCommands agree on every
+  /// user-visible field, not just [id].
+  ///
+  /// 与 [operator ==] (id-only, 用于 Set/Map 按 id 去重) 是两层语义：
+  /// [Agent.contentEquals] 通过本方法检测同 id 内部的 label / payload /
+  /// sortOrder 变更——这些变更 [operator ==] 会漏报，会导致 ChatRoom 的
+  /// QuickCommandBar 不 rebuild。详见 MEMORY `model-equals-identity-blindspot`。
+  bool contentEquals(QuickCommand other) {
+    if (identical(this, other)) return true;
+    return id == other.id &&
+        agentId == other.agentId &&
+        label == other.label &&
+        payload == other.payload &&
+        sortOrder == other.sortOrder;
+  }
+
   QuickCommand copyWith({
     String? id,
     String? agentId,

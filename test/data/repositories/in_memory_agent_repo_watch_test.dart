@@ -192,5 +192,197 @@ void main() {
       expect(sub1.last.nickname, 'test');
       expect(sub2.last.nickname, 'test');
     });
+
+    // ========================================================================
+    // Bug #5 regression — bulk delete triggers watchById null emission
+    // ========================================================================
+    //
+    // The Drift implementation gets deletion notifications automatically
+    // (the SQL DELETE statement changes the watched row).  In-memory
+    // implementations must synthesize a change event per removed localId
+    // so watchById subscribers observe the deletion (post-delete lookup
+    // of _store[localId] yields null).
+    //
+    // Without this fix, dev / test paths silently leak "ghost" agents in
+    // subscribers until the next syncFromGateway.
+
+    test(
+      'deleteByInstanceId triggers watchById null emission for each removed agent',
+      () async {
+        // Seed two agents on the same instance.
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1'),
+          _agent(localId: 'local-2', remoteId: 'r-2'),
+        ]);
+
+        final emittedLocal1 = <Agent?>[];
+        final emittedLocal2 = <Agent?>[];
+        final sub1 = repo.watchById('local-1').listen(emittedLocal1.add);
+        final sub2 = repo.watchById('local-2').listen(emittedLocal2.add);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        await repo.deleteByInstanceId('inst-1');
+
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await sub1.cancel();
+        await sub2.cancel();
+
+        // Each subscriber must observe the deletion: seed yields the
+        // current agent, the post-delete marker re-fires the stream and
+        // .map(_ => _store[localId]) yields null.
+        expect(
+          emittedLocal1.last,
+          isNull,
+          reason:
+              'watchById must emit null after deleteByInstanceId — '
+              'the contract guarantees nonexistent localIds emit null.',
+        );
+        expect(
+          emittedLocal2.last,
+          isNull,
+          reason:
+              'Bulk delete must notify every removed agent\'s subscriber, '
+              'not just the first one.',
+        );
+        // Sanity: each subscriber saw at least one non-null seed before
+        // the null (rules out a test that only sees the seed null).
+        expect(
+          emittedLocal1.contains(null),
+          isTrue,
+          reason: 'at least one null emission expected',
+        );
+        expect(
+          emittedLocal1.where((a) => a != null).length,
+          greaterThanOrEqualTo(1),
+        );
+        expect(
+          emittedLocal2.where((a) => a != null).length,
+          greaterThanOrEqualTo(1),
+        );
+      },
+    );
+
+    test(
+      'deleteByInstanceId on unrelated instance does NOT trigger watchById emit',
+      () async {
+        // Negative case: deleting other instances' agents must not falsely
+        // fire null for unrelated subscribers. Guards against a
+        // well-meaning "emit on any delete" overcorrection.
+        await repo.syncFromGateway('inst-1', [_agent(localId: 'local-1')]);
+        await repo.syncFromGateway('inst-2', [
+          _agent(localId: 'local-2', remoteId: 'r-2', instanceId: 'inst-2'),
+        ]);
+
+        final emitted = <Agent?>[];
+        final sub = repo.watchById('local-1').listen(emitted.add);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        await repo.deleteByInstanceId('inst-2');
+
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await sub.cancel();
+
+        // local-1 should still be the last emit (post-seed) — no null
+        // arrived from the unrelated inst-2 delete.
+        expect(emitted.last, isNotNull);
+        expect(emitted.last!.localId, 'local-1');
+      },
+    );
+
+    test(
+      'syncFromGateway tombstones local agents missing from remote list',
+      () async {
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1'),
+          _agent(localId: 'local-2', remoteId: 'r-2'),
+        ]);
+
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1', name: '产品虾 v2'),
+        ]);
+
+        final removed = await repo.getById('local-2');
+        expect(removed, isNotNull);
+        expect(removed!.isRemoved, isTrue);
+        expect(
+          (await repo.getByInstanceId('inst-1')).map((a) => a.localId),
+          ['local-1'],
+          reason: '默认列表应过滤 tombstoned agent',
+        );
+        expect(
+          (await repo.getAllByInstanceId('inst-1')).map((a) => a.localId),
+          contains('local-2'),
+          reason: 'getAllByInstanceId 按契约不过滤 tombstoned agent',
+        );
+      },
+    );
+
+    test(
+      'syncFromGateway revives tombstoned agent when remote reappears',
+      () async {
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1'),
+          _agent(localId: 'local-2', remoteId: 'r-2'),
+        ]);
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1'),
+        ]);
+        expect((await repo.getById('local-2'))!.isRemoved, isTrue);
+
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1'),
+          _agent(localId: 'remote-local-ignored', remoteId: 'r-2', name: '复活虾'),
+        ]);
+
+        final revived = await repo.findByCompositeKey('inst-1', 'r-2');
+        expect(revived, isNotNull);
+        expect(revived!.localId, 'local-2', reason: '复活必须保留本地 localId 与历史消息关联');
+        expect(revived.isRemoved, isFalse);
+        expect(revived.name, '复活虾');
+      },
+    );
+
+    test(
+      'syncFromGateway with empty remote list tombstones all active agents',
+      () async {
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1'),
+          _agent(localId: 'local-2', remoteId: 'r-2'),
+        ]);
+
+        await repo.syncFromGateway('inst-1', const []);
+
+        expect(await repo.getByInstanceId('inst-1'), isEmpty);
+        final all = await repo.getAllByInstanceId('inst-1');
+        expect(all, hasLength(2));
+        expect(all.every((a) => a.isRemoved), isTrue);
+      },
+    );
+
+    test(
+      'syncFromGateway tombstone and revive emits watchById updates',
+      () async {
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'local-1', remoteId: 'r-1'),
+        ]);
+        final emitted = <Agent?>[];
+        final sub = repo.watchById('local-1').skip(1).listen(emitted.add);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        await repo.syncFromGateway('inst-1', const []);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await repo.syncFromGateway('inst-1', [
+          _agent(localId: 'ignored', remoteId: 'r-1'),
+        ]);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await sub.cancel();
+
+        expect(emitted.length, greaterThanOrEqualTo(2));
+        expect(emitted.any((a) => a != null && a.isRemoved), isTrue);
+        expect(emitted.last, isNotNull);
+        expect(emitted.last!.isRemoved, isFalse);
+        expect(emitted.last!.localId, 'local-1');
+      },
+    );
   });
 }
