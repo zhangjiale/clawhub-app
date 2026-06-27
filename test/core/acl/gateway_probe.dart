@@ -33,16 +33,20 @@ void _verify(String item, bool condition, String detail) {
 void main(List<String> args) async {
   if (args.length < 2) {
     stderr.writeln(
-      '用法: dart run test/core/acl/gateway_probe.dart <ws_url> <token>',
+      '用法: dart run test/core/acl/gateway_probe.dart <ws_url> <token> [--agents-only]',
     );
     stderr.writeln(
       '示例: dart run test/core/acl/gateway_probe.dart ws://192.168.1.100:18789 my-token',
+    );
+    stderr.writeln(
+      '      --agents-only  : 只验证 agents.list 后退出（跳过 chat.send 验证）',
     );
     exit(1);
   }
 
   final rawUrl = args[0];
   final token = args[1];
+  final agentsOnly = args.length >= 3 && args[2] == '--agents-only';
   final uri = Uri.parse(rawUrl).replace(
     queryParameters: {...Uri.parse(rawUrl).queryParameters, 'token': token},
   );
@@ -295,13 +299,30 @@ void main(List<String> args) async {
       '  - id: $agentId${name != null ? '  name: $name' : ''}'
       '${model != null ? '  model: ${model['primary']}' : ''}',
     );
+    // ── 诊断模式：dump 完整原始 JSON，验证 bio 字段名 ──
+    print('    raw: ${jsonEncode(agent)}');
     firstAgentId ??= agentId;
   }
+
+  // 诊断模式：dump agents.list 响应 payload 的顶层 keys（确认 bio 在哪个嵌套层）
+  final payloadKeys = (agentsResponse['payload'] as Map<String, dynamic>? ?? {})
+      .keys
+      .toList();
+  print('agents.list payload top-level keys: $payloadKeys');
 
   if (firstAgentId == null) {
     stderr.writeln('ERROR: No agents available on this Gateway');
     await ws.close();
     exit(1);
+  }
+
+  if (agentsOnly) {
+    print('');
+    print('═══════════════════════════════════════════════════════');
+    print('  --agents-only: 跳过 chat.send 验证');
+    print('═══════════════════════════════════════════════════════');
+    await ws.close();
+    exit(0);
   }
 
   // ── 2. 发送 chat.send 请求 ──────────────────────────────
