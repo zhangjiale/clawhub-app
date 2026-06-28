@@ -199,6 +199,10 @@ class _FakeGatewayClient implements IGatewayClient {
       const Stream<StreamingEvent>.empty();
 
   @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+      const Stream<LargePayloadNotice>.empty();
+
+  @override
   Future<void> dispose() async {
     for (final ctrl in _stateCtrls.values) {
       await ctrl.close();
@@ -304,19 +308,26 @@ void main() {
           reason: 'First save should trigger connect',
         );
 
+        // Force a reconnect via delete+save cycle. The original test expected
+        // a plain second onInstanceSaved() to reconnect, but onInstanceSaved
+        // short-circuits on existing connection (orchestrator:171). The
+        // delete+save cycle exercises the no-leak invariant by tearing down
+        // the connection before reconnecting — verifying _connecting set is
+        // properly emptied by _disconnect and the next connect doesn't
+        // double-add.
         final edited = instance.copyWith(
           name: 'Test Updated',
           healthStatus: HealthStatus.online,
         );
         await instanceRepo.save(edited);
-
+        await orchestrator.onInstanceDeleted(instance.id);
         await orchestrator.onInstanceSaved(edited);
         await Future<void>.delayed(const Duration(milliseconds: 50));
 
         expect(
           gatewayClient.connectCounts['inst-1'],
           2,
-          reason: 'Second save should trigger reconnect (no _connecting leak)',
+          reason: 'Reconnect after disconnect must fire a second connect',
         );
       },
     );
@@ -437,9 +448,15 @@ void main() {
         reason: 'First sync should succeed',
       );
 
-      // Second onInstanceSaved → connect → connected → syncAgents SHOULD
-      // also succeed because the finally block in _syncAgentsForInstance
-      // released _syncingAgents for this instance.
+      // Force a re-sync by disconnecting then saving again. This exercises
+      // the lock-release invariant: after the first sync's finally block
+      // released _syncingAgents, the second sync (triggered by the reconnect's
+      // connected event) must be able to acquire it.
+      //
+      // Note: a plain second onInstanceSaved() would short-circuit because
+      // the connection already exists (orchestrator:171). The delete+save
+      // cycle forces a fresh connection and a new syncAgents call.
+      await orch.onInstanceDeleted(instance.id);
       await orch.onInstanceSaved(instance);
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
@@ -1696,6 +1713,10 @@ class _BlockingFetchGateway implements IGatewayClient {
   Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
       const Stream<StreamingEvent>.empty();
 
+  @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+      const Stream<LargePayloadNotice>.empty();
+
   /// Helper for tests: emit an extra connected event on the instance's stream.
   void addConnectedEvent(String instanceId) {
     final ctrl = _stateCtrls[instanceId];
@@ -1811,6 +1832,10 @@ class _FailsThenSucceedsGateway implements IGatewayClient {
   @override
   Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
       const Stream<StreamingEvent>.empty();
+
+  @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+      const Stream<LargePayloadNotice>.empty();
 
   void addConnectedEvent(String instanceId) {
     final ctrl = _stateCtrls[instanceId];
@@ -1928,6 +1953,9 @@ class _CyclicBlockGateway implements IGatewayClient {
   @override
   Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
       const Stream<StreamingEvent>.empty();
+  @override
+  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+      const Stream<LargePayloadNotice>.empty();
   @override
   Future<void> dispose() async {
     for (final c in _stateCtrls.values) {

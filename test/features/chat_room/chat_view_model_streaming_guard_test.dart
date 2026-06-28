@@ -554,16 +554,18 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         // _init() 自身调用 _loadMessages() 两次（初始快照 + 历史拉取后）,
-        // 故基线为 2。connected seed 必须被抑制 —— 否则会在此多出第 3 次
-        // getByConversation（即本次回归要锁住的冗余查询）。
+        // 加 N+1 修复后的历史预取（line 635），故基线为 3。connected seed
+        // 必须被抑制 —— 否则会在此多出第 4 次 getByConversation
+        // （即本次回归要锁住的冗余查询）。
         expect(
           countingRepo.getByConversationCallCount,
-          2,
+          3,
           reason:
               'connected seed must not trigger a redundant reloadMessages — '
               '_init() already loaded the latest snapshot twice (initial + '
-              'post-history). A 3rd call means the synthetic seed slipped '
-              'through and fired reloadMessages() on cold start.',
+              'post-history) plus one history prefetch (N+1 fix). A 4th call '
+              'means the synthetic seed slipped through and fired '
+              'reloadMessages() on cold start.',
         );
 
         // 真实 connecting→connected 转换仍照常重载（拾取 outbox 冲刷）。
@@ -577,7 +579,7 @@ void main() {
 
         expect(
           countingRepo.getByConversationCallCount,
-          3,
+          4,
           reason:
               'real connecting→connected transition must still reload to pick '
               'up OutboxProcessor PENDING→SENT flushes.',

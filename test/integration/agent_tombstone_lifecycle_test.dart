@@ -413,4 +413,7 @@ class _SilentLogger implements ILogger {
 class _NoopAchievementChecker implements IAchievementChecker {
   @override
   void check(String agentId) {}
+
+  @override
+  Stream<String> get updates => const Stream<String>.empty();
 }
