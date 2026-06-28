@@ -67,6 +67,7 @@ dev_dependencies:
   json_serializable: ^6.9.4
   riverpod_generator: ^2.6.3
 
+  convert: any
 flutter:
   uses-material-design: true
 

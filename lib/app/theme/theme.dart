@@ -202,7 +202,7 @@ extension ColorExtension on Color {
 
   /// Output 6-digit uppercase hex string (e.g. #4F83FF).
   String toHex() {
-    final intValue = value;
+    final intValue = toARGB32();
     final r = (intValue >> 16) & 0xFF;
     final g = (intValue >> 8) & 0xFF;
     final b = intValue & 0xFF;

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
-import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/usecases/sync_agents.dart';
 import 'package:claw_hub/features/agent_list/providers/agent_providers.dart';

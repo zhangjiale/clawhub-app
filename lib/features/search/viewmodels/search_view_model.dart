@@ -67,13 +67,10 @@ class SearchViewModel extends StateNotifier<SearchState> {
   static const _debounceMs = 300;
 
   SearchViewModel({
-    required IMessageRepo messageRepo,
-    required IAgentRepo agentRepo,
-    required IConversationRepo conversationRepo,
-  }) : _messageRepo = messageRepo,
-       _agentRepo = agentRepo,
-       _conversationRepo = conversationRepo,
-       super(const SearchState());
+    required this._messageRepo,
+    required this._agentRepo,
+    required this._conversationRepo,
+  }) : super(const SearchState());
 
   // ---------------------------------------------------------------------------
   // Public API

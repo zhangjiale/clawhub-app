@@ -95,18 +95,14 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   final Duration _syncLoopCooldown;
 
   ConnectionOrchestrator({
-    required IGatewayClient gatewayClient,
-    required IInstanceRepo instanceRepo,
-    required IAgentRepo agentRepo,
+    required this._gatewayClient,
+    required this._instanceRepo,
+    required this._agentRepo,
     IConnectivity? connectivity,
     DateTime Function()? clock,
-    Duration syncLoopCooldown = const Duration(seconds: 1),
-  }) : _gatewayClient = gatewayClient,
-       _instanceRepo = instanceRepo,
-       _agentRepo = agentRepo,
-       _connectivity = connectivity ?? ConnectivityAdapter(),
-       _clock = clock ?? (() => DateTime.now()),
-       _syncLoopCooldown = syncLoopCooldown;
+    this._syncLoopCooldown = const Duration(seconds: 1),
+  }) : _connectivity = connectivity ?? ConnectivityAdapter(),
+       _clock = clock ?? (() => DateTime.now());
 
   // ---------------------------------------------------------------------------
   // 公开 API

@@ -192,9 +192,9 @@ Map<String, dynamic> buildConnectParams({
     'device': {
       'id': deviceId,
       if (config.devicePublicKey != null) 'publicKey': config.devicePublicKey,
-      if (signature != null) 'signature': signature,
-      if (signedAt != null) 'signedAt': signedAt,
-      if (nonce != null) 'nonce': nonce,
+      'signature': ?signature,
+      'signedAt': ?signedAt,
+      'nonce': ?nonce,
     },
     'auth': {'token': token},
     'locale': config.locale,

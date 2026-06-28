@@ -1,3 +1,5 @@
+// Debug CLI script — print() is the intended I/O channel, not a leak.
+// ignore_for_file: avoid_print
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -9,7 +11,7 @@ import 'package:ed25519_edwards/ed25519_edwards.dart' as ed25519;
 
 /// 连接诊断 — 测试编码格式 & 签名方式
 ///
-/// 用法: dart run test/debug_connection.dart <ws_url> <token>
+/// 用法: `dart run test/debug_connection.dart <ws_url> <token>`
 void main(List<String> args) async {
   if (args.length < 2) {
     stderr.writeln('用法: dart run test/debug_connection.dart <ws_url> <token>');

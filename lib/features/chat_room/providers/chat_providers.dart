@@ -52,7 +52,7 @@ final chatViewModelProvider =
       // outbox 计数已由 ChatViewModel 内部的 watchOutboxCount 订阅自动驱动，
       // 此处仅触发消息列表重载（反映冲刷后的最终 SENT 状态）。
       // 按 instanceId 隔离，仅本实例冲刷时触发，避免跨实例广播风暴。
-      ref.listen(outboxFlushTickerProvider(params.instanceId), (_, __) {
+      ref.listen(outboxFlushTickerProvider(params.instanceId), (_, _) {
         vm.reloadMessages();
       });
 
@@ -61,7 +61,7 @@ final chatViewModelProvider =
       // 定时器/listener，销毁会中断进行中的流式传输。reloadMessages 内部的
       // isStreaming 守卫保证流式期间跳过，流式结束后自然刷新。
       // 当前 tick 恒为 0（clearCacheActionProvider 尚未递增），此处为空操作。
-      ref.listen(cacheClearedTickProvider, (_, __) {
+      ref.listen(cacheClearedTickProvider, (_, _) {
         vm.reloadMessages();
       });
 

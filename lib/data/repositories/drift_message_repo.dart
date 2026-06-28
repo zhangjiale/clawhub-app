@@ -494,7 +494,7 @@ class DriftMessageRepo implements IMessageRepo {
     //
     // 与 batchInsertMessages (database.dart:325) 共用 900 变量守卫 —— 留余量
     // 给后续 FTS/SELECT 语句,也保持项目风格统一。
-    const _chunkSize = 900;
+    const chunkSize = 900;
     final deleteList = toDelete.toList();
 
     // 单事务批量删除 + FTS5 同步(分块):
@@ -503,12 +503,10 @@ class DriftMessageRepo implements IMessageRepo {
     //   2) messages 单条 IN-clause DELETE
     // 替代旧的 N × (SELECT rowid + DELETE + FTS5 sync) 循环。
     await _database.transaction(() async {
-      for (var i = 0; i < deleteList.length; i += _chunkSize) {
+      for (var i = 0; i < deleteList.length; i += chunkSize) {
         final chunk = deleteList.sublist(
           i,
-          i + _chunkSize > deleteList.length
-              ? deleteList.length
-              : i + _chunkSize,
+          i + chunkSize > deleteList.length ? deleteList.length : i + chunkSize,
         );
         final placeholders = List.filled(chunk.length, '?').join(', ');
         await _database.customStatement(

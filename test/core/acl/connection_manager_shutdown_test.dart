@@ -4,8 +4,6 @@ import 'package:claw_hub/core/acl/connection_manager.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mocktail/mocktail.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'test_helpers.dart';
 

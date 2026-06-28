@@ -311,24 +311,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   // ============================================================
 
   ChatViewModel({
-    required IAgentRepo agentRepo,
-    required IConversationRepo conversationRepo,
-    required IMessageRepo messageRepo,
-    required IInstanceRepo instanceRepo,
-    required IGatewayClient gatewayClient,
-    required SendMessageUseCase sendMessageUseCase,
-    required IAchievementChecker achievementChecker,
+    required this._agentRepo,
+    required this._conversationRepo,
+    required this._messageRepo,
+    required this._instanceRepo,
+    required this._gatewayClient,
+    required this._sendMessageUseCase,
+    required this._achievementChecker,
     required this.instanceId,
     required this.agentId,
     this.flushDelay = const Duration(milliseconds: 150),
-  }) : _agentRepo = agentRepo,
-       _conversationRepo = conversationRepo,
-       _messageRepo = messageRepo,
-       _instanceRepo = instanceRepo,
-       _gatewayClient = gatewayClient,
-       _sendMessageUseCase = sendMessageUseCase,
-       _achievementChecker = achievementChecker,
-       super(const ChatSessionState());
+  }) : super(const ChatSessionState());
 
   /// The loaded agent — 由 [AgentReactiveState] mixin 提供 (Finding #8 重构)。
   /// 写入走后调 `setAgent(...)`；null 转换与内容变更触发 [onAgentUpdated]。
@@ -519,9 +512,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               // v3 fallback); in that case we process the message rather
               // than silently dropping it.
               final agentRemoteId = activeAgent.remoteId;
-              if (agentRemoteId != null &&
-                  msg.agentId.isNotEmpty &&
-                  msg.agentId != agentRemoteId) {
+              if (msg.agentId.isNotEmpty && msg.agentId != agentRemoteId) {
                 return;
               }
 

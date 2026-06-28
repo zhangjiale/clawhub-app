@@ -33,7 +33,7 @@ class QuickCommandBar extends StatelessWidget {
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: XiaSpacing.s5),
           itemCount: commands.length,
-          separatorBuilder: (_, __) => const SizedBox(width: XiaSpacing.s2),
+          separatorBuilder: (_, _) => const SizedBox(width: XiaSpacing.s2),
           itemBuilder: (context, index) {
             final cmd = commands[index];
             return _QuickCmdPill(

@@ -106,8 +106,9 @@ class StatsGrid extends StatelessWidget {
   /// Message count with fallback — always available even when stats is null.
   String _messageCount() {
     if (stats != null) return _formatNumber(stats!.totalMessages);
-    if (fallbackMessageCount != null)
+    if (fallbackMessageCount != null) {
       return _formatNumber(fallbackMessageCount!);
+    }
     return '--';
   }
 }

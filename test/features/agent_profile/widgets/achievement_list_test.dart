@@ -12,7 +12,7 @@ void main() {
     }
 
     /// Create a standard set of 8 achievements matching the preset definitions.
-    List<Achievement> _allPresetAchievements() {
+    List<Achievement> allPresetAchievements() {
       return [
         const Achievement(
           id: 'first_dialog',
@@ -82,7 +82,7 @@ void main() {
     }
 
     testWidgets('renders all 8 achievements', (tester) async {
-      final achievements = _allPresetAchievements();
+      final achievements = allPresetAchievements();
       await tester.pumpWidget(buildList(achievements: achievements));
       // StaggeredEnterItem creates one-shot timers (maxDelay 200ms
       // + duration 350ms). pumpAndSettle drains them all.
@@ -99,7 +99,7 @@ void main() {
     testWidgets('shows unlocked status for unlocked achievements', (
       tester,
     ) async {
-      final achievements = _allPresetAchievements();
+      final achievements = allPresetAchievements();
       // Mark first_dialog as unlocked
       achievements[0] = achievements[0].copyWith(
         unlocked: true,

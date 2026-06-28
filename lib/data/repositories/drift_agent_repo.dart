@@ -13,8 +13,7 @@ class DriftAgentRepo implements IAgentRepo {
   final db.AppDatabase _database;
   final IAvatarStorageService? _avatarStorage;
 
-  DriftAgentRepo(this._database, {IAvatarStorageService? avatarStorage})
-    : _avatarStorage = avatarStorage;
+  DriftAgentRepo(this._database, {this._avatarStorage});
 
   @override
   Future<List<Agent>> getByInstanceId(String instanceId) async {
@@ -334,7 +333,7 @@ class DriftAgentRepo implements IAgentRepo {
         // iron-law-allow: Law8 -- 清理沙箱文件失败不影响主流程
         if (_avatarStorage != null) {
           try {
-            await _avatarStorage!.deleteAvatar(agent.localId!);
+            await _avatarStorage.deleteAvatar(agent.localId!);
           } catch (_) {
             // Best-effort: avatar file deletion must not block instance
             // deletion. The file may already be gone or on an unmounted

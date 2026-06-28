@@ -1,3 +1,5 @@
+// Debug CLI script — print() is the intended I/O channel, not a leak.
+// ignore_for_file: avoid_print
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -8,7 +10,7 @@ import 'package:ed25519_edwards/ed25519_edwards.dart' as ed25519;
 
 /// Phase 2: Gateway 协议探测 — 捕获原始帧验证 chat.* 生命周期
 ///
-/// 用法: dart run test/core/acl/gateway_probe.dart <ws_url> <token>
+/// 用法: `dart run test/core/acl/gateway_probe.dart <ws_url> <token>`
 ///
 /// 输出:
 ///   - 完整握手流程 (connect.challenge → connect → hello-ok)
@@ -80,7 +82,7 @@ void main(List<String> args) async {
   final events = <Map<String, dynamic>>[];
   final eventTimestamps = <String, DateTime>{};
 
-  Completer<Map<String, dynamic>> _newCompleter(String id) {
+  Completer<Map<String, dynamic>> newCompleter(String id) {
     final c = Completer<Map<String, dynamic>>();
     responseCompleters[id] = c;
     return c;
@@ -215,7 +217,7 @@ void main(List<String> args) async {
   // ── 等待 connect 响应 ──────────────────────────────────
   Map<String, dynamic> connectResponse;
   try {
-    connectResponse = await _newCompleter(
+    connectResponse = await newCompleter(
       'probe-connect',
     ).future.timeout(const Duration(seconds: 15));
   } catch (e) {
@@ -269,7 +271,7 @@ void main(List<String> args) async {
 
   Map<String, dynamic> agentsResponse;
   try {
-    agentsResponse = await _newCompleter(
+    agentsResponse = await newCompleter(
       'probe-agents',
     ).future.timeout(const Duration(seconds: 15));
   } catch (e) {

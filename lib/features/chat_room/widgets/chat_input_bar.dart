@@ -98,7 +98,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
           // Scoped rebuild: only this button redraws on text changes.
           ValueListenableBuilder<TextEditingValue>(
             valueListenable: _controller,
-            builder: (_, value, __) {
+            builder: (_, value, _) {
               final enabled = value.text.trim().isNotEmpty;
               return _SendButton(enabled: enabled, onSend: _send);
             },

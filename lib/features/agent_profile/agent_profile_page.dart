@@ -58,7 +58,6 @@ class _AgentProfilePageState extends ConsumerState<AgentProfilePage> {
       return const Scaffold(body: SizedBox.shrink());
     }
     final vm = ref.read(agentProfileViewModelProvider(widget.agentId).notifier);
-    final theme = Theme.of(context);
 
     // US-021 v1.1: tombstoned agent 显示占位页（与 ChatRoom AC8 同模式）。
     // Step 6: 直接读 vm.agent.isRemoved —— 不再依赖 state.isAgentRemoved

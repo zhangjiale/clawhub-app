@@ -9,6 +9,10 @@ import 'package:flutter_test/flutter_test.dart';
 /// Minimal fake timer for tests that don't need time control.
 class _FakeTimer implements Timer {
   final Duration duration;
+  // Stored to satisfy the TimerFactory typedef signature
+  // (Timer Function(Duration, void Function())) — the callback is never
+  // invoked because cancel()/isActive indicate this timer never fires.
+  // ignore: unused_field
   final void Function() _callback;
   _FakeTimer(this.duration, this._callback);
   @override
@@ -18,8 +22,7 @@ class _FakeTimer implements Timer {
   @override
   int get tick => 0;
 
-  static final Timer Function(Duration, void Function()) noop =
-      (Duration d, void Function() cb) => _FakeTimer(d, cb);
+  static Timer noop(Duration d, void Function() cb) => _FakeTimer(d, cb);
 }
 
 /// Tests for US-016 AC-3: bounded reconnect with reconnectExhausted state.

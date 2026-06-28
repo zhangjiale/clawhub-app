@@ -391,8 +391,7 @@ class InMemoryMessageRepo implements IMessageRepo {
   final StreamController<void> _messagesChanged =
       StreamController<void>.broadcast();
 
-  InMemoryMessageRepo({InMemoryConversationRepo? conversationRepo})
-    : _conversationRepo = conversationRepo;
+  InMemoryMessageRepo({this._conversationRepo});
 
   /// 通知 outbox 计数订阅者重查（写操作后调用）。
   void _notifyChanged() {
@@ -540,7 +539,7 @@ class InMemoryMessageRepo implements IMessageRepo {
   Future<List<Message>> getOutboxByInstance(String instanceId) async {
     if (_conversationRepo == null) return [];
 
-    final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
+    final convIds = _conversationRepo.getConversationIdsByInstance(instanceId);
     if (convIds.isEmpty) return [];
 
     final results = _byClientId.values
@@ -559,7 +558,7 @@ class InMemoryMessageRepo implements IMessageRepo {
   Future<int> getOutboxCountByInstance(String instanceId) async {
     if (_conversationRepo == null) return 0;
 
-    final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
+    final convIds = _conversationRepo.getConversationIdsByInstance(instanceId);
     if (convIds.isEmpty) return 0;
 
     return _byClientId.values
@@ -606,7 +605,7 @@ class InMemoryMessageRepo implements IMessageRepo {
     // 重置它会让下一轮 flush 重发 → 服务端收到重复消息。跳过这类消息。
     if (_conversationRepo == null) return 0;
 
-    final convIds = _conversationRepo!.getConversationIdsByInstance(instanceId);
+    final convIds = _conversationRepo.getConversationIdsByInstance(instanceId);
     if (convIds.isEmpty) return 0;
 
     var count = 0;
@@ -730,8 +729,9 @@ class InMemoryMessageRepo implements IMessageRepo {
       // bug #12: 对齐 Drift 的空字符串守卫 — serverId="" 不是真实 ID
       if (msg.serverId != null &&
           msg.serverId!.isNotEmpty &&
-          _byServerId.containsKey(msg.serverId))
+          _byServerId.containsKey(msg.serverId)) {
         continue;
+      }
       _byClientId[msg.clientId] = msg;
       if (msg.serverId != null && msg.serverId!.isNotEmpty) {
         _byServerId[msg.serverId!] = msg;

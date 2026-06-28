@@ -42,16 +42,12 @@ class OutboxProcessor {
   static const Duration _flushRoundTimeout = Duration(minutes: 5);
 
   OutboxProcessor({
-    required IMessageRepo messageRepo,
-    required IInstanceRepo instanceRepo,
-    required IAgentRepo agentRepo,
-    required SendMessageUseCase sendMessageUseCase,
-    required ILogger logger,
-  }) : _messageRepo = messageRepo,
-       _instanceRepo = instanceRepo,
-       _agentRepo = agentRepo,
-       _sendMessageUseCase = sendMessageUseCase,
-       _logger = logger;
+    required this._messageRepo,
+    required this._instanceRepo,
+    required this._agentRepo,
+    required this._sendMessageUseCase,
+    required this._logger,
+  });
 
   /// 冲刷指定实例的待发送队列。
   ///

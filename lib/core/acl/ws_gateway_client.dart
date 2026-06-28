@@ -61,31 +61,26 @@ class WsGatewayClient implements IGatewayClient {
 
   /// 创建 WebSocket Gateway 客户端。
   ///
-  /// [identityProvider] 提供 Ed25519 设备身份和签名能力，
+  /// [_identityProvider] 提供 Ed25519 设备身份和签名能力，
   /// 由 DI 容器注入（默认 [Ed25519IdentityProvider]）。
   ///
   /// [config] 提供客户端/设备/认证的静态配置参数，
   /// 由 DI 容器预构建后注入。
   ///
-  /// [webSocketFactory] 和 [timerFactory] 仅供测试注入，
+  /// [_webSocketFactory] 和 [_timerFactory] 仅供测试注入，
   /// 生产环境留空即可（委托 [ConnectionManager] 默认行为）。
   ///
-  /// [deviceTokenStore] 持久化 Gateway 签发的 deviceToken；后续重连
+  /// [_deviceTokenStore] 持久化 Gateway 签发的 deviceToken；后续重连
   /// 时优先复用缓存令牌（spec §2.2）。当未注入时，退化为每次连接
   /// 都使用 `instance.tokenRef`（每次都走配对流程）。
   WsGatewayClient({
-    required IDeviceIdentityProvider identityProvider,
+    required this._identityProvider,
     ConnectionConfig? config,
-    WebSocketChannel Function(Uri)? webSocketFactory,
-    TimerFactory? timerFactory,
-    Future<String?> Function()? modelIdentifierLoader,
-    IDeviceTokenStore? deviceTokenStore,
-  }) : _identityProvider = identityProvider,
-       _config = config ?? ConnectionConfig(),
-       _webSocketFactory = webSocketFactory,
-       _timerFactory = timerFactory,
-       _modelIdentifierLoader = modelIdentifierLoader,
-       _deviceTokenStore = deviceTokenStore;
+    this._webSocketFactory,
+    this._timerFactory,
+    this._modelIdentifierLoader,
+    this._deviceTokenStore,
+  }) : _config = config ?? ConnectionConfig();
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -1054,11 +1049,11 @@ class WsGatewayClient implements IGatewayClient {
     // Gateway 的默认 agent (如 "main") 通常没有 name 字段，
     // 只有 id，此时以 id 作为显示名（协议文档 §A.6 实测验证）。
     final identity = json['identity'] as Map<String, dynamic>?;
-    String? _nonEmpty(String? s) =>
+    String? nonEmpty(String? s) =>
         (s != null && s.trim().isNotEmpty) ? s.trim() : null;
     final name =
-        _nonEmpty(json['name'] as String?) ??
-        _nonEmpty(identity?['name'] as String?) ??
+        nonEmpty(json['name'] as String?) ??
+        nonEmpty(identity?['name'] as String?) ??
         remoteId;
 
     // Agent description fallback chain:
@@ -1075,9 +1070,9 @@ class WsGatewayClient implements IGatewayClient {
     // 协议文档参考：api-protocol.md §A.6 (probe-verified); §5.2 示意图已过时。
     // ACL gap 记录：docs/technical/acl-protocol-gaps.md → "agents.list 不返回 description"。
     final description =
-        _nonEmpty(json['description'] as String?) ??
-        _nonEmpty(identity?['theme'] as String?) ??
-        _nonEmpty(identity?['description'] as String?);
+        nonEmpty(json['description'] as String?) ??
+        nonEmpty(identity?['theme'] as String?) ??
+        nonEmpty(identity?['description'] as String?);
 
     return Agent(
       localId: _uuid.v4(),

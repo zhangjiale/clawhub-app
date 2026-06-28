@@ -270,24 +270,16 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
   final void Function(String path)? _onAvatarChanged;
 
   AgentProfileViewModel({
-    required IAgentRepo agentRepo,
-    required IInstanceRepo instanceRepo,
-    required IMessageRepo messageRepo,
-    required IActivityRepo activityRepo,
-    required EvaluateAchievementsUseCase evaluateAchievements,
-    required IAvatarStorageService avatarStorageService,
-    required ILogger logger,
+    required this._agentRepo,
+    required this._instanceRepo,
+    required this._messageRepo,
+    required this._activityRepo,
+    required this._evaluateAchievements,
+    required this._avatarStorageService,
+    required this._logger,
     required this.agentId,
-    void Function(String path)? onAvatarChanged,
-  }) : _agentRepo = agentRepo,
-       _instanceRepo = instanceRepo,
-       _messageRepo = messageRepo,
-       _activityRepo = activityRepo,
-       _evaluateAchievements = evaluateAchievements,
-       _avatarStorageService = avatarStorageService,
-       _logger = logger,
-       _onAvatarChanged = onAvatarChanged,
-       super(const AgentProfileState());
+    this._onAvatarChanged,
+  }) : super(const AgentProfileState());
 
   /// 初始化：加载 agent 详情 + 实例信息 + 消息统计。
   Future<void> init() async {

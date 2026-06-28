@@ -289,7 +289,7 @@ void main() {
     /// something to clean. Uses FK=OFF because the helper inserts in
     /// an order that may not satisfy the engine's constraints; the
     /// real FK validation lives in repository layers, not the DB.
-    Future<void> _seedAllTables() async {
+    Future<void> seedAllTables() async {
       await database.customStatement('PRAGMA foreign_keys = OFF');
       try {
         await database.customStatement(
@@ -347,7 +347,7 @@ void main() {
     }
 
     test('clears messages, tool_calls, achievement_unlocks, FTS', () async {
-      await _seedAllTables();
+      await seedAllTables();
       // Pre-condition: data is present
       expect(
         (await database
@@ -392,7 +392,7 @@ void main() {
     test(
       'preserves agents and conversations skeleton (FK-safe clear)',
       () async {
-        await _seedAllTables();
+        await seedAllTables();
 
         await repo.clearAll();
 
@@ -439,7 +439,7 @@ void main() {
     );
 
     test('preserves instances and user_preferences', () async {
-      await _seedAllTables();
+      await seedAllTables();
       // Add a user_preferences row to verify it survives
       await database.customStatement(
         'INSERT OR REPLACE INTO user_preferences '
@@ -472,7 +472,7 @@ void main() {
     test(
       'invalidateStorageCache is called (getStorageInfo returns 0 after clear)',
       () async {
-        await _seedAllTables();
+        await seedAllTables();
         // Warm cache
         final before = await repo.getStorageInfo();
         expect(before.messageCount, 3);

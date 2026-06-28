@@ -25,8 +25,7 @@ import 'message_cluster_deduper.dart';
 class MergeInboundMessageUseCase {
   final IMessageRepo _messageRepo;
 
-  MergeInboundMessageUseCase({required IMessageRepo messageRepo})
-    : _messageRepo = messageRepo;
+  MergeInboundMessageUseCase({required this._messageRepo});
 
   /// 软匹配时间窗口（毫秒）。同一消息的本地发送时间与网关时间戳通常在几秒内
   /// 对齐（网络 RTT + 处理）；±60s 容忍客户端/网关时钟漂移，同时把"相距较久

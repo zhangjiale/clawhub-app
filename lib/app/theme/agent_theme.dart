@@ -32,10 +32,10 @@ class AgentTheme extends ThemeExtension<AgentTheme> {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is AgentTheme && primary.value == other.primary.value;
+      other is AgentTheme && primary.toARGB32() == other.primary.toARGB32();
 
   @override
-  int get hashCode => primary.value;
+  int get hashCode => primary.toARGB32();
 
   @override
   AgentTheme copyWith({Color? primary}) {

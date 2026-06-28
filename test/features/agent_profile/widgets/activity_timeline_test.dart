@@ -20,7 +20,7 @@ void main() {
     ];
   }
 
-  Widget _wrap(Widget child) {
+  Widget wrap(Widget child) {
     return MaterialApp(
       home: Scaffold(body: SingleChildScrollView(child: child)),
     );
@@ -119,7 +119,7 @@ void main() {
   group('ActivityTimeline', () {
     testWidgets('renders 30 bars for 30 entries', (tester) async {
       final series = makeSeries(List.filled(30, 0));
-      await tester.pumpWidget(_wrap(ActivityTimeline(activities: series)));
+      await tester.pumpWidget(wrap(ActivityTimeline(activities: series)));
       // Find all SizedBox bars; each bar contains a child SizedBox of
       // the proportional height. We assert via Semantics instead since
       // bar count matches Semantics count.
@@ -128,7 +128,7 @@ void main() {
     });
 
     testWidgets('empty series shows placeholder', (tester) async {
-      await tester.pumpWidget(_wrap(const ActivityTimeline(activities: [])));
+      await tester.pumpWidget(wrap(const ActivityTimeline(activities: [])));
       expect(find.text('暂无时间线数据'), findsOneWidget);
     });
 
@@ -141,7 +141,7 @@ void main() {
       counts[14] = 2; // 15 days ago (2024-05-31)
       final series = makeSeries(counts);
 
-      await tester.pumpWidget(_wrap(ActivityTimeline(activities: series)));
+      await tester.pumpWidget(wrap(ActivityTimeline(activities: series)));
 
       // Find Semantics nodes with our expected labels
       expect(
@@ -158,7 +158,7 @@ void main() {
       tester,
     ) async {
       final series = makeSeries(List.filled(30, 0));
-      await tester.pumpWidget(_wrap(ActivityTimeline(activities: series)));
+      await tester.pumpWidget(wrap(ActivityTimeline(activities: series)));
       // 30-day window: 29 empty bars + 1 today bar
       // We assert that zero-count bars are still rendered with at
       // least minimum height (4 px). This is enforced by SizedBox

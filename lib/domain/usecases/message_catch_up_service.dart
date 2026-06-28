@@ -56,18 +56,13 @@ class MessageCatchUpService {
   static const defaultMaxPagesPerConversation = 20;
 
   MessageCatchUpService({
-    required IAgentRepo agentRepo,
-    required IMessageRepo messageRepo,
-    required IConversationRepo conversationRepo,
-    required IGatewayClient gatewayClient,
-    required ILogger logger,
+    required this._agentRepo,
+    required this._messageRepo,
+    required this._conversationRepo,
+    required this._gatewayClient,
+    required this._logger,
     int? maxPagesPerConversation,
-  }) : _agentRepo = agentRepo,
-       _messageRepo = messageRepo,
-       _conversationRepo = conversationRepo,
-       _gatewayClient = gatewayClient,
-       _logger = logger,
-       _maxPagesPerConversation =
+  }) : _maxPagesPerConversation =
            maxPagesPerConversation ?? defaultMaxPagesPerConversation;
 
   /// 执行增量同步。

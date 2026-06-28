@@ -159,6 +159,7 @@ class ControllableWebSocket {
   factory ControllableWebSocket.ready() {
     final ws = ControllableWebSocket._();
     _wire(ws);
+    // ignore: void_checks
     when(() => ws.channel.ready).thenAnswer((_) => Future.value(ws.channel));
     return ws;
   }

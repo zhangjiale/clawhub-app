@@ -21,10 +21,9 @@ class DriftSettingsRepo implements ISettingsRepo {
 
   DriftSettingsRepo(
     this._database, {
-    IAvatarStorageService? avatarStorageService,
-    required ILogger logger,
-  }) : _avatarStorageService = avatarStorageService,
-       _logger = logger;
+    this._avatarStorageService,
+    required this._logger,
+  });
 
   // ---------------------------------------------------------------------------
   // Storage info cache — avoids full COUNT(*) scan on every settings open

@@ -45,18 +45,13 @@ class SaveInstanceUseCase {
   final Uuid _uuid;
 
   SaveInstanceUseCase({
-    required IInstanceRepo instanceRepo,
-    required IAgentRepo agentRepo,
-    required IGatewayClient gatewayClient,
-    IInstanceLifecycle? lifecycle,
-    ILogger? logger,
+    required this._instanceRepo,
+    required this._agentRepo,
+    required this._gatewayClient,
+    this._lifecycle,
+    this._logger,
     Uuid? uuid,
-  }) : _instanceRepo = instanceRepo,
-       _agentRepo = agentRepo,
-       _gatewayClient = gatewayClient,
-       _lifecycle = lifecycle,
-       _logger = logger,
-       _uuid = uuid ?? const Uuid();
+  }) : _uuid = uuid ?? const Uuid();
 
   /// 规范化 host 用于比较：lowercase（`Uri.parse` 已做）+ 剥末尾点。
   ///

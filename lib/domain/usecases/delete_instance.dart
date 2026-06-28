@@ -10,11 +10,7 @@ class DeleteInstanceUseCase {
   final IInstanceRepo _instanceRepo;
   final IInstanceLifecycle? _lifecycle;
 
-  DeleteInstanceUseCase({
-    required IInstanceRepo instanceRepo,
-    IInstanceLifecycle? lifecycle,
-  })  : _instanceRepo = instanceRepo,
-        _lifecycle = lifecycle;
+  DeleteInstanceUseCase({required this._instanceRepo, this._lifecycle});
 
   /// 删除指定实例。
   ///

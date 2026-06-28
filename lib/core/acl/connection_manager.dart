@@ -239,23 +239,18 @@ class ConnectionManager {
   static const _defaultRetryStrategy = RetryStrategy.networkReconnectLimited;
 
   ConnectionManager({
-    required String instanceId,
-    required String gatewayUrl,
+    required this._instanceId,
+    required this._gatewayUrl,
     required String token,
-    required String deviceId,
-    required ConnectionConfig config,
+    required this._deviceId,
+    required this._config,
     Uuid? uuid,
     WebSocketChannel Function(Uri)? webSocketFactory,
     TimerFactory? timerFactory,
     RetryStrategy? retryStrategy,
-    IDeviceTokenStore? deviceTokenStore,
+    this._deviceTokenStore,
   }) : _retryStrategy = retryStrategy ?? _defaultRetryStrategy,
-       _instanceId = instanceId,
-       _gatewayUrl = gatewayUrl,
        _token = token,
-       _deviceId = deviceId,
-       _config = config,
-       _deviceTokenStore = deviceTokenStore,
        _webSocketFactory = webSocketFactory ?? WebSocketChannel.connect,
        _createTimer = timerFactory ?? Timer.new,
        _uuid = uuid ?? const Uuid() {
@@ -389,7 +384,7 @@ class ConnectionManager {
   Future<String> _resolveBearerToken() async {
     if (_deviceTokenStore == null) return _token;
     try {
-      final cached = await _deviceTokenStore!.load(_instanceId);
+      final cached = await _deviceTokenStore.load(_instanceId);
       if (cached != null && cached.isNotEmpty) {
         // Cache-hit is a routine success-path trace on the reconnect hot
         // path — gate behind kDebugMode so release logs don't carry it
@@ -1169,8 +1164,9 @@ class ConnectionManager {
   }) {
     debugPrint('[CM] Auth failed for $_instanceId: $reason');
     if (errorCode != null) debugPrint('[CM] Auth error code: $errorCode');
-    if (errorDetails != null)
+    if (errorDetails != null) {
       debugPrint('[CM] Auth error details: $errorDetails');
+    }
     _failAllPending('Authentication failed: $reason');
     _cancelTimers();
     // Fire-and-forget with error logging — _closeWebSocket() is async but

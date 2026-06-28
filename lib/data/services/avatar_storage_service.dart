@@ -29,14 +29,10 @@ class AvatarStorageService implements IAvatarStorageService {
 
   final ILogger _logger;
 
-  AvatarStorageService({
-    Future<Directory> Function()? baseDirFactory,
-    required ILogger logger,
-  }) : _baseDirFactory = baseDirFactory,
-       _logger = logger;
+  AvatarStorageService({this._baseDirFactory, required this._logger});
 
   Future<Directory> get _baseDir async {
-    if (_baseDirFactory != null) return _baseDirFactory!();
+    if (_baseDirFactory != null) return _baseDirFactory();
     return getApplicationDocumentsDirectory();
   }
 

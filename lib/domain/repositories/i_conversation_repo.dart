@@ -14,7 +14,7 @@ abstract class IConversationRepo {
   Future<Conversation?> getById(String id);
 
   /// 批量根据 ID 获取会话（替代 N+1 查询）。
-  /// 返回 Map<id, Conversation>，未找到的 ID 不出现在结果中。
+  /// 返回 `Map<id, Conversation>`，未找到的 ID 不出现在结果中。
   /// 传入空列表时返回空 Map（不查询数据库）。
   Future<Map<String, Conversation>> getByIds(List<String> ids);
 

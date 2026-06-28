@@ -350,7 +350,7 @@ void main() {
           routes: [
             GoRoute(
               path: '/',
-              builder: (_, __) => const ChatRoomPage(
+              builder: (_, _) => const ChatRoomPage(
                 agentId: 'local-1',
                 instanceId: 'inst-1',
                 source: 'messages',

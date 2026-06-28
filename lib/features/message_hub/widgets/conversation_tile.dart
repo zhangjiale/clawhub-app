@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/app/theme/theme.dart';
-import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/message_hub/providers/message_hub_providers.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
@@ -21,7 +20,6 @@ class ConversationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final conv = preview.conversation;
     final agent = preview.agent;
 

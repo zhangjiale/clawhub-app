@@ -113,7 +113,7 @@ class SettingsRow extends StatelessWidget {
             const SizedBox(width: 6),
             const Icon(Icons.chevron_right, size: 14, color: XiaColors.text4),
           ],
-          if (trailing != null) trailing!,
+          ?trailing,
         ],
       ),
     );

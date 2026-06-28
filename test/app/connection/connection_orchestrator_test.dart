@@ -41,14 +41,11 @@ class _FakeGatewayClient implements IGatewayClient {
   final Map<String, StreamController<GatewayPairingInfo?>> _pairingCtrls = {};
 
   _FakeGatewayClient({
-    Map<String, List<Agent>> stubAgents = const {},
-    bool synchronousEvents = false,
-    bool pairingOnConnect = false,
-    String pairingRequestId = 'req-test-001',
-  }) : _stubAgents = stubAgents,
-       _synchronousEvents = synchronousEvents,
-       _pairingOnConnect = pairingOnConnect,
-       _pairingRequestId = pairingRequestId;
+    this._stubAgents = const {},
+    this._synchronousEvents = false,
+    this._pairingOnConnect = false,
+    this._pairingRequestId = 'req-test-001',
+  });
 
   @override
   Future<void> connect(Instance instance) async {

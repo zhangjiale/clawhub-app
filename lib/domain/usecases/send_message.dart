@@ -27,17 +27,13 @@ class SendMessageUseCase {
   int _logicalClockCounter = DateTime.now().millisecondsSinceEpoch;
 
   SendMessageUseCase({
-    required IMessageRepo messageRepo,
-    required IConversationRepo conversationRepo,
-    required IInstanceRepo instanceRepo,
-    required IGatewayClient gatewayClient,
+    required this._messageRepo,
+    required this._conversationRepo,
+    required this._instanceRepo,
+    required this._gatewayClient,
     GeneratePreview? generatePreview,
     Uuid? uuid,
-  }) : _messageRepo = messageRepo,
-       _conversationRepo = conversationRepo,
-       _instanceRepo = instanceRepo,
-       _gatewayClient = gatewayClient,
-       _generatePreview = generatePreview ?? GeneratePreview(),
+  }) : _generatePreview = generatePreview ?? GeneratePreview(),
        _uuid = uuid ?? const Uuid();
 
   /// Exposes the preview generator so other components (notably

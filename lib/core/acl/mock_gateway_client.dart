@@ -261,7 +261,7 @@ class MockGatewayClient implements IGatewayClient {
     return defaults.map((d) {
       return Agent(
         localId: _uuid.v4(),
-        remoteId: '${instanceId}-default-${d.name}',
+        remoteId: '$instanceId-default-${d.name}',
         instanceId: instanceId,
         name: d.name,
         themeColor: d.color,

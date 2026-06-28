@@ -36,14 +36,11 @@ class SyncAgentsUseCase {
   final ILogger? _logger;
 
   SyncAgentsUseCase({
-    required IInstanceRepo instanceRepo,
-    required IAgentRepo agentRepo,
-    required IGatewayClient gatewayClient,
-    ILogger? logger,
-  }) : _instanceRepo = instanceRepo,
-       _agentRepo = agentRepo,
-       _gatewayClient = gatewayClient,
-       _logger = logger;
+    required this._instanceRepo,
+    required this._agentRepo,
+    required this._gatewayClient,
+    this._logger,
+  });
 
   /// 同步所有实例的 Agent 列表并返回聚合结果
   Future<AgentListData> execute() async {

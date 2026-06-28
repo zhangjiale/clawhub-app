@@ -19,7 +19,7 @@ void main() {
       messageRepo = InMemoryMessageRepo(conversationRepo: conversationRepo);
     });
 
-    Message _msg({
+    Message msg({
       required String clientId,
       required String conversationId,
       String agentId = 'agent-1',
@@ -44,7 +44,7 @@ void main() {
       () async {
         final noConvRepo = InMemoryMessageRepo();
 
-        await noConvRepo.insert(_msg(clientId: 'm1', conversationId: 'conv-a'));
+        await noConvRepo.insert(msg(clientId: 'm1', conversationId: 'conv-a'));
 
         final result = await noConvRepo.getOutboxByInstance('inst-1');
         expect(result, isEmpty);
@@ -56,7 +56,7 @@ void main() {
 
     test('returns empty when no conversations match instanceId', () async {
       // No conversations created for 'inst-1'
-      await messageRepo.insert(_msg(clientId: 'm1', conversationId: 'conv-a'));
+      await messageRepo.insert(msg(clientId: 'm1', conversationId: 'conv-a'));
 
       final result = await messageRepo.getOutboxByInstance('inst-1');
       expect(result, isEmpty);
@@ -69,22 +69,22 @@ void main() {
       final convB = await conversationRepo.getOrCreate('inst-b', 'agent-1');
 
       // Insert PENDING messages across instances
-      final ma1 = _msg(
+      final ma1 = msg(
         clientId: 'ma1',
         conversationId: convA1.id,
         logicalClock: 1,
       );
-      final ma2 = _msg(
+      final ma2 = msg(
         clientId: 'ma2',
         conversationId: convA1.id,
         logicalClock: 2,
       );
-      final ma3 = _msg(
+      final ma3 = msg(
         clientId: 'ma3',
         conversationId: convA2.id,
         logicalClock: 3,
       );
-      final mb1 = _msg(
+      final mb1 = msg(
         clientId: 'mb1',
         conversationId: convB.id,
         logicalClock: 4,
@@ -117,25 +117,25 @@ void main() {
       () async {
         final convA = await conversationRepo.getOrCreate('inst-a', 'agent-1');
 
-        final pending = _msg(
+        final pending = msg(
           clientId: 'm-p',
           conversationId: convA.id,
           status: MessageStatus.pending,
           logicalClock: 1,
         );
-        final failed = _msg(
+        final failed = msg(
           clientId: 'm-f',
           conversationId: convA.id,
           status: MessageStatus.failed,
           logicalClock: 2,
         );
-        final sent = _msg(
+        final sent = msg(
           clientId: 'm-s',
           conversationId: convA.id,
           status: MessageStatus.sent,
           logicalClock: 3,
         );
-        final sending = _msg(
+        final sending = msg(
           clientId: 'm-ing',
           conversationId: convA.id,
           status: MessageStatus.sending,
@@ -158,10 +158,10 @@ void main() {
       final convA = await conversationRepo.getOrCreate('inst-a', 'agent-1');
 
       await messageRepo.insert(
-        _msg(clientId: 'm1', conversationId: convA.id, logicalClock: 1),
+        msg(clientId: 'm1', conversationId: convA.id, logicalClock: 1),
       );
       await messageRepo.insert(
-        _msg(
+        msg(
           clientId: 'm2',
           conversationId: convA.id,
           status: MessageStatus.failed,
@@ -180,7 +180,7 @@ void main() {
 
         // Only SENT messages — nothing countable
         await messageRepo.insert(
-          _msg(
+          msg(
             clientId: 'm1',
             conversationId: convA.id,
             status: MessageStatus.sent,
