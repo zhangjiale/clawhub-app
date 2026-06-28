@@ -71,11 +71,16 @@ class _QuickCommandsEditorState extends State<QuickCommandsEditor> {
     _emit(next);
   }
 
-  void _onReorder(int oldIndex, int newIndex) {
+  void _onReorderItem(int oldIndex, int newIndex) {
+    // Flutter 3.41+ ReorderableListView.onReorderItem contract: by the
+    // time this callback fires, the framework has already removed the
+    // item at [oldIndex] from its internal list. [newIndex] is therefore
+    // already the post-removal insertion position — no manual
+    // `newIndex > oldIndex ? newIndex - 1 : newIndex` adjustment needed
+    // (that used to be required by the deprecated onReorder callback).
     final next = [...widget.commands];
     final cmd = next.removeAt(oldIndex);
-    final insertAt = newIndex > oldIndex ? newIndex - 1 : newIndex;
-    next.insert(insertAt, cmd);
+    next.insert(newIndex, cmd);
     _emit(next);
   }
 
@@ -124,7 +129,7 @@ class _QuickCommandsEditorState extends State<QuickCommandsEditor> {
             physics: const NeverScrollableScrollPhysics(),
             buildDefaultDragHandles: false,
             itemCount: widget.commands.length,
-            onReorder: _onReorder,
+            onReorderItem: _onReorderItem,
             itemBuilder: (context, index) {
               final cmd = widget.commands[index];
               return Dismissible(
