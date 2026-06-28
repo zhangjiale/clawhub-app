@@ -129,12 +129,8 @@ void main() {
 
       // Default stubs — achievement load is best-effort, return empty data
       when(
-        () => achievementRepo.getStats(any()),
-      ).thenAnswer((_) async => null); // cache miss → computeStats
-      when(
         () => achievementRepo.computeStats(any()),
       ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
-      when(() => achievementRepo.saveStats(any())).thenAnswer((_) async {});
       when(
         () => achievementRepo.getUnlocks(any()),
       ).thenAnswer((_) async => <Achievement>[]);
@@ -396,6 +392,46 @@ void main() {
       final vm = createVM();
       await vm.init();
       vm.dispose();
+    });
+
+    // 3B: profile page init triggers a fresh computeStats — use case 已删除
+    // saveStats/getStats 接口，统计全量实时聚合（无 agent_stats 缓存层）。
+    // 这个测试断言 VM 经 use case 调用 computeStats 拿到当前消息的真实
+    // 聚合值。
+    test('init() computes fresh stats (3B: no cache layer)', () async {
+      when(
+        () => agentRepo.getById('local-1'),
+      ).thenAnswer((_) async => testAgent);
+      when(() => instanceRepo.getById('inst-1')).thenAnswer((_) async => null);
+      when(
+        () => messageRepo.getMessageCount('local-1'),
+      ).thenAnswer((_) async => 47);
+
+      final freshStats = AgentStats(
+        agentId: 'local-1',
+        totalDialogs: 3,
+        totalMessages: 47,
+        totalToolCalls: 12,
+        activeDays: 5,
+        currentStreak: 3,
+      );
+      when(
+        () => achievementRepo.computeStats('local-1'),
+      ).thenAnswer((_) async => freshStats);
+      when(
+        () => achievementRepo.getUnlocks('local-1'),
+      ).thenAnswer((_) async => const []);
+
+      final vm = createVM();
+      await vm.init();
+
+      verify(() => achievementRepo.computeStats('local-1')).called(1);
+
+      final data =
+          (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+      expect(data.stats?.totalMessages, 47);
+      expect(data.stats?.totalDialogs, 3);
+      expect(data.stats?.activeDays, 5);
     });
 
     test('init() loads dailyActivity from IActivityRepo', () async {
@@ -992,6 +1028,79 @@ void main() {
         },
       );
 
+      // Round 4 fix #3: refreshAgent 必须 guard against 3 个 async-gap race:
+      //   (a) detailLoadState 还未到达 LoadData (init 未完成)
+      //   (b) detailLoadState 是 LoadError (init 失败)
+      //   (c) VM 已 dispose (ticker 在 getById await 期间触发 dispose)
+      // 这三条都必须在不修改 state 的前提下早返回。
+      test('refreshAgent is no-op when detailLoadState is LoadInProgress '
+          '(init still in flight)', () async {
+        // arrange — 不调 init,detailLoadState 保持 LoadInProgress
+        final vm = createVM();
+        expect(vm.state.detailLoadState, isA<LoadInProgress>());
+
+        await vm.refreshAgent();
+
+        verifyNever(() => agentRepo.getById('local-1'));
+        expect(
+          vm.state.detailLoadState,
+          isA<LoadInProgress>(),
+          reason: 'LoadInProgress 期间 refreshAgent 必须 no-op',
+        );
+      });
+
+      test('refreshAgent is no-op when detailLoadState is LoadError '
+          '(avoid clobbering error state)', () async {
+        // arrange — init 失败 → detailLoadState = LoadError
+        when(() => agentRepo.getById('local-1')).thenAnswer((_) async => null);
+        final vm = createVM();
+        await vm.init();
+        expect(vm.state.detailLoadState, isA<LoadError>());
+
+        // 即使 ticker 想抢救(getById 返回一个 active agent),refreshAgent
+        // 也必须拒绝写入 — 否则 LoadError UI 会被半成品的 LoadData 覆盖。
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        await vm.refreshAgent();
+
+        expect(
+          vm.state.detailLoadState,
+          isA<LoadError>(),
+          reason:
+              'LoadError 期间 refreshAgent 必须 no-op,'
+              '不能让 ticker 写入"半成品"LoadData 覆盖错误状态',
+        );
+        expect(
+          vm.agent?.isRemoved ?? false,
+          isFalse,
+          reason: 'refreshAgent 失败时也不应调用 setAgent 留下半成品状态',
+        );
+      });
+
+      test('refreshAgent is safe to call after dispose '
+          '(async-gap dispose race)', () async {
+        // arrange — init 完成让 VM 进入 LoadData,然后 dispose。
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+        final vm = createVM();
+        await vm.init();
+        vm.dispose();
+        // 模拟 ticker 在 dispose 后又 fire 一次 — 现在 mounted=false。
+        expect(
+          () => vm.refreshAgent(),
+          returnsNormally,
+          reason: 'dispose 后 refreshAgent 必须 no-op,不抛 StateError',
+        );
+      });
+
       test('saveProfile blocked when _agent is null (init failed/not loaded) '
           'surfaces saveError for UX feedback', () async {
         final vm = createVM();
@@ -1086,6 +1195,194 @@ void main() {
           reason: '详情加载失败时不应继续显示 tombstone 占位页',
         );
       });
+    });
+
+    // ============================================================
+    // AchievementRefresh: 局部刷新入口 (race 修复)
+    // AchievementChecker.updates listener 通过 achievementRefresh()
+    // 只刷 stats/achievements/newUnlocks,不动 detailLoadState、
+    // isSaving/saveError,避免与 saveProfile 内部的 refresh() 互相
+    // 覆盖 detailLoadState。
+    // ============================================================
+    group('achievementRefresh', () {
+      setUp(() {
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 0);
+      });
+
+      test('exposes achievementRefresh() as Future<void> Function()', () {
+        final vm = createVM();
+        // 编译期契约：方法存在且签名匹配
+        expect(vm.achievementRefresh, isNotNull);
+        expect(vm.achievementRefresh, isA<Future<void> Function()>());
+      });
+
+      test('updates only stats/achievements/newUnlocks, '
+          'detailLoadState stays LoadData', () async {
+        // arrange — init with stale stats
+        when(
+          () => achievementRepo.computeStats('local-1'),
+        ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
+        final vm = createVM();
+        await vm.init();
+        final before =
+            (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+        final beforeMsgCount = before.messageCount;
+        final beforeAgent = before.agent;
+
+        // act — re-stub computeStats to return fresh stats, then refresh
+        final freshStats = AgentStats(
+          agentId: 'local-1',
+          totalDialogs: 5,
+          totalMessages: 99,
+          totalToolCalls: 12,
+          activeDays: 7,
+          currentStreak: 3,
+        );
+        final freshAchievement = Achievement(
+          // id 必须与 freshStats 触发的预设成就 ID 一致 ('first_dialog'),
+          // 否则 use case 的 freshUnlocks 过滤 (newIds.contains(a.id)) 会
+          // 把这个 freshUnlocks 项过滤掉,newUnlocks 断言失败。
+          id: 'first_dialog',
+          icon: '🏆',
+          name: '初次对话',
+          description: '与虾完成第一次对话',
+          tier: AchievementTier.gold,
+          unlocked: true,
+          unlockedAt: 1719500000000,
+        );
+        when(
+          () => achievementRepo.computeStats('local-1'),
+        ).thenAnswer((_) async => freshStats);
+        // getUnlocks 返回 [] — 让 use case 通过 evaluateNewAchievements
+        // 发现 first_dialog 预设 (totalDialogs=5 ≥ 1),再走 batchUnlock
+        // 分支,这样 freshUnlocks 会被填充 [freshAchievement]。
+        when(
+          () => achievementRepo.getUnlocks('local-1'),
+        ).thenAnswer((_) async => const <Achievement>[]);
+        // batchUnlock 也 stub — freshStats 可能触发 evaluateNewAchievements
+        // 产生 newDefs,这时 use case 会走 batchUnlock 分支而不是返回
+        // existingUnlocks。需要保证两条分支都返回 [freshAchievement] 才能让断言稳定。
+        when(
+          () => achievementRepo.batchUnlock(any(), any()),
+        ).thenAnswer((_) async => [freshAchievement]);
+
+        await vm.achievementRefresh();
+
+        // assert — stats/achievements/newUnlocks updated
+        final data =
+            (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+        expect(data.stats, equals(freshStats));
+        expect(data.achievements, equals([freshAchievement]));
+        expect(vm.state.newUnlocks, equals([freshAchievement]));
+
+        // assert — detailLoadState 没被重置
+        expect(
+          vm.state.detailLoadState,
+          isA<LoadData<AgentDetailData>>(),
+          reason: 'detailLoadState 必须保持 LoadData,不能回到 LoadInProgress',
+        );
+
+        // assert — 其他字段未变 (agent/instance/messageCount/dailyActivity)
+        expect(data.agent, equals(beforeAgent));
+        expect(data.instance, equals(before.instance));
+        expect(data.messageCount, beforeMsgCount);
+        expect(data.dailyActivity, equals(before.dailyActivity));
+
+        // assert — isSaving/saveError/saveSuccess 未被触碰
+        expect(vm.state.isSaving, isFalse);
+        expect(vm.state.saveError, isNull);
+        expect(vm.state.saveSuccess, isFalse);
+      });
+
+      test('is no-op when detailLoadState is LoadInProgress', () async {
+        // arrange — 不调用 init,detailLoadState 保持 LoadInProgress
+        final vm = createVM();
+        expect(vm.state.detailLoadState, isA<LoadInProgress>());
+
+        await vm.achievementRefresh();
+
+        // act — _safeEvaluateAchievements 不应被调用
+        verifyNever(() => achievementRepo.computeStats('local-1'));
+        // detailLoadState 仍为 LoadInProgress
+        expect(vm.state.detailLoadState, isA<LoadInProgress>());
+      });
+
+      test('is no-op when detailLoadState is LoadError', () async {
+        // arrange — init 失败 → detailLoadState = LoadError
+        when(() => agentRepo.getById('local-1')).thenAnswer((_) async => null);
+        final vm = createVM();
+        await vm.init();
+        expect(vm.state.detailLoadState, isA<LoadError>());
+
+        await vm.achievementRefresh();
+
+        // act — _safeEvaluateAchievements 不应被调用
+        verifyNever(() => achievementRepo.computeStats('local-1'));
+        // detailLoadState 仍为 LoadError
+        expect(vm.state.detailLoadState, isA<LoadError>());
+      });
+
+      test(
+        'does NOT overwrite saveError/isSaving during saveProfile (race fix)',
+        () async {
+          // arrange — init 完成
+          final vm = createVM();
+          await vm.init();
+          expect(vm.state.detailLoadState, isA<LoadData<AgentDetailData>>());
+
+          // act — 模拟 saveProfile 启动:isSaving=true, saveError=null
+          vm.state = vm.state.copyWith(
+            isSaving: true,
+            saveError: null,
+            saveSuccess: false,
+          );
+          final snapshotDuringSave = vm.state;
+
+          // 此时 AchievementChecker 触发 → achievementRefresh 并发
+          await vm.achievementRefresh();
+
+          // assert — isSaving/saveError 字段未被 achievementRefresh 触碰
+          expect(
+            vm.state.isSaving,
+            snapshotDuringSave.isSaving,
+            reason: 'achievementRefresh 不应修改 isSaving 字段',
+          );
+          expect(
+            vm.state.saveError,
+            snapshotDuringSave.saveError,
+            reason: 'achievementRefresh 不应修改 saveError 字段',
+          );
+          expect(
+            vm.state.saveSuccess,
+            snapshotDuringSave.saveSuccess,
+            reason: 'achievementRefresh 不应修改 saveSuccess 字段',
+          );
+
+          // assert — detailLoadState 仍为 LoadData (不是 LoadInProgress)
+          expect(
+            vm.state.detailLoadState,
+            isA<LoadData<AgentDetailData>>(),
+            reason: 'achievementRefresh 期间 detailLoadState 不应被重置',
+          );
+
+          // assert — achievementRefresh 自己的写入(stats/achievements) 仍然生效
+          final data =
+              (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+          expect(
+            data.stats,
+            isNotNull,
+            reason: 'achievementRefresh 应在不影响 save 字段的前提下刷 stats',
+          );
+        },
+      );
     });
   });
 }

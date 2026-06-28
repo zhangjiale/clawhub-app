@@ -21,6 +21,7 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
@@ -31,6 +32,7 @@ import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
+import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 
 class _MockAgentRepo extends Mock implements IAgentRepo {}
@@ -45,6 +47,8 @@ class _MockAvatarStorageService extends Mock implements IAvatarStorageService {}
 
 class _MockAchievementRepo extends Mock implements IAchievementRepo {}
 
+class _MockLogger extends Mock implements ILogger {}
+
 void main() {
   late _MockAgentRepo agentRepo;
   late _MockInstanceRepo instanceRepo;
@@ -52,6 +56,7 @@ void main() {
   late _MockActivityRepo activityRepo;
   late _MockAvatarStorageService avatarStorageService;
   late _MockAchievementRepo achievementRepo;
+  late _MockLogger logger;
 
   final activeAgent = Agent(
     localId: 'local-1',
@@ -82,13 +87,14 @@ void main() {
     activityRepo = _MockActivityRepo();
     avatarStorageService = _MockAvatarStorageService();
     achievementRepo = _MockAchievementRepo();
+    logger = _MockLogger();
+    when(() => logger.error(any(), any())).thenReturn(null);
+    when(() => logger.info(any())).thenReturn(null);
 
     // Achievement evaluator 默认 stub
-    when(() => achievementRepo.getStats(any())).thenAnswer((_) async => null);
     when(
       () => achievementRepo.computeStats(any()),
     ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
-    when(() => achievementRepo.saveStats(any())).thenAnswer((_) async {});
     when(
       () => achievementRepo.getUnlocks(any()),
     ).thenAnswer((_) async => <Achievement>[]);
@@ -147,6 +153,7 @@ void main() {
         activityRepoProvider.overrideWithValue(activityRepo),
         avatarStorageServiceProvider.overrideWithValue(avatarStorageService),
         achievementRepoProvider.overrideWithValue(achievementRepo),
+        loggerProvider.overrideWithValue(logger),
       ],
     );
     // Wrap dispose in runZonedGuarded so the unavoidable double-dispose
@@ -312,4 +319,137 @@ void main() {
       );
     },
   );
+
+  // Bug-fix (round 3) + Race fix contract: when AchievementChecker finishes
+  // a stats recompute for THIS agent, the profile provider must call
+  // vm.achievementRefresh() (NOT vm.refresh() — that would reset
+  // detailLoadState and race against saveProfile's internal refresh).
+  //
+  // achievementRefresh 只刷 stats/achievements/newUnlocks，不调
+  // agentRepo.getById（agent 内容没变），不重置 detailLoadState。
+  // 但 computeStats 必须被调用 —— 这是证明 achievementRefresh 真的跑通
+  // 了（而不是 listener 静默丢弃事件）。
+  test('AchievementChecker.updates event for matching agentId triggers '
+      'vm.achievementRefresh — computeStats runs, getById does NOT', () async {
+    var calls = 0;
+    var computeCalls = 0;
+    when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+      calls++;
+      return activeAgent;
+    });
+    when(() => achievementRepo.computeStats('local-1')).thenAnswer((_) async {
+      computeCalls++;
+      return AgentStats(agentId: 'local-1');
+    });
+
+    final container = createContainer();
+    container.read(agentProfileViewModelProvider('local-1'));
+    await waitForInitComplete(container);
+    expect(calls, 1, reason: 'init 阶段 getById 调 1 次');
+    expect(
+      computeCalls,
+      greaterThanOrEqualTo(1),
+      reason: 'init 阶段 computeStats 至少调 1 次 (refresh 内部强制 recompute)',
+    );
+    final initComputeCalls = computeCalls;
+
+    // Simulate "chat message arrived → AchievementChecker.check('local-1')
+    // → recompute succeeded → updates stream emits 'local-1'".
+    final checker = container.read(achievementCheckerProvider);
+    checker.check('local-1');
+    // check() schedules unawaited(_checkAsync); let the async chain drain.
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    // Race 修复契约：listener 改调 achievementRefresh 后，
+    // 不应再触发 vm.refresh() 的 getById。
+    expect(
+      calls,
+      1,
+      reason:
+          'AchievementChecker.updates 发出本 agentId 后,listener 必须调 '
+          'achievementRefresh（只刷 stats）而不是 refresh（全量刷,会触发 '
+          'getById 第 2 次）。当前 calls=$calls（预期 1）',
+    );
+    // achievementRefresh 自己的 computeStats 必须跑通。
+    expect(
+      computeCalls,
+      greaterThan(initComputeCalls),
+      reason:
+          'achievementRefresh 内部应再次调用 computeStats 来刷新 stats。'
+          '当前 computeCalls=$computeCalls,初始=$initComputeCalls',
+    );
+    // detailLoadState 应保持 LoadData，不能回到 LoadInProgress。
+    final vm = container.read(
+      agentProfileViewModelProvider('local-1').notifier,
+    );
+    expect(
+      vm.state.detailLoadState,
+      isA<LoadData<AgentDetailData>>(),
+      reason: 'achievementRefresh 不应把 detailLoadState 重置为 LoadInProgress',
+    );
+  });
+
+  test('AchievementChecker.updates event for OTHER agentId is filtered '
+      'out (no extra getById — Law 6 / N+1 prevention)', () async {
+    var calls = 0;
+    when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+      calls++;
+      return activeAgent;
+    });
+
+    final container = createContainer();
+    container.read(agentProfileViewModelProvider('local-1'));
+    await waitForInitComplete(container);
+    expect(calls, 1, reason: 'init 阶段 getById 调 1 次');
+
+    // Simulate AchievementChecker firing for a DIFFERENT agent — our
+    // listener must NOT trigger vm.refresh() (would be a wasted round-trip
+    // and could clobber mid-edit isSaving state on our profile page).
+    final checker = container.read(achievementCheckerProvider);
+    checker.check('other-agent-99');
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      calls,
+      1,
+      reason:
+          '其他 agent 的 AchievementChecker 事件应被过滤，'
+          '本 VM 不应 refresh。当前 calls=$calls（预期 1）',
+    );
+  });
+
+  // Round 4 fix #4: ticker listener 捕获异常时必须调 logger.error(),不能
+  // 静默 `() => Future<void>.value()`(Iron Law 8 违反)。
+  test('ticker listener logs error to ILogger when refreshAgent fails '
+      '(Law 8 — no silent catch)', () async {
+    // init 阶段 OK,后续 ticker 触发时 getById 抛异常。
+    when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
+      return activeAgent;
+    });
+    final container = createContainer();
+    container.read(agentProfileViewModelProvider('local-1'));
+    await waitForInitComplete(container);
+
+    // 改 stub 让 ticker-driven refreshAgent 内部抛错
+    when(
+      () => agentRepo.getById('local-1'),
+    ).thenThrow(Exception('ticker refresh failed'));
+
+    final notifier = container.read(agentSyncTickerProvider.notifier);
+    notifier.state = AgentSyncTick(
+      revision: (notifier.state?.revision ?? 0) + 1,
+      instanceId: 'inst-1',
+    );
+    // 让 microtask 链跑完:catchError → logger.error
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    // Iron Law 8: 异常必须 log,不能静默。验证 logger.error 被调过一次。
+    verify(() => logger.error(any(), any())).called(greaterThan(0));
+  });
 }

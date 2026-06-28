@@ -177,37 +177,73 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
 
   /// US-021 v1.1: 响应式重查入口。provider 侧 `ref.listen(agentSyncTickerProvider)`
   /// 在 agents 同步完成后调用，把最新 tombstone 状态写进 state。
+  ///
+  /// Async-gap guards (round 4 fix #3): like [achievementRefresh], this method
+  /// must protect against three concurrent paths racing into the same VM:
+  ///   1. ticker listener calls refreshAgent while init() is still in flight
+  ///   2. ticker listener calls refreshAgent after detail load failed (state
+  ///      is LoadError — should not be silently mutated to LoadData)
+  ///   3. ticker listener calls refreshAgent after the VM is disposed (provider
+  ///      auto-dispose while _agentRepo.getById() is in flight)
+  ///
+  /// Without these guards:
+  ///   - Case 1: an in-flight init's LoadError could be clobbered by a stale
+  ///     getById result from the listener (UI shows mixed data)
+  ///   - Case 2: a LoadError state is silently mutated to LoadData with a
+  ///     half-populated detail (instance/messageCount/stats are all defaults
+  ///     because we never re-ran the parallel loaders)
+  ///   - Case 3: writing to `state` after dispose throws StateError and
+  ///     crashes the provider
   Future<void> refreshAgent() async {
+    // Pre-await guard: only proceed if VM is mounted AND we already have
+    // an initial LoadData snapshot. If init hasn't finished yet or failed,
+    // skip — the next sync tick will retry (init will eventually succeed
+    // or the user will see the proper LoadError).
+    if (!mounted) return;
+    final initial = state.detailLoadState;
+    if (initial is! LoadData<AgentDetailData>) return;
+
     final freshAgent = await _loadFreshAgentForRefresh();
     if (freshAgent == null) return;
+
+    // Post-await guard 1: VM may have been disposed while we awaited
+    // _agentRepo.getById(). Bailing here is safe — setAgent + state update
+    // would throw StateError on a disposed notifier.
+    if (!mounted) return;
+
     setAgent(freshAgent);
-    final detail = state.detailLoadState;
-    if (detail is LoadData<AgentDetailData>) {
-      final current = detail.value;
-      _updateState(
-        (s) => s.copyWith(
-          detailLoadState: LoadData(
-            AgentDetailData(
-              agent: freshAgent,
-              instance: current.instance,
-              messageCount: current.messageCount,
-              stats: current.stats,
-              achievements: current.achievements,
-              dailyActivity: current.dailyActivity,
-            ),
+
+    // Post-await guard 2: state may have transitioned out of LoadData while
+    // we were awaiting (concurrent refresh() during init retry, or
+    // saveProfile's internal refresh() clobbering it). Don't write back a
+    // stale snapshot on top of a fresh LoadError or different LoadData.
+    final after = state.detailLoadState;
+    if (after is! LoadData<AgentDetailData>) return;
+    final current = after.value;
+
+    _updateState(
+      (s) => s.copyWith(
+        detailLoadState: LoadData(
+          AgentDetailData(
+            agent: freshAgent,
+            instance: current.instance,
+            messageCount: current.messageCount,
+            stats: current.stats,
+            achievements: current.achievements,
+            dailyActivity: current.dailyActivity,
           ),
         ),
-      );
-    }
+      ),
+    );
   }
 
   Future<Agent?> _loadFreshAgentForRefresh() async {
-    try {
-      return await _agentRepo.getById(agentId);
-    } catch (e, st) {
-      debugPrint('[AgentProfileViewModel] refreshAgent failed: $e\n$st');
-      return null;
-    }
+    // Do NOT catch internally — let exceptions propagate to the provider
+    // layer's catchError (Law 8 compliant: logs via ILogger). Previously
+    // this caught and returned null, which silently swallowed
+    // `_agentRepo.getById` failures and made the provider's catchError
+    // dead code.
+    return await _agentRepo.getById(agentId);
   }
 
   /// BUG B 修复入口:暴露 agent 的 instanceId,让 provider 层的 ticker
@@ -328,6 +364,9 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
 
   Future<_AchievementResult?> _safeEvaluateAchievements(String id) async {
     try {
+      // 3A: use case 不再有 forceRecompute 参数——use case 现在永远走
+      // computeStats() 全量聚合,cache-first 分支已被删除(详见
+      // evaluate_achievements.dart 的 3A 注释)。
       final result = await _evaluateAchievements.execute(id);
       return (
         stats: result.stats,
@@ -347,6 +386,55 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
       debugPrint('Daily activity load failed for $id: $error\n$stackTrace');
       return const [];
     }
+  }
+
+  /// 局部刷新入口 — 只更新 stats/achievements/newUnlocks 三个字段,
+  /// 不触碰 detailLoadState、agent、instance、messageCount、dailyActivity。
+  ///
+  /// 由 AchievementChecker.updates stream listener 调用,避免与
+  /// [saveProfile] 内部的 `await refresh()` 互相覆盖 detailLoadState
+  /// (race 修复)。listener 触发时不应打断用户在 Config 页的保存流程,
+  /// 也不应让 Profile 页闪一下 `LoadInProgress` 空白状态。
+  ///
+  /// 边界:
+  /// - detailLoadState 是 LoadInProgress (init 未完成): no-op,
+  ///   下次 stream emit 会自然覆盖 (init 完成后)。
+  /// - detailLoadState 是 LoadError: no-op,避免破坏错误状态展示。
+  /// - detailLoadState 是 LoadData: 更新三个字段,detailLoadState 保持
+  ///   LoadData,不重置为 LoadInProgress。
+  ///
+  /// 不更新 isSaving / saveError / saveSuccess — 与保存流程正交,
+  /// 即使在 saveProfile 进行中触发也不会覆盖 Config 页的状态。
+  Future<void> achievementRefresh() async {
+    final current = state.detailLoadState;
+    if (current is! LoadData<AgentDetailData>) return;
+
+    final result = await _safeEvaluateAchievements(agentId);
+    if (result == null) return;
+    if (!mounted) return;
+
+    // Re-read after the async gap: detailLoadState might have transitioned
+    // (e.g. tombstone guard, concurrent refresh). Bail if it's no longer
+    // LoadData — don't clobber a fresh error state with stale stats.
+    final after = state.detailLoadState;
+    if (after is! LoadData<AgentDetailData>) return;
+    final currentDetail = after.value;
+
+    _updateState(
+      (s) => s.copyWith(
+        detailLoadState: LoadData(
+          AgentDetailData(
+            agent: currentDetail.agent,
+            instance: currentDetail.instance,
+            messageCount: currentDetail.messageCount,
+            stats: result.stats,
+            achievements: result.achievements,
+            dailyActivity: currentDetail.dailyActivity,
+          ),
+        ),
+        newUnlocks: result.freshUnlocks,
+      ),
+    );
   }
 
   /// 保存个性化配置（由 AgentConfigPage 调用）。

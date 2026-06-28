@@ -471,10 +471,12 @@ final evaluateAchievementsUseCaseProvider =
     );
 
 final achievementCheckerProvider = Provider<IAchievementChecker>((ref) {
-  return AchievementChecker(
+  final checker = AchievementChecker(
     ref.watch(evaluateAchievementsUseCaseProvider),
     ref.watch(loggerProvider),
   );
+  ref.onDispose(checker.dispose);
+  return checker;
 });
 
 // --- Notifications (US-018) ---
