@@ -477,10 +477,12 @@ case AgentsSyncedEvent():
 
 ### 8.1 已知遗留项（优先级 P3，建议后续 Story 处理）
 
-- **`deleteByInstanceId` 注释**：建议补"与 tombstone 软删路径不同；硬删触发 FK CASCADE，清 tombstoned agent" 的语义说明。
-- **`i_agent_repo.dart:57-67` docstring**：建议补"`watchById` 不接收 `syncFromGateway` 的 `customStatement` 写入，需由 ticker + `refreshAgent` 双保险驱动"。
-- **`drift_agent_repo.dart:44-47` `getById`**：建议补"`INTENTIONALLY UNFILTERED` —— OutboxProcessor 依赖此契约判断 tombstone 状态"。
-- **`drift_agent_repo.dart getAll` docstring**：建议注明"默认过滤 tombstoned/hidden agents；不过滤版走 `getAllByInstanceId`"。
+> **状态更新**：以下 4 项 docstring 微修已合入（独立 commit）。代码改动 0 行，仅 docstring 增补。
+
+- [x] **`deleteByInstanceId` 注释**（`drift_agent_repo.dart:322-329`）：补"硬删 vs tombstone 软删语义差异 + tombstoned agent 也被一并清掉（因为实例不存在了）"。
+- [x] **`i_agent_repo.dart:57-77` `watchById` docstring**：修正"DB 任意写入...都会 emit 新值"误导，明确 `syncFromGateway` 的 tombstone / revive 步骤走 `customStatement` **不**触发 Drift reactivity；当前通过 `agentSyncTickerProvider` + `ChatViewModel.refreshAgent` 双保险弥补。
+- [x] **`drift_agent_repo.dart:43-66` `getById` 注释**：补"`INTENTIONALLY UNFILTERED` —— OutboxProcessor + ChatViewModel.send() 依赖此契约判断 tombstone 状态"；列出已知调用方与文件:行号。
+- [x] **`drift_agent_repo.dart:36-49` `getAll` docstring**：注明"默认过滤 tombstoned/hidden agents；不过滤版走 `getAllByInstanceId`"，并补充与 `getByInstanceId` 的粒度差异（跨实例聚合 vs 单实例列表）。
 
 ### 8.2 AC9 关闭信号（Phase B 已实施）
 

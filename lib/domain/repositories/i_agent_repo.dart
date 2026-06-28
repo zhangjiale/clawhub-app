@@ -56,14 +56,24 @@ abstract class IAgentRepo {
 
   /// 响应式订阅指定 agent 的数据变化。
   ///
-  /// Drift 实现基于 `agents` 表的 `.watchSingleOrNull()`，DB 任意写入
-  /// （updateFullProfile / updateLocalProfile / clearAvatar / syncFromGateway /
-  /// togglePin）都会 emit 新值。InMemory 实现基于 `StreamController.broadcast`
-  /// + 手动 emit（仿 InMemoryMessageRepo._messagesChanged）。
+  /// Drift 实现基于 `agents` 表的 `.watchSingleOrNull()`，**Drift typed update**
+  /// 触发的 commit 会 emit 新值（updateFullProfile / updateLocalProfile /
+  /// clearAvatar / togglePin / `syncFromGateway` 的 upsert 路径）。
   ///
-  /// 订阅时立即 emit 当前行（seed event），后续每次 commit emit 一次。
-  /// tombstoned agent（removed_at != null）正常 emit，由调用方判断 isRemoved。
-  /// 不存在的 localId 立即 emit null 并保持 open（等待后续创建）。
+  /// **重要限制**：`syncFromGateway` 的 tombstone / revive 步骤走
+  /// `customStatement`（SQLite 批量 UPDATE 避免 N+1），**不**触发 Drift
+  /// reactivity — watchById 订阅者不会收到 tombstone 翻转通知。当前通过
+  /// `agentSyncTickerProvider` 驱动的 `ChatViewModel.refreshAgent` 双保险
+  /// 弥补此 gap；未来若给 agents 表加新的 `.watch()` stream 消费者，需评估
+  /// 是否要改 Drift typed update 以保证订阅一致性。
+  ///
+  /// InMemory 实现基于 `StreamController.broadcast` + 手动 emit（仿
+  /// InMemoryMessageRepo._messagesChanged）。
+  ///
+  /// 订阅时立即 emit 当前行（seed event），后续每次 Drift 触发的 commit
+  /// emit 一次。tombstoned agent（removed_at != null）正常 emit，由调用方
+  /// 判断 isRemoved。不存在的 localId 立即 emit null 并保持 open（等待后续
+  /// 创建）。
   Stream<Agent?> watchById(String localId);
 
   /// 清除头像 — 将 avatarUrl 显式置为 null。
