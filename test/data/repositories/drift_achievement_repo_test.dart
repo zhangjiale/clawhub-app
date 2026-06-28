@@ -2,7 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/native.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/data/repositories/drift_achievement_repo.dart';
-import 'package:claw_hub/domain/models/achievement.dart';
 
 Future<db.AppDatabase> _createTestDb() async {
   final database = db.AppDatabase(

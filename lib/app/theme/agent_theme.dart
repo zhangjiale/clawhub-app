@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
-import 'package:claw_hub/app/theme/theme.dart';
 
 /// Per-agent theme extension that propagates the agent's primary color
 /// down the widget tree via [Theme.of(context).extension<AgentTheme>()].

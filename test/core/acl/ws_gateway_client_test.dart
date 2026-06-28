@@ -402,8 +402,6 @@ void main() {
       // with a bare sessionKey. chat.send response: ok=true, payload.runId.
       final agentIdA = 'agent-aaa';
       final agentIdB = 'agent-bbb';
-      final sessionKeyA = 'agent:$agentIdA:main';
-      final sessionKeyB = 'agent:$agentIdB:main';
 
       for (final agentId in [agentIdA, agentIdB]) {
         // Fire sendMessage — it awaits the chat.send response, so we

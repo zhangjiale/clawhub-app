@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
-import 'package:claw_hub/domain/models/conversation.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';

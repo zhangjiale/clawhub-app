@@ -485,7 +485,7 @@ void main() {
     });
 
     test('message stream: agent reply is inserted into repo', () async {
-      final vm = await setupAgentAndInit();
+      await setupAgentAndInit();
 
       final reply = Message(
         clientId: 'reply-2',
@@ -571,7 +571,7 @@ void main() {
 
     test('message stream: tool-call message does NOT pollute conversation '
         'preview (GeneratePreview would otherwise emit "[工具调用]")', () async {
-      final vm = await setupAgentAndInit();
+      await setupAgentAndInit();
       final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
 
       // Establish a real text preview first.
@@ -623,7 +623,7 @@ void main() {
 
     test('message stream: a late/out-of-order older message does NOT regress '
         'conversation ordering (lastMessageTime must not rewind)', () async {
-      final vm = await setupAgentAndInit();
+      await setupAgentAndInit();
       final canonicalConvId = Conversation.generateId('inst-1', 'local-1');
 
       // Newer agent reply lands first.

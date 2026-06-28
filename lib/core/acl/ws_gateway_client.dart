@@ -22,7 +22,7 @@ import 'replayable_connection_state.dart';
 /// - 事件：`agent`（thinking / message / tool / lifecycle）、`tick`
 /// - 设备身份：委托给 [IDeviceIdentityProvider]（Ed25519 密钥对 + V3 签名）
 ///
-/// 领域对象映射由本类完成（_parseAgent, _parseMessage, _parseToolCall）。
+/// 领域对象映射由本类完成（_parseAgent, _parseMessage）。
 ///
 /// 每个实例的连接相关资源内聚于 [_InstanceConnection]。
 class WsGatewayClient implements IGatewayClient {
@@ -1139,21 +1139,6 @@ class WsGatewayClient implements IGatewayClient {
     return value < 1000000000000 ? value * 1000 : value;
   }
 
-  ToolCall _parseToolCall(Map<String, dynamic> json) {
-    return ToolCall(
-      id: json['id'] as String? ?? _uuid.v4(),
-      messageId: json['messageId'] as String? ?? '',
-      toolName:
-          json['name'] as String? ?? json['toolName'] as String? ?? 'unknown',
-      status: _parseToolCallStatus(json['status'] as String?),
-      inputArgs: json['input'] as String? ?? json['inputArgs'] as String?,
-      outputResult:
-          json['output'] as String? ?? json['outputResult'] as String?,
-      startedAt: json['startedAt'] as int?,
-      endedAt: json['endedAt'] as int?,
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // 内部：枚举映射
   // ---------------------------------------------------------------------------
@@ -1172,15 +1157,6 @@ class WsGatewayClient implements IGatewayClient {
       'file' => MessageType.file,
       'tool_call' || 'toolCall' => MessageType.toolCall,
       _ => MessageType.text,
-    };
-  }
-
-  ToolCallStatus _parseToolCallStatus(String? status) {
-    return switch (status) {
-      'running' || 'in_progress' => ToolCallStatus.running,
-      'success' || 'completed' => ToolCallStatus.success,
-      'failed' || 'error' => ToolCallStatus.failed,
-      _ => ToolCallStatus.pending,
     };
   }
 

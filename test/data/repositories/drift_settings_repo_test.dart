@@ -6,7 +6,6 @@ import 'package:claw_hub/core/debug_print_logger.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/data/repositories/drift_settings_repo.dart';
-import 'package:claw_hub/domain/models/clear_all_result.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 
 Future<db.AppDatabase> _createTestDb() async {
