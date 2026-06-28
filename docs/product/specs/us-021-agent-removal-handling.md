@@ -39,7 +39,7 @@
 
 ### 2.2 拒绝的方案
 
-- **Option A（硬删 + FK CASCADE）**：永久丢失 messages/conversations/agent_stats；远端误判时无法恢复；`syncFromGateway` 还需复刻 `deleteByInstanceId` 的 FTS5 purge 逻辑（当前缺失）。
+- **Option A（硬删 + FK CASCADE）**：永久丢失 messages/conversations；`agent_stats` 缓存表已于 round 3B 删除（统计走 use case 全量聚合），所以不在此担忧范围；远端误判时无法恢复；`syncFromGateway` 还需复刻 `deleteByInstanceId` 的 FTS5 purge 逻辑（当前缺失）。
 - **Option B（tombstone 合并列）**：sync 的 auto-revival 与"用户隐藏"语义冲突——用户隐藏后 10 秒内 Agent 又冒出来。
 - **Option D（纯 hidden bool）**：无时间戳、无原因区分、无 sync 保护；只是把问题换了个壳。
 

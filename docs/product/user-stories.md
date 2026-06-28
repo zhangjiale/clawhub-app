@@ -420,7 +420,7 @@
 - [ ] **AC2（列表过滤）**：Given Agent C 被 tombstone，When 用户打开虾列表（`getAll`）、消息页（`getByInstanceId`）或全局搜索，Then C 不出现在结果中（历史消息行仍保留在 messages 表中）
 - [ ] **AC3（OutboxProcessor 跳过）**：Given Agent C 被 tombstone 且其 PENDING/FAILED 消息仍在 outbox 中，When OutboxProcessor 下次 flush，Then 这些消息被跳过（不再调用 `chat.send`），无新 FAILED 产生
 - [ ] **AC4（复活）**：Given Agent C 被 tombstone，When Gateway 端重建同 `remoteId` 的 Agent 并再次同步，Then `removed_at` 被清空、Agent C 重新出现在所有列表中，**历史消息/会话/统计完整可见**
-- [ ] **AC5（FK 不级联）**：Given Agent C 被 tombstone，When 查询 conversations / messages / agent_stats，Then 相关数据完整保留（tombstone 是软删，不触发 FK CASCADE）
+- [ ] **AC5（FK 不级联）**：Given Agent C 被 tombstone，When 查询 conversations / messages，Then 相关数据完整保留（tombstone 是软删，不触发 FK CASCADE）。注: `agent_stats` 缓存表已于 round 3B 删除,统计由 use case 全量实时聚合,无表可查
 - [ ] **AC6（实例硬删保持原状）**：Given 用户从实例管理页删除整个 Instance，When `deleteByInstanceId` 执行，Then **行为不变**——所有 Agent（含 tombstoned）及其级联数据被硬删（FK CASCADE）
 - [ ] **AC7（空列表合法）**：Given 远端 `agents.list` 返回 `agents: []`，When syncFromGateway 接收到该响应，Then **正常走 tombstone 流程把本地全部打标**——协议保证 scope 不足时 `fetchAgents` 抛错（不走到本步），`agents: []` 在协议下唯一含义为"Gateway 现已无 Agent"，不应跳过
 - [ ] **AC8（ChatRoom 路由 guard）**：Given Agent C 被 tombstone，When 用户通过任何路径（AgentList 残留入口、深度链接、通知、历史路由、Back Stack 恢复）打开 C 的 ChatRoom，Then 页面在首帧完成前关闭并 toast 提示"该 Agent 已从 Gateway 移除"，**不进入聊天界面**

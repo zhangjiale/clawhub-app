@@ -204,8 +204,7 @@ xia_hub/
 │   │   │   │   ├── achievement_item.dart     # 单个成就行
 │   │   │   │   └── milestone_celebration.dart # 里程碑庆祝动画 Overlay
 │   │   │   └── providers/
-│   │   │       ├── agent_stats_provider.dart       # 统计数据计算
-│   │   │       └── achievement_provider.dart       # 成就解锁状态
+│   │   │       └── agent_profile_providers.dart    # ViewModel + reactive ticker (round 4)
 │   │   │
 │   │   ├── agent_config/             # --- 虾个性化配置 ---
 │   │   │   ├── pages/
@@ -1121,15 +1120,20 @@ final conversationListProvider = StateNotifierProvider<ConversationListNotifier,
 
 // ===== 虾详情 =====
 
-/// Agent 统计数据 Provider
-final agentStatsProvider = FutureProvider.family<AgentStats, String>((ref, agentId) async {
-  final db = ref.watch(databaseProvider);
-  return db.statsDao.getStatsForAgent(agentId);
-});
+// Round 3B: 删除 `agent_stats` 缓存表后,以下 Provider / DAO 全部下线。
+// AgentStats 统计由 EvaluateAchievementsUseCase 全量实时聚合,不再有
+// 单独的 statsDao。下方代码片段保留为历史伪代码,仅供架构叙事参考,
+// 实际实现见 `lib/features/agent_profile/viewmodels/agent_profile_view_model.dart`。
+// (历史伪代码)
+// final agentStatsProvider = FutureProvider.family<AgentStats, String>((ref, agentId) async {
+//   final db = ref.watch(databaseProvider);
+//   return db.statsDao.getStatsForAgent(agentId);
+// });
 
 /// 成就列表 Provider
 final achievementListProvider = Provider.family<List<Achievement>, String>((ref, agentId) {
-  final stats = ref.watch(agentStatsProvider(agentId));
+  // Round 3B: stats 来自 use case 实时聚合,不再 watch agentStatsProvider。
+  // 实际接线见 AgentProfileViewModel._safeEvaluateAchievements。
   // 根据统计数据判断成就解锁状态
   return evaluateAchievements(stats);
 });

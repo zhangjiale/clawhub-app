@@ -156,18 +156,11 @@ CREATE TABLE quick_commands (
     FOREIGN KEY (agent_id) REFERENCES agents(local_id) ON DELETE CASCADE
 );
 
--- 5.2 虾成长面板统计表 (agent_stats)
--- 对齐: 架构 vFinal PRD 3.9 (成长面板), 采用事件驱动增量更新
-CREATE TABLE agent_stats (
-    agent_id TEXT PRIMARY KEY,                 -- 关联 agents.local_id
-    total_msgs INTEGER DEFAULT 0,            -- 总消息数
-    tool_calls INTEGER DEFAULT 0,            -- 工具调用次数
-    active_days INTEGER DEFAULT 0,           -- 活跃天数(有对话的天数)
-    consecutive_days INTEGER DEFAULT 0,      -- 连续活跃天数
-    first_chat_date INTEGER,                 -- 首次对话日期(YYYYMMDD)
-    last_chat_date INTEGER,                  -- 最后对话日期(YYYYMMDD)
-    FOREIGN KEY (agent_id) REFERENCES agents(local_id) ON DELETE CASCADE
-);
+-- 5.2 虾成长面板统计(已删除, round 3B schema v6→v7)
+-- 历史: 原 agent_stats 缓存表于 round 3B 删除(写无读路径,统计由
+-- EvaluateAchievementsUseCase 全量实时聚合)。`AgentStats` domain model
+-- 仍存在(`lib/domain/models/agent_stats.dart`),仅作为结果类型。
+-- DROP TABLE IF EXISTS agent_stats 已在 §1 清理序列中处理。
 
 -- 5.3 免打扰通知暂存队列 (notification_queue)
 -- 对齐: 架构 vFinal 5.9 (推送通知与后台保活引擎)
