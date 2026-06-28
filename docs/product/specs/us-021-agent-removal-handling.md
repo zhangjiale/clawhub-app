@@ -482,9 +482,11 @@ case AgentsSyncedEvent():
 - **`drift_agent_repo.dart:44-47` `getById`**：建议补"`INTENTIONALLY UNFILTERED` —— OutboxProcessor 依赖此契约判断 tombstone 状态"。
 - **`drift_agent_repo.dart getAll` docstring**：建议注明"默认过滤 tombstoned/hidden agents；不过滤版走 `getAllByInstanceId`"。
 
-### 8.2 AC9 关闭信号（Phase B 待实施）
+### 8.2 AC9 关闭信号（Phase B 已实施）
 
-详见 user-stories.md AC9 描述。当前 `send()` 兜底仅 set `LoadError` 状态，未触发 `Navigator.pop()`；ChatRoom 在 tombstone 检测后会停留在路由栈但显示错误视图，而非 pop 回上一页面。计划在 Phase B 增加 `closeRequested` 状态 + `ref.listen` 触发 `Navigator.pop()`。
+详见 user-stories.md AC9 描述（已勾选 `[x]`）。当前 `send()` 在两道 tombstone guard（cached / tombstone-suspect recheck）中除原有 `LoadError` 外追加 `closeRequested: true`，`chat_room_page.dart` 通过新增 `ref.listen` 检测 false→true 转换并 `addPostFrameCallback` 调 `_handleBack()` → `smartBack(context, source: widget.source)` → `Navigator.pop()`（保留 source 参数让 Smart Back Stack 正确回到来源 Tab）。测试：`test/features/chat_room/chat_view_model_close_requested_test.dart`（4 用例）。
+
+**实现选择**：一次性 `bool` 字段而非 `Stream<void>` —— 一次性信号，set true 后不再重置；pop 后 page listener 自然释放，残留 true 状态对其他 watch 该 VM 的 consumer 无影响（VM 不在其他页面被观察）。
 
 ---
 

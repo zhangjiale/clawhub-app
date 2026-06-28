@@ -201,6 +201,18 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       }
     });
 
+    // US-021 AC9: send() 检测到 agent tombstoned 时设置 closeRequested=true,
+    // 此 listener 触发 Navigator.pop() 回上一页面 (走 smartBack 保留 source 参数)。
+    // 一次性信号 —— prev.closeRequested 不为 true 时才触发,避免 stale state 重建
+    // 时重复 pop。post-frame 回调避免在 build() 阶段调用导航 API。
+    ref.listen(chatViewModelProvider(params), (prev, next) {
+      if (next.closeRequested && (prev?.closeRequested ?? false) == false) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _handleBack();
+        });
+      }
+    });
+
     // Apply search-result highlight when messages first load, then auto-fade.
     ref.listen(chatViewModelProvider(params), (prev, next) {
       final highlightId = widget.highlightMessageId;

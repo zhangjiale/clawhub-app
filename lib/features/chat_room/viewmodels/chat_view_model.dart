@@ -76,6 +76,14 @@ class ChatSessionState {
   /// 现在只有真实内容变更才会 bump，seed event 被 contentEquals 过滤掉。
   final int contentRevision;
 
+  /// US-021 AC9: 一次性关闭信号。`send()` 检测到 agent tombstoned 时
+  /// (cached 或 tombstone-suspect recheck 路径) 置 true,UI 层
+  /// ref.listen 触发 Navigator.pop() 回上一页面。一旦置 true 不再重置
+  /// —— pop 后 VM 在路由栈上的 listener 自然释放,残留 true 状态无害
+  /// (VM 不会在其他地方被观察)。默认 false,不影响现有 ==/hashCode
+  /// 之外的对比语义。
+  final bool closeRequested;
+
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
@@ -87,6 +95,7 @@ class ChatSessionState {
     this.highlightedMessageId,
     this.highlightedQuery,
     this.contentRevision = 0,
+    this.closeRequested = false,
   });
 
   ChatSessionState copyWith({
@@ -102,6 +111,7 @@ class ChatSessionState {
     Object? highlightedMessageId = CopyWithSentinel.instance,
     Object? highlightedQuery = CopyWithSentinel.instance,
     int? contentRevision,
+    bool? closeRequested,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -120,6 +130,7 @@ class ChatSessionState {
         this.highlightedQuery,
       ),
       contentRevision: contentRevision ?? this.contentRevision,
+      closeRequested: closeRequested ?? this.closeRequested,
     );
   }
 
@@ -136,7 +147,8 @@ class ChatSessionState {
           retryFeedback == other.retryFeedback &&
           highlightedMessageId == other.highlightedMessageId &&
           highlightedQuery == other.highlightedQuery &&
-          contentRevision == other.contentRevision;
+          contentRevision == other.contentRevision &&
+          closeRequested == other.closeRequested;
 
   @override
   int get hashCode => Object.hash(
@@ -150,6 +162,7 @@ class ChatSessionState {
     highlightedMessageId,
     highlightedQuery,
     contentRevision,
+    closeRequested,
   );
 }
 
@@ -757,6 +770,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // US-021: 缓存的 _agent 已被 init 标记为 tombstoned → 早退。
     // init 在 agent.isRemoved 时已短退 (line 329-335),后续 send 看到
     // _agent.isRemoved=true 不应继续发消息,直接 LoadError。
+    //
+    // US-021 AC9: 同时设置 closeRequested=true,触发 chat_room_page
+    // ref.listen 调用 Navigator.pop() 回上一页面。仅在 LoadError 之上
+    // 增强 UX,不替代错误展示。
     if (agent!.isRemoved) {
       _updateState(
         (s) => s.copyWith(
@@ -765,6 +782,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             'Please go back and try again.',
             StackTrace.current,
           ),
+          closeRequested: true,
         ),
       );
       debugPrint(
@@ -778,6 +796,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // agent。无 ticker fire 时 init 时刻的 _agent 缓存与 DB 一致
     // (tombstone 仅由 syncFromGateway 写入,而 sync 必触发 ticker),
     // 复用缓存避免每发一次都 getById 一次 (N send = N 冗余 read)。
+    //
+    // US-021 AC9: 重查后 freshAgent 仍 tombstoned → 同时设置
+    // closeRequested=true,与缓存路径语义对齐。
     if (_tombstoneSuspect) {
       final freshAgent = await _agentRepo.getById(agentId);
       _tombstoneSuspect = false;
@@ -789,6 +810,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               'Please go back and try again.',
               StackTrace.current,
             ),
+            closeRequested: true,
           ),
         );
         debugPrint(
