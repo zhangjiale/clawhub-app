@@ -1,15 +1,9 @@
-// package:meta is pulled in transitively (flutter SDK + every Flutter
-// plugin), so we use the annotation without taking an explicit dep on it.
-// Suppress the lint to avoid a pubspec churn for what is effectively a
-// zero-cost const annotation.
-// ignore_for_file: depend_on_referenced_packages
-
 import 'dart:async';
 
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
-// `@visibleForTesting` annotation — package:meta is transitive dep.
+// `@visibleForTesting` annotation — explicit dep on package:meta in pubspec.
 import 'package:meta/meta.dart';
 
 /// 独立的成就检查服务 — 不继承 StateNotifier，不持有 UI 状态。

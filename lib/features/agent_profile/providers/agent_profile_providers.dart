@@ -55,6 +55,14 @@ final agentProfileViewModelProvider =
       );
       vm.init();
 
+      // Round 4 P1 cleanup: hoist logger reference once at family body top.
+      // Two listeners below (ticker + AchievementChecker.updates) both
+      // catch errors and route to ILogger — reading loggerProvider twice
+      // per family closure was redundant. Note: ref.read is correct here
+      // (not ref.watch) because we want a stable logger instance for the
+      // lifetime of this VM, not a rebuild trigger.
+      final logger = ref.read(loggerProvider);
+
       // US-021 v1.1: 订阅 sync ticker，让本 provider 在 agents 同步完成后
       // （含 tombstone / 复活）自动重建。与 chat_providers.dart:72-74 同模式。
       //
@@ -72,7 +80,6 @@ final agentProfileViewModelProvider =
         // 处理异步错误。Iron Law 8:catchError 必须把错误交给 ILogger,
         // 不能 `() => Future<void>.value()` 静默吞掉——那样 agent 同步
         // 链路上的失败在生产中完全看不见。
-        final logger = ref.read(loggerProvider);
         unawaited(
           vm.refreshAgent().catchError((Object e, StackTrace st) {
             logger.error(
@@ -118,13 +125,11 @@ final agentProfileViewModelProvider =
             // 已被 _logger.error 记录,这里捕获的是 listener 本身抛出
             // 的非预期错误(例如 vm 已 dispose 后 state 写入)。通过
             // 同一 logger 集中输出,排查时一处即可看到全链路。
-            ref
-                .read(loggerProvider)
-                .error(
-                  '[agentProfileProvider] achievementRefresh listener '
-                  'failed for agent $agentId: $e',
-                  st,
-                );
+            logger.error(
+              '[agentProfileProvider] achievementRefresh listener '
+              'failed for agent $agentId: $e',
+              st,
+            );
             return Future<void>.value();
           }),
         );
