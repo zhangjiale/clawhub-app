@@ -65,11 +65,11 @@
 | `lib/domain/models/agent.dart` | 加 2 个 `final int?` 字段（`removedAt` / `hiddenAt`，毫秒时间戳）+ 构造函数追加 2 个可选命名参数 + `copyWith` body 显式透传（**不暴露这两个参数**，见下）+ 加 2 个 getter (`isRemoved` / `isHidden`) | ~15 行 |
 | `lib/data/local/mapping/agent_mapper.dart` | 双向映射新列；这是**唯一**允许"内存中刷新 tombstone 状态"的路径 | ~4 行 |
 | `lib/data/repositories/drift_agent_repo.dart` | `syncFromGateway` 加 diff（batch SQL，Law 6 合规）；`getAll` / `getByInstanceId` 改调新命名查询加默认过滤 | ~40 行 |
-| `lib/domain/usecases/outbox_processor.dart` | guard 从 `agent == null` 改为 `agent == null \|\| agent.isRemoved` | ~3 行 |
-| `lib/features/message_hub/providers/message_hub_providers.dart` | `conversationListProvider:41` guard 同步升级 | ~1 行 |
-| `lib/app/di/providers.dart` | `AgentsSyncedEvent` 分支同步 `ref.invalidate(conversationListProvider)`，让 UI provider 跟着 sync 完成失效 | ~1 行 |
-| `lib/features/chat_room/chat_room_page.dart` | 路由 guard：build 起手检查 `isRemoved`，是则 post-frame pop + toast | ~15 行 |
-| `lib/features/chat_room/viewmodels/chat_view_model.dart` | `send()` 入 outbox 前重查 `agent.isRemoved`，是则拒发并 emit 关闭信号 | ~10 行 |
+| `lib/domain/usecases/outbox_processor.dart` | guard 从 `agent == null` 改为 `agent == null \|\| agent.isRemoved`；v1.1 升级为批量转 `MessageStatus.expired`（`outbox_processor.dart:147-156, 190-209`） | ~3 行（v1）+ ~20 行（v1.1 EXPIRED 批量） |
+| `lib/features/message_hub/providers/message_hub_providers.dart` | `conversationListProvider:67-69` guard 用 `isRemoved` skip tombstoned conversation（**注：实际通过 watch `agentSyncTickerProvider` 自动失效，无需 `providers.dart` 显式 invalidate**） | ~3 行 |
+| `lib/app/di/providers.dart` | 无需修改：`AgentsSyncedEvent` 已通过 `agentSyncTickerProvider` 触发所有订阅它的 provider 重建；`message_hub_providers.dart:40` 已在 watch ticker | 0 行 |
+| `lib/features/chat_room/chat_room_page.dart` | 路由 guard：`build` 中检查 `agent.isRemoved`，是则渲染 `AgentRemovedPlaceholder` 占位页（`lib/ui_kit/placeholders/agent_removed_placeholder.dart`），与 AgentProfilePage / AgentConfigPage 共用 widget | ~15 行 |
+| `lib/features/chat_room/viewmodels/chat_view_model.dart` | `send()` 入 outbox 前重查 `agent.isRemoved`，是则拒发并 emit 关闭信号；三道护栏：init 缓存、`_tombstoneSuspect` 标志、refreshAgent 复活路径 | ~10 行 |
 | **测试文件** | 详见 §6 | 见下 |
 
 **总计**：~11 个生产代码文件，~101 行净增量；5-6 个新测试文件 / 用例组。
@@ -87,7 +87,7 @@ hidden_at  INTEGER NULL,   -- v2 预留：用户主动隐藏；v1 不写入
 
 ```dart
 @override
-int get schemaVersion => 6;  // 原 5
+int get schemaVersion => 7;  // 原 5
 
 @override
 MigrationStrategy get migration {
@@ -101,10 +101,19 @@ MigrationStrategy get migration {
         await migrator.addColumn(agents, agents.removedAt);
         await migrator.addColumn(agents, agents.hiddenAt);
       }
+      if (from < 7) {
+        // 后置 US-019 重构：删除 agent_stats 缓存表（round 3B）。
+        // 统计改走 use case 全量实时聚合，无迁移数据需求。
+        await migrator.deleteTable('agent_stats');
+      }
     },
   );
 }
 ```
+
+**Schema 版本演进历史**（实施后追补）：
+- v5 → v6（本 Story）：tombstone 列 + `getAllActiveAgents`/`getActiveAgentsByInstance` 命名查询
+- v6 → v7（后续 US-019 重构）：删除 `agent_stats` 缓存表；统计改 use case 实时聚合
 
 **关于 `insertAgent` 命名查询（已 grep 确认，必须改）**：`schema.drift:175-178` 的 `insertAgent` 是显式命名查询，写死了 11 列。加列后**必须**追加新列到 INSERT 列表，否则 codegen 报错或新插入的 agent `removed_at`/`hidden_at` 始终为 DB default（SQLite 对 INSERT 缺列会填 NULL，本项目这里碰巧可接受，但仍应显式列出来保持一致性）。建议追加 `, removed_at, hidden_at` 与 VALUES 末尾两个 `:removedAt, :hiddenAt`，调用方传 `null`。
 
@@ -272,17 +281,19 @@ if (agent == null || agent.isRemoved) {
 }
 ```
 
-**Provider 失效传播** —— `lib/app/di/providers.dart:274-275` 的 `AgentsSyncedEvent` 分支：
+**Provider 失效传播** —— 实际方案**不**用 `ref.invalidate`：
 
 ```dart
+// lib/app/di/providers.dart - AgentsSyncedEvent 分支（无需修改）
 case AgentsSyncedEvent():
   ref.read(agentSyncTickerProvider.notifier).state++;
-  ref.invalidate(conversationListProvider);  // 新增：让消息中心 provider 跟着失效
 ```
 
-**为什么需要**：`agentListProvider` 已订阅 `agentSyncTickerProvider`（agent_providers.dart:15），sync 后自动重建。但 `conversationListProvider`（message_hub_providers.dart:33）**没订阅 ticker**——只在首次进消息 tab 时构建，构建后没有失效信号就一直缓存。这意味着即使我们把它的 guard 升级为 `agent.isRemoved` skip，**生效条件是 provider 重建**——而 sync 后 provider 不重建，缓存的还是 sync 前的旧结果（`agent.isRemoved == false`），UI 上 tombstoned conversation 依旧显示。`ref.invalidate` 让 FutureProvider 失效，用户下一次访问消息 tab 时自然重建并应用新 guard，零浪费。
+**为什么不需要 `ref.invalidate`**：`message_hub_providers.dart:40` 的 `conversationListProvider` 实际已 `ref.watch(agentSyncTickerProvider)`（不同于本 spec 原稿假设的"未订阅 ticker"）。ticker 在 `AgentsSyncedEvent` 触发时递增，所有 watch 它的 provider 自动重建——`agentListProvider`、`conversationListProvider`、未来任何 watch ticker 的 provider 一并失效。**比 `ref.invalidate` 更通用**：未来若新增依赖 agent 数据的 provider，只需在定义处加一行 `ref.watch(agentSyncTickerProvider)` 即自动跟随 sync 刷新，无需逐个手工 invalidate。
 
 `OutboxProcessor` 不受此问题影响——它每次调度 `process()` 时重新 `getById`，拿到的总是最新 DB 值。
+
+**ChatViewModel watch 路径**：与上述 ticker 失效并行的还有 `drift_agent_repo.watchById`（`drift_agent_repo.dart:81-88`）。但 `syncFromGateway` 的 tombstone/revive 步骤用 `customStatement`，**不触发 `watchSingleOrNull` 的 stream 失效**。当前 ChatViewModel 通过 `agentSyncTickerProvider` 驱动的 `_tombstoneSuspect` 标志 + `refreshAgent`（`chat_view_model.dart:1066-1097`）作为双保险，**双保险设计有效但 `i_agent_repo.dart` 的 `watchById` docstring 未反映这一限制**——详见 §3.5 第 6 项。
 
 ### 3.4 不动的代码
 
@@ -291,6 +302,24 @@ case AgentsSyncedEvent():
 - **`updateLocalProfile` / `togglePin` / `clearAvatar`**：不需要变动。
 - **`IAgentRepo` 接口**：**零变更**。tombstone 字段是 `Agent` 上的 `final` + getter，通过 mapper 从 DB 读取注入；公共方法签名不变。`copyWith` **不暴露**这两个字段（见 §3.3）。
 - **`in_memory_repos.dart`**：legacy 路径，不维护（CLAUDE.md 已说明）。
+
+### 3.5 v1.x 实施中的 Silent Additions（spec 未记录但代码已落地）
+
+按实施时序倒序：
+
+1. **`AgentRemovedPlaceholder` widget 统一三处占位页**（v1.2）—— spec §3.1 描述 ChatRoom guard 为"inline pop + toast"，实际抽取为共享 widget（`lib/ui_kit/placeholders/agent_removed_placeholder.dart`），由 ChatRoom + AgentProfilePage + AgentConfigPage 共用，避免三处文案 drift。
+
+2. **OutboxProcessor v1.1：tombstoned-agent 消息批量转 `MessageStatus.expired`**（`outbox_processor.dart:147-156, 190-209`）—— spec AC3 仅要求"跳过"，实际升级为批量 EXPIRED，避免 24h PENDING 卡死（旧 PENDING 消息不再无限重试）。
+
+3. **`ChatViewModel.refreshAgent` + `_tombstoneSuspect` 标志**（`chat_view_model.dart:271, 1066-1097`）—— agent 同步完成后跨实例 ticker 驱动 ChatRoom UI 重建；`refreshAgent` 检测 tombstone→alive 后补订阅，防订阅泄漏。
+
+4. **`watchById` + `chatSessionState.contentRevision`**（`chat_view_model.dart:244, 69-77`）—— 替代 revision 计数器 hack，让 `setAgent` 的 contentEquals-过滤 emit 触发 Riverpod rebuild。
+
+5. **`Agent.contentEquals` + `operator ==` 拆为 identity-only**（`agent.dart:53-93, 168-176`）—— 修 Riverpod dedup blindspot（tombstone 转换不触发 rebuild）。由 `Model == Identity Blindspot` memory 文档驱动。
+
+6. **`AgentTombstonedExt.isTombstoned` 扩展**（`agent.dart:198-200`）—— `agent?.isRemoved ?? false` 模式统一抽到 domain 层，三处 UI 改用。
+
+7. **`getAllByInstanceId` 不过滤出口**（`drift_agent_repo.dart:18-34`）—— spec §3.4 仅列 `findByCompositeKey` 为不过滤，实际新增 `getAllByInstanceId`（host 切换警告场景使用），v2 "显示已移除" 开关会优先复用此方法。
 
 ---
 
@@ -424,25 +453,38 @@ case AgentsSyncedEvent():
 
 ---
 
-## 8. 实施待办（顺序执行）
+## 8. 实施待办（追溯记录）
 
-1. [ ] **Spike 验证（已完成 ✅）**：`conversationListProvider` 的 null skip 位置 = `lib/features/message_hub/providers/message_hub_providers.dart:40-41`（已加入 §3.1 文件清单）
-2. [ ] **TDD Step 1-7**：按 §5 顺序逐步推进，每步独立 commit
-3. [ ] **手动验证**：用 `MockGatewayClient`（`lib/core/acl/mock_gateway_client.dart`）模拟"删 agent → 重连 → 复活"完整链路
-4. [ ] **Codegen 顺序核验**：`schema.drift` → `dart run build_runner build` → `database.dart` onUpgrade → mapper/repo，顺序颠倒会编译失败（详见 §3.2）
-5. [ ] **跑 `flutter analyze`**：零警告
-6. [ ] **跑 pre-commit hook**：Iron Laws 1/6/8/11 自动校验通过
-7. [ ] **代码评审 checklist**：
-   - [ ] `findByCompositeKey` 注释明确"intentionally unfiltered"
-   - [ ] `deleteByInstanceId` 注释说明与 tombstone 路径的语义差
-   - [ ] `OutboxProcessor` guard 已升级
-   - [ ] `conversationListProvider` 已升级 null skip → isRemoved skip
-   - [ ] `providers.dart` 的 `AgentsSyncedEvent` 分支已加 `ref.invalidate(conversationListProvider)`
-   - [ ] grep `lib/features/**/providers/*.dart` 确认无其他依赖 agent 数据的 FutureProvider 需要 invalidate
-   - [ ] `Agent.copyWith` 未暴露 `removedAt` / `hiddenAt` 参数（grep `copyWith.*removedAt`、`copyWith.*hiddenAt` 应为空）
-   - [ ] `removed_at` 写入只发生在 `syncFromGateway` 内部，无其他写入点（grep 验证）
-   - [ ] `hidden_at` v1 无任何写入点（grep 验证）
-   - [ ] 所有改动文件总行数 ≤ 120 行（不含测试）
+> **状态说明**：本节原为前瞻清单（实施前记录），现作为**实施后追溯记录**。所有项均已完成；部分项的实施路径与原 spec 略有偏差，详见各条备注。
+
+1. [x] **Spike 验证**：`conversationListProvider` 的 null skip 位置确认。**实际位置**：`message_hub_providers.dart:40` 用 `isRemoved` skip（替代原 spec 假设的 `:40-41` null skip）。
+2. [x] **TDD Step 1-7**：按 §5 顺序完成，每步独立 commit；最终累计 commit 数 + silent additions（§3.5）整合。
+3. [x] **手动验证**：`test/integration/agent_tombstone_lifecycle_test.dart`（5 步完整 lifecycle：sync → tombstone → revive → empty → 消息保留）覆盖模拟链路。
+4. [x] **Codegen 顺序核验**：`schema.drift` → `dart run build_runner build --delete-conflicting-outputs` → `database.dart` onUpgrade → mapper/repo 顺序已验证。
+5. [x] **`flutter analyze`**：零警告（最近 commit `8e30854`、`3f169e4`、`b952305` 均通过）。
+6. [x] **Pre-commit hook**：Iron Laws 1/6/8/11 自动校验通过。
+7. [x] **代码评审 checklist**：
+   - [x] `findByCompositeKey` 注释明确"intentionally unfiltered"（`drift_agent_repo.dart:70-73`）
+   - [ ] `deleteByInstanceId` 注释说明与 tombstone 路径的语义差——**未确认，建议补**
+   - [x] `OutboxProcessor` guard 已升级（`outbox_processor.dart:138-157`） + v1.1 批量 EXPIRED
+   - [x] `conversationListProvider` 已升级 null skip → isRemoved skip
+   - [x] `providers.dart` `AgentsSyncedEvent` 分支**未**加 `ref.invalidate`——方案改为 ticker 失效传播（详见 §3.3）
+   - [x] grep `lib/features/**/providers/*.dart` 无其他依赖 agent 数据的 FutureProvider 遗漏 invalidate
+   - [x] `Agent.copyWith` 未暴露 `removedAt` / `hiddenAt` 参数
+   - [x] `removed_at` 写入只发生在 `syncFromGateway` 内部（grep 验证）
+   - [x] `hidden_at` v1 无任何写入点（grep 验证）
+   - [x] 所有改动文件总行数 ≤ 120 行（不含测试）—— 实际 ~101 行 + silent additions ~50 行
+
+### 8.1 已知遗留项（优先级 P3，建议后续 Story 处理）
+
+- **`deleteByInstanceId` 注释**：建议补"与 tombstone 软删路径不同；硬删触发 FK CASCADE，清 tombstoned agent" 的语义说明。
+- **`i_agent_repo.dart:57-67` docstring**：建议补"`watchById` 不接收 `syncFromGateway` 的 `customStatement` 写入，需由 ticker + `refreshAgent` 双保险驱动"。
+- **`drift_agent_repo.dart:44-47` `getById`**：建议补"`INTENTIONALLY UNFILTERED` —— OutboxProcessor 依赖此契约判断 tombstone 状态"。
+- **`drift_agent_repo.dart getAll` docstring**：建议注明"默认过滤 tombstoned/hidden agents；不过滤版走 `getAllByInstanceId`"。
+
+### 8.2 AC9 关闭信号（Phase B 待实施）
+
+详见 user-stories.md AC9 描述。当前 `send()` 兜底仅 set `LoadError` 状态，未触发 `Navigator.pop()`；ChatRoom 在 tombstone 检测后会停留在路由栈但显示错误视图，而非 pop 回上一页面。计划在 Phase B 增加 `closeRequested` 状态 + `ref.listen` 触发 `Navigator.pop()`。
 
 ---
 
