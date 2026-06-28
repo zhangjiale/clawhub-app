@@ -201,12 +201,15 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       }
     });
 
-    // US-021 AC9: send() 检测到 agent tombstoned 时设置 closeRequested=true,
-    // 此 listener 触发 Navigator.pop() 回上一页面 (走 smartBack 保留 source 参数)。
-    // 一次性信号 —— prev.closeRequested 不为 true 时才触发,避免 stale state 重建
-    // 时重复 pop。post-frame 回调避免在 build() 阶段调用导航 API。
+    // US-021 AC9: send() 检测到 agent tombstoned 时置 closeRequested=true,
+    // 触发 smartBack 保留 source 参数。post-frame 回调避免在 build() 阶段
+    // 调用导航 API;VM 一次性信号,pop 后 listener 随页面释放。
+    //
+    // 走 _handleBack() 而非直接调 smartBack —— 与本文件其他 5 处 back
+    // 触发点(line 100/155/250/265/364)共用同一入口,未来 _handleBack
+    // 加副作用(埋点/触感反馈/dispose 清理)时 tombstone 路径不会分裂。
     ref.listen(chatViewModelProvider(params), (prev, next) {
-      if (next.closeRequested && (prev?.closeRequested ?? false) == false) {
+      if (next.closeRequested && prev?.closeRequested != true) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _handleBack();
         });

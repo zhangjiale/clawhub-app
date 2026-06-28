@@ -727,6 +727,27 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   // SECTION 3: Send + thinking state management
   // ============================================================
 
+  /// send() tombstone 拒绝的统一出口 —— 写入 [LoadError] + 置
+  /// [ChatSessionState.closeRequested] 让 chat_room_page 触发
+  /// smartBack。两条 guard 分支 (cached / tombstone-suspect recheck)
+  /// 共享此出口,保证 UX 文案与 state 形状一致。
+  void _rejectTombstonedSend(String reason) {
+    _updateState(
+      (s) => s.copyWith(
+        messages: LoadError(
+          'Agent has been removed from the Gateway. '
+          'Please go back and try again.',
+          StackTrace.current,
+        ),
+        closeRequested: true,
+      ),
+    );
+    debugPrint(
+      '[ChatViewModel] send() blocked: agent $agentId $reason '
+      'in instance $instanceId.',
+    );
+  }
+
   /// Send a text message.
   ///
   /// If [init] hasn't completed yet, awaits it first so the user's message
@@ -758,6 +779,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             'It may have been removed. Please go back and try again.',
             StackTrace.current,
           ),
+          // 与下方 tombstone 分支对齐:agent 不存在等价于已被删除
+          // (deleteByInstanceId 级联或从未存在),都该走 AC8 关闭信号。
+          // 文案保留"not found"措辞以区分 tombstone 的"has been removed",
+          // 但 closeRequested 触发逻辑统一。
+          closeRequested: true,
         ),
       );
       debugPrint(
@@ -769,26 +795,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
 
     // US-021: 缓存的 _agent 已被 init 标记为 tombstoned → 早退。
     // init 在 agent.isRemoved 时已短退 (line 329-335),后续 send 看到
-    // _agent.isRemoved=true 不应继续发消息,直接 LoadError。
-    //
-    // US-021 AC9: 同时设置 closeRequested=true,触发 chat_room_page
-    // ref.listen 调用 Navigator.pop() 回上一页面。仅在 LoadError 之上
-    // 增强 UX,不替代错误展示。
+    // _agent.isRemoved=true 不应继续发消息,直接 LoadError + 关闭信号。
     if (agent!.isRemoved) {
-      _updateState(
-        (s) => s.copyWith(
-          messages: LoadError(
-            'Agent has been removed from the Gateway. '
-            'Please go back and try again.',
-            StackTrace.current,
-          ),
-          closeRequested: true,
-        ),
-      );
-      debugPrint(
-        '[ChatViewModel] send() blocked: agent $agentId tombstoned '
-        '(cached from init) in instance $instanceId.',
-      );
+      _rejectTombstonedSend('tombstoned (cached from init)');
       return;
     }
 
@@ -796,27 +805,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // agent。无 ticker fire 时 init 时刻的 _agent 缓存与 DB 一致
     // (tombstone 仅由 syncFromGateway 写入,而 sync 必触发 ticker),
     // 复用缓存避免每发一次都 getById 一次 (N send = N 冗余 read)。
-    //
-    // US-021 AC9: 重查后 freshAgent 仍 tombstoned → 同时设置
-    // closeRequested=true,与缓存路径语义对齐。
     if (_tombstoneSuspect) {
       final freshAgent = await _agentRepo.getById(agentId);
       _tombstoneSuspect = false;
       if (freshAgent == null || freshAgent.isRemoved) {
-        _updateState(
-          (s) => s.copyWith(
-            messages: LoadError(
-              'Agent has been removed from the Gateway. '
-              'Please go back and try again.',
-              StackTrace.current,
-            ),
-            closeRequested: true,
-          ),
-        );
-        debugPrint(
-          '[ChatViewModel] send() blocked: agent $agentId '
+        _rejectTombstonedSend(
           '${freshAgent == null ? "not found" : "tombstoned"} '
-          'after tombstone-suspect refresh in instance $instanceId.',
+          'after tombstone-suspect refresh',
         );
         return;
       }
