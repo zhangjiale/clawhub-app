@@ -13,8 +13,9 @@ import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart'
-    show GatewayConnectionState, StreamingDelta, StreamingDone, StreamingEvent;
-import 'package:claw_hub/core/acl/i_gateway_client.dart';
+    show StreamingDelta, StreamingDone, StreamingEvent;
+import 'package:claw_hub/core/acl/i_gateway_client.dart'
+    show GatewayConnectionState;
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:mocktail/mocktail.dart';

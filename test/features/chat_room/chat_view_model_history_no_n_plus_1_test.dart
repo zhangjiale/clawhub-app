@@ -103,9 +103,6 @@ class _FakeGateway implements IGatewayClient {
   Future<void> disconnect(String instanceId) async {}
 
   @override
-  bool get isConnected => false;
-
-  @override
   Future<({String serverId, int timestamp})> sendMessage({
     required String instanceId,
     required String agentId,

@@ -167,6 +167,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   /// 编辑已有实例时，若连接已存在则跳过重连——避免每次保存都触发
   /// agent 全量同步（syncFromGateway），防止因 Gateway 返回数据差异
   /// 或本地 DB 状态异常导致 agent 被意外 tombstone/重建。
+  @override
   Future<void> onInstanceSaved(Instance instance) async {
     if (_connectionSubscriptions.containsKey(instance.id)) {
       // 编辑已有实例：连接已存在，不需重连。
@@ -179,6 +180,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   }
 
   /// 实例删除后调用。
+  @override
   Future<void> onInstanceDeleted(String instanceId) async {
     await _disconnect(instanceId);
   }
