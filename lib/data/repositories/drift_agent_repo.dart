@@ -35,15 +35,14 @@ class DriftAgentRepo implements IAgentRepo {
 
   /// US-021: 默认过滤 tombstoned (removed_at != null) 和 hidden
   /// (hidden_at != null) agent —— 调用方拿到的是 "active" agent 列表。
-  /// 不过滤版本走 [getAllByInstanceId]（按 instance 隔离的全量列表）。
+  /// 不过滤版本走 [getAllByInstanceId](按 instance 隔离的全量列表)。
   ///
-  /// 注意：`getAll` 命名上无 instanceId 参数，但 Drift 的 `getAllActiveAgents`
-  /// 实际是全表 active 行，与 [getByInstanceId] 的 per-instance 过滤粒度不同
-  /// —— 调用方应明确语义：跨实例聚合（如 stats）走 `getAll`；单实例列表
-  /// （如 AgentList / MessageHub）走 `getByInstanceId`。
+  /// 注意:`getAll` 命名上无 instanceId 参数,但 Drift 的 `getAllActiveAgents`
+  /// 实际是全表 active 行,与 [getByInstanceId] 的 per-instance 过滤粒度不同
+  /// —— 调用方应明确语义:跨实例聚合(如 stats)走 `getAll`;单实例列表
+  /// (如 AgentList / MessageHub)走 `getByInstanceId`。
   @override
   Future<List<Agent>> getAll() async {
-    // US-021: 默认过滤 tombstoned + hidden agent（见 getByInstanceId 注释）。
     final rows = await _database.getAllActiveAgents().get();
     return rows.map(AgentMapper.toDomain).toList();
   }
@@ -51,16 +50,16 @@ class DriftAgentRepo implements IAgentRepo {
   /// INTENTIONALLY UNFILTERED —— 不过滤 tombstoned (removed_at != null) 或
   /// hidden (hidden_at != null) agent。
   ///
-  /// 调用方负责通过 `agent.isRemoved` / `agent.isHidden` 自行判断（Law 2）。
-  /// 已知依赖此契约的下游：
-  /// - **OutboxProcessor.process()**：缓存 _agent 为 tombstoned 时跳过发送
-  ///   （`outbox_processor.dart:138-157` guard `agent == null || agent.isRemoved`）
-  /// - **ChatViewModel.send()**：cached / tombstone-suspect recheck 两道 guard
-  ///   依赖 getById 返回 isRemoved 的 agent（`chat_view_model.dart:757-810`）
+  /// 调用方负责通过 `agent.isRemoved` / `agent.isHidden` 自行判断(Law 2)。
+  /// 已知依赖此契约的下游:
+  /// - **OutboxProcessor.process()**: 缓存 _agent 为 tombstoned 时跳过发送
+  ///   (`outbox_processor.dart:138-157` guard `agent == null || agent.isRemoved`)
+  /// - **ChatViewModel.send()**: cached / tombstone-suspect recheck 两道 guard
+  ///   依赖 getById 返回 isRemoved 的 agent(`chat_view_model.dart:794-810`)
   ///
   /// 误加 `WHERE removed_at IS NULL` 过滤会让以上 guard 永远走不到
-  /// tombstone 分支，US-021 主诉求（避免 FAILED 消息死循环）失效。Reviewer
-  /// 修改此方法前请先阅读 `findByCompositeKey` 的同款注释（line 70-73）。
+  /// tombstone 分支,US-021 主诉求(避免 FAILED 消息死循环)失效。Reviewer
+  /// 修改此方法前请先阅读 `findByCompositeKey` 的同款注释(line 76-80)。
   @override
   Future<Agent?> getById(String localId) async {
     final row = await _database.getAgentByLocalId(localId).getSingleOrNull();
@@ -100,8 +99,9 @@ class DriftAgentRepo implements IAgentRepo {
 
   @override
   Stream<Agent?> watchById(String localId) {
-    // Drift .watchSingleOrNull()：订阅时立即 emit 当前行（如果存在），后续每次
-    // 该行 commit 触发 emit。不存在的 localId 立即 emit null 并保持 open。
+    // Drift .watchSingleOrNull() 实现。契约级语义(seed event / null-when-absent /
+    // tombstone emit 行为)与 Drift 特有的 reactivity gap 均见
+    // [IAgentRepo.watchById] 注释。
     return _database
         .getAgentByLocalId(localId)
         .watchSingleOrNull()
