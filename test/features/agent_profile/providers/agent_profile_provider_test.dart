@@ -20,43 +20,27 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
-import 'package:claw_hub/core/i_avatar_storage_service.dart';
-import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/models/daily_activity.dart';
-import 'package:claw_hub/domain/repositories/i_activity_repo.dart';
-import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
-import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
-import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
-import 'package:claw_hub/domain/repositories/i_message_repo.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
-
-class _MockAgentRepo extends Mock implements IAgentRepo {}
-
-class _MockInstanceRepo extends Mock implements IInstanceRepo {}
-
-class _MockMessageRepo extends Mock implements IMessageRepo {}
-
-class _MockActivityRepo extends Mock implements IActivityRepo {}
-
-class _MockAvatarStorageService extends Mock implements IAvatarStorageService {}
-
-class _MockAchievementRepo extends Mock implements IAchievementRepo {}
-
-class _MockLogger extends Mock implements ILogger {}
+import '../../../_helpers/mocks.dart';
 
 void main() {
-  late _MockAgentRepo agentRepo;
-  late _MockInstanceRepo instanceRepo;
-  late _MockMessageRepo messageRepo;
-  late _MockActivityRepo activityRepo;
-  late _MockAvatarStorageService avatarStorageService;
-  late _MockAchievementRepo achievementRepo;
-  late _MockLogger logger;
+  late MockAgentRepo agentRepo;
+  late MockInstanceRepo instanceRepo;
+  late MockMessageRepo messageRepo;
+  late MockActivityRepo activityRepo;
+  late MockAvatarStorageService avatarStorageService;
+  late MockAchievementRepo achievementRepo;
+  // Provider test needs mocktail Mock<ILogger> because it asserts
+  // on `logger.error(...)` calls (e.g. ticker listener catch path).
+  // The other 3 agent_profile tests use FakeLogger (no-op) since they
+  // only inject without verifying.
+  late MockILogger logger;
 
   final activeAgent = Agent(
     localId: 'local-1',
@@ -81,13 +65,13 @@ void main() {
   });
 
   setUp(() {
-    agentRepo = _MockAgentRepo();
-    instanceRepo = _MockInstanceRepo();
-    messageRepo = _MockMessageRepo();
-    activityRepo = _MockActivityRepo();
-    avatarStorageService = _MockAvatarStorageService();
-    achievementRepo = _MockAchievementRepo();
-    logger = _MockLogger();
+    agentRepo = MockAgentRepo();
+    instanceRepo = MockInstanceRepo();
+    messageRepo = MockMessageRepo();
+    activityRepo = MockActivityRepo();
+    avatarStorageService = MockAvatarStorageService();
+    achievementRepo = MockAchievementRepo();
+    logger = MockILogger();
     when(() => logger.error(any(), any())).thenReturn(null);
     when(() => logger.info(any())).thenReturn(null);
 
@@ -329,8 +313,8 @@ void main() {
   // agentRepo.getById（agent 内容没变），不重置 detailLoadState。
   // 但 computeStats 必须被调用 —— 这是证明 achievementRefresh 真的跑通
   // 了（而不是 listener 静默丢弃事件）。
-  test('AchievementChecker.updates event for matching agentId triggers '
-      'vm.achievementRefresh — computeStats runs, getById does NOT', () async {
+  test('matching agentId triggers achievementRefresh '
+      '(computeStats runs, getById does not)', () async {
     var calls = 0;
     var computeCalls = 0;
     when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
@@ -391,8 +375,7 @@ void main() {
     );
   });
 
-  test('AchievementChecker.updates event for OTHER agentId is filtered '
-      'out (no extra getById — Law 6 / N+1 prevention)', () async {
+  test('updates event for other agent is filtered out', () async {
     var calls = 0;
     when(() => agentRepo.getById('local-1')).thenAnswer((_) async {
       calls++;

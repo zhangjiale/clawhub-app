@@ -7,30 +7,14 @@ import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/enums.dart';
-import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
-import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
-import 'package:claw_hub/domain/repositories/i_message_repo.dart';
-import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
-import 'package:claw_hub/domain/repositories/i_activity_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
-import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/features/agent_profile/agent_config_page.dart';
 import 'package:claw_hub/features/agent_profile/providers/agent_profile_providers.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
 import 'package:claw_hub/ui_kit/color_grid.dart';
 import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
-
-class MockAgentRepo extends Mock implements IAgentRepo {}
-
-class MockInstanceRepo extends Mock implements IInstanceRepo {}
-
-class MockMessageRepo extends Mock implements IMessageRepo {}
-
-class MockAchievementRepo extends Mock implements IAchievementRepo {}
-
-class MockActivityRepo extends Mock implements IActivityRepo {}
-
-class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
+import '../../_helpers/fake_logger.dart';
+import '../../_helpers/mocks.dart';
 
 void main() {
   setUpAll(() {
@@ -62,6 +46,7 @@ void main() {
     late MockAchievementRepo achievementRepo;
     late MockActivityRepo activityRepo;
     late MockAvatarStorageService avatarStorageService;
+    late FakeLogger logger;
 
     setUp(() {
       agentRepo = MockAgentRepo();
@@ -70,6 +55,7 @@ void main() {
       achievementRepo = MockAchievementRepo();
       activityRepo = MockActivityRepo();
       avatarStorageService = MockAvatarStorageService();
+      logger = FakeLogger();
 
       when(
         () => agentRepo.getById('local-1'),
@@ -113,6 +99,7 @@ void main() {
                 achievementRepo,
               ),
               avatarStorageService: avatarStorageService,
+              logger: logger,
               agentId: 'local-1',
             )..init(),
           ),
@@ -239,6 +226,7 @@ void main() {
                     achievementRepo,
                   ),
                   avatarStorageService: avatarStorageService,
+                  logger: logger,
                   agentId: 'local-1',
                 );
                 // Step 6: 用 debugSetAgent 注入 tombstoned agent。
