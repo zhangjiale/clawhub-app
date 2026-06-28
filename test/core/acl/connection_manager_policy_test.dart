@@ -302,6 +302,309 @@ void main() {
       },
       timeout: const Timeout(Duration(seconds: 10)),
     );
+
+    // -------------------------------------------------------------------------
+    // Regression: UTF-8 cheap-size bypass (Fix 1)
+    //
+    // The previous sendRequest used `requestJson.length` (UTF-16 code units)
+    // as a "cheap upper bound" before falling back to `utf8.encode`. This is
+    // broken for non-ASCII content because String.length is a LOWER bound on
+    // the UTF-8 byte count — CJK characters are 1 code unit but 3 UTF-8 bytes.
+    // A 25M-char CJK payload reads as 25M code units (passes the cheap check)
+    // but is ~75MB on the wire, defeating the entire Gap #2 OOM guard.
+    //
+    // These tests pin the contract: maxPayload is enforced against UTF-8
+    // BYTES, not code units.
+    // -------------------------------------------------------------------------
+    test('CJK payload is measured in UTF-8 bytes, not code units', () async {
+      final ws = ControllableWebSocket.ready();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(),
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      unawaited(cm.connect());
+      await pumpMicrotasks();
+      ws.completeHandshake();
+      await pumpMicrotasks();
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.first);
+      // Tight limit so we can craft a small test that still trips the
+      // UTF-8 vs code-unit mismatch.
+      ws.simulateServerFrame(helloOkWithPolicy(reqId, maxPayload: 1024));
+      await pumpMicrotasks();
+
+      expect(cm.state, GatewayConnectionState.connected);
+
+      // 350 CJK chars: 350 code units (well under 1024) but 1050 UTF-8
+      // bytes for the message alone. With ~80 bytes of JSON wrapper, the
+      // full request is ~430 code units but ~1130 UTF-8 bytes — exceeds
+      // the 1024 cap ONLY in UTF-8 bytes, not in code units. The old
+      // cheap check passed this; the correct check must throw.
+      final cjkMessage = '中' * 350;
+      final params = <String, dynamic>{'message': cjkMessage};
+
+      await expectLater(
+        cm.sendRequest('chat.send', params),
+        throwsA(
+          isA<PayloadTooLargeException>()
+              .having((e) => e.actualSize, 'actualSize', greaterThan(1024))
+              .having((e) => e.maxSize, 'maxSize', 1024),
+        ),
+        reason:
+            'CJK payload whose UTF-16 length is under maxPayload but whose '
+            'UTF-8 byte length exceeds it must still throw '
+            'PayloadTooLargeException',
+      );
+
+      // No chat.send frame was written — the over-sized request was
+      // rejected before reaching the socket.
+      expect(
+        ws.sentFrames.length,
+        1,
+        reason: 'only connect frame sent; oversize chat.send was rejected',
+      );
+      expect(ws.sentFrames.last, contains('"method":"connect"'));
+
+      await cm.dispose();
+    });
+
+    test('emoji payload is measured in UTF-8 bytes, not code units', () async {
+      // Different multibyte category from CJK: emoji are 4 UTF-8 bytes
+      // per code point (vs CJK's 3). We need UTF-8 bytes > 1024 while
+      // code units ≤ 1024 to exercise the fix.
+      //
+      // 300 emoji = 300 code units (≤ 1024) but 1200 UTF-8 bytes for
+      // the message alone — plus ~80 bytes of JSON wrapper = ~1280
+      // total, which exceeds the 1024 cap ONLY in UTF-8 bytes, not
+      // in code units. The old cheap check would have passed this;
+      // the correct check must throw.
+      final ws = ControllableWebSocket.ready();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(),
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      unawaited(cm.connect());
+      await pumpMicrotasks();
+      ws.completeHandshake();
+      await pumpMicrotasks();
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(helloOkWithPolicy(reqId, maxPayload: 1024));
+      await pumpMicrotasks();
+
+      final emojiMessage = '😀' * 300; // 300 code units, 1200 UTF-8 bytes
+      final params = <String, dynamic>{'message': emojiMessage};
+
+      await expectLater(
+        cm.sendRequest('chat.send', params),
+        throwsA(isA<PayloadTooLargeException>()),
+        reason: 'emoji payload must be measured in UTF-8 bytes, not code units',
+      );
+
+      await cm.dispose();
+    });
+
+    test('ASCII payload at exactly the code-unit limit is accepted', () async {
+      // Sanity-check the boundary: an ASCII payload whose UTF-8 byte
+      // count equals the code-unit count should NOT trigger the guard.
+      final ws = ControllableWebSocket.ready();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(),
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      unawaited(cm.connect());
+      await pumpMicrotasks();
+      ws.completeHandshake();
+      await pumpMicrotasks();
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(helloOkWithPolicy(reqId, maxPayload: 1024));
+      await pumpMicrotasks();
+
+      // 100 ASCII chars + ~80 byte wrapper ≈ 180 UTF-8 bytes — well
+      // under the 1024 cap on either measurement.
+      final asciiPayload = 'x' * 100;
+      final params = <String, dynamic>{'message': asciiPayload};
+      final responseFuture = cm.sendRequest('chat.send', params);
+
+      await pumpMicrotasks();
+      expect(
+        responseFuture,
+        isA<Future<ResponseFrame>>(),
+        reason: 'small ASCII payload must not be rejected',
+      );
+
+      await cm.dispose();
+    });
+
+    // -------------------------------------------------------------------------
+    // Regression: maxPayload ≤ 0 from server (Fix 2)
+    //
+    // A misconfigured server returning maxPayload=0 (or negative) used to
+    // wedge every sendRequest — cheapSize > 0 always triggered the throw.
+    // The fix falls back to the spec default in that case.
+    // -------------------------------------------------------------------------
+    test(
+      'maxPayload=0 from server falls back to defaultMaxPayloadBytes',
+      () async {
+        final ws = ControllableWebSocket.ready();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        unawaited(cm.connect());
+        await pumpMicrotasks();
+        ws.completeHandshake();
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+        ws.simulateServerFrame(helloOkWithPolicy(reqId, maxPayload: 0));
+        await pumpMicrotasks();
+
+        expect(
+          cm.maxPayloadBytesForTesting,
+          defaultMaxPayloadBytes,
+          reason:
+              'maxPayload=0 must fall back to spec default — otherwise every '
+              'sendRequest would throw PayloadTooLargeException',
+        );
+
+        // A small payload must succeed under the default cap.
+        final responseFuture = cm.sendRequest('chat.send', {'message': 'hi'});
+        await pumpMicrotasks();
+        expect(responseFuture, isA<Future<ResponseFrame>>());
+
+        await cm.dispose();
+      },
+    );
+
+    test(
+      'negative maxPayload from server falls back to defaultMaxPayloadBytes',
+      () async {
+        final ws = ControllableWebSocket.ready();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        unawaited(cm.connect());
+        await pumpMicrotasks();
+        ws.completeHandshake();
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+        ws.simulateServerFrame(helloOkWithPolicy(reqId, maxPayload: -1));
+        await pumpMicrotasks();
+
+        expect(
+          cm.maxPayloadBytesForTesting,
+          defaultMaxPayloadBytes,
+          reason: 'negative maxPayload must also fall back to default',
+        );
+
+        await cm.dispose();
+      },
+    );
+
+    // Regression: server-sent JSON numbers that jsonDecode materializes as
+    // `double` (e.g. `26214400.0`, or any number carrying a fractional /
+    // exponent part) must NOT silently drop the server-negotiated cap.
+    //
+    // Bug: the parser used `policy['maxPayload'] as int?`. `as int?` on a
+    // `double` is a *cast* (TypeError), not a null-coercion — it throws
+    // inside `_handleConnectResponse`. The state has already been set to
+    // `connected` (line ~667, before policy parsing), so the throw is
+    // swallowed by the connect-response `.catchError` and the handshake
+    // *looks* successful — but `_maxPayloadBytes`/`_maxBufferedBytes` are
+    // never updated, silently degrading to the 25MB/50MB defaults. A
+    // server that negotiated a 10MB cap then sees the client ship 15MB
+    // payloads it should have rejected. Defensive `num`-based parsing
+    // (`is num` + `toInt()`) accepts both int and double.
+    //
+    // (helloOkWithPolicy only emits ints, so this test hand-writes the
+    // hello-ok JSON with `N.0` doubles — mirroring the raw-JSON pattern in
+    // connection_manager_auth_retry_test.dart.)
+    test('maxPayload / maxBufferedBytes sent as JSON double are parsed '
+        'without crashing', () async {
+      final ws = ControllableWebSocket.ready();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(),
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      unawaited(cm.connect());
+      await pumpMicrotasks();
+      ws.completeHandshake();
+      await pumpMicrotasks();
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.first);
+
+      // Note the `.0` — jsonDecode yields `double` for these.
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId","ok":true,'
+        '"payload":{"type":"hello-ok","protocol":4,'
+        '"policy":{"tickIntervalMs":15000,'
+        '"maxPayload":10000000.0,'
+        '"maxBufferedBytes":20000000.0}}}',
+      );
+      await pumpMicrotasks();
+
+      // Before the fix: the `as int?` cast throws (TypeError), the
+      // connect-response `.catchError` swallows it, state stays
+      // `connected` (already set before policy parsing) — but the cap is
+      // silently ignored and `_maxPayloadBytes` keeps its default.
+      expect(
+        cm.state,
+        GatewayConnectionState.connected,
+        reason: 'handshake must complete; the double must not crash it',
+      );
+      expect(
+        cm.maxPayloadBytesForTesting,
+        10_000_000,
+        reason: 'double 10000000.0 must coerce to int 10000000',
+      );
+      expect(
+        cm.maxBufferedBytesForTesting,
+        20_000_000,
+        reason: 'double 20000000.0 must coerce to int 20000000',
+      );
+
+      await cm.dispose();
+    });
   });
 
   group('PayloadTooLargeException', () {

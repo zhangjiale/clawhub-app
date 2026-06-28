@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -73,10 +74,11 @@ class ConnectionManager {
 
   /// Read-only view of [supportedEvents].
   ///
-  /// Returns an [UnmodifiableSetView] so callers cannot mutate the
-  /// internal set through the getter.  See [supportedEvents] for
+  /// Returns an [UnmodifiableSetView] (zero-copy wrapper) so callers cannot
+  /// mutate the internal set through the getter without paying the per-call
+  /// allocation cost of [Set.unmodifiable].  See [supportedEvents] for
   /// semantics.
-  Set<String> get supportedEvents => Set.unmodifiable(_supportedEvents);
+  Set<String> get supportedEvents => UnmodifiableSetView(_supportedEvents);
 
   // --- WebSocket ---
   WebSocketChannel? _channel;
@@ -161,9 +163,12 @@ class ConnectionManager {
   void _detectClockDrift(Map<String, dynamic>? payload) {
     if (payload == null) return;
     final tsRaw = payload['ts'];
-    if (tsRaw is! int) return;
+    // Accept both `int` and `double`: jsonDecode yields `double` for numbers
+    // carrying a fractional/exponent part (e.g. `1719500000000.0`), and a
+    // strict `is! int` would silently skip drift detection for those.
+    if (tsRaw is! num) return;
 
-    final serverTs = tsRaw;
+    final serverTs = tsRaw.toInt();
     final clientTs = DateTime.now().millisecondsSinceEpoch;
     final drift = serverTs - clientTs;
     _lastObservedClockDriftMs = drift;
@@ -183,15 +188,12 @@ class ConnectionManager {
   ///
   /// Set true when the first AUTH_TOKEN_MISMATCH triggers a retry;
   /// reset to false on successful hello-ok so a later session can
-  /// retry again if it hits the same race.  Limits retry count to 1
-  /// per connection attempt, matching the spec's "尝试一次" wording.
+  /// retry again if it hits the same race.  Also reset to false at the
+  /// start of a manual [connect()] — a user-initiated reconnect is a fresh
+  /// connection attempt that §A.9 promises its own retry budget.  Limits
+  /// retry count to 1 per connection attempt, matching the spec's "尝试一次"
+  /// wording.
   bool _hasAttemptedDeviceTokenRetry = false;
-
-  /// Test-only read of the retry-budget flag.  See the field docstring
-  /// for semantics.
-  @visibleForTesting
-  bool get hasAttemptedDeviceTokenRetryForTesting =>
-      _hasAttemptedDeviceTokenRetry;
 
   /// Gap #5: most recently observed clock drift in milliseconds, signed
   /// (server - client).  `null` until the first `tick` event with
@@ -275,6 +277,14 @@ class ConnectionManager {
 
     _intentionalDisconnect = false;
     _reconnectAttempt = 0;
+    // Re-arm the AUTH_TOKEN_MISMATCH retry budget (spec §A.9 "1 retry per
+    // connection attempt"). connect() is the manual-attempt entry point;
+    // the budget is otherwise reset only on a successful hello-ok, so
+    // without this a failed-then-manually-reconnected session would be
+    // denied its one retry. The auto-retry path goes through
+    // _scheduleDoConnect → _doConnect (not connect()), so resetting here
+    // does NOT re-arm the budget mid-retry (which would loop forever).
+    _hasAttemptedDeviceTokenRetry = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     await _doConnect();
@@ -316,14 +326,26 @@ class ConnectionManager {
     // with a `payload.large` event that we'd silently drop — either
     // way the user sees "message disappeared". Throwing here gives
     // the ViewModel a typed error to surface.
+    //
+    // Always compute the precise UTF-8 byte count. `String.length`
+    // (UTF-16 code units) is a LOWER bound on byte count for non-ASCII
+    // content — e.g. CJK characters encode to 3 UTF-8 bytes per code
+    // unit, so a 25M-char CJK payload reads as ~25M code units but
+    // ~75M bytes on the wire. A previous "cheap upper-bound" attempt
+    // using String.length was wrong for non-ASCII and silently bypassed
+    // the guard (regression test: connection_manager_policy_test.dart
+    // "CJK payload is measured in UTF-8 bytes, not code units").
+    // Allocating the Uint8List is negligible vs. the network write
+    // that follows — typical chat messages are < 100KB.
+    final maxPayload = _maxPayloadBytes;
     final payloadSize = utf8.encode(requestJson).length;
-    if (payloadSize > _maxPayloadBytes) {
+    if (payloadSize > maxPayload) {
       throw PayloadTooLargeException(
         message:
             'Request $method payload size $payloadSize exceeds '
-            'maxPayload $_maxPayloadBytes',
+            'maxPayload $maxPayload',
         actualSize: payloadSize,
-        maxSize: _maxPayloadBytes,
+        maxSize: maxPayload,
       );
     }
 
@@ -390,6 +412,22 @@ class ConnectionManager {
   Future<void> _doConnect() async {
     if (_inDoConnect) return;
     _inDoConnect = true;
+
+    // Fix 5 (post-Fix-1 audit): cancel any stale connect-timeout timer
+    // from a previous attempt. Without this, if attempt #1 entered
+    // authenticating but the handshake never completed (e.g. transport
+    // error mid-handshake), T1 (15s timeout) is still alive. When
+    // attempt #2 starts after reconnect, T2 overwrites T1's reference
+    // at line ~451 but T1's callback is still scheduled in the event
+    // loop. If T1 fires during attempt #2's authenticating phase,
+    // `if (_state == authenticating)` passes and we falsely trigger
+    // `_handleAuthFailure('Handshake timeout')` — masking the recovery
+    // with a terminal auth failure.
+    //
+    // Regression test: connection_manager_test.dart
+    // "connect-timeout timer is cancelled when _doConnect restarts".
+    _connectTimeoutTimer?.cancel();
+    _connectTimeoutTimer = null;
 
     _setState(GatewayConnectionState.connecting);
 
@@ -651,14 +689,22 @@ class ConnectionManager {
         if (policy != null) {
           _tickIntervalMs = policy['tickIntervalMs'] as int? ?? 15000;
           // Gap #2: read maxPayload / maxBufferedBytes from hello-ok
-          // (spec §2.2). If the server omits either field, keep our
-          // pre-handshake default (defaultMaxPayloadBytes /
-          // defaultMaxBufferedBytes) — degrading to 25MB / 50MB is
-          // strictly safer than disabling the limit.
-          _maxPayloadBytes =
-              policy['maxPayload'] as int? ?? defaultMaxPayloadBytes;
+          // (spec §2.2). If the server omits either field OR sends a
+          // non-positive value (0 / negative — seen in misconfigured /
+          // dev environments), fall back to the spec default. Without
+          // the `> 0` guard, maxPayload=0 would wedge every sendRequest
+          // because any non-empty payload exceeds 0 bytes.
+          // (Regression test: connection_manager_policy_test.dart
+          // "maxPayload=0 from server falls back to defaultMaxPayloadBytes")
+          final serverMaxPayload = policy['maxPayload'];
+          _maxPayloadBytes = (serverMaxPayload is num && serverMaxPayload > 0)
+              ? serverMaxPayload.toInt()
+              : defaultMaxPayloadBytes;
+          final serverMaxBuffered = policy['maxBufferedBytes'];
           _maxBufferedBytes =
-              policy['maxBufferedBytes'] as int? ?? defaultMaxBufferedBytes;
+              (serverMaxBuffered is num && serverMaxBuffered > 0)
+              ? serverMaxBuffered.toInt()
+              : defaultMaxBufferedBytes;
         }
 
         // Gap #3: read features.events (spec §2.2).  Old Gateway builds
@@ -757,6 +803,28 @@ class ConnectionManager {
 
   /// 处理 NOT_PAIRED — 设备待审批，进入配对等待模式并定期重试。
   Future<void> _handlePairingRequired(ProtocolError error) async {
+    // Guard: same race fixed in `_handleAuthTokenMismatchRetry` (Fix 3).
+    // A stale NOT_PAIRED response arriving while state has already
+    // moved to a terminal (authFailed / disconnected / etc.) must NOT
+    // override the terminal state with pairingRequired + a pairing-retry
+    // timer — that would mask the real failure from the user and create
+    // a zombie retry after explicit disconnect.
+    //
+    // The pairingInfo stream emit is intentionally gated by this guard
+    // too, so a stale NOT_PAIRED can't surface a phantom pairing
+    // request after the user has disconnected.
+    //
+    // Regression tests: connection_manager_test.dart
+    //   - "NOT_PAIRED in terminal state (authFailed) does NOT override state"
+    //   - "NOT_PAIRED in terminal state (disconnected) does NOT schedule retry"
+    if (_state.isTerminal) {
+      debugPrint(
+        '[CM] NOT_PAIRED pairing handler skipped for $_instanceId '
+        '(terminal state: $_state)',
+      );
+      return;
+    }
+
     final details = error.details;
     final requestId = details?['requestId'] as String?;
     final deviceId = details?['deviceId'] as String?;
@@ -801,6 +869,23 @@ class ConnectionManager {
   /// Gateway 需要数秒释放旧 session。与 [NOT_PAIRED] 不同，这是已知的瞬时错误
   /// ——短时间后自动恢复，不应标记为 [GatewayConnectionState.authFailed]。
   Future<void> _handleDeviceIdMismatch(ProtocolError error) async {
+    // Guard: same race fixed in `_handleAuthTokenMismatchRetry` (Fix 3).
+    // A stale DEVICE_ID_MISMATCH response arriving while state has
+    // already moved to a terminal (authFailed / disconnected / etc.)
+    // must NOT override the terminal state with recovering + a 2s
+    // retry — that would mask the real failure from the user and
+    // create a zombie retry after explicit disconnect.
+    //
+    // Regression test: connection_manager_test.dart
+    //   - "DEVICE_ID_MISMATCH in terminal state (authFailed) does NOT retry"
+    if (_state.isTerminal) {
+      debugPrint(
+        '[CM] DEVICE_ID_MISMATCH handler skipped for $_instanceId '
+        '(terminal state: $_state)',
+      );
+      return;
+    }
+
     debugPrint(
       '[CM] Device ID mismatch for $_instanceId — '
       'retrying in 2s (transient race)',
@@ -852,22 +937,63 @@ class ConnectionManager {
   /// limiting us to 1 retry per connect attempt, and that flag resets
   /// only on successful hello-ok.
   Future<void> _handleAuthTokenMismatchRetry() async {
+    // Guard: if the CM is already in a terminal state (authFailed /
+    // pairingRequired / reconnectExhausted / disconnected) when a
+    // stale AUTH_TOKEN_MISMATCH response arrives (race window —
+    // another code path may have terminated the state while the
+    // connect response was still in flight), we MUST NOT retry.
+    //
+    // Retrying here would:
+    //   1. Overwrite the terminal state with `disconnected` via
+    //      _immediateReconnect, masking the original failure from
+    //      the user.
+    //   2. Schedule a fresh connect over a state that has explicit
+    //      user-action semantics (e.g. pairingRequired = "user must
+    //      approve", disconnected = "user clicked disconnect").
+    //   3. Burn the retry budget for the next legitimate session
+    //      (a future AUTH_TOKEN_MISMATCH would find the budget
+    //      already consumed and skip the retry spec §A.9 promises).
+    //
+    // Regression test: connection_manager_auth_retry_test.dart
+    // "AUTH_TOKEN_MISMATCH in terminal state (authFailed) does NOT retry".
+    if (_state.isTerminal) {
+      debugPrint(
+        '[CM] AUTH_TOKEN_MISMATCH retry skipped for $_instanceId '
+        '(terminal state: $_state)',
+      );
+      return;
+    }
+
     debugPrint(
       '[CM] AUTH_TOKEN_MISMATCH for $_instanceId — retrying with cached '
       'deviceToken (spec §A.9)',
     );
     _hasAttemptedDeviceTokenRetry = true;
 
-    _failAllPending('AUTH_TOKEN_MISMATCH (retrying)');
+    await _immediateReconnect(
+      pendingFailReason: 'AUTH_TOKEN_MISMATCH (retrying)',
+      scheduleReason: 'AUTH_TOKEN_MISMATCH retry',
+    );
+  }
+
+  /// Shared "reset and reconnect with zero delay" primitive for
+  /// [_handleGracefulShutdown] and [_handleAuthTokenMismatchRetry].
+  ///
+  /// Both handlers want the same outcome: fail pending requests, cancel
+  /// timers, await-close-socket (errors logged but not propagated), bail
+  /// if a user-initiated disconnect arrived during the await, transition
+  /// to [GatewayConnectionState.disconnected], then schedule an immediate
+  /// reconnect.  The variation between the two callers is captured by the
+  /// reason strings; the lifecycle sequence is identical.
+  Future<void> _immediateReconnect({
+    required String pendingFailReason,
+    required String scheduleReason,
+  }) async {
+    _failAllPending(pendingFailReason);
     _cancelTimers();
-    // Must await — _scheduleDoConnect(0) will fire another _doConnect
-    // which re-listens on _channel.stream. If the existing subscription
-    // isn't cancelled first, _doConnect races with the close path and
-    // gets "Stream has already been listened to". Mirrors the await
-    // pattern in [_handleGracefulShutdown].
     await _closeWebSocket().catchError((error, stackTrace) {
       debugPrint(
-        '[CM] Error closing WebSocket during AUTH_TOKEN_MISMATCH retry: '
+        '[CM] Error closing WebSocket during $scheduleReason: '
         '$error\n$stackTrace',
       );
     });
@@ -878,7 +1004,7 @@ class ConnectionManager {
     _setState(GatewayConnectionState.disconnected);
     _scheduleDoConnect(
       delaySeconds: 0,
-      reason: 'AUTH_TOKEN_MISMATCH retry',
+      reason: scheduleReason,
       timerRef: 'reconnect',
     );
   }
@@ -931,32 +1057,9 @@ class ConnectionManager {
       return;
     }
 
-    _failAllPending('Gateway graceful shutdown');
-    _setState(GatewayConnectionState.disconnected);
-
-    // Best-effort tear-down of the existing channel.  The close path is
-    // async; any error here must not block the immediate reconnect.
-    await _closeWebSocket().catchError((error, stackTrace) {
-      debugPrint(
-        '[CM] Error closing WebSocket during graceful shutdown: '
-        '$error\n$stackTrace',
-      );
-    });
-
-    // Re-check after the await: disconnect()/dispose() may have fired
-    // while we were awaiting close.  No terminal-state re-check here —
-    // our own disconnected is non-actionable (we want to reconnect), and
-    // any other terminal would only be reachable if an error path ran
-    // during _closeWebSocket(), which is already logged above.
-    if (_intentionalDisconnect) return;
-
-    // Schedule immediate reconnect — no backoff, no attempt increment.
-    // Using [_scheduleDoConnect] (not [_scheduleReconnect]) because the
-    // latter would increment _reconnectAttempt via its onFire callback.
-    _scheduleDoConnect(
-      delaySeconds: 0,
-      reason: 'graceful shutdown reconnect',
-      timerRef: 'reconnect',
+    await _immediateReconnect(
+      pendingFailReason: 'Gateway graceful shutdown',
+      scheduleReason: 'graceful shutdown reconnect',
     );
   }
 
@@ -1085,8 +1188,24 @@ class ConnectionManager {
     debugPrint('[CM] WebSocket error for $_instanceId: $error');
     // 在任何非终态下收到传输层错误都应尝试恢复，而不仅仅是 connected。
     // 认证阶段的协议错误若被忽略，会等到 15s 握手超时才处理。
+    //
+    // Fix 3 (post-Fix-1 audit): we ALSO schedule a reconnect here,
+    // mirroring `_onWebSocketClosed`. The previous design relied on
+    // `_onConnectionDone` firing after `onError` to schedule the
+    // reconnect — but some platforms / scenarios emit `onError`
+    // without a follow-up `done`, leaving the connection stuck in
+    // `recovering` indefinitely. Making `_onConnectionError`
+    // self-sufficient closes that gap. `_scheduleDoConnect` cancels
+    // any existing `_reconnectTimer` before scheduling, so if both
+    // fire the second is a no-op (no double-schedule).
+    //
+    // Regression tests: connection_manager_test.dart
+    //   - "_onConnectionError from connected → recovering + reconnect"
+    //   - "_onConnectionError alone (no follow-up done) leaves system
+    //     recoverable"
     if (!_state.isTerminal) {
       _setState(GatewayConnectionState.recovering);
+      _scheduleReconnect();
     }
   }
 

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter_test/flutter_test.dart';
+import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -24,6 +24,115 @@ class MockWebSocketSink extends Mock implements WebSocketSink {
   @override
   Future<dynamic> close([int? closeCode, String? closeReason]) =>
       Future.value();
+}
+
+// ---------------------------------------------------------------------------
+// Fake timer — controllable [Timer] for unit-testing time-dependent behavior.
+// Extracted from connection_manager_test.dart & connection_manager_shutdown_test.dart.
+// ---------------------------------------------------------------------------
+
+class FakeTimer implements Timer {
+  final Duration duration;
+  final void Function() _callback;
+  bool _cancelled = false;
+  bool _fired = false;
+
+  FakeTimer(this.duration, this._callback);
+
+  @override
+  void cancel() {
+    _cancelled = true;
+  }
+
+  @override
+  bool get isActive => !_cancelled && !_fired;
+
+  @override
+  int get tick => 0;
+
+  bool get isCancelled => _cancelled;
+  bool get isFired => _fired;
+
+  void fire() {
+    if (_cancelled || _fired) return;
+    _fired = true;
+    _callback();
+  }
+
+  // ignore: non_constant_identifier_names
+  static Timer Function(Duration, void Function()) NOOP = (_, _) =>
+      FakeTimer(Duration.zero, () {});
+}
+
+class FakeTimerFactory {
+  final List<FakeTimer> timers = [];
+
+  Timer call(Duration duration, void Function() callback) {
+    final timer = FakeTimer(duration, callback);
+    timers.add(timer);
+    return timer;
+  }
+
+  FakeTimer? get lastTimer => timers.isEmpty ? null : timers.last;
+  Iterable<FakeTimer> get activeTimers => timers.where((t) => t.isActive);
+
+  void fireLast() {
+    final t = lastTimer;
+    if (t != null && t.isActive) t.fire();
+  }
+
+  void fireAll() {
+    for (final t in timers) {
+      if (t.isActive) t.fire();
+    }
+  }
+
+  void reset() => timers.clear();
+}
+
+// ---------------------------------------------------------------------------
+// In-memory [IDeviceTokenStore] for tests.  Tracks call counts so retry tests
+// can assert "load() was actually called during retry", not just "the manager
+// emitted hello-ok eventually".  Extracted from connection_manager_auth_retry_test.dart
+// and connection_manager_device_token_test.dart.
+// ---------------------------------------------------------------------------
+
+class FakeDeviceTokenStore implements IDeviceTokenStore {
+  final Map<String, String> _store = {};
+
+  int loadCalls = 0;
+  int deleteCalls = 0;
+
+  /// Read-only view of the backing map — tests use this to assert that the
+  /// manager saved/deleted the expected keys without poking into private
+  /// state. Public because the field's library-private (`_`) name is
+  /// inaccessible from other test files.
+  Map<String, String> get tokens => Map.unmodifiable(_store);
+
+  /// Pre-populate the store without going through [save] — useful for tests
+  /// that want to simulate "device already paired before this test ran".
+  void seed(String instanceId, String deviceToken) {
+    _store[instanceId] = deviceToken;
+  }
+
+  @override
+  Future<void> save(String instanceId, String deviceToken) async {
+    _store[instanceId] = deviceToken;
+  }
+
+  @override
+  Future<String?> load(String instanceId) async {
+    loadCalls++;
+    final value = _store[instanceId];
+    if (value == null || value.isEmpty) return null;
+    return value;
+  }
+
+  @override
+  Future<void> delete(String instanceId) async {
+    deleteCalls++;
+    _store.remove(instanceId);
+  }
 }
 
 // ---------------------------------------------------------------------------

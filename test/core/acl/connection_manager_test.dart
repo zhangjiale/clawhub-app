@@ -29,77 +29,7 @@ String authErrorJson(
 const String presenceJson =
     '{"type":"event","event":"presence","payload":{"status":"online"}}';
 
-// ---------------------------------------------------------------------------
-// Fake timer infrastructure
-// ---------------------------------------------------------------------------
-
-/// A controllable fake [Timer] for unit testing time-dependent behavior.
-class FakeTimer implements Timer {
-  final Duration duration;
-  final void Function() _callback;
-  bool _cancelled = false;
-  bool _fired = false;
-
-  FakeTimer(this.duration, this._callback);
-
-  @override
-  void cancel() {
-    _cancelled = true;
-  }
-
-  @override
-  bool get isActive => !_cancelled && !_fired;
-
-  @override
-  int get tick => 0;
-
-  /// Whether this timer has been cancelled.
-  bool get isCancelled => _cancelled;
-
-  /// Fire the timer's callback (marks it inactive).
-  void fire() {
-    if (_cancelled || _fired) return;
-    _fired = true;
-    _callback();
-  }
-
-  // ignore: non_constant_identifier_names
-  static Timer Function(Duration, void Function()) NOOP = (_, __) =>
-      FakeTimer(Duration.zero, () {});
-}
-
-/// Records and manages fake timers created by [ConnectionManager] tests.
-class FakeTimerFactory {
-  final List<FakeTimer> timers = [];
-
-  Timer call(Duration duration, void Function() callback) {
-    final timer = FakeTimer(duration, callback);
-    timers.add(timer);
-    return timer;
-  }
-
-  /// Returns the most recently created timer, or null.
-  FakeTimer? get lastTimer => timers.isEmpty ? null : timers.last;
-
-  /// Returns all non-cancelled timers.
-  Iterable<FakeTimer> get activeTimers => timers.where((t) => t.isActive);
-
-  /// Fires the most recently created non-cancelled timer.
-  void fireLast() {
-    final t = lastTimer;
-    if (t != null && t.isActive) t.fire();
-  }
-
-  /// Fires all non-cancelled timers in creation order.
-  void fireAll() {
-    for (final t in timers) {
-      if (t.isActive) t.fire();
-    }
-  }
-
-  void reset() => timers.clear();
-}
-
+// FakeTimer / FakeTimerFactory live in test_helpers.dart — re-imported here.
 // ============================================================================
 // Tests
 // ============================================================================
@@ -466,6 +396,159 @@ void main() {
 
       await cm.dispose();
     });
+
+    // -------------------------------------------------------------------------
+    // Regression: NOT_PAIRED / DEVICE_ID_MISMATCH in terminal state must NOT
+    // override the terminal state (Fix 2 / #2 of the post-Fix-1 audit).
+    //
+    // Same race Fix 3 closed for `_handleAuthTokenMismatchRetry`:
+    // `_handlePairingRequired` and `_handleDeviceIdMismatch` lack a
+    // `_state.isTerminal` pre-check. A stale NOT_PAIRED / DEVICE_ID_MISMATCH
+    // response arriving while state has already moved to a terminal
+    // (authFailed / pairingRequired / reconnectExhausted / disconnected)
+    // will:
+    //   1. Overwrite the terminal state with pairingRequired / recovering.
+    //   2. Schedule a fresh connect or pairing retry, masking the original
+    //      failure from the user.
+    //
+    // The pairingInfo stream side-effect is also gated by this guard so a
+    // stale NOT_PAIRED doesn't surface a phantom pairing request after the
+    // user has explicitly disconnected / failed auth.
+    // -------------------------------------------------------------------------
+    test(
+      'NOT_PAIRED in terminal state (authFailed) does NOT override state',
+      () async {
+        final ws = ControllableWebSocket.ready();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(signPayload: (_) async => 'mock-sig'),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        final pairingInfos = <GatewayPairingInfo?>[];
+        cm.pairingInfo.listen(pairingInfos.add);
+
+        cm.connect();
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+
+        // Force terminal state BEFORE the NOT_PAIRED response arrives.
+        // Race window: another code path moved us to authFailed while
+        // the connect response was still in flight.
+        cm.setTestState(GatewayConnectionState.authFailed);
+        expect(cm.state, GatewayConnectionState.authFailed);
+
+        ws.simulateServerFrame(notPairedJson(reqId, requestId: 'req-stale'));
+        await pumpMicrotasks();
+        for (var i = 0; i < 4; i++) {
+          await pumpMicrotasks();
+        }
+
+        expect(
+          cm.state,
+          GatewayConnectionState.authFailed,
+          reason:
+              'stale NOT_PAIRED arriving in a terminal state must NOT '
+              'override it to pairingRequired',
+        );
+        expect(
+          pairingInfos,
+          isEmpty,
+          reason:
+              'no pairingInfo should be emitted for a stale NOT_PAIRED in '
+              'a terminal state — would confuse the UI',
+        );
+
+        await cm.dispose();
+      },
+    );
+
+    test(
+      'NOT_PAIRED in terminal state (disconnected) does NOT schedule retry',
+      () async {
+        final ws = ControllableWebSocket.ready();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(signPayload: (_) async => 'mock-sig'),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        cm.connect();
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+
+        // User has explicitly disconnected; state → disconnected (terminal).
+        await cm.disconnect();
+        expect(cm.state, GatewayConnectionState.disconnected);
+
+        // Stale NOT_PAIRED response arrives. Without the fix, the
+        // handler would set state to pairingRequired + schedule a
+        // 10s pairing retry — a zombie retry after the user explicitly
+        // disconnected.
+        ws.simulateServerFrame(notPairedJson(reqId));
+        await pumpMicrotasks();
+        for (var i = 0; i < 4; i++) {
+          await pumpMicrotasks();
+        }
+
+        expect(
+          cm.state,
+          GatewayConnectionState.disconnected,
+          reason: 'user disconnect must not be overwritten by stale NOT_PAIRED',
+        );
+
+        await cm.dispose();
+      },
+    );
+
+    test(
+      'DEVICE_ID_MISMATCH in terminal state (authFailed) does NOT retry',
+      () async {
+        final ws = ControllableWebSocket.ready();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(signPayload: (_) async => 'mock-sig'),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        cm.connect();
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+
+        cm.setTestState(GatewayConnectionState.authFailed);
+
+        ws.simulateServerFrame(deviceIdMismatchJson(reqId));
+        await pumpMicrotasks();
+        for (var i = 0; i < 4; i++) {
+          await pumpMicrotasks();
+        }
+
+        expect(
+          cm.state,
+          GatewayConnectionState.authFailed,
+          reason:
+              'stale DEVICE_ID_MISMATCH must NOT override terminal '
+              'authFailed with recovering + 2s retry timer',
+        );
+
+        await cm.dispose();
+      },
+    );
   });
 
   // ==========================================================================
@@ -1323,7 +1406,17 @@ void main() {
     // ======================================================================
     // Law 16: _onConnectionError side-effect coverage
     // ======================================================================
-    test('_onConnectionError from connected → recovering', () async {
+    test('_onConnectionError from connected → recovering + reconnect', () async {
+      // Fix 3 (post-Fix-1 audit): _onConnectionError now mirrors
+      // _onWebSocketClosed — state goes to recovering AND a reconnect
+      // timer is scheduled. The old behaviour relied on _onConnectionDone
+      // firing next, but some platforms / scenarios don't emit done
+      // after onError, leaving the connection stuck in `recovering`
+      // indefinitely.
+      //
+      // Regression test:
+      // `_onConnectionError alone (no follow-up done) leaves system recoverable`
+      // below pins the user-visible contract: a timer must be scheduled.
       final result = await connectAndHandshakeWithTimers();
       final ws = result.ws;
       final cm = result.cm;
@@ -1340,15 +1433,78 @@ void main() {
       expect(cm.state, GatewayConnectionState.recovering);
       expect(states, contains(GatewayConnectionState.recovering));
 
-      // Per design: _onConnectionError does NOT cancel timers.
+      // Reconnect timer must be scheduled — the bug was that
+      // _onConnectionError set state to `recovering` but didn't
+      // schedule a reconnect, leaving the system stuck until _onConnectionDone
+      // (which may never fire) cancelled the state.  Active timer count
+      // should rise by exactly 1 (one new reconnect timer).
       expect(
         timers.activeTimers.length,
-        activeBeforeError,
+        activeBeforeError + 1,
         reason:
-            '_onConnectionError should not cancel timers '
-            '(design: let the stream close naturally)',
+            '_onConnectionError must schedule a reconnect — otherwise a '
+            'transport error without a follow-up done leaves the '
+            'connection stuck in `recovering` indefinitely',
       );
+
+      // Existing reconnect timers should NOT be cancelled (the new
+      // _scheduleDoConnect cancels _reconnectTimer before scheduling,
+      // but there was no existing reconnect timer to cancel — only
+      // the tick timeout was active here).
     });
+
+    test(
+      '_onConnectionError alone (no follow-up done) leaves system recoverable',
+      () async {
+        // The original bug report (Fix 3 of the post-Fix-1 audit):
+        // some platforms / scenarios fire `onError` on the WebSocket
+        // stream without a follow-up `done`. In that case the old
+        // `_onConnectionError` set state to `recovering` and waited
+        // for `_onConnectionDone` to schedule a reconnect. Without
+        // `done`, the system sat in `recovering` forever and the UI
+        // showed "reconnecting" with no recovery action.
+        //
+        // The fix makes `_onConnectionError` self-sufficient: it
+        // schedules a reconnect directly, mirroring `_onWebSocketClosed`.
+        //
+        // This test simulates ONLY an error (no `simulateServerClose`)
+        // and verifies a reconnect timer is scheduled.  We don't fire
+        // the timer here — firing it would invoke `_doConnect` on the
+        // same exhausted ControllableWebSocket stream and fail; the
+        // other tests in this group already verify the timer fires
+        // correctly when a fresh socket is available (see the
+        // `connect() during reconnect dedup` tests).
+        final result = await connectAndHandshakeWithTimers();
+        final ws = result.ws;
+        final cm = result.cm;
+        final timers = result.timers;
+
+        ws.simulateError('Transport error without done');
+        await pumpMicrotasks();
+
+        // State must be recovering.
+        expect(cm.state, GatewayConnectionState.recovering);
+
+        // A reconnect timer MUST be active — otherwise the system is
+        // stuck (the bug). Look for the RetryStrategy-shaped delay
+        // (1s on first attempt) which `_scheduleReconnect` produces.
+        final reconnectTimers = timers.activeTimers.where(
+          (t) =>
+              t.duration == const Duration(seconds: 1) ||
+              t.duration == const Duration(seconds: 2),
+        );
+        expect(
+          reconnectTimers.length,
+          1,
+          reason:
+              '_onConnectionError must schedule a reconnect — no follow-up '
+              'done will arrive, so without an explicit schedule the '
+              'connection would be stuck in `recovering` forever',
+        );
+
+        await cm.dispose();
+      },
+    );
 
     test('_onConnectionError does not fail pending requests', () async {
       final result = await connectAndHandshakeWithTimers();
@@ -1376,6 +1532,89 @@ void main() {
         isFalse,
         reason: 'pending request should not resolve on connection error alone',
       );
+    });
+
+    // Regression: connect-timeout timer from a previous attempt must be
+    // cancelled when a new _doConnect starts.
+    //
+    // Bug scenario:
+    //   1. _doConnect #1 → state=connecting→authenticating → T1 (15s) created.
+    //   2. hello-ok never arrives (transport error mid-handshake).
+    //   3. _onConnectionError → state=recovering → reconnect timer R1 (1s).
+    //   4. R1 fires → _doConnect #2 → state=connecting→authenticating → T2
+    //      created (overwrites T1's reference WITHOUT cancelling T1).
+    //   5. T1 fires 15s after step 1, during step 4's authenticating phase.
+    //      `if (_state == authenticating)` passes → false `_handleAuthFailure`
+    //      → user sees authFailed instead of recovering.
+    //
+    // The fix cancels T1 at the start of _doConnect. Without it, the
+    // old timer survives the reconnect and corrupts the new handshake.
+    test('connect-timeout timer is cancelled when _doConnect restarts '
+        '(no false auth failure from stale timer)', () async {
+      final ws = ControllableWebSocket.ready();
+      final timers = FakeTimerFactory();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(signPayload: (_) async => 'mock-sig'),
+        webSocketFactory: (_) => ws.channel,
+        timerFactory: timers.call,
+      );
+
+      cm.connect();
+      await pumpMicrotasks();
+      ws.completeHandshake();
+      await pumpMicrotasks();
+
+      // Drive handshake to authenticating — challenge received but
+      // no hello-ok yet. The 15s connect-timeout timer T1 is now
+      // active in the FakeTimerFactory.
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      expect(cm.state, GatewayConnectionState.authenticating);
+
+      final t1Candidates = timers.activeTimers
+          .where((t) => t.duration == const Duration(seconds: 15))
+          .toList();
+      expect(
+        t1Candidates.length,
+        1,
+        reason: 'connect-timeout timer must be active during authenticating',
+      );
+      final t1 = t1Candidates.first;
+      expect(t1.isActive, isTrue);
+
+      // Transport error mid-handshake → _onConnectionError schedules
+      // a reconnect (1s backoff per RetryStrategy).
+      ws.simulateError('Transport error during handshake');
+      await pumpMicrotasks();
+
+      // Capture the reconnect timer and fire it → _doConnect #2
+      // starts → new connect-timeout timer T2 is created.
+      final reconnectCandidates = timers.activeTimers
+          .where((t) => t.duration == const Duration(seconds: 1))
+          .toList();
+      expect(reconnectCandidates.length, 1);
+      reconnectCandidates.first.fire();
+      await pumpMicrotasks();
+
+      // CRITICAL ASSERTION: T1 must be cancelled. Without the fix,
+      // T1's callback would still fire ~15s after step 1 and falsely
+      // fail the new handshake via `_handleAuthFailure('Handshake
+      // timeout')`.
+      expect(
+        t1.isCancelled,
+        isTrue,
+        reason:
+            'connect-timeout timer from a previous attempt must be '
+            'cancelled when a new _doConnect starts — otherwise the '
+            'old callback can fire during the new authenticating phase '
+            'and falsely trigger auth failure',
+      );
+
+      await cm.dispose();
     });
 
     test('_onConnectionError from authenticating → recovering', () async {

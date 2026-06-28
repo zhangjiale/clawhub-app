@@ -116,13 +116,47 @@ class WsGatewayClient implements IGatewayClient {
   /// from the other source are dropped.
   final Map<String, String> _deltaSource = {};
 
+  /// Active server-assigned `runId` for the current turn, per session.
+  ///
+  /// Key format: `$instanceId:$sessionKey` (same as [_streamingBuffers]).
+  /// `runId` is the server-authoritative per-turn identifier (parsed on
+  /// `chat`/`agent` events and returned by the `chat.send` response).
+  ///
+  /// A streaming buffer belongs to exactly one turn. `sessionKey` is
+  /// stable across turns for the same agent, so without this pointer a
+  /// turn aborted before its `lifecycle.end`/`chat.final` (e.g. a
+  /// graceful-shutdown reconnect, which lives inside `ConnectionManager`
+  /// and never reaches `_cleanup`) leaves a non-empty buffer that the
+  /// next turn's deltas `.append()` to — corrupting the reply with
+  /// `stale_turn1 + turn2`.
+  ///
+  /// When the `runId` for a session changes, the prior buffer is
+  /// irrecoverably stale and is dropped (see [_resetTurnForSession]).
+  /// A missing `runId` (older Gateways) leaves this map untouched — the
+  /// degradation path preserves the no-runId behavior pinned by the
+  /// "chat.delta arriving before lifecycle.start is not dropped" test.
+  final Map<String, String> _activeRunIdBySession = {};
+
   /// Explicit mapping from sessionKey → remoteAgentId.
   ///
   /// Populated by [sendMessage] (chat.send) response handler.
   /// Events dispatch look up agentId via this table instead
   /// of parsing the colon-separated sessionKey string — that heuristic is
   /// unreliable when Gateway uses alternative sessionKey formats.
+  ///
+  /// Keys are bare sessionKeys (e.g. `agent:r-1:main`), NOT prefixed with
+  /// instanceId. The reverse index [_sessionKeysByInstance] tracks which
+  /// keys belong to which instance so [_cleanup] can drop the right ones
+  /// when an instance is removed — see the memory-leak fix in _cleanup.
   final Map<String, String> _sessionToAgentId = {};
+
+  /// Reverse index: instanceId → set of sessionKeys owned by that instance.
+  ///
+  /// Used by [_cleanup] to remove the instance's entries from
+  /// [_sessionToAgentId]. Without this index, _sessionToAgentId would
+  /// only be cleared in [dispose], leaking entries across instance
+  /// churn (add → remove → add → …).
+  final Map<String, Set<String>> _sessionKeysByInstance = {};
 
   // 设备身份由 [IDeviceIdentityProvider] 管理，通过构造函数注入。
 
@@ -170,6 +204,21 @@ class WsGatewayClient implements IGatewayClient {
     WsGatewayClient client,
     DeviceIdentity identity,
   ) => client._resolveEffectiveConfig(identity);
+
+  /// 测试缝隙 — 返回 [_sessionToAgentId] 当前条目数。
+  ///
+  /// 用于验证实例断开后映射被正确清理（防内存泄漏）。只在测试中调用。
+  /// 返回 size 而不是整个 map，避免泄露每个 entry 的 sessionKey 字符串。
+  @visibleForTesting
+  int get sessionToAgentIdSizeForTesting => _sessionToAgentId.length;
+
+  /// 测试缝隙 — 返回 [_sessionKeysByInstance] 反向索引中的 sessionKey 总数。
+  ///
+  /// 用于验证失败的 sendMessage 不会泄露反向索引条目（与
+  /// [sessionToAgentIdSizeForTesting] 配对，覆盖两个映射）。只在测试中调用。
+  @visibleForTesting
+  int get sessionKeysByInstanceSizeForTesting =>
+      _sessionKeysByInstance.values.fold<int>(0, (n, s) => n + s.length);
 
   // ---------------------------------------------------------------------------
   // IGatewayClient 实现
@@ -293,6 +342,23 @@ class WsGatewayClient implements IGatewayClient {
     _streamingBuffers.removeWhere((key, _) => key.startsWith('$instanceId:'));
     _finalizedSessions.removeWhere((key) => key.startsWith('$instanceId:'));
     _deltaSource.removeWhere((key, _) => key.startsWith('$instanceId:'));
+    _activeRunIdBySession.removeWhere(
+      (key, _) => key.startsWith('$instanceId:'),
+    );
+
+    // _sessionToAgentId uses BARE sessionKeys (no instanceId prefix) — it
+    // would never match the prefix filter above.  Drop the entries via
+    // the reverse index to avoid leaking across instance churn (the map
+    // was previously only cleared in dispose(), so add→remove→add→…
+    // grew it unbounded).  Regression test:
+    // ws_gateway_client_test.dart "disconnect clears _sessionToAgentId
+    // entries for that instance".
+    final ownedKeys = _sessionKeysByInstance.remove(instanceId);
+    if (ownedKeys != null) {
+      for (final key in ownedKeys) {
+        _sessionToAgentId.remove(key);
+      }
+    }
 
     if (emitDisconnected) {
       conn.connectionState.emit(GatewayConnectionState.disconnected);
@@ -309,8 +375,6 @@ class WsGatewayClient implements IGatewayClient {
 
     // sessionKey format: agent:{agentId}:main (ref doc §7.2)
     final sessionKey = 'agent:$agentId:main';
-    // Populate mapping so event dispatch can resolve agentId without string parsing
-    _sessionToAgentId[sessionKey] = agentId;
 
     final res = await manager.sendRequest(Methods.chatSend, {
       'sessionKey': sessionKey,
@@ -325,11 +389,39 @@ class WsGatewayClient implements IGatewayClient {
       );
     }
 
+    // Populate the sessionKey → agentId mapping ONLY on a successful send.
+    // Writing it before `sendRequest` (the old code) leaked the entry when
+    // the await threw or the response was `ok:false` — the entries were
+    // never removed until disconnect, and the reverse-index made the leak
+    // grow across different failed agents. Deferring the write to the
+    // success path means a failed send leaves nothing behind. Event
+    // dispatch for any delta still resolves via `_resolveAgentId`'s
+    // string-parsing fallback (`split(':')[1]`), so this is
+    // behavior-preserving on the success path.
+    _sessionToAgentId[sessionKey] = agentId;
+    // Reverse-index so _cleanup can remove this entry when the instance
+    // disconnects (fixes the memory leak — bare sessionKeys don't match
+    // the '$instanceId:' prefix filter used by the other maps).
+    (_sessionKeysByInstance[instanceId] ??= {}).add(sessionKey);
+
     // chat.send 响应中没有 serverId，用 runId 作为追踪标识
     final payload = res.payload ?? {};
-    final serverId = payload['runId'] as String? ?? _uuid.v4();
+    final serverRunId = payload['runId'] as String?;
+    final serverId = serverRunId ?? _uuid.v4();
     final timestamp =
         payload['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+
+    // runId turn-token (primary turn boundary): the server assigns runId
+    // here, before any chat.delta / lifecycle.start. When present this is
+    // the earliest, most reliable turn boundary — drop any lingering
+    // buffer / finalized / delta-source state for this session so an
+    // aborted prior turn (no lifecycle.end ever arrived — e.g. a mid-turn
+    // graceful-shutdown reconnect) cannot corrupt this turn's reply.
+    // Only the server-sent value counts; the `_uuid.v4()` fallback above
+    // is not server-authoritative and must not be treated as a runId.
+    if (serverRunId != null) {
+      _resetTurnForSession('$instanceId:$sessionKey', serverRunId);
+    }
 
     return (serverId: serverId, timestamp: timestamp);
   }
@@ -557,8 +649,10 @@ class WsGatewayClient implements IGatewayClient {
     _connections.clear();
     _streamingBuffers.clear();
     _sessionToAgentId.clear();
+    _sessionKeysByInstance.clear();
     _finalizedSessions.clear();
     _deltaSource.clear();
+    _activeRunIdBySession.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -603,6 +697,43 @@ class WsGatewayClient implements IGatewayClient {
     }
   }
 
+  /// Drop all per-session streaming state for [bufferKey] and stamp [runId]
+  /// as the active turn.
+  ///
+  /// Called at a turn boundary — most authoritatively from the `chat.send`
+  /// response (the server assigns `runId` before any deltas), and as a
+  /// fallback from `lifecycle.start` / a differing-`runId` delta when a
+  /// turn begins without a fresh `chat.send`. Dropping the buffer here
+  /// prevents an aborted prior turn (no `lifecycle.end`/`chat.final`
+  /// ever arrived) from corrupting the new turn's reply.
+  ///
+  /// [runId] must be the server-sent value (non-null). Callers gate on
+  /// null themselves so the no-`runId` degradation path is preserved.
+  void _resetTurnForSession(String bufferKey, String runId) {
+    _streamingBuffers.remove(bufferKey);
+    _finalizedSessions.remove(bufferKey);
+    _deltaSource.remove(bufferKey);
+    _activeRunIdBySession[bufferKey] = runId;
+  }
+
+  /// Record [runId] as the active turn for [bufferKey].
+  ///
+  /// - [runId] `null` → no-op (degradation for older Gateways that don't
+  ///   send `runId`; current behavior is preserved).
+  /// - [runId] differs from the active turn → turn boundary: drop the
+  ///   prior turn's streaming state via [_resetTurnForSession].
+  /// - [runId] equals the active turn (or none is recorded yet) → just
+  ///   stamp it as active; buffer is untouched.
+  void _applyRunId(String bufferKey, String? runId) {
+    if (runId == null) return;
+    final active = _activeRunIdBySession[bufferKey];
+    if (active != null && active != runId) {
+      _resetTurnForSession(bufferKey, runId);
+    } else {
+      _activeRunIdBySession[bufferKey] = runId;
+    }
+  }
+
   /// `chat` 事件 — Gateway v2026.6.6 UI 面向前端事件。
   ///
   /// - `state: "delta"` → 增量文本（含 deltaText）
@@ -620,6 +751,12 @@ class WsGatewayClient implements IGatewayClient {
     switch (event.state) {
       case ChatState.delta:
         if (event.deltaText != null && event.deltaText!.isNotEmpty) {
+          // runId turn-token: a differing runId means a new turn began
+          // without a fresh chat.send (agent self-branch / tool
+          // continuation). Drop the stale prior-turn buffer before
+          // appending. Absent runId → degradation (keep current behavior).
+          _applyRunId(bufferKey, event.runId);
+
           // Dedup: if agent source already locked for this session, skip
           final source = _deltaSource.putIfAbsent(bufferKey, () => 'chat');
           if (source != 'chat') break;
@@ -682,6 +819,9 @@ class WsGatewayClient implements IGatewayClient {
           );
         }
         _streamingBuffers.remove(bufferKey);
+        // Turn complete — clear the active runId so the next turn starts
+        // clean (also reset by _resetTurnForSession on the next boundary).
+        _activeRunIdBySession.remove(bufferKey);
 
         // Notify UI that streaming is complete — only when we have
         // a resolvable agentId; otherwise ChatViewModel silently drops
@@ -760,6 +900,10 @@ class WsGatewayClient implements IGatewayClient {
         {
           final delta = event.data['delta'] as String?;
           if (delta != null && delta.isNotEmpty) {
+            // runId turn-token (see _onChatEvent delta branch): a differing
+            // runId signals a new turn began without a fresh chat.send.
+            _applyRunId(bufferKey, event.runId);
+
             // Dedup: if chat source already locked for this session, skip
             final source = _deltaSource.putIfAbsent(bufferKey, () => 'agent');
             if (source != 'agent') break;
@@ -788,6 +932,16 @@ class WsGatewayClient implements IGatewayClient {
         {
           final phase = event.data['phase'] as String?;
           if (phase == 'start') {
+            // runId turn-token (secondary boundary): if the server emits
+            // a lifecycle.start whose runId differs from the active turn,
+            // a new turn began — drop the stale prior-turn buffer. This
+            // is the case Fix 7's conditional clear below could not
+            // handle (it only cleared empty buffers). Same/absent runId
+            // falls through to the existing conditional clear, preserving
+            // the "chat.delta arriving before lifecycle.start is not
+            // dropped" regression test.
+            _applyRunId(bufferKey, event.runId);
+
             // A new agent run has begun — clear the previous turn's
             // dedup token so _finalizedSessions does not permanently
             // block subsequent messages to the same agent (the key is
@@ -795,8 +949,26 @@ class WsGatewayClient implements IGatewayClient {
             // This also allows the next lifecycle.end or chat.final for
             // this session to process normally.
             _finalizedSessions.remove(bufferKey);
-            _streamingBuffers.remove(bufferKey);
             _deltaSource.remove(bufferKey);
+
+            // Fix 7 (post-Fix-1 audit): conditionally clear the
+            // streaming buffer. If a `chat.delta` event arrived in
+            // the SAME microtask as this `lifecycle.start` (server
+            // misorder), the buffer was populated by that delta.
+            // Clearing it unconditionally would drop the first chunk
+            // of the new turn on the floor. Only clear if the buffer
+            // is empty — a non-empty buffer is either in-flight data
+            // for the new turn or stale data from a prior turn that
+            // never sent an end event (rare; the next chat.final or
+            // lifecycle.end will consume it).
+            //
+            // Regression test: ws_gateway_client_test.dart
+            // "chat.delta arriving before lifecycle.start is not
+            // dropped".
+            final existing = _streamingBuffers[bufferKey];
+            if (existing == null || existing.text.isEmpty) {
+              _streamingBuffers.remove(bufferKey);
+            }
           } else if (phase == 'end') {
             // Coordinate with chat.final — only one handler per session
             // may finalize, preventing duplicate messages when a v3
@@ -819,6 +991,9 @@ class WsGatewayClient implements IGatewayClient {
             final buffer = _streamingBuffers.remove(bufferKey);
             if (buffer == null || buffer.text.isEmpty) break;
             if (!_finalizedSessions.add(bufferKey)) break;
+
+            // Turn complete — clear the active runId (mirrors chat.final).
+            _activeRunIdBySession.remove(bufferKey);
 
             if (!conn.messageCtrl.isClosed) {
               conn.messageCtrl.add(

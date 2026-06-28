@@ -302,5 +302,62 @@ void main() {
 
       await cm.dispose();
     });
+
+    // Regression: a server-sent `ts` that jsonDecode materializes as
+    // `double` (e.g. `1719500000000.0`) must still be detected as clock
+    // drift, not silently skipped.
+    //
+    // Bug: `_detectClockDrift` used `if (tsRaw is! int) return;`. A JSON
+    // number decoded as `double` fails that check (double is not int), so
+    // the method returns early — drift goes unrecorded and the
+    // DEVICE_AUTH_SIGNATURE_EXPIRED root-cause breadcrumb is lost for any
+    // Gateway/ts source whose numbers decode as doubles. Defensive
+    // `num`-based parsing (`is! num` + `toInt()`) accepts both.
+    //
+    // (tickWithTsJson emits an int literal, so this test hand-writes the
+    // frame with a `.0` double to exercise the failing decode path.)
+    test('ts sent as JSON double is still detected as clock drift', () async {
+      final ws = ControllableWebSocket.ready();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(),
+        webSocketFactory: (_) => ws.channel,
+      );
+
+      unawaited(cm.connect());
+      await pumpMicrotasks();
+      ws.completeHandshake();
+      await pumpMicrotasks();
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(helloOkJson(reqId));
+      await pumpMicrotasks();
+
+      expect(cm.state, GatewayConnectionState.connected);
+      expect(cm.lastObservedClockDriftMsForTesting, isNull);
+
+      // A `.0` double — jsonDecode yields `double`, which `is! int`
+      // rejected before the fix. Use a far-future ts so the drift is
+      // large; we only assert the value is *recorded* (the threshold-gated
+      // debugPrint warning is not under test here).
+      ws.simulateServerFrame(
+        '{"type":"event","event":"tick","payload":{"ts":1719500000000.0}}',
+      );
+      await pumpMicrotasks();
+
+      expect(
+        cm.lastObservedClockDriftMsForTesting,
+        isNotNull,
+        reason:
+            'a JSON-double ts must not be silently skipped — it is a '
+            'valid numeric timestamp and drift must be recorded',
+      );
+
+      await cm.dispose();
+    });
   });
 }

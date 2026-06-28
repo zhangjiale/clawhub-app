@@ -1,43 +1,11 @@
 import 'package:claw_hub/core/acl/connection_manager.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
-import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'test_helpers.dart';
 
-// ---------------------------------------------------------------------------
-// Fake IDeviceTokenStore
-//
-// Minimal in-memory map implementation.  Used to verify ConnectionManager's
-// read/write contract without touching FlutterSecureStorage.
-// ---------------------------------------------------------------------------
-
-class _FakeDeviceTokenStore implements IDeviceTokenStore {
-  final Map<String, String> _store = {};
-
-  /// Pre-populate the store to simulate a previously-paired device.
-  void seed(String instanceId, String deviceToken) {
-    _store[instanceId] = deviceToken;
-  }
-
-  @override
-  Future<void> save(String instanceId, String deviceToken) async {
-    _store[instanceId] = deviceToken;
-  }
-
-  @override
-  Future<String?> load(String instanceId) async {
-    final value = _store[instanceId];
-    if (value == null || value.isEmpty) return null;
-    return value;
-  }
-
-  @override
-  Future<void> delete(String instanceId) async {
-    _store.remove(instanceId);
-  }
-}
+// FakeDeviceTokenStore lives in test_helpers.dart (re-imported).
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -51,7 +19,7 @@ void main() {
     group('hello-ok with auth.deviceToken', () {
       test('persists deviceToken to store on successful hello-ok', () async {
         final ws = ControllableWebSocket.create();
-        final tokenStore = _FakeDeviceTokenStore();
+        final tokenStore = FakeDeviceTokenStore();
 
         final cm = ConnectionManager(
           instanceId: 'inst-1',
@@ -79,7 +47,7 @@ void main() {
 
         expect(cm.state, GatewayConnectionState.connected);
         expect(
-          tokenStore._store,
+          tokenStore.tokens,
           {'inst-1': 'dt-new-1'},
           reason:
               'ConnectionManager must persist auth.deviceToken to the store '
@@ -98,7 +66,7 @@ void main() {
         'does NOT call store.save when hello-ok has no auth.deviceToken',
         () async {
           final ws = ControllableWebSocket.create();
-          final tokenStore = _FakeDeviceTokenStore();
+          final tokenStore = FakeDeviceTokenStore();
 
           final cm = ConnectionManager(
             instanceId: 'inst-1',
@@ -126,7 +94,7 @@ void main() {
 
           expect(cm.state, GatewayConnectionState.connected);
           expect(
-            tokenStore._store,
+            tokenStore.tokens,
             isEmpty,
             reason:
                 'No save when the Gateway did not issue a new deviceToken '
@@ -146,7 +114,7 @@ void main() {
         'sends cached deviceToken in connect.auth.token when store has one',
         () async {
           final ws = ControllableWebSocket.create();
-          final tokenStore = _FakeDeviceTokenStore();
+          final tokenStore = FakeDeviceTokenStore();
           tokenStore.seed('inst-1', 'dt-cached-9');
 
           final cm = ConnectionManager(
@@ -193,7 +161,7 @@ void main() {
         'falls back to instance.tokenRef when store has no cached token',
         () async {
           final ws = ControllableWebSocket.create();
-          final tokenStore = _FakeDeviceTokenStore();
+          final tokenStore = FakeDeviceTokenStore();
           // No seed() — first-time pairing scenario.
 
           final cm = ConnectionManager(

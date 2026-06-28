@@ -383,6 +383,271 @@ void main() {
       await client.dispose();
     });
 
+    // Regression: per-instance sessionKey → agentId mapping must be cleared
+    // on disconnect, otherwise removing+re-adding an instance (or churn in
+    // general) leaks entries forever (only cleared in dispose()).
+    //
+    // The bug: `_cleanup` (called by disconnect) filters
+    // `_streamingBuffers` / `_finalizedSessions` / `_deltaSource` by
+    // `'$instanceId:'` prefix, but `_sessionToAgentId` keys are bare
+    // sessionKeys (`agent:{agentId}:main`), NOT prefixed with instanceId.
+    // Result: the prefix-based filter never matches, only `dispose()`
+    // clears the map.
+    test('disconnect clears _sessionToAgentId entries for that instance '
+        '(no memory leak across instance churn)', () async {
+      final (:client, ws: ws) = await connectAndHandshake();
+
+      // Drive two sendMessage calls — each populates _sessionToAgentId
+      // with a bare sessionKey. chat.send response: ok=true, payload.runId.
+      final agentIdA = 'agent-aaa';
+      final agentIdB = 'agent-bbb';
+      final sessionKeyA = 'agent:$agentIdA:main';
+      final sessionKeyB = 'agent:$agentIdB:main';
+
+      for (final agentId in [agentIdA, agentIdB]) {
+        // Fire sendMessage — it awaits the chat.send response, so we
+        // drive it as an unawaited future and inject the response.
+        final future = client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: agentId,
+          message: Message(
+            clientId: 'msg-$agentId',
+            conversationId: 'conv-1',
+            agentId: agentId,
+            role: MessageRole.user,
+            type: MessageType.text,
+            content: 'hi',
+            logicalClock: 0,
+          ),
+        );
+
+        await pumpMicrotasks();
+
+        // The last sent frame is the chat.send request.
+        final sent = ws.sentFrames.last;
+        final reqId = extractReqId(sent);
+        ws.simulateServerFrame(
+          '{"type":"res","id":"$reqId","ok":true,'
+          '"payload":{"runId":"run-$agentId","timestamp":1700000000000}}',
+        );
+        await pumpMicrotasks();
+
+        await future;
+      }
+
+      // Sanity: both entries are now in the map.
+      expect(
+        client.sessionToAgentIdSizeForTesting,
+        2,
+        reason: 'both sendMessage calls should have populated the map',
+      );
+
+      // Now disconnect — the per-instance entries MUST be cleared.
+      await client.disconnect('test-instance');
+
+      expect(
+        client.sessionToAgentIdSizeForTesting,
+        0,
+        reason:
+            'disconnect must remove all sessionKeys belonging to the '
+            'disconnected instance — otherwise instance churn leaks '
+            'entries until dispose() (memory leak)',
+      );
+
+      await client.dispose();
+    });
+
+    test(
+      'disconnect for instance A does not touch instance B entries',
+      () async {
+        // Two-instance scenario: removing A must not affect B's mappings.
+        // The fix uses a per-instance reverse index; this test pins that
+        // the index lookup is correctly scoped to the disconnected
+        // instance.
+        final wsA = ControllableWebSocket.ready();
+        final clientA = WsGatewayClient(
+          identityProvider: FakeDeviceIdentityProvider(),
+          webSocketFactory: (_) => wsA.channel,
+        );
+        unawaited(clientA.connect(testInstance(id: 'instance-a')));
+        await pumpMicrotasks();
+        wsA.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqIdA = extractReqId(wsA.sentFrames.first);
+        wsA.simulateServerFrame(helloOkJson(reqIdA));
+        await pumpMicrotasks();
+
+        final wsB = ControllableWebSocket.ready();
+        final clientB = WsGatewayClient(
+          identityProvider: FakeDeviceIdentityProvider(),
+          webSocketFactory: (_) => wsB.channel,
+        );
+        unawaited(clientB.connect(testInstance(id: 'instance-b')));
+        await pumpMicrotasks();
+        wsB.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqIdB = extractReqId(wsB.sentFrames.first);
+        wsB.simulateServerFrame(helloOkJson(reqIdB));
+        await pumpMicrotasks();
+
+        // Populate both maps with one sendMessage each.
+        Future<void> sendOne(
+          WsGatewayClient c,
+          ControllableWebSocket ws,
+          String instanceId,
+          String agentId,
+        ) async {
+          final future = c.sendMessage(
+            instanceId: instanceId,
+            agentId: agentId,
+            message: Message(
+              clientId: 'msg-$agentId',
+              conversationId: 'conv-1',
+              agentId: agentId,
+              role: MessageRole.user,
+              type: MessageType.text,
+              content: 'hi',
+              logicalClock: 0,
+            ),
+          );
+          await pumpMicrotasks();
+          final reqId = extractReqId(ws.sentFrames.last);
+          ws.simulateServerFrame(
+            '{"type":"res","id":"$reqId","ok":true,'
+            '"payload":{"runId":"run-$agentId",'
+            '"timestamp":1700000000000}}',
+          );
+          await pumpMicrotasks();
+          await future;
+        }
+
+        await sendOne(clientA, wsA, 'instance-a', 'agent-a');
+        await sendOne(clientB, wsB, 'instance-b', 'agent-b');
+
+        // Both clients (each owns one instance) should have 1 entry.
+        expect(clientA.sessionToAgentIdSizeForTesting, 1);
+        expect(clientB.sessionToAgentIdSizeForTesting, 1);
+
+        // Disconnect A — A's entry should be cleared, B's untouched.
+        await clientA.disconnect('instance-a');
+        expect(
+          clientA.sessionToAgentIdSizeForTesting,
+          0,
+          reason: 'A disconnected → A entry cleared',
+        );
+
+        await clientA.dispose();
+        await clientB.dispose();
+      },
+    );
+
+    // Regression: chat.delta arriving in the same microtask as
+    // agent.lifecycle.start must NOT be wiped from the streaming buffer.
+    //
+    // Bug: `_onAgentEvent` clears `_streamingBuffers[bufferKey]` on
+    // `lifecycle.start`. If a `chat.delta` event for the new turn
+    // arrived BEFORE `lifecycle.start` in the same microtask (server
+    // misorder), the buffer was already populated by that delta —
+    // `lifecycle.start` would silently drop it. The first chunk of
+    // the new turn would never reach the user.
+    //
+    // Detection: trigger a `chat.final` with NO `message` field (forces
+    // the fallback path which uses `_streamingBuffers[bufferKey].text`).
+    // If the buffer was wiped, the fallback message only contains
+    // deltas that arrived AFTER `lifecycle.start`; with the fix it
+    // contains the full delta stream.
+    test('chat.delta arriving before lifecycle.start is not dropped '
+        '(no buffer wipe on lifecycle.start)', () async {
+      final (:client, ws: ws) = await connectAndHandshake();
+
+      // Populate _sessionToAgentId so _resolveAgentId works.
+      // Drive a successful sendMessage first.
+      final sendFuture = client.sendMessage(
+        instanceId: 'test-instance',
+        agentId: 'agent-r1',
+        message: Message(
+          clientId: 'msg-1',
+          conversationId: 'conv-1',
+          agentId: 'agent-r1',
+          role: MessageRole.user,
+          type: MessageType.text,
+          content: 'user prompt',
+          logicalClock: 0,
+        ),
+      );
+      await pumpMicrotasks();
+      final sendReqId = extractReqId(ws.sentFrames.last);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$sendReqId","ok":true,'
+        '"payload":{"runId":"run-1","timestamp":1700000000000}}',
+      );
+      await pumpMicrotasks();
+      await sendFuture;
+
+      // Listen for the fallback agent message.
+      final messages = <Message>[];
+      client.messageStream('test-instance').listen(messages.add);
+
+      const sessionKey = 'agent:agent-r1:main';
+
+      // Server misorder: chat.delta for new turn arrives BEFORE
+      // lifecycle.start (same microtask). Both are dispatched via
+      // ws.simulateServerFrame in sequence; the listener processes
+      // them in order.
+      ws.simulateServerFrame(
+        '{"type":"event","event":"chat","payload":'
+        '{"sessionKey":"$sessionKey","state":"delta",'
+        '"deltaText":"First chunk","seq":1}}',
+      );
+      await pumpMicrotasks();
+      ws.simulateServerFrame(
+        '{"type":"event","event":"agent","payload":'
+        '{"sessionKey":"$sessionKey","stream":"lifecycle",'
+        '"data":{"phase":"start"}}}',
+      );
+      await pumpMicrotasks();
+
+      // More deltas after lifecycle.start.
+      ws.simulateServerFrame(
+        '{"type":"event","event":"chat","payload":'
+        '{"sessionKey":"$sessionKey","state":"delta",'
+        '"deltaText":" second","seq":2}}',
+      );
+      await pumpMicrotasks();
+
+      // End the turn with chat.final but NO message field → forces
+      // fallback path that uses _streamingBuffers[bufferKey].text.
+      // If lifecycle.start wiped the buffer, this would only contain
+      // " second" (the delta that arrived after start).
+      ws.simulateServerFrame(
+        '{"type":"event","event":"chat","payload":'
+        '{"sessionKey":"$sessionKey","state":"final","seq":10}}',
+      );
+      await pumpMicrotasks();
+
+      // Find the fallback agent message — it should contain BOTH
+      // chunks ("First chunk second"), proving the buffer wasn't
+      // wiped by lifecycle.start.
+      final agentMessages = messages
+          .where((m) => m.role == MessageRole.agent)
+          .toList();
+      expect(
+        agentMessages.length,
+        1,
+        reason: 'fallback agent message must be emitted',
+      );
+      expect(
+        agentMessages.single.content,
+        contains('First chunk'),
+        reason:
+            'lifecycle.start must NOT wipe the buffer — the delta '
+            'that arrived before it must survive',
+      );
+      expect(agentMessages.single.content, contains('second'));
+
+      await client.dispose();
+    });
+
     test('dispose closes all resources cleanly', () async {
       final client = WsGatewayClient(
         identityProvider: FakeDeviceIdentityProvider(),
@@ -392,6 +657,365 @@ void main() {
       // Verify double-dispose is safe
       await client.dispose();
     });
+  });
+
+  // ==========================================================================
+  // runId turn-token: stale streaming-buffer corruption fix
+  //
+  // Bug: `_streamingBuffers` is keyed `$instanceId:$sessionKey`, and
+  // `sessionKey` is stable across turns for the same agent. A buffer is
+  // dropped only on normal completion (lifecycle.end / chat.final) or
+  // instance _cleanup — NOT when a turn is aborted by a graceful-shutdown
+  // reconnect / recoverable transport error (that path lives inside
+  // ConnectionManager; WsGatewayClient._InstanceConnection + buffers
+  // survive untouched). So an aborted turn whose lifecycle.end never
+  // arrives leaves a non-empty buffer; the next turn's deltas .append()
+  // to it and lifecycle.end/chat.final emits `stale_turn1 + turn2`.
+  //
+  // Fix: track the active `runId` per session (server-assigned, per-turn,
+  // already parsed on chat/agent events + the chat.send response). When
+  // the runId for a session changes, the prior buffer is irrecoverably
+  // stale and is dropped. Same/absent runId → in-flight, keep (the
+  // absent-runId degradation path preserves the no-runId regression test
+  // above at "chat.delta arriving before lifecycle.start is not dropped").
+  // ==========================================================================
+  group('runId turn-token (stale buffer fix)', () {
+    const sessionKey = 'agent:agent-r1:main';
+
+    /// Drive a `chat.send` RPC and reply with [runId], completing it.
+    Future<void> sendWithRunId(
+      WsGatewayClient client,
+      ControllableWebSocket ws, {
+      required String runId,
+      String clientId = 'msg-1',
+    }) async {
+      final future = client.sendMessage(
+        instanceId: 'test-instance',
+        agentId: 'agent-r1',
+        message: Message(
+          clientId: clientId,
+          conversationId: 'conv-1',
+          agentId: 'agent-r1',
+          role: MessageRole.user,
+          type: MessageType.text,
+          content: 'prompt',
+          logicalClock: 0,
+        ),
+      );
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.last);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId","ok":true,'
+        '"payload":{"runId":"$runId","timestamp":1700000000000}}',
+      );
+      await pumpMicrotasks();
+      await future;
+    }
+
+    void chatDelta(ControllableWebSocket ws, String text, String runId) {
+      ws.simulateServerFrame(
+        '{"type":"event","event":"chat","payload":'
+        '{"sessionKey":"$sessionKey","runId":"$runId",'
+        '"state":"delta","deltaText":"$text","seq":1}}',
+      );
+    }
+
+    void chatFinal(ControllableWebSocket ws, String runId) {
+      ws.simulateServerFrame(
+        '{"type":"event","event":"chat","payload":'
+        '{"sessionKey":"$sessionKey","runId":"$runId",'
+        '"state":"final","seq":10}}',
+      );
+    }
+
+    void lifecycleStart(ControllableWebSocket ws, String runId) {
+      ws.simulateServerFrame(
+        '{"type":"event","event":"agent","payload":'
+        '{"sessionKey":"$sessionKey","runId":"$runId",'
+        '"stream":"lifecycle","data":{"phase":"start"}}}',
+      );
+    }
+
+    test('aborted turn buffer is dropped on next chat.send response', () async {
+      final (:client, ws: ws) = await connectAndHandshake();
+      final messages = <Message>[];
+      client.messageStream('test-instance').listen(messages.add);
+
+      // Turn 1: chat.send → run-1 → one delta → NO end event (aborted
+      // mid-turn by a reconnect / transport error). Buffer = "turn1".
+      await sendWithRunId(client, ws, runId: 'run-1', clientId: 'msg-1');
+      chatDelta(ws, 'turn1', 'run-1');
+      await pumpMicrotasks();
+
+      // Turn 2: a fresh chat.send → run-2. The server-assigned runId
+      // changing is the authoritative turn boundary; the lingering
+      // turn-1 buffer MUST be dropped here.
+      await sendWithRunId(client, ws, runId: 'run-2', clientId: 'msg-2');
+      chatDelta(ws, 'turn2', 'run-2');
+      await pumpMicrotasks();
+
+      // End turn 2 with chat.final (no `message` → forces the buffer
+      // fallback path). Before the fix the buffer held "turn1turn2";
+      // after the fix it holds only "turn2".
+      chatFinal(ws, 'run-2');
+      await pumpMicrotasks();
+
+      final agentMessages = messages
+          .where((m) => m.role == MessageRole.agent)
+          .toList();
+      expect(agentMessages.length, 1);
+      expect(agentMessages.single.content, 'turn2');
+      expect(
+        agentMessages.single.content,
+        isNot(contains('turn1')),
+        reason:
+            'aborted turn-1 buffer must be dropped on the turn-2 '
+            'chat.send response (runId changed)',
+      );
+
+      await client.dispose();
+    });
+
+    test('delta with a differing runId resets the buffer', () async {
+      final (:client, ws: ws) = await connectAndHandshake();
+      final messages = <Message>[];
+      client.messageStream('test-instance').listen(messages.add);
+
+      // chat.send → run-1, then a delta for run-1.
+      await sendWithRunId(client, ws, runId: 'run-1');
+      chatDelta(ws, 'a', 'run-1');
+      await pumpMicrotasks();
+
+      // A delta arrives with run-2 and NO fresh chat.send (agent
+      // self-branch / tool continuation). The differing runId signals a
+      // turn boundary → the "a" buffer must be dropped.
+      chatDelta(ws, 'b', 'run-2');
+      await pumpMicrotasks();
+
+      chatFinal(ws, 'run-2');
+      await pumpMicrotasks();
+
+      final agentMessages = messages
+          .where((m) => m.role == MessageRole.agent)
+          .toList();
+      expect(agentMessages.length, 1);
+      expect(agentMessages.single.content, 'b');
+      expect(
+        agentMessages.single.content,
+        isNot(contains('a')),
+        reason: 'a differing runId on a delta must reset the buffer',
+      );
+
+      await client.dispose();
+    });
+
+    test(
+      'lifecycle.start with the same runId keeps in-flight buffer data',
+      () async {
+        final (:client, ws: ws) = await connectAndHandshake();
+        final messages = <Message>[];
+        client.messageStream('test-instance').listen(messages.add);
+
+        await sendWithRunId(client, ws, runId: 'run-1');
+        chatDelta(ws, 'first', 'run-1');
+        await pumpMicrotasks();
+
+        // lifecycle.start for the SAME turn (run-1) — must NOT wipe the
+        // in-flight buffer. Regression guard for Fix 7's conditional
+        // clear, now scoped by runId equality.
+        lifecycleStart(ws, 'run-1');
+        await pumpMicrotasks();
+
+        chatDelta(ws, 'second', 'run-1');
+        await pumpMicrotasks();
+
+        chatFinal(ws, 'run-1');
+        await pumpMicrotasks();
+
+        final agentMessages = messages
+            .where((m) => m.role == MessageRole.agent)
+            .toList();
+        expect(agentMessages.length, 1);
+        expect(agentMessages.single.content, contains('first'));
+        expect(agentMessages.single.content, contains('second'));
+
+        await client.dispose();
+      },
+    );
+
+    test(
+      'lifecycle.start with a differing runId drops stale buffer data',
+      () async {
+        final (:client, ws: ws) = await connectAndHandshake();
+        final messages = <Message>[];
+        client.messageStream('test-instance').listen(messages.add);
+
+        await sendWithRunId(client, ws, runId: 'run-1');
+        chatDelta(ws, 'stale', 'run-1');
+        await pumpMicrotasks();
+
+        // lifecycle.start for a NEW turn (run-2) — the prior "stale"
+        // buffer must be dropped (the case Fix 7's conditional clear
+        // could not handle).
+        lifecycleStart(ws, 'run-2');
+        await pumpMicrotasks();
+
+        chatDelta(ws, 'fresh', 'run-2');
+        await pumpMicrotasks();
+
+        chatFinal(ws, 'run-2');
+        await pumpMicrotasks();
+
+        final agentMessages = messages
+            .where((m) => m.role == MessageRole.agent)
+            .toList();
+        expect(agentMessages.length, 1);
+        expect(agentMessages.single.content, 'fresh');
+        expect(
+          agentMessages.single.content,
+          isNot(contains('stale')),
+          reason:
+              'lifecycle.start with a differing runId must drop the '
+              'stale prior-turn buffer',
+        );
+
+        await client.dispose();
+      },
+    );
+  });
+
+  // ==========================================================================
+  // sendMessage failure must not leak session mapping
+  //
+  // Bug: `sendMessage` wrote `_sessionToAgentId[sessionKey]` and the
+  // `_sessionKeysByInstance` reverse-index entry BEFORE `await
+  // manager.sendRequest(...)`. If that await threw (transport error,
+  // timeout, PayloadTooLarge) or the response was `ok:false` (sendMessage
+  // throws), the entries were never removed — they leaked until the
+  // instance disconnected / `_cleanup`. The reverse-index (added to fix
+  // the disconnect leak) made the leak grow across DIFFERENT failed
+  // agents, since the bare sessionKey is stable per agent.
+  //
+  // Fix: populate the mappings only on a successful send (after the
+  // `!res.ok` throw). A failed send never writes them → nothing to leak.
+  // `_resolveAgentId`'s string-parsing fallback (`split(':')[1]`) still
+  // resolves agentId for any early-arriving event, so deferring the write
+  // is behavior-preserving on the success path.
+  // ==========================================================================
+  group('sendMessage failure does not leak session mapping', () {
+    /// Start a `sendMessage` for [agentId]. Caller pumps, reads the
+    /// chat.send reqId from `ws.sentFrames.last`, replies, then pumps
+    /// again and awaits [future].
+    Future<({String serverId, int timestamp})> startSend({
+      required WsGatewayClient client,
+      required String agentId,
+      String clientId = 'msg-1',
+    }) {
+      return client.sendMessage(
+        instanceId: 'test-instance',
+        agentId: agentId,
+        message: Message(
+          clientId: clientId,
+          conversationId: 'conv-1',
+          agentId: agentId,
+          role: MessageRole.user,
+          type: MessageType.text,
+          content: 'prompt',
+          logicalClock: 0,
+        ),
+      );
+    }
+
+    test('failed sendMessage (ok:false) leaves no mapping entries', () async {
+      final (:client, ws: ws) = await connectAndHandshake();
+
+      // Two DIFFERENT agents, both failing. Before the fix each failure
+      // wrote its sessionKey into both maps and never removed it → sizes
+      // grew to 2. After the fix neither write happens → sizes stay 0.
+      final f1 = startSend(client: client, agentId: 'agent-a', clientId: 'c1');
+      await pumpMicrotasks();
+      final reqId1 = extractReqId(ws.sentFrames.last);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId1","ok":false,'
+        '"error":{"message":"boom"}}',
+      );
+      await expectLater(f1, throwsA(isA<Exception>()));
+      await pumpMicrotasks();
+
+      final f2 = startSend(client: client, agentId: 'agent-b', clientId: 'c2');
+      await pumpMicrotasks();
+      final reqId2 = extractReqId(ws.sentFrames.last);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$reqId2","ok":false,'
+        '"error":{"message":"boom"}}',
+      );
+      await expectLater(f2, throwsA(isA<Exception>()));
+      await pumpMicrotasks();
+
+      expect(
+        client.sessionToAgentIdSizeForTesting,
+        0,
+        reason: 'a failed send must not leak a _sessionToAgentId entry',
+      );
+      expect(
+        client.sessionKeysByInstanceSizeForTesting,
+        0,
+        reason: 'a failed send must not leak a reverse-index entry',
+      );
+
+      await client.dispose();
+    });
+
+    test(
+      'failed sendMessage preserves a prior successful send\'s mapping',
+      () async {
+        final (:client, ws: ws) = await connectAndHandshake();
+
+        // Successful send for agent-a → mapping populated (size 1).
+        final ok = startSend(
+          client: client,
+          agentId: 'agent-a',
+          clientId: 'c1',
+        );
+        await pumpMicrotasks();
+        final okReqId = extractReqId(ws.sentFrames.last);
+        ws.simulateServerFrame(
+          '{"type":"res","id":"$okReqId","ok":true,'
+          '"payload":{"runId":"run-agent-a","timestamp":1700000000000}}',
+        );
+        await pumpMicrotasks();
+        await ok;
+        await pumpMicrotasks();
+        expect(client.sessionToAgentIdSizeForTesting, 1);
+
+        // A subsequent FAILED send for the same agent must NOT remove the
+        // prior good entry (sessionKey is stable per agent; removing it
+        // would break event dispatch for the still-valid session).
+        final fail = startSend(
+          client: client,
+          agentId: 'agent-a',
+          clientId: 'c2',
+        );
+        await pumpMicrotasks();
+        final failReqId = extractReqId(ws.sentFrames.last);
+        ws.simulateServerFrame(
+          '{"type":"res","id":"$failReqId","ok":false,'
+          '"error":{"message":"boom"}}',
+        );
+        await expectLater(fail, throwsA(isA<Exception>()));
+        await pumpMicrotasks();
+
+        expect(
+          client.sessionToAgentIdSizeForTesting,
+          1,
+          reason:
+              'a failed send must not evict a prior successful '
+              'send\'s mapping for the same agent',
+        );
+
+        await client.dispose();
+      },
+    );
   });
 
   // ==========================================================================

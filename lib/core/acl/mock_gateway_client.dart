@@ -63,6 +63,25 @@ class MockGatewayClient implements IGatewayClient {
     ).emit(GatewayConnectionState.disconnected);
   }
 
+  /// Remove all per-instance resources (broadcast controllers, connection state).
+  ///
+  /// Mirrors WsGatewayClient's `_cleanup` semantics so callers can drop a
+  /// removed instance's streams without disposing the whole client.  Without
+  /// this path, the `_largePayloadControllers` (and the older controllers)
+  /// for removed instances would leak broadcast StreamControllers indefinitely.
+  Future<void> removeInstance(String instanceId) async {
+    final state = _connectionStates.remove(instanceId);
+    await state?.dispose();
+    final msgCtrl = _messageControllers.remove(instanceId);
+    if (msgCtrl != null) await msgCtrl.close();
+    final tcCtrl = _toolCallControllers.remove(instanceId);
+    if (tcCtrl != null) await tcCtrl.close();
+    final streamCtrl = _streamingControllers.remove(instanceId);
+    if (streamCtrl != null) await streamCtrl.close();
+    final lpCtrl = _largePayloadControllers.remove(instanceId);
+    if (lpCtrl != null) await lpCtrl.close();
+  }
+
   @override
   Future<({String serverId, int timestamp})> sendMessage({
     required String instanceId,

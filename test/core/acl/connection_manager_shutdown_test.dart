@@ -12,55 +12,7 @@ import 'test_helpers.dart';
 ConnectionConfig testConfig({Future<String> Function(String)? signPayload}) =>
     ConnectionConfig(signPayload: signPayload);
 
-// ---------------------------------------------------------------------------
-// Reused fakes from connection_manager_test.dart — duplicated here because
-// the test file is small and we don't want to expose the helpers' FakeTimer
-// to other suites that don't need it.
-// ---------------------------------------------------------------------------
-
-class FakeTimer implements Timer {
-  final Duration duration;
-  final void Function() _callback;
-  bool _cancelled = false;
-  bool _fired = false;
-
-  FakeTimer(this.duration, this._callback);
-
-  @override
-  void cancel() {
-    _cancelled = true;
-  }
-
-  @override
-  bool get isActive => !_cancelled && !_fired;
-
-  @override
-  int get tick => 0;
-
-  bool get isCancelled => _cancelled;
-  bool get isFired => _fired;
-
-  void fire() {
-    if (_cancelled || _fired) return;
-    _fired = true;
-    _callback();
-  }
-}
-
-class FakeTimerFactory {
-  final List<FakeTimer> timers = [];
-
-  Timer call(Duration duration, void Function() callback) {
-    final timer = FakeTimer(duration, callback);
-    timers.add(timer);
-    return timer;
-  }
-
-  FakeTimer? get lastTimer => timers.isEmpty ? null : timers.last;
-  Iterable<FakeTimer> get activeTimers => timers.where((t) => t.isActive);
-
-  void reset() => timers.clear();
-}
+// FakeTimer / FakeTimerFactory live in test_helpers.dart (re-imported).
 
 void main() {
   // ============================================================================
@@ -76,6 +28,7 @@ void main() {
     late ConnectionManager cm;
     late ControllableWebSocket ws;
     late List<GatewayConnectionState> stateLog;
+    late StreamSubscription<GatewayConnectionState> stateSub;
 
     setUp(() {
       timerFactory = FakeTimerFactory();
@@ -91,7 +44,15 @@ void main() {
         timerFactory: timerFactory.call,
         webSocketFactory: (_) => ws.channel,
       );
-      cm.connectionState.listen(stateLog.add);
+      stateSub = cm.connectionState.listen(stateLog.add);
+    });
+
+    // Cancel the listener and dispose the manager so each test starts
+    // with a clean slate.  Without this, subscriptions + the ConnectionManager
+    // they pin alive accumulate across the 5 tests in this group.
+    tearDown(() async {
+      await stateSub.cancel();
+      await cm.dispose();
     });
 
     /// Drive the handshake to `connected` state.
