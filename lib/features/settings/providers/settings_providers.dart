@@ -100,8 +100,8 @@ final clearCacheActionProvider = Provider<Future<ClearAllResult> Function()>((
 /// per-agent 清空动作 Provider (US-020 AC-3)。
 ///
 /// 清空指定 agent 的全部对话内容与派生缓存：messages（+ tool_calls 经
-/// FK CASCADE）、agent_stats、achievement_unlocks、pending_notifications、
-/// FTS5 索引。保留 agents/conversations 骨架（理由同 [ISettingsRepo.clearAll]：
+/// FK CASCADE）、achievement_unlocks、pending_notifications、FTS5 索引。
+/// 保留 agents/conversations 骨架（理由同 [ISettingsRepo.clearAll]：
 /// 避免破坏进行中流式会话的 FK 约束）。
 ///
 /// **不清头像文件**：自定义头像属于 Agent「配置」（与昵称/主题色同等），

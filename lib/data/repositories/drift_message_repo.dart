@@ -84,7 +84,7 @@ class DriftMessageRepo implements IMessageRepo {
   @override
   Future<void> clearAgentContent(String agentId) {
     // 委托给 AppDatabase.clearAgentContent —— 该方法封装了事务边界与
-    // FTS5/messages/stats/achievements/pending_notifications 的删除顺序约束。
+    // FTS5/messages/achievements/pending_notifications 的删除顺序约束。
     return _database.clearAgentContent(agentId);
   }
 

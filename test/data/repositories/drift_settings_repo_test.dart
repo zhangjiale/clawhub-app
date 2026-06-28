@@ -321,13 +321,6 @@ void main() {
           );
         }
         await database.customStatement(
-          'INSERT INTO agent_stats '
-          '(agent_id, total_dialogs, total_messages, total_tool_calls, '
-          'active_days, current_streak) '
-          'VALUES (?, 1, 3, 0, 1, 1)',
-          ['agent-1'],
-        );
-        await database.customStatement(
           'INSERT INTO achievement_unlocks '
           '(achievement_id, agent_id, unlocked_at) '
           'VALUES (?, ?, ?)',
@@ -354,46 +347,42 @@ void main() {
       }
     }
 
-    test(
-      'clears messages, tool_calls, agent_stats, achievement_unlocks, FTS',
-      () async {
-        await _seedAllTables();
-        // Pre-condition: data is present
-        expect(
-          (await database
-                  .customSelect('SELECT COUNT(*) AS n FROM messages')
-                  .getSingle())
-              .read<int>('n'),
-          3,
-        );
-        expect(
-          (await database
-                  .customSelect('SELECT COUNT(*) AS n FROM agents')
-                  .getSingle())
-              .read<int>('n'),
-          1,
-        );
+    test('clears messages, tool_calls, achievement_unlocks, FTS', () async {
+      await _seedAllTables();
+      // Pre-condition: data is present
+      expect(
+        (await database
+                .customSelect('SELECT COUNT(*) AS n FROM messages')
+                .getSingle())
+            .read<int>('n'),
+        3,
+      );
+      expect(
+        (await database
+                .customSelect('SELECT COUNT(*) AS n FROM agents')
+                .getSingle())
+            .read<int>('n'),
+        1,
+      );
 
-        await repo.clearAll();
+      await repo.clearAll();
 
-        // Post-condition: content tables empty, skeleton preserved
-        for (final table in [
-          'messages',
-          'tool_calls',
-          'agent_stats',
-          'achievement_unlocks',
-          'pending_notifications',
-          'messages_fts',
-        ]) {
-          final n =
-              (await database
-                      .customSelect('SELECT COUNT(*) AS n FROM $table')
-                      .getSingle())
-                  .read<int>('n');
-          expect(n, 0, reason: 'table $table should be empty after clearAll');
-        }
-      },
-    );
+      // Post-condition: content tables empty, skeleton preserved
+      for (final table in [
+        'messages',
+        'tool_calls',
+        'achievement_unlocks',
+        'pending_notifications',
+        'messages_fts',
+      ]) {
+        final n =
+            (await database
+                    .customSelect('SELECT COUNT(*) AS n FROM $table')
+                    .getSingle())
+                .read<int>('n');
+        expect(n, 0, reason: 'table $table should be empty after clearAll');
+      }
+    });
 
     /// Regression: 流式中 clearAll 后,Agent 的最终回复仍能落库。
     ///

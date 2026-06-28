@@ -8,47 +8,14 @@ import '../local/database/database.dart' as db;
 
 /// Drift/SQLite implementation of [IAchievementRepo].
 ///
-/// Stats are pre-computed from raw message/tool_call data and cached in the
-/// agent_stats table. Achievements are unlocked via INSERT OR IGNORE into
-/// achievement_unlocks.
+/// Achievements are unlocked via INSERT OR IGNORE into
+/// achievement_unlocks. Stats are computed on-demand from raw
+/// message/tool_call data — no cache layer (3B removed the write-only
+/// `agent_stats` cache table).
 class DriftAchievementRepo implements IAchievementRepo {
   final db.AppDatabase _database;
 
   DriftAchievementRepo(this._database);
-
-  // ---------------------------------------------------------------------------
-  // Stats cache
-  // ---------------------------------------------------------------------------
-
-  @override
-  Future<AgentStats?> getStats(String agentId) async {
-    final row = await _database.getAgentStats(agentId).getSingleOrNull();
-    if (row == null) return null;
-    return AgentStats(
-      agentId: row.agentId ?? agentId,
-      totalDialogs: row.totalDialogs,
-      totalMessages: row.totalMessages,
-      totalToolCalls: row.totalToolCalls,
-      activeDays: row.activeDays,
-      currentStreak: row.currentStreak,
-      firstDialogDate: row.firstDialogDate,
-      lastDialogDate: row.lastDialogDate,
-    );
-  }
-
-  @override
-  Future<void> saveStats(AgentStats stats) async {
-    await _database.upsertAgentStats(
-      stats.agentId,
-      stats.totalDialogs,
-      stats.totalMessages,
-      stats.totalToolCalls,
-      stats.activeDays,
-      stats.currentStreak,
-      stats.firstDialogDate,
-      stats.lastDialogDate,
-    );
-  }
 
   // ---------------------------------------------------------------------------
   // Achievement unlocks

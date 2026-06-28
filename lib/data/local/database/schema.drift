@@ -406,22 +406,7 @@ VALUES (1, :notificationsEnabled, :notifyOnReply, :notifyOnError,
         :dndEndHour, :dndEndMinute, :biometricEnabled);
 
 -- ============================================================
--- 8. Agent Stats — pre-computed statistics cache
--- ============================================================
-CREATE TABLE agent_stats (
-    agent_id TEXT PRIMARY KEY,
-    total_dialogs INTEGER NOT NULL DEFAULT 0 CHECK(total_dialogs >= 0),
-    total_messages INTEGER NOT NULL DEFAULT 0 CHECK(total_messages >= 0),
-    total_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK(total_tool_calls >= 0),
-    active_days INTEGER NOT NULL DEFAULT 0 CHECK(active_days >= 0),
-    current_streak INTEGER NOT NULL DEFAULT 0 CHECK(current_streak >= 0),
-    first_dialog_date INTEGER,
-    last_dialog_date INTEGER,
-    FOREIGN KEY (agent_id) REFERENCES agents(local_id) ON DELETE CASCADE
-);
-
--- ============================================================
--- 9. Achievement Unlocks — per-agent unlock records
+-- 8. Achievement Unlocks — per-agent unlock records
 -- ============================================================
 CREATE TABLE achievement_unlocks (
     achievement_id TEXT NOT NULL,
@@ -430,19 +415,6 @@ CREATE TABLE achievement_unlocks (
     PRIMARY KEY (achievement_id, agent_id),
     FOREIGN KEY (agent_id) REFERENCES agents(local_id) ON DELETE CASCADE
 );
-
--- Named queries: Agent Stats
-getAgentStats: SELECT * FROM agent_stats WHERE agent_id = :agentId;
-
-upsertAgentStats:
-INSERT OR REPLACE INTO agent_stats
-    (agent_id, total_dialogs, total_messages, total_tool_calls,
-     active_days, current_streak, first_dialog_date, last_dialog_date)
-VALUES (:agentId, :totalDialogs, :totalMessages, :totalToolCalls,
-        :activeDays, :currentStreak, :firstDialogDate, :lastDialogDate);
-
--- US-020: per-agent 清空。删除指定 agent 的预计算统计行。
-deleteAgentStats: DELETE FROM agent_stats WHERE agent_id = :agentId;
 
 -- Named queries: Achievement Unlocks
 getAchievementUnlocksForAgent:

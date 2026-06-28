@@ -81,12 +81,8 @@ void main() {
         () => messageRepo.getMessageCount('local-1'),
       ).thenAnswer((_) async => 42);
       when(
-        () => achievementRepo.getStats(any()),
-      ).thenAnswer((_) async => null); // cache miss → computeStats
-      when(
         () => achievementRepo.computeStats(any()),
       ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
-      when(() => achievementRepo.saveStats(any())).thenAnswer((_) async {});
       when(
         () => achievementRepo.getUnlocks(any()),
       ).thenAnswer((_) async => <Achievement>[]);

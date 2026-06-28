@@ -837,25 +837,12 @@ void main() {
       );
     }
 
-    test('clears messages, stats, achievements, DND queue for target agent '
+    test('clears messages, achievements, DND queue for target agent '
         'and leaves other agents intact', () async {
       // Arrange: populate both agents with messages
       await messageRepo.insert(msgFor(agentAId, clientId: 'a1', content: 'A1'));
       await messageRepo.insert(msgFor(agentAId, clientId: 'a2', content: 'A2'));
       await messageRepo.insert(msgFor(agentBId, clientId: 'b1', content: 'B1'));
-
-      // Populate agent_stats for both
-      await database.upsertAgentStats(
-        agentAId,
-        5, // totalDialogs
-        2, // totalMessages
-        0, // totalToolCalls
-        1, // activeDays
-        1, // currentStreak
-        1000, // firstDialogDate
-        2000, // lastDialogDate
-      );
-      await database.upsertAgentStats(agentBId, 3, 1, 0, 1, 1, 1500, 2500);
 
       // Populate achievement_unlocks for both
       await database.insertAchievementUnlock('first-message', agentAId, 1000);
@@ -890,11 +877,6 @@ void main() {
         reason: 'A messages gone',
       );
       expect(
-        await database.getAgentStats(agentAId).getSingleOrNull(),
-        isNull,
-        reason: 'A stats row deleted',
-      );
-      expect(
         await database.getAchievementUnlocksForAgent(agentAId).get(),
         isEmpty,
         reason: 'A achievements deleted',
@@ -918,11 +900,6 @@ void main() {
         await messageRepo.getMessageCount(agentBId),
         1,
         reason: 'B messages preserved',
-      );
-      expect(
-        await database.getAgentStats(agentBId).getSingleOrNull(),
-        isNotNull,
-        reason: 'B stats preserved',
       );
       final bAchievements = await database
           .getAchievementUnlocksForAgent(agentBId)

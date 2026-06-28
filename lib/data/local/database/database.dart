@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration {
@@ -87,7 +87,9 @@ class AppDatabase extends _$AppDatabase {
           await migrator.createTable(userPreferences);
         }
         if (from < 3) {
-          await migrator.createTable(agentStats);
+          // Note: agent_stats was originally created here in v3, but is
+          // dropped by the v7 migration (3B). Skip creation here to avoid
+          // creating-then-dropping churn on v2 → v7 direct upgrades.
           await migrator.createTable(achievementUnlocks);
         }
         if (from < 4) {
@@ -115,6 +117,12 @@ class AppDatabase extends _$AppDatabase {
           // DriftAgentRepo.syncFromGateway 独占写入；hidden_at v1 不写入。
           await migrator.addColumn(agents, agents.removedAt);
           await migrator.addColumn(agents, agents.hiddenAt);
+        }
+        if (from < 7) {
+          // 3B: 删除 agent_stats 缓存表（write-only 无读路径，统计由
+          // DriftAchievementRepo.computeStats 实时聚合）。migrator.deleteTable
+          // 会同时清掉该表对应的索引与触发器。
+          await migrator.deleteTable('agent_stats');
         }
       },
     );
@@ -187,8 +195,7 @@ class AppDatabase extends _$AppDatabase {
 
   /// 清空所有聊天内容,但**保留 agents/conversations 骨架**(US-030 清除缓存路径)。
   ///
-  /// 删除:messages / tool_calls / agent_stats / achievement_unlocks /
-  ///      pending_notifications
+  /// 删除:messages / tool_calls / achievement_unlocks / pending_notifications
   /// 保留:agents / conversations / instances / user_preferences
   ///
   /// **为什么不删 agents(改自旧 `deleteAllAgents`)**:旧实现 `DELETE FROM
@@ -210,7 +217,6 @@ class AppDatabase extends _$AppDatabase {
   /// 才能执行 'delete-all'。本方法不调用 purge,顺序由调用方保证。
   Future<void> clearAllContent() async {
     await customStatement('DELETE FROM tool_calls');
-    await customStatement('DELETE FROM agent_stats');
     await customStatement('DELETE FROM achievement_unlocks');
     await customStatement('DELETE FROM messages');
     await customStatement('DELETE FROM pending_notifications');
@@ -232,7 +238,7 @@ class AppDatabase extends _$AppDatabase {
 
   /// US-020: 清空指定 agent 的对话内容与全部派生缓存，保留 agents/conversations 骨架。
   ///
-  /// 删除：messages / tool_calls (FK CASCADE) / agent_stats /
+  /// 删除：messages / tool_calls (FK CASCADE) /
   ///       achievement_unlocks / pending_notifications + FTS5 索引
   /// 保留：agents / conversations / instances / user_preferences
   ///
@@ -252,7 +258,6 @@ class AppDatabase extends _$AppDatabase {
     await transaction(() async {
       await purgeMessagesFtsForAgent(agentId); // 必须先于 deleteMessagesByAgent
       await deleteMessagesByAgent(agentId); // tool_calls 经 FK CASCADE 联动
-      await deleteAgentStats(agentId);
       await deleteAchievementUnlocksForAgent(agentId);
       await deletePendingNotificationsForAgent(agentId);
     });

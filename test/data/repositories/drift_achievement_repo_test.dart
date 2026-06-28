@@ -2,7 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/native.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/data/repositories/drift_achievement_repo.dart';
-import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/models/achievement.dart';
 
 Future<db.AppDatabase> _createTestDb() async {
@@ -46,54 +45,6 @@ void main() {
   setUp(() async {
     database = await _createTestDb();
     repo = DriftAchievementRepo(database);
-  });
-
-  group('Stats cache', () {
-    setUp(() async {
-      await _seedTestAgent(database, 'agent-1');
-    });
-
-    test('getStats returns null when no cache', () async {
-      final stats = await repo.getStats('agent-1');
-      expect(stats, isNull);
-    });
-
-    test('saveStats + getStats round-trip', () async {
-      final stats = AgentStats(
-        agentId: 'agent-1',
-        totalDialogs: 10,
-        totalMessages: 50,
-        totalToolCalls: 5,
-        activeDays: 7,
-        currentStreak: 3,
-        firstDialogDate: 1700000000,
-        lastDialogDate: 1715000000,
-      );
-
-      await repo.saveStats(stats);
-      final loaded = await repo.getStats('agent-1');
-
-      expect(loaded, isNotNull);
-      expect(loaded!.agentId, 'agent-1');
-      expect(loaded.totalDialogs, 10);
-      expect(loaded.totalMessages, 50);
-      expect(loaded.totalToolCalls, 5);
-      expect(loaded.activeDays, 7);
-      expect(loaded.currentStreak, 3);
-      expect(loaded.firstDialogDate, 1700000000);
-      expect(loaded.lastDialogDate, 1715000000);
-    });
-
-    test('saveStats overwrites existing cache', () async {
-      final v1 = AgentStats(agentId: 'agent-1', totalMessages: 10);
-      final v2 = AgentStats(agentId: 'agent-1', totalMessages: 20);
-
-      await repo.saveStats(v1);
-      await repo.saveStats(v2);
-
-      final loaded = await repo.getStats('agent-1');
-      expect(loaded!.totalMessages, 20);
-    });
   });
 
   group('Achievement unlocks', () {

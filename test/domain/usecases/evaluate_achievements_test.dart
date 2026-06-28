@@ -25,7 +25,6 @@ void main() {
       // batchUnlock is only called when new achievements are detected;
       // return a conservative default so tests that don't expect unlocks
       // still pass without explicitly stubbing it.
-      when(() => repo.saveStats(any())).thenAnswer((_) async {});
       when(
         () => repo.getUnlocks(any()),
       ).thenAnswer((_) async => buildAchievementList({}, {}));
@@ -34,28 +33,11 @@ void main() {
       ).thenAnswer((_) async => buildAchievementList({}, {}));
     });
 
-    test('returns cached stats when cache exists', () async {
-      final cachedStats = AgentStats(agentId: 'a1', totalDialogs: 5);
-      when(() => repo.getStats('a1')).thenAnswer((_) async => cachedStats);
-      when(
-        () => repo.getUnlocks('a1'),
-      ).thenAnswer((_) async => buildAchievementList({}, {}));
-
-      final result = await useCase.execute('a1');
-
-      // Should use cached stats without calling computeStats
-      expect(result.stats, cachedStats);
-      verifyNever(() => repo.computeStats(any()));
-      verify(() => repo.saveStats(cachedStats)).called(1);
-    });
-
-    test('computes stats on cache miss', () async {
+    test('always calls computeStats (3B: no cache layer)', () async {
       final computedStats = AgentStats(agentId: 'a1', totalDialogs: 3);
-      when(() => repo.getStats('a1')).thenAnswer((_) async => null);
       when(
         () => repo.computeStats('a1'),
       ).thenAnswer((_) async => computedStats);
-      when(() => repo.saveStats(any())).thenAnswer((_) async {});
       when(
         () => repo.getUnlocks('a1'),
       ).thenAnswer((_) async => buildAchievementList({}, {}));
@@ -64,7 +46,6 @@ void main() {
 
       expect(result.stats, computedStats);
       verify(() => repo.computeStats('a1')).called(1);
-      verify(() => repo.saveStats(computedStats)).called(1);
     });
 
     test('returns all achievements with correct unlock status', () async {
@@ -73,7 +54,7 @@ void main() {
         totalDialogs: 1,
         totalMessages: 5,
       );
-      when(() => repo.getStats('a1')).thenAnswer((_) async => stats);
+      when(() => repo.computeStats('a1')).thenAnswer((_) async => stats);
       // first_dialog is already unlocked in DB
       when(() => repo.getUnlocks('a1')).thenAnswer(
         (_) async =>
@@ -95,7 +76,7 @@ void main() {
         totalMessages: 50,
         currentStreak: 7,
       );
-      when(() => repo.getStats('a1')).thenAnswer((_) async => stats);
+      when(() => repo.computeStats('a1')).thenAnswer((_) async => stats);
       // Nothing unlocked yet
       when(
         () => repo.getUnlocks('a1'),
@@ -117,7 +98,7 @@ void main() {
 
     test('does not unlock already-unlocked achievements', () async {
       final stats = AgentStats(agentId: 'a1', totalDialogs: 1);
-      when(() => repo.getStats('a1')).thenAnswer((_) async => stats);
+      when(() => repo.computeStats('a1')).thenAnswer((_) async => stats);
       // first_dialog already unlocked
       when(() => repo.getUnlocks('a1')).thenAnswer(
         (_) async =>
@@ -134,7 +115,7 @@ void main() {
 
     test('freshUnlocks empty when no new achievements', () async {
       final stats = AgentStats(agentId: 'a1');
-      when(() => repo.getStats('a1')).thenAnswer((_) async => stats);
+      when(() => repo.computeStats('a1')).thenAnswer((_) async => stats);
       when(
         () => repo.getUnlocks('a1'),
       ).thenAnswer((_) async => buildAchievementList({}, {}));
@@ -145,7 +126,7 @@ void main() {
     });
 
     test('propagates repo errors to caller', () async {
-      when(() => repo.getStats('a1')).thenThrow(Exception('DB error'));
+      when(() => repo.computeStats('a1')).thenThrow(Exception('DB error'));
 
       expect(() => useCase.execute('a1'), throwsException);
     });

@@ -7,7 +7,7 @@ import '../local/database/database.dart' as db;
 /// Drift/SQLite implementation of [IActivityRepo].
 ///
 /// 单次 SQL 聚合 + Dart 端补全空日 — Law 6 批量,无 N+1。
-/// 不动 `agent_stats` 缓存表(30 天数组入缓存成本太高,新鲜查询即可)。
+/// 实时聚合 30 天每日消息数（无缓存层）。
 class DriftActivityRepo implements IActivityRepo {
   final db.AppDatabase _database;
 

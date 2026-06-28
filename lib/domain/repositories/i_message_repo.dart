@@ -107,7 +107,7 @@ abstract class IMessageRepo {
 
   /// US-020 AC-3：清空指定 Agent 的对话内容与全部派生缓存。
   ///
-  /// 删除范围：messages（+ tool_calls 经 FK CASCADE）、agent_stats、
+  /// 删除范围：messages（+ tool_calls 经 FK CASCADE）、
   /// achievement_unlocks、pending_notifications、FTS5 索引。
   /// 保留：agents / conversations 骨架（避免破坏进行中流式会话的 FK 约束，
   /// 与 [clearAllContent] 一致的取舍）。
