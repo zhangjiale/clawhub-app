@@ -14,6 +14,7 @@ import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
+import 'package:claw_hub/domain/usecases/merge_inbound_message.dart';
 import 'package:claw_hub/features/_shared/agent_reactive_state.dart';
 
 /// The agent's thinking/waiting state — mutually exclusive states that
@@ -175,6 +176,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
   final SendMessageUseCase _sendMessageUseCase;
+
+  /// 入站消息合并用例（Bug #2：历史/实时回传的 user 消息去重）。
+  /// 仅依赖 [_messageRepo]，故在内部构造，无需外部注入（避免改动所有
+  /// ChatViewModel 测试构造点）。两条入站路径（实时流 + 历史拉取）统一走
+  /// [_mergeUseCase.merge] 替代裸 [_messageRepo.insert]，按身份/内容去重。
+  /// `late` 不能省 —— Dart 不允许在非 late 的字段初始化器里访问 `this._messageRepo`。
+  late final MergeInboundMessageUseCase _mergeUseCase =
+      MergeInboundMessageUseCase(messageRepo: _messageRepo);
   final IAchievementChecker _achievementChecker;
   final String instanceId;
   final String agentId;
@@ -547,14 +556,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
                     : msg.logicalClock,
               );
               try {
-                await _messageRepo.insert(fixedMsg);
+                await _mergeUseCase.merge(fixedMsg, softMatch: false);
               } catch (error, stackTrace) {
                 // iron-law-allow: Law8 — 兜底:即使 clearAll 保留骨架,任何
                 // FK/约束冲突也不应静默吞掉后续逻辑。旧实现异常会中断
                 // _updateConversationPreview 与 _loadMessages,使消息列表
                 // 卡在空状态。记日志后 return,等下一条消息正常处理。
                 debugPrint(
-                  '[ChatViewModel] message insert failed for '
+                  '[ChatViewModel] message merge failed for '
                   '${fixedMsg.clientId}: $error\n$stackTrace',
                 );
                 return;
@@ -619,6 +628,15 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           instanceId: instanceId,
           agentId: remoteId,
         );
+        // 循环外预取一次近期消息列表,传给每条 merge() 用作软匹配 candidate。
+        // —— Bug #4 (Law 6) 修复:之前每条 merge() 内部都触发一次
+        // getByConversation(limit:50),N 条历史 = N 次相同查询(标准 N+1)。
+        // 与 MessageCatchUpService.catchUp(line 184)同款优化。
+        final recent = await _messageRepo.getByConversation(
+          _conversationId,
+          limit: 50,
+        );
+
         // per-insert try/catch: 与 messageStream 路径(line 368-379)对称,
         // 防止 clearAll 保留骨架后,任何一条历史消息的 FK/约束冲突中断整
         // 个循环,导致 _loadMessages 永不调用,后续消息(N+1..end)静默跳过。
@@ -629,15 +647,41 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           // violates the FK constraint on messages.conversation_id.
           final fixedMsg = msg.copyWith(conversationId: _conversationId);
           try {
-            await _messageRepo.insert(fixedMsg);
+            // 用 mergeWithStatus 以传入 recent(merge() 不暴露该参数)。
+            // 这里丢弃 wasNew —— history 路径不需要区分是否新增,
+            // dedupeConversation 已覆盖清理历史重复的职责。
+            await _mergeUseCase.mergeWithStatus(
+              fixedMsg,
+              softMatch: true,
+              recent: recent,
+            );
           } catch (error, stackTrace) {
             // iron-law-allow: Law8 — 历史拉取的逐条兜底,与 messageStream
             // 路径一致,单条 FK 冲突不应中断整批导入。
             debugPrint(
-              '[ChatViewModel] history insert failed for '
+              '[ChatViewModel] history merge failed for '
               '${fixedMsg.clientId}: $error\n$stackTrace',
             );
           }
+        }
+        // Bug #2 补强: 清理历史遗留的重复行。旧 CatchUp(身份去重)在过往重启中
+        // 累积了重复消息;merge 已停止新增,这里删除已存在的重复。幂等 —— 无
+        // 重复时为 no-op。放在历史合并之后、_loadMessages 之前,使首屏即干净。
+        try {
+          final deleted = await _messageRepo.dedupeConversation(
+            _conversationId,
+          );
+          if (deleted > 0) {
+            debugPrint(
+              '[ChatViewModel] dedupeConversation removed $deleted duplicate '
+              'rows for $_conversationId',
+            );
+          }
+        } catch (error, stackTrace) {
+          debugPrint(
+            '[ChatViewModel] dedupeConversation failed for '
+            '$_conversationId: $error\n$stackTrace',
+          );
         }
         await _loadMessages();
       } catch (error, stackTrace) {

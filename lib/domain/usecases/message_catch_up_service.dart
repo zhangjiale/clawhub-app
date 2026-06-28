@@ -4,6 +4,7 @@ import '../models/conversation.dart';
 import '../repositories/i_agent_repo.dart';
 import '../repositories/i_conversation_repo.dart';
 import '../repositories/i_message_repo.dart';
+import 'merge_inbound_message.dart';
 
 /// 消息增量同步服务 — 断线重连后拉取 Gateway 新消息（US-016 AC-1/AC-2）。
 ///
@@ -14,15 +15,28 @@ import '../repositories/i_message_repo.dart';
 /// 1. 确保 conversation 行存在（FK 约束）
 /// 2. 逐页调用 [IGatewayClient.fetchMessageHistory]（newest-first）
 /// 3. 规整化每条消息的 conversationId
-/// 4. 通过 [IMessageRepo.batchInsertByIndexedIds] 双 ID 去重插入
-/// 5. 当某页出现已知消息时停止（已追平）
+/// 4. 通过 [MergeInboundMessageUseCase.mergeWithStatus] 合并入库
+///    （身份去重 + 内容/时间戳软匹配，与 ChatViewModel 历史路径共用同一去重）
+/// 5. 当某页出现已知消息（wasNew=false）时停止（已追平）
 /// 6. 每 Agent 最多扫描 [_maxPagesPerConversation] 页
+///
+/// **Bug #2 修复**：旧实现用 [IMessageRepo.batchInsertByIndexedIds]（仅按
+/// clientId/serverId 身份去重）。但网关不给 user 消息回传 clientId、本地
+/// serverId 是 runId/随机 UUID → 身份永远对不上 → 每次重启重连都把"已发的
+/// user 消息"和"agent 回复"当成新消息再插一行 → 重复。改走 [mergeWithStatus]
+/// 后，软匹配兜底去重，与 ChatViewModel 路径一致，重复根除。
 class MessageCatchUpService {
   final IAgentRepo _agentRepo;
   final IMessageRepo _messageRepo;
   final IConversationRepo _conversationRepo;
   final IGatewayClient _gatewayClient;
   final ILogger _logger;
+
+  /// 入站合并用例 —— 与 ChatViewModel 共用同一去重逻辑（身份 + 软匹配）。
+  /// 在内部从 [_messageRepo] 构造，避免改动 DI 与所有构造点。
+  /// `late` 不能省 —— Dart 不允许在非 late 的字段初始化器里访问 `this._messageRepo`。
+  late final MergeInboundMessageUseCase _mergeUseCase =
+      MergeInboundMessageUseCase(messageRepo: _messageRepo);
 
   /// Per-instance 防重入锁
   final Set<String> _catchingUp =
@@ -154,25 +168,64 @@ class MessageCatchUpService {
 
         if (history.messages.isEmpty) break;
 
-        // Normalize conversationId on every message BEFORE batch insert.
+        // Normalize conversationId on every message BEFORE merge.
         // WsGatewayClient._parseMessage sets conversationId from the Gateway
         // response, which may be empty — that would fail the FK constraint
-        // (messages.conversation_id REFERENCES conversations.id).
+        // (messages.conversation_id REFERENCES conversations.id),且软匹配
+        // 也需要 conversationId 来查近期消息。
         final normalized = history.messages
             .map((msg) => msg.copyWith(conversationId: conversationId))
             .toList();
 
-        final inserted = await _messageRepo.batchInsertByIndexedIds(normalized);
-        totalInserted += inserted.length;
+        // 逐条合并入库（身份去重 + 内容/时间戳软匹配）。
+        // 用 wasNew 区分真新插入 vs 命中已有行,驱动"已追平"停止判定。
+        // 软匹配的"近期消息"在循环外预取一次（_mergeUseCase 内部不再
+        // getByConversation）—— 历史 catch-up 一页 50 条,避免 50 次相同查询。
+        final recent = await _messageRepo.getByConversation(
+          conversationId,
+          limit: 50,
+        );
+        var pageNew = 0;
+        var pageKnown = 0;
+        var pageSkipped = 0;
+        for (final msg in normalized) {
+          try {
+            final result = await _mergeUseCase.mergeWithStatus(
+              msg,
+              softMatch: true,
+              recent: recent,
+            );
+            if (result.wasSkipped) {
+              // 空内容 / 业务规则丢弃 —— 既非新插入也非命中已有行,不计入
+              // pageKnown,避免误触发「已追平」停止条件。
+              pageSkipped++;
+            } else if (result.wasNew) {
+              pageNew++;
+            } else {
+              pageKnown++;
+            }
+          } catch (e, st) {
+            // 单条合并失败（FK/约束冲突等）不中断整页——与 ChatViewModel
+            // 历史路径的 per-insert 兜底语义一致。
+            _logger.error(
+              '[MessageCatchUp] merge failed for ${msg.clientId}: $e',
+              st,
+            );
+          }
+        }
+        totalInserted += pageNew;
 
-        // AC-2 dedup check: if any messages on this page already existed,
-        // we've found the boundary of known messages. Since chat.history
-        // returns newest-first, all subsequent pages are older → all known.
-        if (inserted.length < normalized.length) {
+        // AC-2 dedup check: if any messages on this page already existed
+        // (pageKnown > 0), we've found the boundary of known messages.
+        // Since chat.history returns newest-first, all subsequent pages are
+        // older → all known.
+        // 注意:pageSkipped 不计入 pageKnown —— 空内容 skip 与「命中已有行」
+        // 语义不同,不能误触发 break。
+        if (pageKnown > 0) {
           _logger.info(
             '[MessageCatchUp] Caught up for agent $agentRemoteId '
-            '(found ${normalized.length - inserted.length} already-known '
-            'messages on page $pageCount)',
+            '(found $pageKnown already-known messages on page $pageCount, '
+            'inserted $pageNew new, skipped $pageSkipped empty)',
           );
           break;
         }
@@ -200,6 +253,28 @@ class MessageCatchUpService {
         break; // Network error during catch-up — stop and try next time
       }
     } while (cursor != null && pageCount < _maxPagesPerConversation);
+
+    // Bug #2 修复补强: 无论是否新插入了消息,都清理一次历史重复行。
+    // 单靠 ChatViewModel 在打开聊天时调用,用户从未打开的会话里
+    // 重复永远在;在 catch-up 路径上做一次,才能兑现 PR 的「重复根除」承诺。
+    // dedupeConversation 是幂等的,无重复时为 no-op。
+    try {
+      final deleted = await _messageRepo.dedupeConversation(conversationId);
+      if (deleted > 0) {
+        _logger.info(
+          '[MessageCatchUp] Cleaned $deleted legacy duplicate rows for '
+          'agent $agentRemoteId conversation $conversationId',
+        );
+      }
+    } catch (e, st) {
+      // dedupeConversation 自身是事务 + 已建索引,失败概率极低;不影响
+      // catch-up 主路径,仅记日志,下次 catch-up 或聊天打开时会重试。
+      _logger.error(
+        '[MessageCatchUp] dedupeConversation failed for agent '
+        '$agentRemoteId conversation $conversationId: $e',
+        st,
+      );
+    }
 
     return CatchUpResult(inserted: totalInserted, truncated: truncated);
   }

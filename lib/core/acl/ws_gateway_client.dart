@@ -1082,24 +1082,48 @@ class WsGatewayClient implements IGatewayClient {
   }
 
   Message _parseMessage(Map<String, dynamic> json) {
+    final role = _parseMessageRole(json['role'] as String?);
+    // Bug #2 (重启错乱): 时间戳归一化为毫秒。Gateway 历史可能用秒级时间戳
+    // (doc §5.4 示意图: 1718000000)；与本地消息(DateTime.now().ms, ~1.7e12)
+    // 不同量级会导致软匹配 ±60s 永不命中 + 排序错乱。< 1e12 视为秒级(1e12 ms
+    // ≈ 2001 年,任何真实毫秒时间戳都 >= 1e12),×1000 归一化。
+    final timestamp = _normalizeEpochMs(json['timestamp'] as int?);
     return Message(
       clientId: json['clientId'] as String? ?? _uuid.v4(),
       serverId: json['serverId'] as String? ?? json['id'] as String?,
       conversationId: json['conversationId'] as String? ?? '',
       agentId: json['agentId'] as String? ?? '',
-      role: _parseMessageRole(json['role'] as String?),
+      role: role,
       content:
           _extractTextContent(json['content']) ??
           _extractTextContent(json['text']),
       type: _parseMessageType(json['type'] as String?),
-      status: MessageStatus.delivered,
+      // Bug #1 (双对号): 入站消息按角色赋状态，不再一律 delivered。
+      // 回传/历史中的 user 消息若被标 delivered，右下角会渲染双对号
+      // (Icons.done_all)。user 消息最多到 sent（已送达网关）；delivered
+      // 保留给 agent/system（已读/已处理）。
+      status: role == MessageRole.user
+          ? MessageStatus.sent
+          : MessageStatus.delivered,
+      // Bug #2: gateway 省略 logicalClock 时回退到「消息自身时间戳」(归一化),
+      // 而非 DateTime.now()。旧实现让所有历史消息聚到重启时刻 → 错乱。
+      // gateway 显式给的 logicalClock 保持原样(不二次猜测,向后兼容)。
       logicalClock:
-          json['logicalClock'] as int? ?? DateTime.now().millisecondsSinceEpoch,
-      timestamp: json['timestamp'] as int?,
+          json['logicalClock'] as int? ??
+          timestamp ??
+          DateTime.now().millisecondsSinceEpoch,
+      timestamp: timestamp,
       metadata: json['metadata'] is Map<String, dynamic>
           ? json['metadata'] as Map<String, dynamic>
           : null,
     );
+  }
+
+  /// 把可能是秒级的 epoch 时间戳归一化为毫秒。< 1e12 视为秒级(1e12 ms ≈ 2001 年)。
+  /// null 透传(null)，由调用方决定兜底。
+  int? _normalizeEpochMs(int? value) {
+    if (value == null) return null;
+    return value < 1000000000000 ? value * 1000 : value;
   }
 
   ToolCall _parseToolCall(Map<String, dynamic> json) {

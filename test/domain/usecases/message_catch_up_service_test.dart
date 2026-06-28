@@ -99,6 +99,19 @@ void main() {
         instanceId: _testInstanceId,
       ),
     );
+
+    // Default merge-path stubs: all inbound messages are treated as NEW
+    // (identity miss + no soft-match). Tests that need "known" messages
+    // override getByServerId specifically (mocktail LIFO: later stub wins).
+    // CatchUp now uses MergeInboundMessageUseCase (not batchInsertByIndexedIds).
+    when(() => messageRepo.getByClientId(any())).thenAnswer((_) async => null);
+    when(() => messageRepo.getByServerId(any())).thenAnswer((_) async => null);
+    when(
+      () => messageRepo.getByConversation(any(), limit: any(named: 'limit')),
+    ).thenAnswer((_) async => []);
+    when(
+      () => messageRepo.insert(any()),
+    ).thenAnswer((inv) async => inv.positionalArguments[0] as Message);
   });
 
   group('catchUp - basic scenarios', () {
@@ -131,12 +144,6 @@ void main() {
           limit: 50,
         ),
       ).thenAnswer((_) async => (messages: [msg1, msg2], nextCursor: null));
-      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-        inv,
-      ) async {
-        final msgs = inv.positionalArguments[0] as List<Message>;
-        return msgs; // All are new
-      });
 
       final result = await service.catchUp(_testInstanceId);
 
@@ -177,7 +184,8 @@ void main() {
       final msg1 = _newMsg(serverId: 'new-1', clientId: 'nc1');
       final msg2 = _newMsg(serverId: 'known-1', clientId: 'kc1');
 
-      // Page 1: msg1 is new, msg2 is known → should stop after this page
+      // Page 1: msg1 is new, msg2 is known → should stop after this page.
+      // msg2 is "known" because its serverId already exists locally.
       when(
         () => gatewayClient.fetchMessageHistory(
           instanceId: _testInstanceId,
@@ -188,13 +196,10 @@ void main() {
       ).thenAnswer(
         (_) async => (messages: [msg1, msg2], nextCursor: 'cursor-page2'),
       );
-      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-        inv,
-      ) async {
-        final msgs = inv.positionalArguments[0] as List<Message>;
-        // Only msg1 was actually new; msg2 was already known
-        return [msgs.first];
-      });
+      // Override: msg2's serverId already in local DB → merge returns existing.
+      when(
+        () => messageRepo.getByServerId('known-1'),
+      ).thenAnswer((_) async => msg2);
 
       final result = await service.catchUp(_testInstanceId);
 
@@ -227,12 +232,6 @@ void main() {
           limit: 50,
         ),
       ).thenAnswer((_) async => (messages: [msg3], nextCursor: null));
-      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-        inv,
-      ) async {
-        final msgs = inv.positionalArguments[0] as List<Message>;
-        return msgs; // All are new
-      });
 
       final result = await service.catchUp(_testInstanceId);
 
@@ -254,12 +253,6 @@ void main() {
           nextCursor: null,
         ),
       );
-      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-        inv,
-      ) async {
-        final msgs = inv.positionalArguments[0] as List<Message>;
-        return msgs;
-      });
 
       final result = await service.catchUp(_testInstanceId);
 
@@ -310,12 +303,7 @@ void main() {
             nextCursor: 'more',
           ),
         );
-        when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-          inv,
-        ) async {
-          final msgs = inv.positionalArguments[0] as List<Message>;
-          return msgs; // All new — never trips the dedup stop condition
-        });
+        // All new (no override) — never trips the dedup stop condition.
 
         final result = await cappedService.catchUp(_testInstanceId);
 
@@ -372,12 +360,6 @@ void main() {
             nextCursor: null, // no more pages
           ),
         );
-        when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-          inv,
-        ) async {
-          final msgs = inv.positionalArguments[0] as List<Message>;
-          return msgs;
-        });
 
         final result = await cappedService.catchUp(_testInstanceId);
 
@@ -422,12 +404,6 @@ void main() {
           nextCursor: null,
         ),
       );
-      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-        inv,
-      ) async {
-        final msgs = inv.positionalArguments[0] as List<Message>;
-        return msgs;
-      });
 
       final result = await service.catchUp(_testInstanceId);
 
@@ -477,16 +453,10 @@ void main() {
           nextCursor: null,
         ),
       );
-      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-        inv,
-      ) async {
-        final msgs = inv.positionalArguments[0] as List<Message>;
-        return msgs;
-      });
 
       await service.catchUp(_testInstanceId);
 
-      // getOrCreate BEFORE batchInsertByIndexedIds
+      // getOrCreate BEFORE merge/insert
       verify(
         () => conversationRepo.getOrCreate(_testInstanceId, _testAgentLocalId),
       ).called(1);
@@ -547,22 +517,205 @@ void main() {
           (_) async => (messages: [msgFromGateway], nextCursor: null),
         );
 
-        // Capture what was passed to batchInsertByIndexedIds
-        List<Message>? captured;
-        when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
-          inv,
-        ) async {
-          captured = inv.positionalArguments[0] as List<Message>;
+        // Capture what was passed to insert (merge path — msg is new here).
+        Message? captured;
+        when(() => messageRepo.insert(any())).thenAnswer((inv) async {
+          captured = inv.positionalArguments[0] as Message;
           return captured!;
         });
 
         await service.catchUp(_testInstanceId);
 
-        // The inserted message should have a non-empty conversationId
+        // The inserted message should have a non-empty (normalized) conversationId.
         expect(captured, isNotNull);
-        expect(captured!.single.conversationId, isNotEmpty);
-        expect(captured!.single.conversationId, isNot(''));
+        expect(captured!.conversationId, isNotEmpty);
+        expect(captured!.conversationId, isNot(''));
       },
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bug #1 (空内容 → 误停止)：mergeWithStatus 对空内容 text 返回 wasNew=false,
+  // CatchUp 把它当 pageKnown++ 计入,触发 `if (pageKnown > 0) break;` 提前停止,
+  // 同页的真实新消息被丢弃。
+  // 修法:MergeResult 区分 wasSkipped 与「命中已有行」,CatchUp 只把后两者计入
+  // pageKnown,空内容跳过既不计 pageKnown 也不计 pageNew。
+  // ---------------------------------------------------------------------------
+  group('catchUp - empty-content skip must not trigger stop condition', () {
+    test(
+      'page with 1 empty text + 1 real new msg inserts the real msg '
+      'and does NOT break early (regression: empty skipped ≠ known)',
+      () async {
+        final emptyMsg = Message(
+          clientId: 'empty-cid',
+          serverId: 'empty-srv',
+          conversationId: '',
+          agentId: _testAgentRemoteId,
+          role: MessageRole.agent,
+          content: '', // 空内容 —— merge 应跳过(wasSkipped=true)
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+          timestamp: 1718000000000,
+        );
+        final realMsg = Message(
+          clientId: 'real-cid',
+          serverId: 'real-srv',
+          conversationId: '',
+          agentId: _testAgentRemoteId,
+          role: MessageRole.agent,
+          content: 'real content',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 2,
+          timestamp: 1718000000001,
+        );
+
+        when(
+          () => gatewayClient.fetchMessageHistory(
+            instanceId: _testInstanceId,
+            agentId: _testAgentRemoteId,
+            cursor: null,
+            limit: 50,
+          ),
+        ).thenAnswer(
+          (_) async => (messages: [emptyMsg, realMsg], nextCursor: null),
+        );
+
+        // 捕获 insert 调用以便断言哪条消息真正入库。
+        final inserted = <Message>[];
+        when(() => messageRepo.insert(any())).thenAnswer((inv) async {
+          final m = inv.positionalArguments[0] as Message;
+          inserted.add(m);
+          return m;
+        });
+
+        final result = await service.catchUp(_testInstanceId);
+
+        // 真实消息必须入库,不能因为前一条空内容被错误停止而丢失。
+        expect(
+          result.inserted,
+          1,
+          reason: 'realMsg 必须入库;空内容只能算 skipped,不能算 known。',
+        );
+        expect(
+          inserted.where((m) => m.clientId == 'real-cid').length,
+          1,
+          reason: 'realMsg 必须被 insert 一次(携带 normalized conversationId)',
+        );
+        expect(
+          inserted.where((m) => m.clientId == 'empty-cid').length,
+          0,
+          reason: 'emptyMsg 不应被 insert —— merge 在第 0 步跳过',
+        );
+      },
+    );
+
+    test('a page of ALL empty-content text messages does not falsely report '
+        '"caught up" (truncated=false, inserted=0, but loop should not break '
+        'prematurely on identity/soft-match signal)', () async {
+      final empty1 = Message(
+        clientId: 'e1',
+        serverId: null,
+        conversationId: '',
+        agentId: _testAgentRemoteId,
+        role: MessageRole.agent,
+        content: '',
+        type: MessageType.text,
+        status: MessageStatus.delivered,
+        logicalClock: 1,
+        timestamp: 1,
+      );
+      final empty2 = Message(
+        clientId: 'e2',
+        serverId: null,
+        conversationId: '',
+        agentId: _testAgentRemoteId,
+        role: MessageRole.agent,
+        content: null, // null content 同样应跳过
+        type: MessageType.text,
+        status: MessageStatus.delivered,
+        logicalClock: 2,
+        timestamp: 2,
+      );
+
+      when(
+        () => gatewayClient.fetchMessageHistory(
+          instanceId: _testInstanceId,
+          agentId: _testAgentRemoteId,
+          cursor: null,
+          limit: 50,
+        ),
+      ).thenAnswer((_) async => (messages: [empty1, empty2], nextCursor: null));
+
+      final result = await service.catchUp(_testInstanceId);
+
+      expect(result.inserted, 0);
+      expect(result.truncated, isFalse);
+      // 关键:不能因 pageKnown>0 提前 break。空内容既非 new 也非 known——
+      // nextCursor=null 时正常结束,不应触发「已追平」语义。
+      expect(
+        logger.infos.any((s) => s.contains('Caught up')),
+        isFalse,
+        reason: '空内容 skip 不能误触发「已追平」日志',
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bug #2 修复补强: catch-up 路径必须主动调用 dedupeConversation 清理历史
+  // 重复行 —— 单靠 ChatViewModel 在打开聊天时调用,用户从未打开的会话里
+  // 重复永远在,PR 自己的「重复根除」承诺并未在 catch-up 路径上兑现。
+  // ---------------------------------------------------------------------------
+  group('catchUp - calls dedupeConversation to clean legacy duplicates', () {
+    test('after a single-page catch-up, dedupeConversation is called '
+        'for the agent conversation', () async {
+      final msg = _newMsg(serverId: 's1', clientId: 'c1');
+      when(
+        () => gatewayClient.fetchMessageHistory(
+          instanceId: _testInstanceId,
+          agentId: _testAgentRemoteId,
+          cursor: null,
+          limit: 50,
+        ),
+      ).thenAnswer((_) async => (messages: [msg], nextCursor: null));
+
+      await service.catchUp(_testInstanceId);
+
+      // catch-up 完成后,无论是否新插入消息,都应调用一次 dedupeConversation。
+      // (cleanup 是幂等的,无重复时 no-op。)
+      final expectedConvId = Conversation.generateId(
+        _testInstanceId,
+        _testAgentLocalId,
+      );
+      verify(() => messageRepo.dedupeConversation(expectedConvId)).called(1);
+    });
+
+    test('dedupeConversation is called even when catch-up inserts nothing '
+        '(early stop on known message)', () async {
+      final known = _newMsg(serverId: 'known-1', clientId: 'kc1');
+      final unknown = _newMsg(serverId: 'new-1', clientId: 'nc1');
+      when(
+        () => gatewayClient.fetchMessageHistory(
+          instanceId: _testInstanceId,
+          agentId: _testAgentRemoteId,
+          cursor: null,
+          limit: 50,
+        ),
+      ).thenAnswer((_) async => (messages: [unknown, known], nextCursor: null));
+      when(
+        () => messageRepo.getByServerId('known-1'),
+      ).thenAnswer((_) async => known);
+
+      final result = await service.catchUp(_testInstanceId);
+
+      // pageKnown>0 → break,但 dedupeConversation 仍应在最后被调用一次。
+      expect(result.inserted, 1);
+      final expectedConvId = Conversation.generateId(
+        _testInstanceId,
+        _testAgentLocalId,
+      );
+      verify(() => messageRepo.dedupeConversation(expectedConvId)).called(1);
+    });
   });
 }

@@ -10,6 +10,7 @@ import 'package:claw_hub/core/acl/replayable_connection_state.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/domain/models/enums.dart'
     show HealthStatus, MessageRole, MessageType, ToolCallStatus;
+import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
@@ -2100,6 +2101,222 @@ void main() {
           toolCalls,
           isEmpty,
           reason: 'toolCallStream should be empty before connect',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+  });
+
+  // ==========================================================================
+  // Bug #1: 双对号 — _parseMessage 把所有入站消息（包括回传的 user 消息）
+  // 一律标 delivered，导致用户自己发的消息右下角显示双对号（done_all）。
+  // 修复：按角色赋状态 — user → sent（最多已送达网关），agent/system → delivered。
+  // ==========================================================================
+  group('_parseMessage status by role (Bug #1 — double-checkmark)', () {
+    test('user-role message is parsed as SENT, not DELIVERED', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      // Gateway 回传 / 历史拉取中的 user 消息（role=user）。
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"我发送的消息","role":"user","type":"text"}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages, hasLength(1));
+      expect(messages.first.role, MessageRole.user);
+      expect(
+        messages.first.status,
+        MessageStatus.sent,
+        reason:
+            '回传/历史中的 user 消息不能被标 delivered —— 否则右下角会渲染双对号 '
+            '(Icons.done_all)。user 消息最多到 sent（已送达网关），delivered '
+            '保留给 agent 已读。',
+      );
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('agent-role message remains DELIVERED (regression guard)', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"Agent reply","role":"agent","type":"text"}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages, hasLength(1));
+      expect(messages.first.role, MessageRole.agent);
+      expect(
+        messages.first.status,
+        MessageStatus.delivered,
+        reason: 'agent 回复仍应标 delivered（已读/已处理）。',
+      );
+
+      await sub.cancel();
+      await client.dispose();
+    });
+  });
+
+  // ==========================================================================
+  // Bug #2 (重启错乱): 历史消息 logicalClock 兜底用 DateTime.now() → 所有历史
+  // 消息聚到「重启时刻」,而非各自原始时间 → ORDER BY logical_clock DESC 把
+  // 整批历史堆在顶部、本地消息压到底部,且历史消息间互相 tie → 错乱。
+  // 修法: _parseMessage 在 gateway 省略 logicalClock 时回退到「消息自身时间戳」
+  // (而非 DateTime.now()),并把秒级时间戳归一化为毫秒,保证时序正确。
+  // gateway 显式给的 logicalClock 保持原样(向后兼容,不二次猜测)。
+  // ==========================================================================
+  group('_parseMessage chronology (Bug #2 — history scramble)', () {
+    test('seconds-scale timestamp is normalized to milliseconds', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      // Gateway 历史可能用秒级时间戳 (doc §5.4 示意图: 1718000000)。
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"reply","role":"agent","type":"text",'
+              '"timestamp":1718000000}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages, hasLength(1));
+      expect(
+        messages.first.timestamp,
+        1718000000000,
+        reason:
+            '秒级时间戳必须归一化为毫秒,与本地消息(DateTime.now().ms)同量级,'
+            '否则软匹配 ±60s 永不命中、排序错乱。',
+      );
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('milliseconds-scale timestamp is preserved unchanged', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"reply","role":"agent","type":"text",'
+              '"timestamp":1718000000000}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages.first.timestamp, 1718000000000, reason: '毫秒时间戳不应被改动。');
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('message without logicalClock falls back to its own timestamp '
+        '(NOT DateTime.now) — fixes history scramble', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      // 历史消息: gateway 省略 logicalClock, 但带原始 timestamp。
+      // 旧实现兜底为 DateTime.now()(重启时刻)→ 错乱。
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"old reply","role":"agent","type":"text",'
+              '"timestamp":1717000000000}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages, hasLength(1));
+      expect(
+        messages.first.logicalClock,
+        1717000000000,
+        reason:
+            '省略 logicalClock 时应回退到消息自身时间戳(归一化后),'
+            '保证历史消息按原始时间排序,而非全部聚到重启时刻。',
+      );
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('message without logicalClock and without timestamp stays now-based '
+        '(regression guard)', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      final before = DateTime.now().millisecondsSinceEpoch;
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"reply","role":"agent","type":"text"}',
+        ),
+      );
+      await pumpMicrotasks();
+      final after = DateTime.now().millisecondsSinceEpoch;
+
+      expect(messages, hasLength(1));
+      expect(messages.first.logicalClock, greaterThanOrEqualTo(before));
+      expect(messages.first.logicalClock, lessThanOrEqualTo(after));
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test(
+      'explicit gateway logicalClock is preserved verbatim (no normalization)',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+        final messages = <Message>[];
+        final sub = client.messageStream('test-instance').listen(messages.add);
+
+        ws.simulateServerFrame(
+          chatFinalJson(
+            sessionKey: 'agent:r-1:main',
+            messageContent:
+                '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+                '"content":"reply","role":"agent","type":"text",'
+                '"logicalClock":999999}',
+          ),
+        );
+        await pumpMicrotasks();
+
+        expect(
+          messages.first.logicalClock,
+          999999,
+          reason: 'gateway 显式给的 logicalClock 必须原样保留,不二次猜测。',
         );
 
         await sub.cancel();

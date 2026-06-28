@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../domain/models/models.dart';
 import '../../domain/repositories/repositories.dart';
+import '../../domain/usecases/message_cluster_deduper.dart';
 
 /// 内存版实例仓库（MVP 开发用，后续替换为 drift/SQLite 实现）
 class InMemoryInstanceRepo implements IInstanceRepo {
@@ -659,6 +660,23 @@ class InMemoryMessageRepo implements IMessageRepo {
   @override
   Future<int> getMessageCount(String agentId) async {
     return _byClientId.values.where((m) => m.agentId == agentId).length;
+  }
+
+  @override
+  Future<int> dedupeConversation(String conversationId) async {
+    // 与 DriftMessageRepo.dedupeConversation 同语义: 委托 MessageClusterDeduper
+    // 规划应删除的 clientId(空 content text + (role, content) 聚簇去重)。
+    final all = _byClientId.values
+        .where((m) => m.conversationId == conversationId)
+        .toList();
+    final toDelete = MessageClusterDeduper.plan(all);
+    if (toDelete.isEmpty) return 0;
+    for (final clientId in toDelete) {
+      final m = _byClientId.remove(clientId);
+      if (m != null && m.serverId != null) _byServerId.remove(m.serverId);
+    }
+    _notifyChanged();
+    return toDelete.length;
   }
 
   @override

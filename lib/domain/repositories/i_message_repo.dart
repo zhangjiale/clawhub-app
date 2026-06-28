@@ -115,6 +115,20 @@ abstract class IMessageRepo {
   /// 实现必须在单一事务内执行，要么全部成功要么全部回滚。
   Future<void> clearAgentContent(String agentId);
 
+  /// 清理指定会话中历史遗留的重复消息行（Bug #2 补强）。
+  ///
+  /// 旧 [batchInsertByIndexedIds]（仅身份去重）在每次重启重连时把已发的
+  /// user 消息 / agent 回复再插一行，DB 累积重复。本方法清理这些已存在的
+  /// 重复：按 (role, content, ±60s 时间窗, type=text 且内容非空) 聚簇，每簇
+  /// 保留一行（优先有 `serverId` 的；其次最早的），删除其余并同步 FTS5。
+  ///
+  /// - 不合并 >60s 间隔的相同内容（视为不同消息）。
+  /// - 不合并不同 role 的相同内容。
+  /// - 不处理 `type != text` 或空内容的消息（工具调用等无法安全按内容去重）。
+  ///
+  /// 返回删除的行数。无重复时返回 0（no-op，幂等）。
+  Future<int> dedupeConversation(String conversationId);
+
   /// 批量插入消息，同时按 clientId 和 serverId 去重（US-016 AC-2）。
   ///
   /// 跳过已有 clientId 或 serverId 的消息。在单次事务中执行 INSERT + FTS5 同步。

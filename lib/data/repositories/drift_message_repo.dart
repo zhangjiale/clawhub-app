@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
+import 'package:claw_hub/domain/usecases/message_cluster_deduper.dart';
 import 'package:drift/drift.dart' show UpdateKind, Variable;
 
 import '../local/database/database.dart' as db;
@@ -476,6 +477,53 @@ class DriftMessageRepo implements IMessageRepo {
     });
 
     return doomedRows.length;
+  }
+
+  @override
+  Future<int> dedupeConversation(String conversationId) async {
+    // 加载该会话全部消息(大 limit 等价于全量),交给 MessageClusterDeduper 规划
+    // 哪些 clientId 应删除(空 content text + (role, content) 聚簇去重)。
+    final all = await getByConversation(conversationId, limit: 1 << 20);
+    final toDelete = MessageClusterDeduper.plan(all);
+    if (toDelete.isEmpty) return 0;
+
+    // Bug #5 修复: SQLite SQLITE_MAX_VARIABLE_NUMBER 限制 (现代默认值 32766,
+    // 历史默认值 999). 老 install 累积大量 legacy CatchUp 重复时,单条
+    // `WHERE client_id IN (?, ?, ...)` 会超出变量上限触发
+    // "too many SQL variables" → 整个 dedupe 失败。
+    //
+    // 与 batchInsertMessages (database.dart:325) 共用 900 变量守卫 —— 留余量
+    // 给后续 FTS/SELECT 语句,也保持项目风格统一。
+    const _chunkSize = 900;
+    final deleteList = toDelete.toList();
+
+    // 单事务批量删除 + FTS5 同步(分块):
+    //   1) FTS5 'delete' 每块一次性把所有 doomed 行的 rowid+content 拉出来 purge
+    //      (必须在 messages 删除之前,否则 rowid 找不到)
+    //   2) messages 单条 IN-clause DELETE
+    // 替代旧的 N × (SELECT rowid + DELETE + FTS5 sync) 循环。
+    await _database.transaction(() async {
+      for (var i = 0; i < deleteList.length; i += _chunkSize) {
+        final chunk = deleteList.sublist(
+          i,
+          i + _chunkSize > deleteList.length
+              ? deleteList.length
+              : i + _chunkSize,
+        );
+        final placeholders = List.filled(chunk.length, '?').join(', ');
+        await _database.customStatement(
+          "INSERT INTO messages_fts(messages_fts, rowid, content) "
+          "SELECT 'delete', rowid, content FROM messages "
+          "WHERE client_id IN ($placeholders)",
+          chunk,
+        );
+        await _database.customStatement(
+          'DELETE FROM messages WHERE client_id IN ($placeholders)',
+          chunk,
+        );
+      }
+    });
+    return toDelete.length;
   }
 
   @override
