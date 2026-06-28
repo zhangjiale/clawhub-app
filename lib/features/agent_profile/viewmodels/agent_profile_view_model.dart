@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
@@ -158,6 +159,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
   final IActivityRepo _activityRepo;
   final EvaluateAchievementsUseCase _evaluateAchievements;
   final IAvatarStorageService _avatarStorageService;
+  final ILogger _logger;
   final String agentId;
 
   /// Public read-only view of [_agent] for UI consumers — 由
@@ -176,8 +178,8 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
   /// US-021 v1.1: 响应式重查入口。provider 侧 `ref.listen(agentSyncTickerProvider)`
   /// 在 agents 同步完成后调用，把最新 tombstone 状态写进 state。
   ///
-  /// Async-gap guards (round 4 fix #3): like [achievementRefresh], this method
-  /// must protect against three concurrent paths racing into the same VM:
+  /// Like [achievementRefresh], this method protects against three
+  /// concurrent paths racing into the same VM:
   ///   1. ticker listener calls refreshAgent while init() is still in flight
   ///   2. ticker listener calls refreshAgent after detail load failed (state
   ///      is LoadError — should not be silently mutated to LoadData)
@@ -211,6 +213,16 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
 
     setAgent(freshAgent);
 
+    // US-021 tombstone transition (sync discovered a tombstone):
+    // setAgent above already flipped vm.agent.isRemoved = true (drives the
+    // page-level AgentRemovedPlaceholder). Skip the state detailLoadState
+    // update — copying `current.instance / messageCount / stats /
+    // achievements` from the previous LoadData would yield a half-populated
+    // LoadData with stale messageCount and stats next to the tombstone
+    // placeholder. The page-level UI is the SSOT for tombstoned agents;
+    // the detailLoadState carries only the data needed for alive agents.
+    if (freshAgent.isRemoved) return;
+
     // Post-await guard 2: state may have transitioned out of LoadData while
     // we were awaiting (concurrent refresh() during init retry, or
     // saveProfile's internal refresh() clobbering it). Don't write back a
@@ -236,11 +248,8 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
   }
 
   Future<Agent?> _loadFreshAgentForRefresh() async {
-    // Do NOT catch internally — let exceptions propagate to the provider
-    // layer's catchError (Law 8 compliant: logs via ILogger). Previously
-    // this caught and returned null, which silently swallowed
-    // `_agentRepo.getById` failures and made the provider's catchError
-    // dead code.
+    // Let exceptions propagate — the provider layer's catchError routes
+    // them to ILogger. Catching here would swallow the failure silently.
     return await _agentRepo.getById(agentId);
   }
 
@@ -267,6 +276,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     required IActivityRepo activityRepo,
     required EvaluateAchievementsUseCase evaluateAchievements,
     required IAvatarStorageService avatarStorageService,
+    required ILogger logger,
     required this.agentId,
     void Function(String path)? onAvatarChanged,
   }) : _agentRepo = agentRepo,
@@ -275,6 +285,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
        _activityRepo = activityRepo,
        _evaluateAchievements = evaluateAchievements,
        _avatarStorageService = avatarStorageService,
+       _logger = logger,
        _onAvatarChanged = onAvatarChanged,
        super(const AgentProfileState());
 
@@ -346,7 +357,10 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     try {
       return await _instanceRepo.getById(instanceId);
     } catch (error, stackTrace) {
-      debugPrint('Instance lookup failed for $instanceId: $error\n$stackTrace');
+      _logger.error(
+        'Instance lookup failed for $instanceId: $error',
+        stackTrace,
+      );
       return null;
     }
   }
@@ -355,16 +369,13 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     try {
       return await _messageRepo.getMessageCount(id);
     } catch (error, stackTrace) {
-      debugPrint('Message count lookup failed for $id: $error\n$stackTrace');
+      _logger.error('Message count lookup failed for $id: $error', stackTrace);
       return 0;
     }
   }
 
   Future<_AchievementResult?> _safeEvaluateAchievements(String id) async {
     try {
-      // 3A: use case 不再有 forceRecompute 参数——use case 现在永远走
-      // computeStats() 全量聚合,cache-first 分支已被删除(详见
-      // evaluate_achievements.dart 的 3A 注释)。
       final result = await _evaluateAchievements.execute(id);
       return (
         stats: result.stats,
@@ -372,7 +383,10 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
         freshUnlocks: result.freshUnlocks,
       );
     } catch (error, stackTrace) {
-      debugPrint('Stats/achievement load failed for $id: $error\n$stackTrace');
+      _logger.error(
+        'Stats/achievement load failed for $id: $error',
+        stackTrace,
+      );
       return null;
     }
   }
@@ -381,7 +395,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     try {
       return await _activityRepo.getDailyActivity(id);
     } catch (error, stackTrace) {
-      debugPrint('Daily activity load failed for $id: $error\n$stackTrace');
+      _logger.error('Daily activity load failed for $id: $error', stackTrace);
       return const [];
     }
   }
@@ -418,6 +432,26 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     if (after is! LoadData<AgentDetailData>) return;
     final currentDetail = after.value;
 
+    // Skip the state write if nothing changed — every chat message would
+    // otherwise re-emit the same AgentDetailData and trigger a downstream
+    // rebuild. UI bumps newUnlocks only on real unlocks, which the use case
+    // already filters — but the comparison must include freshUnlocks
+    // otherwise a recompute that returns the same stats+achievements but a
+    // non-empty freshUnlocks (e.g. a celebration replay path, or a future
+    // use-case variant that decouples the two) would silently drop the
+    // unlock event here.
+    //
+    // Use content equality, NOT `==`. `AgentStats.==` is field-based
+    // (safe), but `List<Achievement> ==` is identity in Dart — the use
+    // case constructs a fresh list every call, so two semantically-equal
+    // lists compare unequal and the skip would never fire (the
+    // [[model-equals-identity-blindspot]] trap).
+    if (result.stats == currentDetail.stats &&
+        listEquals(result.achievements, currentDetail.achievements) &&
+        listEquals(result.freshUnlocks, state.newUnlocks)) {
+      return;
+    }
+
     _updateState(
       (s) => s.copyWith(
         detailLoadState: LoadData(
@@ -447,16 +481,12 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     // US-021 v1.2 修复：阻断必须 surface saveError，否则 UI 看不到反馈。
     // 区分 null（未加载）和 tombstoned（已删除）两条文案。
     if (agent == null) {
-      debugPrint(
-        '[AgentProfileViewModel] saveProfile blocked: agent not loaded',
-      );
+      _logger.info('saveProfile blocked: agent not loaded');
       _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
       return;
     }
     if (agent!.isRemoved) {
-      debugPrint(
-        '[AgentProfileViewModel] saveProfile blocked: agent tombstoned',
-      );
+      _logger.info('saveProfile blocked: agent tombstoned');
       _updateState((s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法保存'));
       return;
     }
@@ -478,7 +508,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
       await refresh();
       _updateState((s) => s.copyWith(isSaving: false, saveSuccess: true));
     } catch (error, stackTrace) {
-      debugPrint('AgentConfig save failed: $error\n$stackTrace');
+      _logger.error('AgentConfig save failed: $error', stackTrace);
       _updateState((s) => s.copyWith(isSaving: false, saveError: '保存失败，请重试'));
     }
   }
@@ -491,16 +521,12 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝写入头像。
     // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
     if (agent == null) {
-      debugPrint(
-        '[AgentProfileViewModel] updateAvatar blocked: agent not loaded',
-      );
+      _logger.info('updateAvatar blocked: agent not loaded');
       _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
       return;
     }
     if (agent!.isRemoved) {
-      debugPrint(
-        '[AgentProfileViewModel] updateAvatar blocked: agent tombstoned',
-      );
+      _logger.info('updateAvatar blocked: agent tombstoned');
       _updateState(
         (s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法上传头像'),
       );
@@ -540,16 +566,12 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝清除头像（同样不会触达 DB）。
     // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
     if (agent == null) {
-      debugPrint(
-        '[AgentProfileViewModel] removeAvatar blocked: agent not loaded',
-      );
+      _logger.info('removeAvatar blocked: agent not loaded');
       _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
       return;
     }
     if (agent!.isRemoved) {
-      debugPrint(
-        '[AgentProfileViewModel] removeAvatar blocked: agent tombstoned',
-      );
+      _logger.info('removeAvatar blocked: agent tombstoned');
       _updateState(
         (s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法移除头像'),
       );
@@ -606,7 +628,7 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
       // 监听器。头像变更是即时操作，不需要退出配置页。
       _updateState((s) => s.copyWith(isSaving: false));
     } catch (error, stackTrace) {
-      debugPrint('Avatar $opTag failed: $error\n$stackTrace');
+      _logger.error('Avatar $opTag failed: $error', stackTrace);
       if (onErrorRollback != null) {
         await onErrorRollback();
       }

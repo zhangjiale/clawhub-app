@@ -10,27 +10,11 @@ import 'package:claw_hub/domain/models/daily_activity.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/errors.dart';
 import 'package:claw_hub/domain/models/quick_command.dart';
-import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
-import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
-import 'package:claw_hub/domain/repositories/i_message_repo.dart';
-import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
-import 'package:claw_hub/domain/repositories/i_activity_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
-import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/features/agent_profile/viewmodels/agent_profile_view_model.dart';
-
-class MockAgentRepo extends Mock implements IAgentRepo {}
-
-class MockInstanceRepo extends Mock implements IInstanceRepo {}
-
-class MockMessageRepo extends Mock implements IMessageRepo {}
-
-class MockAchievementRepo extends Mock implements IAchievementRepo {}
-
-class MockActivityRepo extends Mock implements IActivityRepo {}
-
-class MockAvatarStorageService extends Mock implements IAvatarStorageService {}
+import '../../../_helpers/fake_logger.dart';
+import '../../../_helpers/mocks.dart';
 
 void main() {
   setUpAll(() {
@@ -109,6 +93,7 @@ void main() {
     late MockAchievementRepo achievementRepo;
     late MockActivityRepo activityRepo;
     late MockAvatarStorageService avatarStorageService;
+    late FakeLogger logger;
 
     final testAgent = Agent(
       localId: 'local-1',
@@ -126,6 +111,7 @@ void main() {
       achievementRepo = MockAchievementRepo();
       activityRepo = MockActivityRepo();
       avatarStorageService = MockAvatarStorageService();
+      logger = FakeLogger();
 
       // Default stubs — achievement load is best-effort, return empty data
       when(
@@ -147,14 +133,19 @@ void main() {
       ).thenAnswer((_) async => const []);
     });
 
-    AgentProfileViewModel createVM() {
+    AgentProfileViewModel createVM({
+      EvaluateAchievementsUseCase? evaluateAchievements,
+    }) {
       return AgentProfileViewModel(
         agentRepo: agentRepo,
         instanceRepo: instanceRepo,
         messageRepo: messageRepo,
         activityRepo: activityRepo,
         avatarStorageService: avatarStorageService,
-        evaluateAchievements: EvaluateAchievementsUseCase(achievementRepo),
+        evaluateAchievements:
+            evaluateAchievements ??
+            EvaluateAchievementsUseCase(achievementRepo),
+        logger: logger,
         agentId: 'local-1',
       );
     }
@@ -1028,6 +1019,89 @@ void main() {
         },
       );
 
+      // US-021 tombstone transition contract: when a sync discovers the
+      // agent has been tombstoned, refreshAgent must (a) still call
+      // setAgent so vm.agent.isRemoved = true drives the page-level
+      // AgentRemovedPlaceholder, AND (b) skip the _updateState that would
+      // copy the previous (alive) LoadData's instance/messageCount/stats/
+      // achievements on top of the placeholder. Otherwise the page would
+      // show a half-populated LoadData next to the tombstone UI, with
+      // stale messageCount from before the tombstone.
+      //
+      // Two-step scenario: init with alive agent (so detailLoadState has a
+      // populated LoadData), then sync with tombstoned agent. refreshAgent
+      // must flip vm.agent.isRemoved WITHOUT mutating detailLoadState.
+      //
+      // Note: state itself DOES change (setAgent bumps contentRevision via
+      // AgentReactiveState mixin's onAgentUpdated) — that's expected, it
+      // drives Riverpod's rebuild for the tombstone placeholder. What must
+      // NOT change is the detailLoadState wrapper (the LoadData inner
+      // value). Without the tombstone guard, _updateState would re-wrap
+      // `current.value` (the alive snapshot) with the tombstoned agent,
+      // producing a stale LoadData.
+      test('refreshAgent skips detailLoadState re-write when sync '
+          'discovers a tombstone (US-021 — avoid stale LoadData '
+          'on tombstone placeholder)', () async {
+        // Arrange: init with ALIVE agent so detailLoadState has populated
+        // messageCount=7, stats=non-null, achievements=[…]. This is what the
+        // bug scenario requires — a populated LoadData that would be
+        // wrongly copied if _updateState runs.
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => testAgent);
+        when(
+          () => instanceRepo.getById('inst-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getMessageCount('local-1'),
+        ).thenAnswer((_) async => 7);
+
+        final vm = createVM();
+        await vm.init();
+        // Sanity: LoadData is populated
+        final aliveDetail =
+            (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+        expect(aliveDetail.agent.isRemoved, isFalse);
+        expect(aliveDetail.messageCount, 7);
+
+        // Capture detailLoadState identity — refreshAgent must NOT re-wrap
+        // this LoadData when freshAgent.isRemoved is true. State will
+        // still change (contentRevision bumps) — that's the signal the
+        // page needs to swap in AgentRemovedPlaceholder.
+        final detailBefore = vm.state.detailLoadState;
+        final messageCountBefore = aliveDetail.messageCount;
+
+        // Act: sync delivers a tombstoned agent
+        when(
+          () => agentRepo.getById('local-1'),
+        ).thenAnswer((_) async => tombAgent);
+        await vm.refreshAgent();
+
+        // Assert 1: vm.agent flipped to tombstoned (drives page placeholder)
+        expect(vm.agent?.isRemoved ?? false, isTrue);
+
+        // Assert 2: detailLoadState NOT re-written with stale tombstone
+        // wrapper. The alive LoadData stays intact — page-level placeholder
+        // handles the tombstone UI based on vm.agent.isRemoved, not on a
+        // tombstoned detailLoadState.
+        expect(
+          identical(vm.state.detailLoadState, detailBefore),
+          isTrue,
+          reason:
+              'refreshAgent must skip _updateState when freshAgent.isRemoved '
+              'is true — copying previous LoadData.instance/messageCount/'
+              'stats/achievements would yield a half-populated LoadData '
+              'alongside the tombstone placeholder UI.',
+        );
+
+        // Assert 3: the alive LoadData is preserved untouched (messageCount
+        // still 7, agent still alive in detailLoadState — vm.agent is the
+        // SSOT for tombstone, NOT detailLoadState.agent).
+        final after = vm.state.detailLoadState as LoadData<AgentDetailData>;
+        expect(after.value.messageCount, messageCountBefore);
+        expect(after.value.agent.isRemoved, isFalse);
+      });
+
       // Round 4 fix #3: refreshAgent 必须 guard against 3 个 async-gap race:
       //   (a) detailLoadState 还未到达 LoadData (init 未完成)
       //   (b) detailLoadState 是 LoadError (init 失败)
@@ -1383,6 +1457,133 @@ void main() {
           );
         },
       );
+
+      // Identity-blindspot regression guard (model-equals-identity-blindspot.md):
+      // The skip-if-unchanged block at agent_profile_view_model.dart:423 must
+      // use CONTENT equality on the achievements list, not List.== (which is
+      // identity in Dart and would never match across two fresh list
+      // instances). The early-return is the only thing protecting downstream
+      // widgets from rebuilds on every chat message — if it never fires, the
+      // optimization is dead code.
+      //
+      // This test detects the bug by checking `identical` of the detail data
+      // reference: if the skip fires, no new AgentDetailData is constructed;
+      // if the skip doesn't fire, `_updateState` always wraps a new one.
+      test('skips state write when stats+achievements are content-equal '
+          '(different list instance, same content)', () async {
+        // arrange — init with baseline stats + empty achievements
+        when(
+          () => achievementRepo.computeStats('local-1'),
+        ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
+        when(
+          () => achievementRepo.getUnlocks('local-1'),
+        ).thenAnswer((_) async => <Achievement>[]);
+        final vm = createVM();
+        await vm.init();
+        final beforeDetail =
+            (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+        final beforeAchievements = beforeDetail.achievements;
+
+        // act — re-stub with NEW instances but SAME content. The
+        // non-const constructors ensure different identities for both
+        // the AgentStats and the empty list.
+        when(
+          () => achievementRepo.computeStats('local-1'),
+        ).thenAnswer((_) async => AgentStats(agentId: 'local-1'));
+        when(
+          () => achievementRepo.getUnlocks('local-1'),
+        ).thenAnswer((_) async => <Achievement>[]);
+
+        await vm.achievementRefresh();
+
+        // assert — early-return fired, so detail data reference is unchanged
+        final afterDetail =
+            (vm.state.detailLoadState as LoadData<AgentDetailData>).value;
+        expect(
+          identical(beforeDetail, afterDetail),
+          isTrue,
+          reason:
+              'Content-equal stats+achievements must skip state write, '
+              'leaving the AgentDetailData reference unchanged. If this '
+              'fails, the skip-if-unchanged check is using identity '
+              'equality on the achievements list (List.==) instead of '
+              'content equality (listEquals).',
+        );
+        // Sanity: achievements list itself is also the same reference
+        expect(
+          identical(beforeAchievements, afterDetail.achievements),
+          isTrue,
+          reason: 'achievements list reference must be unchanged',
+        );
+      });
+
+      // Latent celebration-drop guard: when the skip-if-unchanged optimization
+      // fires (e.g. after fix #2 above), the early-return at line 423 must
+      // NOT also drop `result.freshUnlocks`. Otherwise a recompute that
+      // returns the same stats+achievements but a non-empty freshUnlocks
+      // (e.g. a celebration replay path, or any future use-case change
+      // that decouples the two) would silently fail to update
+      // state.newUnlocks and the UI would never see the unlock event.
+      //
+      // The real use case couples achievements+freshUnlocks (a new unlock
+      // always changes the achievements list), so the latent bug only
+      // surfaces via a mocked use case that returns mismatched data —
+      // which is the exact defensive case this test pins.
+      test('propagates freshUnlocks to state.newUnlocks even when stats+'
+          'achievements are content-equal', () async {
+        // Use a mocked use case to construct the latent scenario.
+        final useCase = MockEvaluateAchievementsUseCase();
+        when(() => useCase.execute('local-1')).thenAnswer(
+          (_) async => EvaluateAchievementsResult(
+            stats: const AgentStats(agentId: 'local-1'),
+            achievements: const <Achievement>[],
+            freshUnlocks: const <Achievement>[],
+          ),
+        );
+
+        final vm = createVM(evaluateAchievements: useCase);
+        await vm.init();
+        expect(
+          vm.state.newUnlocks,
+          isEmpty,
+          reason: 'baseline: no fresh unlocks yet',
+        );
+
+        // Re-stub: SAME stats+achievements, but a non-empty freshUnlocks.
+        // (Real use case never produces this, but a future variant
+        // could — and the VM must handle it correctly.)
+        const freshUnlock = Achievement(
+          id: 'first_dialog',
+          icon: '🏆',
+          name: '初次对话',
+          description: '与虾完成第一次对话',
+          tier: AchievementTier.gold,
+          unlocked: true,
+          unlockedAt: 1719500000000,
+        );
+        when(() => useCase.execute('local-1')).thenAnswer(
+          (_) async => EvaluateAchievementsResult(
+            stats: const AgentStats(agentId: 'local-1'),
+            achievements: const <Achievement>[],
+            freshUnlocks: const [freshUnlock],
+          ),
+        );
+
+        await vm.achievementRefresh();
+
+        // freshUnlocks MUST be written to state even when stats+achievements
+        // are content-equal. Otherwise the celebration gets silently dropped
+        // by the skip-if-unchanged early-return.
+        expect(
+          vm.state.newUnlocks,
+          equals([freshUnlock]),
+          reason:
+              'freshUnlocks must propagate to state.newUnlocks even when '
+              'stats+achievements are content-equal. If this fails, the '
+              'skip-if-unchanged early-return is dropping the celebration '
+              'event along with the (correctly-skipped) data update.',
+        );
+      });
     });
   });
 }
