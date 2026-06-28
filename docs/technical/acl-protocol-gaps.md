@@ -150,6 +150,65 @@
 
 ---
 
+### Gap #7 — `agents.list` 响应不含 `description` 字段（name/description 撞车 bug）
+
+**严重度**：🟡 P2（数据正确性，UI 上 agent 简介取值错误）
+
+**Spec 引用**：
+- §A.6 `agents.list` 实测响应（probe-verified）
+- §5.2 `agents.list` 示意图（**已过时**，含过时字段 `description`）
+
+**症状**：
+- `agents.list` RPC 响应里**没有**顶层 `description` 字段
+- `openclaw config get agents.list` 返回完整配置（含 `description`）
+- `openclaw agents list --format json` 也不含 description
+- CLI text 表格无 Description 行
+- ClawHub UI 上所有 agent 的 description **绝大多数显示为空（"暂无简介"）**
+
+**identity 块实际语义**（per `config get` 实测，2026-06-28）：
+
+| 字段 | 语义 | 示例 |
+|---|---|---|
+| `identity.name` | display name（短名/昵称） | "Bob"、"芷若"、"心晴"、"行远" |
+| `identity.theme` | 角色描述（仅部分 agent 配了） | "严谨专业的 AI 编程顾问..." |
+| `identity.emoji` | emoji | "💻"、"🌿"、"🌙" |
+
+⚠️ 注意：`identity.name` **不是**角色描述。是 display name。ClawHub parser 之前
+在 `ws_gateway_client.dart:_parseAgent`（9503d5f 引入）把它当 description fallback，
+导致 name 和 description 在 UI 上**完全撞车**（例如 name="编程大师-Bob" 简介也是
+"Bob"）。
+
+**已修复**（见本仓库 commit 历史，`fix(acl): stop using identity.name as
+agent description fallback`）：`_parseAgent` description fallback 链改为
+`json['description'] → identity.theme → identity.description`，**不再**回退到
+`identity.name`。测试 `fetchAgents bio field parsing` 8 个用例已对齐新语义。
+
+**真正获取 description 的路径**（修复后仍未解决，需要 follow-up）：
+1. 等 OpenClaw 把 `description` 加进 `agents.list` 响应（推荐）
+2. ClawHub ACL 加 `config.get` RPC client（需 Gateway 启用 admin RPC），按 agent
+   id 匹配填充本地 `Agent.description`
+3. Mock 数据 `assets/mock/agents.json` 加 `identity` 块，让 mock parser 走真实路径
+
+**文件位置**：
+- `lib/core/acl/ws_gateway_client.dart:_parseAgent`（fallback 链）
+- `test/core/acl/ws_gateway_client_test.dart:1134-1187`（测试组 `fetchAgents bio field parsing`）
+- `assets/mock/agents.json`（mock 数据，待对齐）
+
+**测试面**：已在 `fetchAgents bio field parsing` 组覆盖（8 个用例）：
+
+| 场景 | 用例 |
+|---|---|
+| 只有 `identity.name`（旧 bug 现场） | `description is null when only identity.name is present` |
+| 顶层 `description` 优先 | `prefers top-level description when other fields coexist` |
+| `identity.theme` 兜底 | `falls back to identity.theme when no top-level description` |
+| `identity.theme` 优先于 `identity.description` | `prefers identity.theme over identity.description` |
+| 空字符串跳过（`_nonEmpty`） | `skips empty description string` |
+| `identity.theme` 空时再兜底 | `skips empty identity.theme string` |
+| `identity.description` 兜底（legacy v3 兼容） | `falls back to identity.description` |
+| 完全无 bio 来源（默认 agent `main`） | `description is null when no bio source is present` |
+
+---
+
 ### Gap #6 — `payload.large` 诊断事件无业务处理
 
 **严重度**：🟠 P1（用户体验差，用户看到"消息没到"无解释）
@@ -329,7 +388,7 @@ final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
 | 类型 | 数量 | 工作量估计 |
 |---|---|---|
 | 🟠 P1 | 3 (#2, #4, #6) | 各 1-2 个 commit，每个 ~150-300 行 |
-| 🟡 P2 | 3 (#3, #1+, F-1) | 各 1 个 commit，~100-200 行 |
+| 🟡 P2 | 4 (#3, #7, #1+, F-1) | 各 1 个 commit，~100-200 行 |
 | 🔵 P3 | 3 (#5, F-2, F-3) | 零散小改，~50 行 |
 
 **建议实施顺序**（价值/风险比）：

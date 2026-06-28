@@ -1146,26 +1146,63 @@ void main() {
       return agents.single;
     }
 
-    test('reads bio from identity.name when top-level description is absent '
-        '(real Gateway v2026.x.x — protocol doc §A.6 实测验证)', () async {
-      // 实测捕获的响应片段（来自本次诊断）：
-      // agent_b43ae25f name="旅行规划师" identity.name="行程规划与旅行规划"
+    test('description is null when only identity.name is present '
+        '(identity.name is display name, NOT a bio source — fix for name/'
+        'description collision bug)', () async {
+      // 真实 Gateway 实测：agent_b43ae25f name="旅行规划师" identity.name="行远"
+      // 旧 parser 把 identity.name 当 description fallback，导致 name 和
+      // description 在 UI 上完全撞车（name="旅行规划师" 简介="行远"→"行远"）。
+      // 修复后：identity.name 不再是 description 来源，description 应为 null。
       final agent = await fetchSingleAgent(
         '{"id":"agent_b43ae25f","name":"旅行规划师",'
-        '"identity":{"name":"行程规划与旅行规划"}}',
+        '"identity":{"name":"行远"}}',
       );
       expect(agent.name, '旅行规划师');
-      expect(agent.description, '行程规划与旅行规划');
+      expect(agent.description, isNull);
     });
 
-    test('prefers top-level description over identity.name '
-        '(backward compat with §5.2 示意图)', () async {
+    test('prefers top-level description when other fields coexist', () async {
       final agent = await fetchSingleAgent(
         '{"id":"a1","name":"A",'
         '"description":"top-level description wins",'
         '"identity":{"name":"identity name"}}',
       );
       expect(agent.description, 'top-level description wins');
+    });
+
+    test('falls back to identity.theme when no top-level description '
+        '(real Gateway schema: identity.theme holds role description for '
+        'jvsclaw/xinqing/zhishi-style agents)', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"jvsclaw","name":"编程大师-Bob",'
+        '"identity":{"name":"Bob","theme":"严谨专业的 AI 编程顾问",'
+        '"emoji":"💻"}}',
+      );
+      expect(agent.description, '严谨专业的 AI 编程顾问');
+    });
+
+    test('prefers identity.theme over identity.description', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"a1","identity":{"theme":"theme wins","description":"desc"}}',
+      );
+      expect(agent.description, 'theme wins');
+    });
+
+    test('skips empty description string and falls back to identity.theme '
+        '(_nonEmpty guards against empty-string short-circuit)', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"a1","description":"",'
+        '"identity":{"theme":"fallback"}}',
+      );
+      expect(agent.description, 'fallback');
+    });
+
+    test('skips empty identity.theme string and falls back to '
+        'identity.description', () async {
+      final agent = await fetchSingleAgent(
+        '{"id":"a1","identity":{"theme":"","description":"final"}}',
+      );
+      expect(agent.description, 'final');
     });
 
     test('falls back to identity.description when no top-level description '

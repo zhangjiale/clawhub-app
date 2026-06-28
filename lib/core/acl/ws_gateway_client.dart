@@ -1061,10 +1061,23 @@ class WsGatewayClient implements IGatewayClient {
         _nonEmpty(identity?['name'] as String?) ??
         remoteId;
 
+    // Agent description fallback chain:
+    //   json['description'] → identity.theme → identity.description
+    //
+    // 真实 Gateway 的 agents.list API 不返回顶层 description（API 简化版，
+    // 仅含路由必要字段）；配置 schema 支持 description（openclaw config get
+    // agents.list 可查完整结构）。兜底到 identity.theme（部分 agent 的角色描述
+    // 字段，jvsclaw/xinqing/zhishi 等已配）和 identity.description（未来字段
+    // 预留）。**不再**回退到 identity.name —— identity.name 是 display name
+    // （短名/昵称，如 "Bob"、"行远"），不是角色描述，回退会导致 name/description
+    // 在 UI 上完全撞车（这是 9503d5f 引入的 bug，已修复）。
+    //
+    // 协议文档参考：api-protocol.md §A.6 (probe-verified); §5.2 示意图已过时。
+    // ACL gap 记录：docs/technical/acl-protocol-gaps.md → "agents.list 不返回 description"。
     final description =
-        json['description'] as String? ??
-        identity?['description'] as String? ??
-        identity?['name'] as String?;
+        _nonEmpty(json['description'] as String?) ??
+        _nonEmpty(identity?['theme'] as String?) ??
+        _nonEmpty(identity?['description'] as String?);
 
     return Agent(
       localId: _uuid.v4(),
