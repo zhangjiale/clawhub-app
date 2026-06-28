@@ -13,9 +13,11 @@ import 'gateway_protocol.dart';
 
 /// Injectable timer factory — defaults to [Timer.new].
 ///
-/// Tests inject a fake factory to control time-dependent behavior
-/// (tick timeout, reconnect backoff, pairing retry) without real delays.
-@visibleForTesting
+/// Used by both [ConnectionManager] and [WsGatewayClient] (the latter
+/// forwards it via DI). Tests inject a fake factory to control
+/// time-dependent behavior (tick timeout, reconnect backoff, pairing
+/// retry) without real delays. Not annotated `@visibleForTesting`
+/// because it is part of the cross-class production API.
 typedef TimerFactory = Timer Function(Duration, void Function());
 
 /// 管理单个 OpenClaw Gateway 实例的 WebSocket 连接生命周期。
@@ -244,7 +246,7 @@ class ConnectionManager {
     required ConnectionConfig config,
     Uuid? uuid,
     WebSocketChannel Function(Uri)? webSocketFactory,
-    @visibleForTesting TimerFactory? timerFactory,
+    TimerFactory? timerFactory,
     RetryStrategy? retryStrategy,
     IDeviceTokenStore? deviceTokenStore,
   }) : _retryStrategy = retryStrategy ?? _defaultRetryStrategy,
