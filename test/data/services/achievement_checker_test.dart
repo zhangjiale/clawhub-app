@@ -117,12 +117,14 @@ void main() {
     });
 
     // T-LIFECYCLE-01: dispose during in-flight _checkAsync prevents update
-    // emission. Without the isClosed guard inside _checkAsync, an unawaited
-    // future completing after dispose() would call _updates.add() on a
-    // closed broadcast controller, violating the contract that disposed
-    // checkers are silent.
+    // emission AND must not produce a spurious error log. Without the
+    // isClosed guard inside _checkAsync, the unawaited future completing
+    // after dispose() would call _updates.add() on a closed broadcast
+    // controller and throw StateError — caught by the surrounding try/catch
+    // and logged via logger.error. The contract is: a disposed checker is
+    // silent on BOTH the updates stream and the logger.
     test(
-      'dispose during in-flight _checkAsync prevents update emission',
+      'dispose during in-flight _checkAsync is silent (no emit, no log)',
       () async {
         final completer = Completer<EvaluateAchievementsResult>();
         when(() => useCase.execute(any())).thenAnswer((_) => completer.future);
@@ -152,6 +154,13 @@ void main() {
           reason: 'disposed controller must not emit update events',
         );
         verify(() => useCase.execute('agent-42')).called(1);
+        // T-LIFECYCLE-01 (strengthened): disposed checker must be silent on
+        // BOTH the stream and the logger. Without the post-await isClosed
+        // guard in _checkAsync, _updates.add() throws StateError on a closed
+        // broadcast controller; the try/catch catches it and routes to
+        // logger.error, producing a spurious "Achievement check failed" log
+        // in production on every dispose-during-in-flight race.
+        verifyNever(() => logger.error(any(), any()));
       },
     );
 
@@ -262,55 +271,36 @@ void main() {
       );
     });
 
-    // T-EVICTION-02: entries older than _maxAge are removed when the next
-    // cap-hit eviction pass runs. Uses fakeAsync to advance the clock
-    // without waiting real time.
-    test('evicts entries older than _maxAge on next cap-bound insertion '
-        '(time-based eviction)', () async {
-      // Insert one entry.
-      checker.check('agent-old');
-      await Future<void>.delayed(Duration.zero);
+    // T-EVICTION-02: time-based eviction branch — verifies the eviction
+    // constants remain positive. (Real time-eviction would need a
+    // [Clock] injection to test deterministically; see T-EVICTION-01 for
+    // the cap-bound sweep path that does exercise eviction.)
+    test(
+      'eviction constants remain positive durations (regression guard)',
+      () async {
+        // Bring the map right at cap so the next insertion triggers the
+        // eviction sweep — confirms the sweep path runs without error.
+        for (var i = 0; i < AchievementChecker.debugMaxEntries; i++) {
+          checker.check('agent-fill-$i');
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        }
+        expect(
+          checker.debugLastChecks.length,
+          AchievementChecker.debugMaxEntries,
+          reason: 'Map should hold up to cap entries',
+        );
 
-      // Insert _maxEntries - 1 more entries to bring the map right at the
-      // cap (so the NEXT insertion triggers the eviction sweep).
-      for (var i = 1; i < AchievementChecker.debugMaxEntries; i++) {
-        checker.check('agent-fill-$i');
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-      expect(
-        checker.debugLastChecks.length,
-        AchievementChecker.debugMaxEntries,
-        reason: 'Map should be at cap just before the next insertion',
-      );
-
-      // Now use fakeAsync to fast-forward past _maxAge. Any clock source
-      // injected via [clock] would be ideal, but AchievementChecker uses
-      // DateTime.now() directly. We instead wait for the real wall clock
-      // to pass _maxAge — too slow for unit tests. Fallback: verify the
-      // existing time-eviction branch in code via a different angle —
-      // calling check() again immediately (still within _minInterval)
-      // returns no-op because 'agent-old' is still debounced. This
-      // confirms the entry persists within the debounce window; the
-      // real eviction-by-time path is exercised in T-EVICTION-01 above
-      // (entries inserted first get evicted first when over cap).
-      //
-      // This test therefore serves as a structural regression guard:
-      // _maxAge must remain a positive Duration (not 0 or negative).
-      expect(
-        AchievementChecker.debugMaxAge,
-        greaterThan(Duration.zero),
-        reason:
-            '_maxAge must be a positive Duration so stale entries can '
-            'eventually be evicted; current '
-            '_maxAge=${AchievementChecker.debugMaxAge}',
-      );
-      expect(
-        AchievementChecker.debugMinInterval,
-        greaterThan(Duration.zero),
-        reason:
-            '_minInterval must be a positive Duration for the debounce '
-            'window to be meaningful',
-      );
-    });
+        expect(
+          AchievementChecker.debugMaxAge,
+          greaterThan(Duration.zero),
+          reason: '_maxAge must be positive so stale entries can be evicted',
+        );
+        expect(
+          AchievementChecker.debugMinInterval,
+          greaterThan(Duration.zero),
+          reason: '_minInterval must be positive for debounce to be meaningful',
+        );
+      },
+    );
   });
 }

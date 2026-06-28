@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
@@ -130,5 +132,50 @@ void main() {
 
       expect(() => useCase.execute('a1'), throwsException);
     });
+
+    // T-LAW17-CONCURRENT: Domain Law 17 contract — computeStats and
+    // getUnlocks must run concurrently (line 46 `(computeStats, getUnlocks)
+    // .wait`), not sequentially. A regression to sequential awaits would
+    // pass every other test in this file. Pin the concurrency invariant
+    // directly: hang both repo calls on Completers and assert both have
+    // been invoked before either is released.
+    //
+    // Why this matters: the use case is on the chat-message hot path
+    // (AchievementChecker fires it on every chat event). Sequential
+    // await of two SELECTs would double the latency of every chat
+    // message that happens to coincide with a Profile page open.
+    test(
+      'computeStats and getUnlocks are awaited concurrently (Law 17)',
+      () async {
+        final statsCompleter = Completer<AgentStats>();
+        final unlocksCompleter = Completer<List<Achievement>>();
+
+        when(
+          () => repo.computeStats('a1'),
+        ).thenAnswer((_) => statsCompleter.future);
+        when(
+          () => repo.getUnlocks('a1'),
+        ).thenAnswer((_) => unlocksCompleter.future);
+
+        final future = useCase.execute('a1');
+
+        // Yield so both awaits in the `.wait` record start. flushMicrotasks
+        // alone is insufficient — the futures are async (event-loop), not
+        // microtasks.
+        await Future<void>.delayed(Duration.zero);
+
+        // Both repo calls must have been invoked before either resolves.
+        // If computeStats awaited getUnlocks (sequential regression), the
+        // getUnlocks stub would not have been called yet.
+        verify(() => repo.computeStats('a1')).called(1);
+        verify(() => repo.getUnlocks('a1')).called(1);
+
+        // Release in reverse order to prove order doesn't matter.
+        unlocksCompleter.complete(buildAchievementList({}, {}));
+        await Future<void>.delayed(Duration.zero);
+        statsCompleter.complete(AgentStats(agentId: 'a1'));
+        await future;
+      },
+    );
   });
 }

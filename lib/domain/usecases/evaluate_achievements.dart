@@ -35,17 +35,18 @@ class EvaluateAchievementsUseCase {
   /// 执行成就评估管线。
   ///
   /// 1. 走 [IAchievementRepo.computeStats] 全量聚合计算 stats — 始终实时
-  ///    聚合，无缓存层（3A 删除 forceRecompute + cache-first 分支，3B 删除
-  ///    `agent_stats` 缓存表与 saveStats/getStats 接口）。
+  ///    聚合，无缓存层。
   /// 2. 获取已解锁成就列表，过滤出尚未解锁的预设成就。
   /// 3. 若有新成就，通过 [IAchievementRepo.batchUnlock] 原子写入。
   /// 4. 返回 [EvaluateAchievementsResult]。
   ///
   /// 异常直接传播给调用方（不在此处静默）。
   Future<EvaluateAchievementsResult> execute(String agentId) async {
-    final stats = await _repo.computeStats(agentId);
-
-    final existingUnlocks = await _repo.getUnlocks(agentId);
+    // computeStats and getUnlocks are independent reads — run concurrently.
+    final (stats, existingUnlocks) = await (
+      _repo.computeStats(agentId),
+      _repo.getUnlocks(agentId),
+    ).wait;
     final unlockedIds = existingUnlocks
         .where((a) => a.unlocked)
         .map((a) => a.id)

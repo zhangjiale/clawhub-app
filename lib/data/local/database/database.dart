@@ -87,9 +87,7 @@ class AppDatabase extends _$AppDatabase {
           await migrator.createTable(userPreferences);
         }
         if (from < 3) {
-          // Note: agent_stats was originally created here in v3, but is
-          // dropped by the v7 migration (3B). Skip creation here to avoid
-          // creating-then-dropping churn on v2 → v7 direct upgrades.
+          // agent_stats table no longer created here — dropped in v7.
           await migrator.createTable(achievementUnlocks);
         }
         if (from < 4) {
@@ -119,9 +117,9 @@ class AppDatabase extends _$AppDatabase {
           await migrator.addColumn(agents, agents.hiddenAt);
         }
         if (from < 7) {
-          // 3B: 删除 agent_stats 缓存表（write-only 无读路径，统计由
-          // DriftAchievementRepo.computeStats 实时聚合）。migrator.deleteTable
-          // 会同时清掉该表对应的索引与触发器。
+          // Drop agent_stats cache table — stats are now computed on demand
+          // by DriftAchievementRepo.computeStats. deleteTable also clears
+          // associated indexes/triggers.
           await migrator.deleteTable('agent_stats');
         }
       },

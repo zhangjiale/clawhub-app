@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
@@ -35,29 +36,37 @@ class AchievementChecker implements IAchievementChecker {
   static const _maxAge = Duration(minutes: 30);
   static const _maxEntries = 50;
 
+  /// Exposed for cap-bound eviction tests. The `debug` prefix is the
+  /// Dart convention for "test-only public API surface" — keeps the
+  /// signal even though [@visibleForTesting] is applied. Public so tests
+  /// can assert the current tuning constants without going through a
+  /// getter wrapper (compile-time const is cheaper than a getter call).
+  @visibleForTesting
+  static const debugMinInterval = _minInterval;
+
+  @visibleForTesting
+  static const debugMaxAge = _maxAge;
+
+  @visibleForTesting
+  static const debugMaxEntries = _maxEntries;
+
   /// Read-only debug view of [_lastChecks] for direct assertion in tests.
   ///
-  /// T-LIFECYCLE-04 strengthening: dispose must clear the debounce map, but
-  /// the previous round-2 test verified this only INDIRECTLY (a fresh
-  /// checker firing on a never-seen agentId). That style of test would pass
-  /// even if dispose() forgot to call `_lastChecks.clear()` — provided a
-  /// different agentId was used. This getter lets tests assert the
-  /// disposed instance's map is literally empty.
+  /// **Live view, not a snapshot.** Backed by [UnmodifiableMapView], so the
+  /// returned map reflects all subsequent mutations of the debounce map
+  /// (inserts, eviction sweep, `dispose().clear()`) through the same
+  /// reference. Use `Map.unmodifiable(_lastChecks)` instead if you need a
+  /// detached frozen copy at a specific call site — the existing tests
+  /// intentionally want the live view so dispose() empties the assertion
+  /// target without re-fetching the reference.
+  ///
+  /// Do NOT capture this view across an intervening `check()` or
+  /// `dispose()` and then assert on the captured reference's `length` —
+  /// the live semantics will surprise you. Pattern of correct use:
+  ///   1. `checker.check(...)` / `checker.dispose()`
+  ///   2. `expect(checker.debugLastChecks, isEmpty)`  ← re-fetched here
   @visibleForTesting
-  Map<String, DateTime> get debugLastChecks => Map.unmodifiable(_lastChecks);
-
-  /// Read-only debug accessors for the eviction constants — tests need
-  /// these to assert cap-bound eviction without hardcoding 50/30min/5s
-  /// literals (so future tuning of these constants is reflected
-  /// automatically in the test).
-  @visibleForTesting
-  static int get debugMaxEntries => _maxEntries;
-
-  @visibleForTesting
-  static Duration get debugMaxAge => _maxAge;
-
-  @visibleForTesting
-  static Duration get debugMinInterval => _minInterval;
+  Map<String, DateTime> get debugLastChecks => UnmodifiableMapView(_lastChecks);
 
   AchievementChecker(this._useCase, this._logger);
 
@@ -78,9 +87,7 @@ class AchievementChecker implements IAchievementChecker {
   /// 失败时静默记录日志，不向调用方传播异常。
   @override
   void check(String agentId) {
-    // Guard: post-dispose check() is a safe no-op. Without this, _lastChecks
-    // gets written and an unawaited future fires on a closed controller
-    // (caught by T-LIFECYCLE-03). Tests-as-design-tool discovery.
+    // Post-dispose guard — calling check() after dispose() must be a no-op.
     if (_updates.isClosed) return;
     final now = DateTime.now();
 
@@ -100,13 +107,17 @@ class AchievementChecker implements IAchievementChecker {
   Future<void> _checkAsync(String agentId) async {
     try {
       // Delegate to shared use case — same pipeline as the Profile VM.
-      // Always compute fresh stats (no cache read path — 3A removed the
-      // forceRecompute parameter because both callers always passed true,
-      // making it a misleading API).
+      // Always compute fresh stats — no cache layer.
       await _useCase.execute(agentId);
       // 通知订阅者（profile VM 等）该 agent 的 stats 已是最新值，可以
       // 拉自己一份新快照。仅在成功时通知——失败时让下一条消息自然触发
       // 下一次 check() 重试，避免堆积无效通知风暴。
+      //
+      // Post-await isClosed guard: dispose() may fire while _useCase.execute
+      // is in flight, closing _updates between the await and this line.
+      // [check]'s top-level isClosed guard only protects synchronous entry;
+      // this guard closes the in-flight gap so a disposed checker is silent
+      // on BOTH the updates stream AND the logger (T-LIFECYCLE-01).
       if (!_updates.isClosed) _updates.add(agentId);
     } catch (e, st) {
       // Best-effort — 成就检查失败不得影响聊天流程

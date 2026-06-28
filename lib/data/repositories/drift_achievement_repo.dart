@@ -10,8 +10,7 @@ import '../local/database/database.dart' as db;
 ///
 /// Achievements are unlocked via INSERT OR IGNORE into
 /// achievement_unlocks. Stats are computed on-demand from raw
-/// message/tool_call data — no cache layer (3B removed the write-only
-/// `agent_stats` cache table).
+/// message/tool_call data — no cache layer.
 class DriftAchievementRepo implements IAchievementRepo {
   final db.AppDatabase _database;
 
