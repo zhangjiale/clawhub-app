@@ -3318,6 +3318,17 @@ class UserPreferences extends Table
     $customConstraints: 'NOT NULL DEFAULT 0',
     defaultValue: const CustomExpression('0'),
   );
+  static const VerificationMeta _backgroundSyncEnabledMeta =
+      const VerificationMeta('backgroundSyncEnabled');
+  late final GeneratedColumn<int> backgroundSyncEnabled = GeneratedColumn<int>(
+    'background_sync_enabled',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    $customConstraints: 'NOT NULL DEFAULT 1',
+    defaultValue: const CustomExpression('1'),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -3331,6 +3342,7 @@ class UserPreferences extends Table
     dndEndHour,
     dndEndMinute,
     biometricEnabled,
+    backgroundSyncEnabled,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -3434,6 +3446,15 @@ class UserPreferences extends Table
         ),
       );
     }
+    if (data.containsKey('background_sync_enabled')) {
+      context.handle(
+        _backgroundSyncEnabledMeta,
+        backgroundSyncEnabled.isAcceptableOrUnknown(
+          data['background_sync_enabled']!,
+          _backgroundSyncEnabledMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -3487,6 +3508,10 @@ class UserPreferences extends Table
         DriftSqlType.int,
         data['${effectivePrefix}biometric_enabled'],
       )!,
+      backgroundSyncEnabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}background_sync_enabled'],
+      )!,
     );
   }
 
@@ -3511,6 +3536,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
   final int dndEndHour;
   final int dndEndMinute;
   final int biometricEnabled;
+  final int backgroundSyncEnabled;
   const UserPreference({
     required this.id,
     required this.notificationsEnabled,
@@ -3523,6 +3549,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
     required this.dndEndHour,
     required this.dndEndMinute,
     required this.biometricEnabled,
+    required this.backgroundSyncEnabled,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -3540,6 +3567,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
     map['dnd_end_hour'] = Variable<int>(dndEndHour);
     map['dnd_end_minute'] = Variable<int>(dndEndMinute);
     map['biometric_enabled'] = Variable<int>(biometricEnabled);
+    map['background_sync_enabled'] = Variable<int>(backgroundSyncEnabled);
     return map;
   }
 
@@ -3556,6 +3584,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
       dndEndHour: Value(dndEndHour),
       dndEndMinute: Value(dndEndMinute),
       biometricEnabled: Value(biometricEnabled),
+      backgroundSyncEnabled: Value(backgroundSyncEnabled),
     );
   }
 
@@ -3580,6 +3609,9 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
       dndEndHour: serializer.fromJson<int>(json['dnd_end_hour']),
       dndEndMinute: serializer.fromJson<int>(json['dnd_end_minute']),
       biometricEnabled: serializer.fromJson<int>(json['biometric_enabled']),
+      backgroundSyncEnabled: serializer.fromJson<int>(
+        json['background_sync_enabled'],
+      ),
     );
   }
   @override
@@ -3599,6 +3631,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
       'dnd_end_hour': serializer.toJson<int>(dndEndHour),
       'dnd_end_minute': serializer.toJson<int>(dndEndMinute),
       'biometric_enabled': serializer.toJson<int>(biometricEnabled),
+      'background_sync_enabled': serializer.toJson<int>(backgroundSyncEnabled),
     };
   }
 
@@ -3614,6 +3647,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
     int? dndEndHour,
     int? dndEndMinute,
     int? biometricEnabled,
+    int? backgroundSyncEnabled,
   }) => UserPreference(
     id: id ?? this.id,
     notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
@@ -3627,6 +3661,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
     dndEndHour: dndEndHour ?? this.dndEndHour,
     dndEndMinute: dndEndMinute ?? this.dndEndMinute,
     biometricEnabled: biometricEnabled ?? this.biometricEnabled,
+    backgroundSyncEnabled: backgroundSyncEnabled ?? this.backgroundSyncEnabled,
   );
   UserPreference copyWithCompanion(UserPreferencesCompanion data) {
     return UserPreference(
@@ -3661,6 +3696,9 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
       biometricEnabled: data.biometricEnabled.present
           ? data.biometricEnabled.value
           : this.biometricEnabled,
+      backgroundSyncEnabled: data.backgroundSyncEnabled.present
+          ? data.backgroundSyncEnabled.value
+          : this.backgroundSyncEnabled,
     );
   }
 
@@ -3677,7 +3715,8 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
           ..write('dndStartMinute: $dndStartMinute, ')
           ..write('dndEndHour: $dndEndHour, ')
           ..write('dndEndMinute: $dndEndMinute, ')
-          ..write('biometricEnabled: $biometricEnabled')
+          ..write('biometricEnabled: $biometricEnabled, ')
+          ..write('backgroundSyncEnabled: $backgroundSyncEnabled')
           ..write(')'))
         .toString();
   }
@@ -3695,6 +3734,7 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
     dndEndHour,
     dndEndMinute,
     biometricEnabled,
+    backgroundSyncEnabled,
   );
   @override
   bool operator ==(Object other) =>
@@ -3710,7 +3750,8 @@ class UserPreference extends DataClass implements Insertable<UserPreference> {
           other.dndStartMinute == this.dndStartMinute &&
           other.dndEndHour == this.dndEndHour &&
           other.dndEndMinute == this.dndEndMinute &&
-          other.biometricEnabled == this.biometricEnabled);
+          other.biometricEnabled == this.biometricEnabled &&
+          other.backgroundSyncEnabled == this.backgroundSyncEnabled);
 }
 
 class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
@@ -3725,6 +3766,7 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
   final Value<int> dndEndHour;
   final Value<int> dndEndMinute;
   final Value<int> biometricEnabled;
+  final Value<int> backgroundSyncEnabled;
   const UserPreferencesCompanion({
     this.id = const Value.absent(),
     this.notificationsEnabled = const Value.absent(),
@@ -3737,6 +3779,7 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
     this.dndEndHour = const Value.absent(),
     this.dndEndMinute = const Value.absent(),
     this.biometricEnabled = const Value.absent(),
+    this.backgroundSyncEnabled = const Value.absent(),
   });
   UserPreferencesCompanion.insert({
     this.id = const Value.absent(),
@@ -3750,6 +3793,7 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
     this.dndEndHour = const Value.absent(),
     this.dndEndMinute = const Value.absent(),
     this.biometricEnabled = const Value.absent(),
+    this.backgroundSyncEnabled = const Value.absent(),
   });
   static Insertable<UserPreference> custom({
     Expression<int>? id,
@@ -3763,6 +3807,7 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
     Expression<int>? dndEndHour,
     Expression<int>? dndEndMinute,
     Expression<int>? biometricEnabled,
+    Expression<int>? backgroundSyncEnabled,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -3778,6 +3823,8 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
       if (dndEndHour != null) 'dnd_end_hour': dndEndHour,
       if (dndEndMinute != null) 'dnd_end_minute': dndEndMinute,
       if (biometricEnabled != null) 'biometric_enabled': biometricEnabled,
+      if (backgroundSyncEnabled != null)
+        'background_sync_enabled': backgroundSyncEnabled,
     });
   }
 
@@ -3793,6 +3840,7 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
     Value<int>? dndEndHour,
     Value<int>? dndEndMinute,
     Value<int>? biometricEnabled,
+    Value<int>? backgroundSyncEnabled,
   }) {
     return UserPreferencesCompanion(
       id: id ?? this.id,
@@ -3807,6 +3855,8 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
       dndEndHour: dndEndHour ?? this.dndEndHour,
       dndEndMinute: dndEndMinute ?? this.dndEndMinute,
       biometricEnabled: biometricEnabled ?? this.biometricEnabled,
+      backgroundSyncEnabled:
+          backgroundSyncEnabled ?? this.backgroundSyncEnabled,
     );
   }
 
@@ -3848,6 +3898,11 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
     if (biometricEnabled.present) {
       map['biometric_enabled'] = Variable<int>(biometricEnabled.value);
     }
+    if (backgroundSyncEnabled.present) {
+      map['background_sync_enabled'] = Variable<int>(
+        backgroundSyncEnabled.value,
+      );
+    }
     return map;
   }
 
@@ -3864,7 +3919,8 @@ class UserPreferencesCompanion extends UpdateCompanion<UserPreference> {
           ..write('dndStartMinute: $dndStartMinute, ')
           ..write('dndEndHour: $dndEndHour, ')
           ..write('dndEndMinute: $dndEndMinute, ')
-          ..write('biometricEnabled: $biometricEnabled')
+          ..write('biometricEnabled: $biometricEnabled, ')
+          ..write('backgroundSyncEnabled: $backgroundSyncEnabled')
           ..write(')'))
         .toString();
   }
@@ -4667,6 +4723,236 @@ class PendingNotificationsCompanion
   }
 }
 
+class SyncState extends Table with TableInfo<SyncState, SyncStateData> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  SyncState(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _instanceIdMeta = const VerificationMeta(
+    'instanceId',
+  );
+  late final GeneratedColumn<String> instanceId = GeneratedColumn<String>(
+    'instance_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    $customConstraints: 'PRIMARY KEY',
+  );
+  static const VerificationMeta _lastSyncAtMeta = const VerificationMeta(
+    'lastSyncAt',
+  );
+  late final GeneratedColumn<int> lastSyncAt = GeneratedColumn<int>(
+    'last_sync_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  @override
+  List<GeneratedColumn> get $columns => [instanceId, lastSyncAt];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'sync_state';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<SyncStateData> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('instance_id')) {
+      context.handle(
+        _instanceIdMeta,
+        instanceId.isAcceptableOrUnknown(data['instance_id']!, _instanceIdMeta),
+      );
+    }
+    if (data.containsKey('last_sync_at')) {
+      context.handle(
+        _lastSyncAtMeta,
+        lastSyncAt.isAcceptableOrUnknown(
+          data['last_sync_at']!,
+          _lastSyncAtMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_lastSyncAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {instanceId};
+  @override
+  SyncStateData map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return SyncStateData(
+      instanceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}instance_id'],
+      ),
+      lastSyncAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}last_sync_at'],
+      )!,
+    );
+  }
+
+  @override
+  SyncState createAlias(String alias) {
+    return SyncState(attachedDatabase, alias);
+  }
+
+  @override
+  bool get dontWriteConstraints => true;
+}
+
+class SyncStateData extends DataClass implements Insertable<SyncStateData> {
+  final String? instanceId;
+  final int lastSyncAt;
+  const SyncStateData({this.instanceId, required this.lastSyncAt});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (!nullToAbsent || instanceId != null) {
+      map['instance_id'] = Variable<String>(instanceId);
+    }
+    map['last_sync_at'] = Variable<int>(lastSyncAt);
+    return map;
+  }
+
+  SyncStateCompanion toCompanion(bool nullToAbsent) {
+    return SyncStateCompanion(
+      instanceId: instanceId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(instanceId),
+      lastSyncAt: Value(lastSyncAt),
+    );
+  }
+
+  factory SyncStateData.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return SyncStateData(
+      instanceId: serializer.fromJson<String?>(json['instance_id']),
+      lastSyncAt: serializer.fromJson<int>(json['last_sync_at']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'instance_id': serializer.toJson<String?>(instanceId),
+      'last_sync_at': serializer.toJson<int>(lastSyncAt),
+    };
+  }
+
+  SyncStateData copyWith({
+    Value<String?> instanceId = const Value.absent(),
+    int? lastSyncAt,
+  }) => SyncStateData(
+    instanceId: instanceId.present ? instanceId.value : this.instanceId,
+    lastSyncAt: lastSyncAt ?? this.lastSyncAt,
+  );
+  SyncStateData copyWithCompanion(SyncStateCompanion data) {
+    return SyncStateData(
+      instanceId: data.instanceId.present
+          ? data.instanceId.value
+          : this.instanceId,
+      lastSyncAt: data.lastSyncAt.present
+          ? data.lastSyncAt.value
+          : this.lastSyncAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SyncStateData(')
+          ..write('instanceId: $instanceId, ')
+          ..write('lastSyncAt: $lastSyncAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(instanceId, lastSyncAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is SyncStateData &&
+          other.instanceId == this.instanceId &&
+          other.lastSyncAt == this.lastSyncAt);
+}
+
+class SyncStateCompanion extends UpdateCompanion<SyncStateData> {
+  final Value<String?> instanceId;
+  final Value<int> lastSyncAt;
+  final Value<int> rowid;
+  const SyncStateCompanion({
+    this.instanceId = const Value.absent(),
+    this.lastSyncAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  SyncStateCompanion.insert({
+    this.instanceId = const Value.absent(),
+    required int lastSyncAt,
+    this.rowid = const Value.absent(),
+  }) : lastSyncAt = Value(lastSyncAt);
+  static Insertable<SyncStateData> custom({
+    Expression<String>? instanceId,
+    Expression<int>? lastSyncAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (instanceId != null) 'instance_id': instanceId,
+      if (lastSyncAt != null) 'last_sync_at': lastSyncAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  SyncStateCompanion copyWith({
+    Value<String?>? instanceId,
+    Value<int>? lastSyncAt,
+    Value<int>? rowid,
+  }) {
+    return SyncStateCompanion(
+      instanceId: instanceId ?? this.instanceId,
+      lastSyncAt: lastSyncAt ?? this.lastSyncAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (instanceId.present) {
+      map['instance_id'] = Variable<String>(instanceId.value);
+    }
+    if (lastSyncAt.present) {
+      map['last_sync_at'] = Variable<int>(lastSyncAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SyncStateCompanion(')
+          ..write('instanceId: $instanceId, ')
+          ..write('lastSyncAt: $lastSyncAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -4728,6 +5014,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final PendingNotifications pendingNotifications = PendingNotifications(
     this,
   );
+  late final SyncState syncState = SyncState(this);
   Selectable<Instance> getAllInstances() {
     return customSelect(
       'SELECT * FROM instances ORDER BY last_connected_at DESC',
@@ -5287,9 +5574,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     int dndEndHour,
     int dndEndMinute,
     int biometricEnabled,
+    int backgroundSyncEnabled,
   ) {
     return customInsert(
-      'INSERT OR REPLACE INTO user_preferences (id, notifications_enabled, notify_on_reply, notify_on_error, notify_on_connection_change, dnd_enabled, dnd_start_hour, dnd_start_minute, dnd_end_hour, dnd_end_minute, biometric_enabled) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)',
+      'INSERT OR REPLACE INTO user_preferences (id, notifications_enabled, notify_on_reply, notify_on_error, notify_on_connection_change, dnd_enabled, dnd_start_hour, dnd_start_minute, dnd_end_hour, dnd_end_minute, biometric_enabled, background_sync_enabled) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)',
       variables: [
         Variable<int>(notificationsEnabled),
         Variable<int>(notifyOnReply),
@@ -5301,6 +5589,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         Variable<int>(dndEndHour),
         Variable<int>(dndEndMinute),
         Variable<int>(biometricEnabled),
+        Variable<int>(backgroundSyncEnabled),
       ],
       updates: {userPreferences},
     );
@@ -5416,6 +5705,22 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Selectable<int> getLastSyncAt(String? instanceId) {
+    return customSelect(
+      'SELECT last_sync_at FROM sync_state WHERE instance_id = ?1',
+      variables: [Variable<String>(instanceId)],
+      readsFrom: {syncState},
+    ).map((QueryRow row) => row.read<int>('last_sync_at'));
+  }
+
+  Future<int> upsertLastSyncAt(String? instanceId, int lastSyncAt) {
+    return customInsert(
+      'INSERT INTO sync_state (instance_id, last_sync_at) VALUES (?1, ?2) ON CONFLICT (instance_id) DO UPDATE SET last_sync_at = ?2',
+      variables: [Variable<String>(instanceId), Variable<int>(lastSyncAt)],
+      updates: {syncState},
+    );
+  }
+
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -5441,6 +5746,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     userPreferences,
     achievementUnlocks,
     pendingNotifications,
+    syncState,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -6962,6 +7268,7 @@ typedef $UserPreferencesCreateCompanionBuilder =
       Value<int> dndEndHour,
       Value<int> dndEndMinute,
       Value<int> biometricEnabled,
+      Value<int> backgroundSyncEnabled,
     });
 typedef $UserPreferencesUpdateCompanionBuilder =
     UserPreferencesCompanion Function({
@@ -6976,6 +7283,7 @@ typedef $UserPreferencesUpdateCompanionBuilder =
       Value<int> dndEndHour,
       Value<int> dndEndMinute,
       Value<int> biometricEnabled,
+      Value<int> backgroundSyncEnabled,
     });
 
 class $UserPreferencesFilterComposer
@@ -7039,6 +7347,11 @@ class $UserPreferencesFilterComposer
 
   ColumnFilters<int> get biometricEnabled => $composableBuilder(
     column: $table.biometricEnabled,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get backgroundSyncEnabled => $composableBuilder(
+    column: $table.backgroundSyncEnabled,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -7106,6 +7419,11 @@ class $UserPreferencesOrderingComposer
     column: $table.biometricEnabled,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<int> get backgroundSyncEnabled => $composableBuilder(
+    column: $table.backgroundSyncEnabled,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $UserPreferencesAnnotationComposer
@@ -7169,6 +7487,11 @@ class $UserPreferencesAnnotationComposer
     column: $table.biometricEnabled,
     builder: (column) => column,
   );
+
+  GeneratedColumn<int> get backgroundSyncEnabled => $composableBuilder(
+    column: $table.backgroundSyncEnabled,
+    builder: (column) => column,
+  );
 }
 
 class $UserPreferencesTableManager
@@ -7213,6 +7536,7 @@ class $UserPreferencesTableManager
                 Value<int> dndEndHour = const Value.absent(),
                 Value<int> dndEndMinute = const Value.absent(),
                 Value<int> biometricEnabled = const Value.absent(),
+                Value<int> backgroundSyncEnabled = const Value.absent(),
               }) => UserPreferencesCompanion(
                 id: id,
                 notificationsEnabled: notificationsEnabled,
@@ -7225,6 +7549,7 @@ class $UserPreferencesTableManager
                 dndEndHour: dndEndHour,
                 dndEndMinute: dndEndMinute,
                 biometricEnabled: biometricEnabled,
+                backgroundSyncEnabled: backgroundSyncEnabled,
               ),
           createCompanionCallback:
               ({
@@ -7239,6 +7564,7 @@ class $UserPreferencesTableManager
                 Value<int> dndEndHour = const Value.absent(),
                 Value<int> dndEndMinute = const Value.absent(),
                 Value<int> biometricEnabled = const Value.absent(),
+                Value<int> backgroundSyncEnabled = const Value.absent(),
               }) => UserPreferencesCompanion.insert(
                 id: id,
                 notificationsEnabled: notificationsEnabled,
@@ -7251,6 +7577,7 @@ class $UserPreferencesTableManager
                 dndEndHour: dndEndHour,
                 dndEndMinute: dndEndMinute,
                 biometricEnabled: biometricEnabled,
+                backgroundSyncEnabled: backgroundSyncEnabled,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
@@ -7712,6 +8039,147 @@ typedef $PendingNotificationsProcessedTableManager =
       PendingNotification,
       PrefetchHooks Function()
     >;
+typedef $SyncStateCreateCompanionBuilder =
+    SyncStateCompanion Function({
+      Value<String?> instanceId,
+      required int lastSyncAt,
+      Value<int> rowid,
+    });
+typedef $SyncStateUpdateCompanionBuilder =
+    SyncStateCompanion Function({
+      Value<String?> instanceId,
+      Value<int> lastSyncAt,
+      Value<int> rowid,
+    });
+
+class $SyncStateFilterComposer extends Composer<_$AppDatabase, SyncState> {
+  $SyncStateFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get instanceId => $composableBuilder(
+    column: $table.instanceId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get lastSyncAt => $composableBuilder(
+    column: $table.lastSyncAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $SyncStateOrderingComposer extends Composer<_$AppDatabase, SyncState> {
+  $SyncStateOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get instanceId => $composableBuilder(
+    column: $table.instanceId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get lastSyncAt => $composableBuilder(
+    column: $table.lastSyncAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $SyncStateAnnotationComposer extends Composer<_$AppDatabase, SyncState> {
+  $SyncStateAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get instanceId => $composableBuilder(
+    column: $table.instanceId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get lastSyncAt => $composableBuilder(
+    column: $table.lastSyncAt,
+    builder: (column) => column,
+  );
+}
+
+class $SyncStateTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          SyncState,
+          SyncStateData,
+          $SyncStateFilterComposer,
+          $SyncStateOrderingComposer,
+          $SyncStateAnnotationComposer,
+          $SyncStateCreateCompanionBuilder,
+          $SyncStateUpdateCompanionBuilder,
+          (
+            SyncStateData,
+            BaseReferences<_$AppDatabase, SyncState, SyncStateData>,
+          ),
+          SyncStateData,
+          PrefetchHooks Function()
+        > {
+  $SyncStateTableManager(_$AppDatabase db, SyncState table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $SyncStateFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $SyncStateOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $SyncStateAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String?> instanceId = const Value.absent(),
+                Value<int> lastSyncAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => SyncStateCompanion(
+                instanceId: instanceId,
+                lastSyncAt: lastSyncAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                Value<String?> instanceId = const Value.absent(),
+                required int lastSyncAt,
+                Value<int> rowid = const Value.absent(),
+              }) => SyncStateCompanion.insert(
+                instanceId: instanceId,
+                lastSyncAt: lastSyncAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $SyncStateProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      SyncState,
+      SyncStateData,
+      $SyncStateFilterComposer,
+      $SyncStateOrderingComposer,
+      $SyncStateAnnotationComposer,
+      $SyncStateCreateCompanionBuilder,
+      $SyncStateUpdateCompanionBuilder,
+      (SyncStateData, BaseReferences<_$AppDatabase, SyncState, SyncStateData>),
+      SyncStateData,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -7731,4 +8199,6 @@ class $AppDatabaseManager {
       $AchievementUnlocksTableManager(_db, _db.achievementUnlocks);
   $PendingNotificationsTableManager get pendingNotifications =>
       $PendingNotificationsTableManager(_db, _db.pendingNotifications);
+  $SyncStateTableManager get syncState =>
+      $SyncStateTableManager(_db, _db.syncState);
 }

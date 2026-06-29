@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration {
@@ -121,6 +121,20 @@ class AppDatabase extends _$AppDatabase {
           // by DriftAchievementRepo.computeStats. deleteTable also clears
           // associated indexes/triggers.
           await migrator.deleteTable('agent_stats');
+        }
+        if (from < 8) {
+          // US-018 background sync: per-instance last_background_sync_at cursor.
+          // New table only — no backfill. First background tick uses
+          // now()-1h as the start point (handled in BackgroundSyncRunner).
+          await migrator.createTable(syncState);
+          // US-018: background_sync_enabled toggle (default ON = 1).
+          await migrator.addColumn(
+            userPreferences,
+            userPreferences.backgroundSyncEnabled,
+          );
+          await customStatement(
+            'UPDATE user_preferences SET background_sync_enabled = 1 WHERE id = 1',
+          );
         }
       },
     );
