@@ -26,7 +26,14 @@ void main() {
         totalToolCalls: 23,
         activeDays: 18,
         currentStreak: 5,
-        firstDialogDate: 1700000000, // 2023-11-15
+        // Noon UTC is the safe pick for date-display tests: the rendered
+        // "11/15" is stable in any timezone UTC-12..UTC+11, which covers
+        // GitHub Actions (UTC) and most dev machines. Avoid midnight-UTC
+        // timestamps — they flip days across timezone changes and break
+        // CI. 1700000000 (2023-11-14 22:13 UTC) looks like 11/15 in
+        // UTC+8 but 11/14 in UTC, which is what made this CI-flaky.
+        firstDialogDate:
+            DateTime.utc(2023, 11, 15, 12).millisecondsSinceEpoch ~/ 1000,
       );
 
       await tester.pumpWidget(buildGrid(stats: stats));
