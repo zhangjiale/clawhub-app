@@ -102,8 +102,22 @@ class _FakeNotificationRepo implements INotificationRepo {
   /// 记录单条 markDelivered 调用次数 (flush 路径应为 0)。
   int singleMarkCalls = 0;
 
+  /// Expose stored entries for test assertions.
+  List<PendingNotification> get stored => List.unmodifiable(_store);
+
   @override
   Future<int> enqueue(PendingNotification n) async {
+    // Simulate the real DB's partial unique index:
+    //   (instance_id, message_server_id) WHERE message_server_id IS NOT NULL
+    // On conflict, the real DB silently no-ops; the fake returns the existing id.
+    if (n.messageServerId != null) {
+      final existing = _store.indexWhere(
+        (e) =>
+            e.instanceId == n.instanceId &&
+            e.messageServerId == n.messageServerId,
+      );
+      if (existing >= 0) return _store[existing].id;
+    }
     final withId = n.copyWith(id: _nextId++);
     _store.add(withId);
     return withId.id;
@@ -791,6 +805,14 @@ void main() {
       // through the enqueue path.
       expect(d.isNotified('s1'), isTrue);
       expect(service.shown, isEmpty);
+
+      // Verify the enqueued entry has delivered=false and the correct
+      // messageServerId, confirming the ON CONFLICT DO NOTHING contract
+      // will protect against re-enqueue on a subsequent background pull.
+      final stored = repo.stored;
+      expect(stored.length, 1);
+      expect(stored.first.delivered, isFalse);
+      expect(stored.first.messageServerId, 's1');
     });
 
     test('evaluateDndDecision_stillEnqueues', () async {
@@ -870,6 +892,18 @@ void main() {
 
       // No show() calls ever.
       expect(service.shown, isEmpty);
+
+      // The fake's ON CONFLICT DO NOTHING simulation MUST reject the duplicate.
+      // If this assertion fails, the fake's enqueue is not deduplicating —
+      // meaning the test was passing without verifying the real contract.
+      expect(
+        repo.stored.where((n) => n.messageServerId == 's1').length,
+        1,
+        reason:
+            'FakeNotificationRepo must dedup on (instanceId, messageServerId); '
+            'a count >1 means the fake allows duplicates that the real DB '
+            'would reject via the partial unique index',
+      );
     });
 
     test('skipsNonAgentRoleMessages', () async {
