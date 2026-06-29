@@ -37,6 +37,7 @@
 - [附录 C：参考实现 — Flutter/Dart (ClawHub)](#附录-c参考实现--flutterdart-clawhub)
 - [附录 D：术语表](#附录-d术语表)
 - [附录 E：参考链接](#附录-e参考链接)
+- [附录 F：多模态 Input（图片 / 文件）](#附录-f多模态-input图片--文件)
 
 ---
 
@@ -914,6 +915,249 @@ signature = ed25519_sign(private_key, payload)
 
 ## 修订记录
 
+- 2026-06-29 — v2.2 **新增附录 F：多模态 Input（图片 / 文件）**。覆盖 WebSocket `chat.send.attachments` 与 HTTP `/v1/responses` OpenResponses 两条路径，含 schema / MIME / 大小限制 / 安全策略。
 - 2026-06-29 — v2.1 附录 C 更新：`已知 Bug` 列表对齐 ClawHub master `9ab78a8` 现状（Bug #1 / #3 已修，#2 仍存），增加"ClawHub 额外协议对齐工作"小节
 - 2026-06-29 — v2 通用化重写：从 ClawHub 项目特定文档改为通用集成参考。结构重排为 10 章主文 + 5 附录，覆盖全部 RPC 与事件族；ClawHub 实现细节下沉到附录 C
 - 2026-06-29 — v1 初版（已废弃，见 git 历史）
+
+---
+
+## 附录 F：多模态 Input（图片 / 文件）
+
+> **状态**：实验性/弱约束——OpenClaw v2026.6.x 协议层支持，但官方 markdown 文档几乎未涵盖。本附录基于 TypeBox schema + 测试用例 + 类型定义整理。生产使用建议先在测试 Gateway 上验证实际行为。
+
+### F.1 两条路径对比
+
+| 维度 | WebSocket `chat.send.attachments` | HTTP `/v1/responses` OpenResponses |
+|---|---|---|
+| **传输** | 通过 Gateway WS 协议 | 直接 HTTP POST |
+| **文档完整度** | ⚠️ 弱（schema 是 `TArray<TUnknown>`） | ✅ 完整 |
+| **适合场景** | 客户端主动向某个 session 发多模态消息 | 服务端测试 / PoC / 单次调用 |
+| **多模态能力** | `attachments` 数组元素任意 shape | `content[]` 用 `input_image` / `input_file` block |
+| **持久化** | 进入 session transcript（默认） | ephemeral / system prompt 注入 |
+| **推荐度** | 中（生产前需实测） | 高（先验证格式） |
+
+### F.2 WebSocket 路径
+
+#### Schema
+
+`chat.send` 的 TypeBox schema（来自 `dist/schema-*.d.ts`）：
+
+```ts
+ChatSendParams: TObject<{
+  sessionKey: TString;
+  agentId: TOptional<TString>;
+  sessionId: TOptional<TString>;
+  message: TString;
+  thinking: TOptional<TString>;
+  fastMode: TOptional<TUnion<[TBoolean, TLiteral<"auto">]>>;
+  fastAutoOnSeconds: TOptional<TInteger>;
+  deliver: TOptional<TBoolean>;
+  originatingChannel: TOptional<TString>;
+  originatingTo: TOptional<TString>;
+  originatingAccountId: TOptional<TString>;
+  originatingThreadId: TOptional<TString>;
+  attachments: TOptional<TArray<TUnknown>>;   // ← 不约束元素
+  timeoutMs: TOptional<TInteger>;
+  systemInputProvenance: TOptional<TObject<{...}>>;
+  systemProvenanceReceipt: TOptional<TString>;
+  suppressCommandInterpretation: TOptional<TBoolean>;
+  idempotencyKey: TString;
+}>
+```
+
+> ⚠️ `attachments: TArray<TUnknown>` — schema **不强约束**元素结构，任意 shape 都能通过 TypeBox 校验，运行时由 Gateway 内部处理。生产前**必须**实测以确认实际接收的字段。
+
+#### Attachment 元素实际格式（从源码拼凑）
+
+**观察 1**：`docs/help/testing-live.md` 示例
+```json
+{ "mimeType": "image/png", "content": "<base64>" }
+```
+
+**观察 2**：`dist/types*.d.ts` 中的 `MediaAttachment` 类型
+```ts
+type MediaAttachment = {
+  path?: string;
+  url?: string;
+  mime?: string;       // 注：这里叫 mime 不是 mimeType
+  index: number;
+  alreadyTranscribed?: boolean;
+};
+```
+
+**推测的标准格式**（结合两处来源）：
+```json
+{
+  "attachments": [
+    {
+      "mimeType": "image/png",
+      "filename": "cat.png",
+      "content": "<base64-encoded>"
+    },
+    {
+      "mime": "image/jpeg",
+      "url": "https://cdn.example.com/photo.jpg",
+      "index": 1
+    }
+  ]
+}
+```
+
+字段命名有两套：`mimeType` (testing-live.md) vs `mime` (types.d.ts)。**生产前用 capture 工具抓一次实际 payload 确认**。
+
+### F.3 HTTP 路径（OpenResponses）
+
+`gateway.http.endpoints.responses` 启用时，`POST /v1/responses` 是 OpenAI Responses 风格的多模态接口。
+
+#### `input_image`
+
+```json
+{
+  "type": "input_image",
+  "source": { "type": "url", "url": "https://example.com/image.png" }
+}
+```
+
+或 base64：
+```json
+{
+  "type": "input_image",
+  "source": {
+    "type": "base64",
+    "media_type": "image/png",
+    "data": "<base64>"
+  }
+}
+```
+
+**支持 MIME**：`image/jpeg`, `image/png`, `image/gif`, `image/webp`, `image/heic`, `image/heif`
+**最大大小**：10 MB
+
+#### `input_file`
+
+```json
+{
+  "type": "input_file",
+  "source": {
+    "type": "base64",
+    "media_type": "text/plain",
+    "data": "SGVsbG8gV29ybGQh",
+    "filename": "hello.txt"
+  }
+}
+```
+
+**支持 MIME**：`text/plain`, `text/markdown`, `text/html`, `text/csv`, `application/json`, `application/pdf`
+**最大大小**：5 MB
+
+**特殊行为**：
+- 文件内容解码后注入到 **system prompt**（不是 user message）
+- 是 **ephemeral**（**不**持久化到 session history）
+- 解码文本包成 "untrusted external content"（防止 prompt injection）
+- PDF 由 `document-extract` 插件提供（`clawpdf` + WASM PDFium）
+- 超大 PDF 自动 rasterize 成图片传给模型
+
+#### URL 抓取的安全控制
+
+OpenClaw 默认开 URL 抓取，但有严格的安全门：
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `files.allowUrl` | `true` | 是否允许 URL-based input_file |
+| `images.allowUrl` | `true` | 是否允许 URL-based input_image |
+| `maxUrlParts` | `8` | 单请求 URL 类附件总数上限 |
+| `files.urlAllowlist` | `[]` | 主机白名单（exact 或 `*.domain`） |
+| `images.urlAllowlist` | `[]` | 主机白名单 |
+
+URL 抓取时强制：
+- DNS resolution 检查
+- 私有 IP 拦截（防 SSRF）
+- redirect 次数上限
+- timeout 控制
+
+### F.4 配置示例
+
+```json5
+{
+  gateway: {
+    http: {
+      endpoints: {
+        responses: {
+          enabled: true,
+          maxBodyBytes: 20000000,
+          maxUrlParts: 8,
+          files: {
+            allowUrl: true,
+            urlAllowlist: ["cdn.example.com", "*.assets.example.com"],
+            allowedMimes: [
+              "text/plain", "text/markdown", "text/html",
+              "text/csv", "application/json", "application/pdf"
+            ]
+          },
+          images: {
+            allowUrl: true,
+            urlAllowlist: ["*.img.example.com"],
+            allowedMimes: [
+              "image/jpeg", "image/png", "image/gif",
+              "image/webp", "image/heic", "image/heif"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### F.5 流式输出（Agent 响应包含图片）
+
+`chat.history` 返回的 message `content` 字段是**多模态数组**结构（不限于文本）：
+
+```json
+{
+  "content": [
+    { "type": "text", "text": "这是图表：" },
+    { "type": "image", "url": "https://cdn.example.com/chart.png" }
+  ]
+}
+```
+
+客户端 UI 需要渲染多种 content type，不能只 strip 到 string。
+
+### F.6 已知风险与注意点
+
+1. **WebSocket `attachments` schema 弱**：未来版本可能调整形状，**强类型客户端会被破坏**。建议：
+   - 用最少字段（`mimeType` + `content`）
+   - 实测 capture 确认
+2. **WebSocket attachment 是否进入 history**：根据 schema 看，是附在 `chat.send` 上；Gateway 内部会决定是否持久化。如果你的客户端需要不可见的 attachments，需要 `chat.inject` 路径。
+3. **大文件不要走 `chat.send`**：超 5MB 文件 / 10MB 图片会导致 Gateway 拒收或超时。生产客户端应：
+   - **小文件（< 10MB）**：base64 inline 到 `attachments`
+   - **大文件（> 10MB）**：先上传到自己的对象存储 (OSS / S3)，用 URL 引用
+4. **PDF 解析依赖 `document-extract` 插件**：默认装但需要确认。生产前用样例 PDF 实测。
+5. **Vision 模型要求**：`input_image` 必须 LLM 支持 vision（如 Claude 3+、GPT-4V、Gemini 等）。OpenClaw 路由会自动把 vision 能力 mismatch 的请求拒绝或降级。
+
+### F.7 客户端实施清单
+
+接入多模态 input 的最低步骤：
+
+- [ ] `Message` 模型加 `attachments: List<Attachment>` 字段
+- [ ] `Attachment` 模型定义（mimeType / filename / content or url / index）
+- [ ] UI 加图片选择（`image_picker` 等）+ 预览 + 压缩（>10MB 客户端先压）
+- [ ] `chat.send` payload 加 `attachments` 透传
+- [ ] 流式接收 `chat.history` 多模态 `content[]`，UI 渲染
+- [ ] 大文件路径（自建 OSS / MinIO）— 可选
+- [ ] 单元测试覆盖：base64 inline / URL 引用 / 混合附件
+- [ ] 实测 capture：确认 Gateway 实际接收的 attachment shape（不依赖 schema 推测）
+
+### F.8 参考资源
+
+| 来源 | 路径 |
+|---|---|
+| OpenResponses HTTP API 完整 spec | `docs/gateway/openresponses-http-api.md` |
+| TypeBox schema (chat.send) | `dist/schema-*.d.ts`（`ChatSendParams`） |
+| MediaAttachment 类型定义 | `dist/types*.d.ts`（`MediaAttachment`） |
+| Attachment 使用示例 | `docs/help/testing-live.md` |
+| 流式 content 多模态 | `docs/concepts/messages.md` + `docs/concepts/streaming.md` |
+| Image generation (反方向) | `docs/tools/image-generation.md` |
+
