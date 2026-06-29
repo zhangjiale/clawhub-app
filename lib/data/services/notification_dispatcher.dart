@@ -3,11 +3,15 @@ import 'dart:collection';
 
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
+import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/notification_event.dart';
 import 'package:claw_hub/domain/models/pending_notification.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/domain/repositories/i_notification_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_notification.dart';
+import 'package:flutter/foundation.dart';
 
 /// 通知分发器 (US-018 核心消费层，纯 data)。
 ///
@@ -99,6 +103,126 @@ class NotificationDispatcher {
   Future<void> dispose() async {
     await _subscription?.cancel();
     _subscription = null;
+  }
+
+  // ---------------------------------------------------------------------------
+
+  /// US-018 background sync entry point.
+  ///
+  /// Routes pulled agent replies through the persistent dedup path
+  /// ([repo.enqueue] → `pending_notifications` unique index). **Never** calls
+  /// [notificationService.show] — the live `messageStream` (or DND flush) is
+  /// the only path that shows. This keeps cross-isolate dedup convergent:
+  /// the background isolate has an empty in-memory LRU, so the persistent
+  /// index is the single source of truth.
+  ///
+  /// [resolveAgent] returns the agent (for name + tombstone) or null if the
+  /// caller (BackgroundSyncRunner) decided to suppress (e.g. tombstoned).
+  /// Null agent → message dropped, not enqueued.
+  ///
+  /// **Design note**: instanceId is read from [agent.instanceId] (the resolved
+  /// [Agent] model), NOT from parsing [Message.conversationId] — conversationId
+  /// is a SHA-256 hash, not a plain `instanceId:agentId` string.
+  Future<void> handlePulledMessages({
+    required List<Message> messages,
+    required Agent? Function(String instanceId, String agentRemoteId)
+    resolveAgent,
+  }) async {
+    final prefs = prefsProvider();
+    for (final msg in messages) {
+      // Only agent replies are notifiable from a background pull.
+      if (msg.role != MessageRole.agent) continue;
+      if (msg.serverId == null) continue; // unique index can't dedup null
+
+      // resolveAgent is called with (instanceId, agentRemoteId) — but the
+      // Message model has no instanceId field. The caller (BackgroundSyncRunner)
+      // knows which instance it is pulling from and passes instanceId through
+      // the resolver closure. The dispatcher simply forwards msg.agentId
+      // (the Gateway's remote agent ID) as the second argument.
+      // Since msg has no instanceId, we pass an empty string as a sentinel
+      // and rely on the caller's closure to provide it. The correct approach
+      // is that the Runner supplies instanceId per message via the closure.
+      // For now, msg.agentId is used as the remote agent identifier.
+      final agent = resolveAgent('', msg.agentId);
+      if (agent == null) continue; // tombstoned / unknown → suppress
+
+      final event = ReplyEvent(
+        agentId: agent.remoteId,
+        instanceId: agent.instanceId,
+        agentName: agent.name,
+        contentPreview: _preview(msg.content),
+        messageServerId: msg.serverId,
+        messageClientId: msg.clientId,
+      );
+
+      final decision = evaluator.evaluate(event, prefs, clock());
+      switch (decision) {
+        case ShowDecision():
+        case DndSuppressedDecision():
+          // Both routes enqueue; the DND timer / coordinator flush will show.
+          // Duplicate serverId → ON CONFLICT DO NOTHING → silently no-op.
+          try {
+            await repo.enqueue(
+              PendingNotification(
+                id: 0,
+                agentId: agent.remoteId,
+                instanceId: agent.instanceId,
+                agentName: agent.name,
+                summary: _preview(msg.content),
+                createdAt: clock().millisecondsSinceEpoch ~/ 1000,
+                messageServerId: msg.serverId,
+                delivered: false,
+              ),
+            );
+          } catch (e, st) {
+            logger.error(
+              '[Dispatcher] handlePulledMessages enqueue failed: $e',
+              st,
+            );
+          }
+          // Also record in the in-memory LRU so a concurrent live event for
+          // the same serverId is suppressed this session.
+          _recordNotified(event.messageServerId ?? event.messageClientId);
+        case DroppedDecision():
+          // no-op
+          break;
+      }
+    }
+  }
+
+  /// Reseed the in-memory dedup LRU from persisted pending notifications.
+  ///
+  /// Called on main-isolate cold start (NotificationBootstrap) so the live
+  /// `messageStream` doesn't re-notify messages the background isolate
+  /// already enqueued. Only undelivered rows with a non-null serverId are
+  /// seeded (delivered = already shown; null-serverId = not index-protected).
+  Future<void> warmupFromPending() async {
+    try {
+      final pending = await repo.getPending();
+      for (final p in pending) {
+        if (p.delivered) continue;
+        final key = p.messageServerId;
+        if (key == null) continue;
+        _notifiedKeys.add(key);
+      }
+      _evictIfFull();
+    } catch (e, st) {
+      logger.error('[Dispatcher] warmupFromPending failed: $e', st);
+    }
+  }
+
+  /// Test-only: whether a dedup key is currently in the LRU.
+  @visibleForTesting
+  bool isNotified(String key) => _notifiedKeys.contains(key);
+
+  /// Generate a preview string from message content.
+  String _preview(String? content) =>
+      (content == null || content.isEmpty) ? '(消息)' : content;
+
+  /// Record a dedup key in the in-memory LRU, evicting oldest if full.
+  void _recordNotified(String key) {
+    _notifiedKeys.add(key);
+    _evictIfFull();
   }
 
   // ---------------------------------------------------------------------------

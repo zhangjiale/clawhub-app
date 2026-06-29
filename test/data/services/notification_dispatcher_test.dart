@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
+import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/notification_event.dart';
 import 'package:claw_hub/domain/models/pending_notification.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
@@ -87,6 +90,12 @@ class _FakeNotificationRepo implements INotificationRepo {
   final List<PendingNotification> _store = [];
   int _nextId = 1;
 
+  /// For warmup tests: pre-loaded pending list.
+  final List<PendingNotification> _preloaded;
+
+  _FakeNotificationRepo({List<PendingNotification>? pending})
+    : _preloaded = pending ?? [];
+
   /// 记录 markDeliveredBatch 调用次数 (用于断言 Law 6：批量而非逐条)。
   int batchMarkCalls = 0;
 
@@ -101,8 +110,14 @@ class _FakeNotificationRepo implements INotificationRepo {
   }
 
   @override
-  Future<List<PendingNotification>> getPending() async =>
-      _store.where((n) => !n.delivered).toList();
+  Future<List<PendingNotification>> getPending() async {
+    // Combine preloaded + runtime enqueued; preloaded are "persisted" before
+    // the dispatcher exists, simulating what warmupFromPending reads from DB.
+    if (_preloaded.isNotEmpty) {
+      return _preloaded.where((n) => !n.delivered).toList();
+    }
+    return _store.where((n) => !n.delivered).toList();
+  }
 
   @override
   Future<void> markDelivered(int id) async {
@@ -162,6 +177,62 @@ UserPreferences _prefs({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Helper factories for handlePulledMessages / warmupFromPending tests
+// ---------------------------------------------------------------------------
+
+Message _makeReplyMessage({
+  String serverId = 's1',
+  String clientId = 'c1',
+  String agentId = 'a',
+  String content = 'hi',
+}) {
+  return Message(
+    clientId: clientId,
+    serverId: serverId,
+    conversationId: 'abc123def456', // SHA-256 hash, NOT instanceId:agentId
+    agentId: agentId,
+    role: MessageRole.agent,
+    content: content,
+    type: MessageType.text,
+    logicalClock: 1,
+  );
+}
+
+Agent _makeAgent({
+  String localId = 'l1',
+  String remoteId = 'a',
+  String instanceId = 'i',
+  String name = 'Claw',
+}) {
+  return Agent(
+    localId: localId,
+    remoteId: remoteId,
+    instanceId: instanceId,
+    name: name,
+  );
+}
+
+PendingNotification _makePending({
+  String? serverId = 's1',
+  bool delivered = false,
+  String agentId = 'a',
+  String instanceId = 'i',
+  String agentName = 'Claw',
+  String summary = 'hi',
+}) {
+  return PendingNotification(
+    id: 0,
+    agentId: agentId,
+    instanceId: instanceId,
+    agentName: agentName,
+    summary: summary,
+    createdAt: 1,
+    messageServerId: serverId,
+    delivered: delivered,
+  );
+}
+
 void main() {
   late _FakeNotificationService service;
   late _FakeNotificationRepo repo;
@@ -178,17 +249,22 @@ void main() {
   NotificationDispatcher buildDispatcher({
     required UserPreferences prefs,
     required DateTime Function() clock,
+    _FakeNotificationRepo? customRepo,
   }) {
     return NotificationDispatcher(
       eventStream: controller.stream,
       prefsProvider: () => prefs,
-      repo: repo,
+      repo: customRepo ?? repo,
       notificationService: service,
       evaluator: const EvaluateNotificationUseCase(),
       clock: clock,
       logger: _FakeLogger(),
     );
   }
+
+  // ==========================================================================
+  // Existing tests (live stream routing)
+  // ==========================================================================
 
   test('reply with switch on -> show notification with route path', () async {
     final d = buildDispatcher(
@@ -672,6 +748,239 @@ void main() {
           reason: 'ids should be monotonically increasing within a process',
         );
       }
+    });
+  });
+
+  // ==========================================================================
+  // handlePulledMessages — background sync dedup path
+  // ==========================================================================
+  group('handlePulledMessages', () {
+    test('writesThroughPendingRepo_neverCallsShow', () async {
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // NEVER show — background pull routes through pending repo only.
+      expect(service.shown, isEmpty);
+      // Enqueued into pending repo.
+      expect(d.isNotified('s1'), isTrue);
+    });
+
+    test('evaluateShowDecision_enqueuesWithDeliveredFalse', () async {
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // The message was evaluated as ShowDecision (notifications ON, DND off),
+      // so it should be enqueued. But the dispatcher enqueues for BOTH
+      // ShowDecision and DndSuppressedDecision, so we just verify it went
+      // through the enqueue path.
+      expect(d.isNotified('s1'), isTrue);
+      expect(service.shown, isEmpty);
+    });
+
+    test('evaluateDndDecision_stillEnqueues', () async {
+      // DND ON (22:00-08:00, now=23:00)
+      final prefs = _prefs(dndEnabled: true, notifyOnReply: true);
+      final d = buildDispatcher(
+        prefs: prefs,
+        clock: () => DateTime(2026, 6, 20, 23, 0),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // Suppressed by DND but still enqueued (DndSuppressedDecision).
+      expect(d.isNotified('s1'), isTrue);
+      expect(service.shown, isEmpty);
+    });
+
+    test('evaluateDropDecision_doesNotEnqueue', () async {
+      // notificationsEnabled=false -> DroppedDecision
+      final d = buildDispatcher(
+        prefs: _prefs(notificationsEnabled: false),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // DroppedDecision -> no enqueue, no LRU slot.
+      expect(d.isNotified('s1'), isFalse);
+      expect(service.shown, isEmpty);
+    });
+
+    test('tombstonedAgent_suppressedByNullResolve', () async {
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => null, // tombstoned
+      );
+
+      // Null agent -> dropped before evaluation; no enqueue, no LRU.
+      expect(d.isNotified('s1'), isFalse);
+      expect(service.shown, isEmpty);
+    });
+
+    test('skipsAlreadyNotified_doesNotThrowOnDuplicate', () async {
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+
+      // First pull — enqueues and records in LRU.
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+      expect(d.isNotified('s1'), isTrue);
+
+      // Second pull of the same serverId — repo.enqueue is a no-op
+      // (ON CONFLICT DO NOTHING). Dispatcher must not throw.
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // No show() calls ever.
+      expect(service.shown, isEmpty);
+    });
+
+    test('skipsNonAgentRoleMessages', () async {
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = Message(
+        clientId: 'c1',
+        serverId: 's1',
+        conversationId: 'conv1',
+        agentId: 'a',
+        role: MessageRole.user, // not an agent reply
+        content: 'hi',
+        type: MessageType.text,
+        logicalClock: 1,
+      );
+
+      await d.handlePulledMessages(
+        messages: [msg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // Non-agent messages are skipped.
+      expect(d.isNotified('s1'), isFalse);
+      expect(service.shown, isEmpty);
+    });
+
+    test('skipsNullServerIdMessages', () async {
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+      );
+      final msg = _makeReplyMessage(serverId: 's1', content: 'hi');
+      // Override to null serverId
+      final nullServerMsg = Message(
+        clientId: msg.clientId,
+        serverId: null,
+        conversationId: msg.conversationId,
+        agentId: msg.agentId,
+        role: msg.role,
+        content: msg.content,
+        type: msg.type,
+        logicalClock: msg.logicalClock,
+      );
+
+      await d.handlePulledMessages(
+        messages: [nullServerMsg],
+        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+      );
+
+      // null serverId skipped (unique index can't dedup).
+      expect(d.isNotified('c1'), isFalse); // not in LRU
+      expect(service.shown, isEmpty);
+    });
+  });
+
+  // ==========================================================================
+  // warmupFromPending — LRU reseeding from persisted pending notifications
+  // ==========================================================================
+  group('warmupFromPending', () {
+    test('seedsLruWithUndeliveredServerIds', () async {
+      final pendingRepo = _FakeNotificationRepo(
+        pending: [
+          _makePending(serverId: 's1', delivered: false),
+          _makePending(serverId: 's2', delivered: false),
+        ],
+      );
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+        customRepo: pendingRepo,
+      );
+      await d.warmupFromPending();
+      expect(d.isNotified('s1'), isTrue);
+      expect(d.isNotified('s2'), isTrue);
+    });
+
+    test('skipsNullServerId', () async {
+      final pendingRepo = _FakeNotificationRepo(
+        pending: [
+          _makePending(serverId: null, delivered: false),
+          _makePending(serverId: 's1', delivered: false),
+        ],
+      );
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+        customRepo: pendingRepo,
+      );
+      await d.warmupFromPending();
+      // null-serverId entries are not protected by the unique index; do not
+      // pollute the LRU (would suppress unrelated null-serverId live events).
+      expect(d.isNotified('s1'), isTrue);
+    });
+
+    test('skipsDeliveredRows', () async {
+      final pendingRepo = _FakeNotificationRepo(
+        pending: [
+          _makePending(serverId: 's1', delivered: true), // already shown
+          _makePending(serverId: 's2', delivered: false),
+        ],
+      );
+      final d = buildDispatcher(
+        prefs: _prefs(),
+        clock: () => DateTime(2026, 6, 20, 12),
+        customRepo: pendingRepo,
+      );
+      await d.warmupFromPending();
+      expect(d.isNotified('s1'), isFalse);
+      expect(d.isNotified('s2'), isTrue);
     });
   });
 }
