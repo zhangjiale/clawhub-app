@@ -124,8 +124,10 @@ class AppDatabase extends _$AppDatabase {
         }
         if (from < 8) {
           // US-018 background sync: per-instance last_background_sync_at cursor.
-          // New table only — no backfill. First background tick uses
-          // now()-1h as the start point (handled in BackgroundSyncRunner).
+          // Creates sync_state table, adds background_sync_enabled column to
+          // user_preferences, and backfills the singleton settings row to
+          // background_sync_enabled = 1 (default ON). Note: last_sync_at is
+          // not backfilled — first background tick uses now()-1h.
           await migrator.createTable(syncState);
           // US-018: background_sync_enabled toggle (default ON = 1).
           await migrator.addColumn(
