@@ -5,8 +5,10 @@ import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
+import 'package:claw_hub/core/lifecycle/i_background_sync_notifier.dart';
 import 'package:claw_hub/data/services/notification_dispatcher.dart';
 import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/notification_event.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
@@ -77,7 +79,12 @@ class NotificationCoordinator {
   /// 由本 coordinator 拥有的 dispatcher (订阅 [_eventSink])。
   /// start() 前为 null；dispose() 据此判断是否需清理，避免访问未初始化的
   /// late 字段抛 LateInitializationError。
-  NotificationDispatcher? dispatcher;
+  NotificationDispatcher? _dispatcher;
+
+  /// Exposes the dispatcher as [IBackgroundSyncNotifier] for the provider
+  /// wiring. Returns a no-op notifier when not started (safe default).
+  IBackgroundSyncNotifier get notifier =>
+      _dispatcher ?? _NoOpBackgroundSyncNotifier();
   bool _started = false;
   bool _disposed = false;
 
@@ -87,7 +94,7 @@ class NotificationCoordinator {
     _started = true;
 
     // 构造 dispatcher 并接线 eventStream + routeFor。
-    dispatcher = NotificationDispatcher(
+    _dispatcher = NotificationDispatcher(
       eventStream: _eventSink.stream,
       prefsProvider: prefsProvider,
       repo: notificationRepo,
@@ -97,7 +104,7 @@ class NotificationCoordinator {
       logger: logger,
       routeFor: routeFor,
     );
-    dispatcher!.start();
+    _dispatcher!.start();
 
     // 1. 主动枚举所有已保存实例，为每个建订阅。
     try {
@@ -153,8 +160,8 @@ class NotificationCoordinator {
     }
     _subs.clear();
     // start() 可能从未执行 (dispatcher 为 null)，需空判断。
-    await dispatcher?.dispose();
-    dispatcher = null;
+    await _dispatcher?.dispose();
+    _dispatcher = null;
     await _eventSink.close();
   }
 
@@ -331,7 +338,7 @@ class NotificationCoordinator {
 
   Future<void> _flushSummary() async {
     try {
-      await dispatcher?.flushDndSummary();
+      await _dispatcher?.flushDndSummary();
     } catch (e, st) {
       logger.error('[NotificationCoordinator] flush summary failed: $e', st);
     }
@@ -361,5 +368,18 @@ class _InstanceSubscriptions {
   Future<void> cancel() async {
     await message.cancel();
     await connection.cancel();
+  }
+}
+
+/// No-op [IBackgroundSyncNotifier] used as a safe default when the
+/// coordinator has not been started yet.
+class _NoOpBackgroundSyncNotifier implements IBackgroundSyncNotifier {
+  @override
+  Future<void> handlePulledMessages({
+    required List<Message> messages,
+    required Agent? Function(String instanceId, String agentRemoteId)
+    resolveAgent,
+  }) async {
+    // No-op: coordinator not started yet.
   }
 }

@@ -1,15 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:workmanager/workmanager.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_runner_factory.dart';
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/ui_kit/error_boundary.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // US-018: register the background-sync entry point. MUST happen before
+  // runApp so workmanager can dispatch to callbackDispatcher from a background
+  // isolate. Same-process (enableSeparateBackgroundProcess is NOT called) so
+  // flutter_secure_storage keychain access works cross-isolate.
+  await Workmanager().initialize(callbackDispatcher, isInDebugMode: kDebugMode);
 
   // Set global error widget fallback once — avoids the multi-instance
   // conflict that would occur if set per ErrorBoundary widget.

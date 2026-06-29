@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
@@ -220,19 +221,15 @@ class FakeClock {
   int now() => nowMs;
 }
 
-class StubLogger implements Logger {
+class StubLogger implements ILogger {
   final List<String> infos = [];
   final List<String> errors = [];
-  final List<String> warnings = [];
 
   @override
   void info(String msg) => infos.add(msg);
 
   @override
-  void error(String msg, [Object? error, StackTrace? stack]) => errors.add(msg);
-
-  @override
-  void warn(String msg) => warnings.add(msg);
+  void error(String msg, [StackTrace? stack]) => errors.add(msg);
 }
 
 // ---------------------------------------------------------------------------

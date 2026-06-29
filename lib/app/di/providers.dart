@@ -46,6 +46,13 @@ import 'package:claw_hub/app/notifications/notification_coordinator.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/data/repositories/drift_notification_repo.dart';
 import 'package:claw_hub/data/services/local_notification_service.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_prefs_shared_prefs.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_workmanager_backend.dart';
+import 'package:claw_hub/core/lifecycle/i_background_sync_prefs.dart';
+import 'package:claw_hub/data/repositories/drift_last_sync_repo.dart';
+import 'package:claw_hub/domain/repositories/i_last_sync_repo.dart';
 
 /// ============================================================
 /// ClawHub 依赖注入容器 (Riverpod)
@@ -590,5 +597,44 @@ final syncAgentsUseCaseProvider = Provider<SyncAgentsUseCase>((ref) {
     agentRepo: ref.watch(agentRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
     logger: ref.watch(loggerProvider),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// US-018 Background Sync
+//
+// Note: BackgroundSyncRunner is NOT exposed as a provider here. The runner
+// only executes in the background isolate, where callbackDispatcher
+// (lib/core/lifecycle/background_sync_runner_factory.dart) constructs it
+// directly — there is no ProviderScope in the background isolate. A
+// main-isolate runner provider would be dead code and would depend on the
+// coordinator's notifier before the coordinator is started. The scheduler
+// below (used by NotificationBootstrap / lifecycle) is the only main-isolate
+// entry point.
+// ---------------------------------------------------------------------------
+
+/// SharedPreferences-backed cross-isolate "main active" flag.
+final backgroundSyncPrefsProvider = Provider<IBackgroundSyncPrefs>(
+  (_) => const SharedPreferencesBackgroundSyncPrefs(),
+);
+
+/// Gate that lets background sync skip itself when the main isolate is active.
+final backgroundSyncGateProvider = Provider<BackgroundSyncGate>((ref) {
+  return BackgroundSyncGate(prefs: ref.watch(backgroundSyncPrefsProvider));
+});
+
+/// Per-instance last-sync cursor.
+final lastSyncRepoProvider = Provider<ILastSyncRepo>(
+  (ref) => DriftLastSyncRepo(ref.watch(databaseProvider)),
+);
+
+/// Schedules / cancels the periodic background-sync work and flips the gate
+/// on app lifecycle changes. Production backend wraps `workmanager`.
+final backgroundSyncSchedulerProvider = Provider<BackgroundSyncScheduler>((
+  ref,
+) {
+  return BackgroundSyncScheduler(
+    gate: ref.watch(backgroundSyncGateProvider),
+    backend: const WorkmanagerBackendImpl(),
   );
 });

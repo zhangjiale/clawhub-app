@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:claw_hub/core/i_logger.dart';
+
 import '../../domain/models/agent.dart';
 import '../../domain/models/instance.dart';
 import '../../domain/models/message.dart';
@@ -52,7 +54,7 @@ class BackgroundSyncRunner {
   final BackgroundSyncBudget budget;
 
   /// Logger with info/error/warn methods.
-  final Logger logger;
+  final ILogger logger;
 
   /// Returns current wall-clock time in milliseconds since epoch.
   final int Function() now;
@@ -116,7 +118,7 @@ class BackgroundSyncRunner {
     try {
       final deadline = now() + budget.perInstanceBudget.inMilliseconds;
 
-      // 4a. Connect (with timeout)
+      // Connect (with timeout)
       try {
         await gatewayClient.connect(instance).timeout(budget.connectTimeout);
       } catch (e) {
@@ -126,7 +128,7 @@ class BackgroundSyncRunner {
         return;
       }
 
-      // 4b. Load agents for this instance
+      // Load agents for this instance
       final agents = await agentRepo.getAllByInstanceId(instance.id);
       if (agents.isEmpty) {
         logger.info(
@@ -137,7 +139,7 @@ class BackgroundSyncRunner {
         return;
       }
 
-      // 4c. Per-agent cursor walk
+      // Per-agent cursor walk
       int totalInserted = 0;
       int maxServerTs = -1;
       bool budgetExpired = false;
@@ -163,7 +165,7 @@ class BackgroundSyncRunner {
         if (totalInserted >= budget.maxMessagesPerPull) break;
         if (now() >= deadline) {
           budgetExpired = true;
-          logger.warn('Instance ${instance.id}: per-instance budget expired');
+          logger.info('Instance ${instance.id}: per-instance budget expired');
           break;
         }
 
@@ -185,7 +187,7 @@ class BackgroundSyncRunner {
         }
       }
 
-      // 4d. Update last_sync_at
+      // Update last_sync_at
       if (budgetExpired || anyAgentFailed) {
         // Graceful skip: don't update last_sync_at
         logger.info(
@@ -206,7 +208,6 @@ class BackgroundSyncRunner {
       // never blocks another" contract.
       logger.error(
         'BackgroundSync: unexpected error for ${instance.id}: $e',
-        e,
         st,
       );
       try {
@@ -240,7 +241,7 @@ class BackgroundSyncRunner {
 
     while (pagesFetched < budget.maxPagesPerAgent) {
       if (now() >= deadline) {
-        logger.warn(
+        logger.info(
           'Instance ${instance.id}: budget expired during agent ${agent.remoteId}',
         );
         return const SyncAgentResult(
@@ -339,11 +340,4 @@ class SyncAgentResult {
     required this.maxTimestamp,
     this.failed = false,
   });
-}
-
-/// Minimal logger interface used by [BackgroundSyncRunner].
-abstract class Logger {
-  void info(String message);
-  void warn(String message);
-  void error(String message, [Object? error, StackTrace? stackTrace]);
 }
