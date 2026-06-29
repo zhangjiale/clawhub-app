@@ -53,6 +53,7 @@ class DriftSettingsRepo implements ISettingsRepo {
       preferences.dndEndHour,
       preferences.dndEndMinute,
       _boolToInt(preferences.biometricEnabled),
+      _boolToInt(preferences.backgroundSyncEnabled),
     );
   }
 
@@ -158,6 +159,7 @@ class DriftSettingsRepo implements ISettingsRepo {
       dndEndHour: row.dndEndHour,
       dndEndMinute: row.dndEndMinute,
       biometricEnabled: _intToBool(row.biometricEnabled),
+      backgroundSyncEnabled: _intToBool(row.backgroundSyncEnabled),
     );
   }
 

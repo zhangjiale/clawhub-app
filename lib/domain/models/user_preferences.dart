@@ -41,6 +41,11 @@ class UserPreferences {
   /// 生物识别解锁开关
   final bool biometricEnabled;
 
+  // ── Background Sync ───────────────────────────────────────────
+
+  /// 后台同步开关（US-018）。默认启用。
+  final bool backgroundSyncEnabled;
+
   const UserPreferences({
     this.notificationsEnabled = true,
     this.notifyOnReply = true,
@@ -52,6 +57,7 @@ class UserPreferences {
     this.dndEndHour = 8,
     this.dndEndMinute = 0,
     this.biometricEnabled = false,
+    this.backgroundSyncEnabled = true,
   });
 
   factory UserPreferences.defaults() => const UserPreferences();
@@ -67,6 +73,7 @@ class UserPreferences {
     int? dndEndHour,
     int? dndEndMinute,
     bool? biometricEnabled,
+    bool? backgroundSyncEnabled,
   }) {
     return UserPreferences(
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
@@ -80,6 +87,8 @@ class UserPreferences {
       dndEndHour: dndEndHour ?? this.dndEndHour,
       dndEndMinute: dndEndMinute ?? this.dndEndMinute,
       biometricEnabled: biometricEnabled ?? this.biometricEnabled,
+      backgroundSyncEnabled:
+          backgroundSyncEnabled ?? this.backgroundSyncEnabled,
     );
   }
 
@@ -96,7 +105,8 @@ class UserPreferences {
           dndStartMinute == other.dndStartMinute &&
           dndEndHour == other.dndEndHour &&
           dndEndMinute == other.dndEndMinute &&
-          biometricEnabled == other.biometricEnabled;
+          biometricEnabled == other.biometricEnabled &&
+          backgroundSyncEnabled == other.backgroundSyncEnabled;
 
   @override
   int get hashCode => Object.hash(
@@ -110,6 +120,7 @@ class UserPreferences {
     dndEndHour,
     dndEndMinute,
     biometricEnabled,
+    backgroundSyncEnabled,
   );
 
   @override
@@ -119,5 +130,6 @@ class UserPreferences {
       'connChange: $notifyOnConnectionChange, '
       'dnd: $dndEnabled ($dndStartHour:${dndStartMinute.toString().padLeft(2, '0')}'
       '—$dndEndHour:${dndEndMinute.toString().padLeft(2, '0')}), '
-      'biometric: $biometricEnabled)';
+      'biometric: $biometricEnabled, '
+      'bgSync: $backgroundSyncEnabled)';
 }

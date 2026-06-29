@@ -91,6 +91,11 @@ void main() {
       expect(prefs.notifyOnReply, isTrue);
       expect(prefs.biometricEnabled, isFalse);
     });
+
+    test('getPreferences_defaultsTrue_whenRowAbsent', () async {
+      // Fresh in-memory DB has no user_preferences row yet.
+      expect((await repo.getPreferences()).backgroundSyncEnabled, isTrue);
+    });
   });
 
   group('DriftSettingsRepo.updatePreferences', () {
@@ -153,6 +158,19 @@ void main() {
       );
       prefs = await repo.getPreferences();
       expect(prefs.dndEnabled, isFalse);
+    });
+
+    test('updatePreferences_roundTripsBackgroundSyncEnabled', () async {
+      final off = UserPreferences.defaults().copyWith(
+        backgroundSyncEnabled: false,
+      );
+      await repo.updatePreferences(off);
+      final loaded = await repo.getPreferences();
+      expect(loaded.backgroundSyncEnabled, isFalse);
+
+      final on = off.copyWith(backgroundSyncEnabled: true);
+      await repo.updatePreferences(on);
+      expect((await repo.getPreferences()).backgroundSyncEnabled, isTrue);
     });
 
     test('multiple updates in sequence all persist', () async {

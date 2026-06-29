@@ -85,5 +85,31 @@ void main() {
         expect(prefs.dndStartHour, 25);
       });
     });
+
+    // ── backgroundSyncEnabled (US-018) ────────────────────────────
+
+    test('defaults_hasBackgroundSyncEnabledTrue', () {
+      expect(UserPreferences.defaults().backgroundSyncEnabled, isTrue);
+    });
+
+    test('defaults_constructorHasBackgroundSyncEnabledTrue', () {
+      expect(const UserPreferences().backgroundSyncEnabled, isTrue);
+    });
+
+    test('copyWith_backgroundSyncEnabled_togglesValue', () {
+      final off = UserPreferences.defaults().copyWith(
+        backgroundSyncEnabled: false,
+      );
+      expect(off.backgroundSyncEnabled, isFalse);
+      final on = off.copyWith(backgroundSyncEnabled: true);
+      expect(on.backgroundSyncEnabled, isTrue);
+    });
+
+    test('equals_distinguishesBackgroundSyncEnabled', () {
+      final a = UserPreferences.defaults();
+      final b = a.copyWith(backgroundSyncEnabled: false);
+      expect(a == b, isFalse);
+      expect(a.hashCode == b.hashCode, isFalse);
+    });
   });
 }
