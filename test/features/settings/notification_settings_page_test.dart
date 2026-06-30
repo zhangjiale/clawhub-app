@@ -38,7 +38,7 @@ void main() {
   }
 
   group('NotificationSettingsPage', () {
-    testWidgets('renders all 4 toggle rows', (tester) async {
+    testWidgets('renders all 5 toggle rows', (tester) async {
       await tester.pumpWidget(buildTestWidget());
       await tester.pumpAndSettle();
 
@@ -46,6 +46,7 @@ void main() {
       expect(find.text('\u{1F4AC}  Agent 回复通知'), findsOneWidget);
       expect(find.text('⚠️  Agent 出错通知'), findsOneWidget);
       expect(find.text('\u{1F517}  连接状态通知'), findsOneWidget);
+      expect(find.text('\u{1F504}  后台同步'), findsOneWidget);
     });
 
     testWidgets('master toggle off disables sub-toggles visually', (
@@ -94,6 +95,28 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('通知通过设备本地推送实现'), findsOneWidget);
+    });
+
+    testWidgets('backgroundSyncToggle_reflectsState', (tester) async {
+      await tester.pumpWidget(buildTestWidget());
+      await tester.pumpAndSettle();
+
+      // The last Switch in the page is the background sync toggle.
+      final switchFinder = find.byType(Switch).last;
+      expect(tester.widget<Switch>(switchFinder).value, isTrue);
+    });
+
+    testWidgets('backgroundSyncToggle_togglesOnTap', (tester) async {
+      await tester.pumpWidget(buildTestWidget());
+      await tester.pumpAndSettle();
+
+      final switchFinder = find.byType(Switch).last;
+      expect(tester.widget<Switch>(switchFinder).value, isTrue);
+
+      await tester.tap(switchFinder);
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<Switch>(switchFinder).value, isFalse);
     });
   });
 }

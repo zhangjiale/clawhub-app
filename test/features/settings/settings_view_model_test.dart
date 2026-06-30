@@ -197,6 +197,22 @@ void main() {
     });
   });
 
+  group('Background Sync mutator', () {
+    test('setBackgroundSyncEnabled should update state and persist', () async {
+      final vm = SettingsViewModel(repo: repo);
+      await vm.init();
+
+      expect(vm.state.backgroundSyncEnabled, isTrue); // default
+
+      await vm.setBackgroundSyncEnabled(false);
+      expect(vm.state.backgroundSyncEnabled, isFalse);
+      verify(() => repo.updatePreferences(any())).called(1);
+
+      await vm.setBackgroundSyncEnabled(true);
+      expect(vm.state.backgroundSyncEnabled, isTrue);
+    });
+  });
+
   group('Serialised mutations', () {
     test('concurrent mutations should all be persisted', () async {
       final vm = SettingsViewModel(repo: repo);

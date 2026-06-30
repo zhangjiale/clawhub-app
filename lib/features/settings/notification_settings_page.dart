@@ -25,6 +25,7 @@ class NotificationSettingsPage extends ConsumerWidget {
           notifyOnReply: s.notifyOnReply,
           notifyOnError: s.notifyOnError,
           notifyOnConnectionChange: s.notifyOnConnectionChange,
+          backgroundSyncEnabled: s.backgroundSyncEnabled,
         ),
       ),
     );
@@ -90,6 +91,21 @@ class NotificationSettingsPage extends ConsumerWidget {
                   isLast: true,
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: XiaSpacing.s5),
+          Container(
+            decoration: BoxDecoration(
+              color: XiaColors.surface,
+              borderRadius: BorderRadius.circular(XiaRadius.lg),
+            ),
+            child: SettingsToggleRow(
+              emoji: '\u{1F504}',
+              label: '后台同步',
+              subtitle: 'App 闲置时定时拉取新消息（约 15 分钟，由系统调度）',
+              value: prefs.backgroundSyncEnabled,
+              onChanged: vm.setBackgroundSyncEnabled,
+              isLast: true,
             ),
           ),
           const SizedBox(height: XiaSpacing.s5),

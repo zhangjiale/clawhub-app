@@ -148,6 +148,16 @@ class SettingsViewModel extends StateNotifier<UserPreferences> {
   }
 
   // ---------------------------------------------------------------------------
+  // Background Sync
+  // ---------------------------------------------------------------------------
+
+  /// Toggle background sync (US-018).
+  Future<void> setBackgroundSyncEnabled(bool value) {
+    _update(state.copyWith(backgroundSyncEnabled: value));
+    return _pendingUpdate;
+  }
+
+  // ---------------------------------------------------------------------------
   // Biometric
   // ---------------------------------------------------------------------------
 
