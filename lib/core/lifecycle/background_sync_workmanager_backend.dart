@@ -14,7 +14,7 @@ class WorkmanagerBackendImpl implements WorkmanagerBackend {
       BackgroundSyncScheduler.uniqueWorkName,
       frequency: const Duration(minutes: 15),
       constraints: Constraints(networkType: NetworkType.connected),
-      existingWorkPolicy: ExistingWorkPolicy.replace,
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
     );
   }
 
