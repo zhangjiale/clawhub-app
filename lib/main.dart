@@ -6,7 +6,7 @@ import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_runner_factory.dart';
+import 'package:claw_hub/app/background_sync/callback_dispatcher.dart';
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/ui_kit/error_boundary.dart';

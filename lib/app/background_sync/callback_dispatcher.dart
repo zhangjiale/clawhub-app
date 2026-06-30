@@ -1,3 +1,17 @@
+// ---------------------------------------------------------------------------
+// US-018 background isolate composition root.
+//
+// This file is the entry point workmanager dispatches to from a fresh
+// background isolate (no ProviderScope). It therefore rebuilds every
+// dependency from scratch and intentionally imports `app/` + `data/` — it is
+// a composition root, so it lives in `app/` (not `core/`) to respect the
+// layering rule: `core/` must not depend on `app/` or `data/`.
+//
+// `buildGatewayClient` is also consumed by the main isolate's
+// `wsGatewayClientProvider` (lib/app/di/providers.dart) so the Gateway
+// construction stays single-sourced across both isolates.
+// ---------------------------------------------------------------------------
+
 import 'package:claw_hub/app/config/app_config.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
