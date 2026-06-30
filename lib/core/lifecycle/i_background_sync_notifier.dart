@@ -8,12 +8,12 @@ import '../../domain/models/message.dart';
 abstract class IBackgroundSyncNotifier {
   /// Called with messages that were actually inserted by the runner.
   ///
-  /// [resolveAgent] is a callback that looks up an agent by
-  /// (instanceId, agentRemoteId). The first argument (instanceId) may be
-  /// empty — implementations should close over the real instanceId.
+  /// [resolveAgent] looks up an agent by its remote id. The caller
+  /// ([BackgroundSyncRunner]) closes over the real instanceId when building
+  /// the callback, so the instance is already in scope here — the lookup only
+  /// needs the agentRemoteId carried on each [Message].
   Future<void> handlePulledMessages({
     required List<Message> messages,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
+    required Agent? Function(String agentRemoteId) resolveAgent,
   });
 }

@@ -169,13 +169,12 @@ class CapturingDispatcher implements IBackgroundSyncNotifier {
   @override
   Future<void> handlePulledMessages({
     required List<Message> messages,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
+    required Agent? Function(String agentRemoteId) resolveAgent,
   }) async {
     callCount++;
     handledLists.add(List.unmodifiable(messages));
     for (final m in messages) {
-      final agent = resolveAgent('', m.agentId);
+      final agent = resolveAgent(m.agentId);
       if (agent != null) {
         enqueuedServerIds.add(m.serverId ?? m.clientId);
       }
@@ -894,7 +893,7 @@ void main() {
     // -----------------------------------------------------------------------
     // ResolveAgent handoff
     // -----------------------------------------------------------------------
-    test('executeOnce_resolveAgentHandoff_ignoresEmptyInstanceId', () async {
+    test('executeOnce_resolveAgentHandoff_resolvesByRemoteId', () async {
       final inst = _inst('i1');
 
       when(

@@ -149,13 +149,13 @@ class BackgroundSyncRunner {
       final lastSyncMs = await lastSyncRepo.get(instance.id) ?? 0;
 
       // Build the resolveAgent closure once, shared across all agents.
-      // It closes over the real instanceId and ignores the empty-string first
-      // argument (Task 4 handoff contract).
+      // It closes over the real instanceId (the caller already has it in
+      // scope), so the lookup only needs the agentRemoteId.
       final byRemote = <String, Agent>{};
       for (final a in agents) {
         byRemote[a.remoteId] = a;
       }
-      Agent? resolveAgent(String passedInstanceId, String remoteId) {
+      Agent? resolveAgent(String remoteId) {
         final a = byRemote[remoteId];
         if (a == null || a.isRemoved) return null;
         return a;
@@ -232,8 +232,7 @@ class BackgroundSyncRunner {
     required int lastSyncMs,
     required int maxMessagesPerPull,
     required int deadline,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
+    required Agent? Function(String agentRemoteId) resolveAgent,
   }) async {
     String? cursor;
     int pagesFetched = 0;
@@ -318,7 +317,7 @@ class BackgroundSyncRunner {
 
     // Notify dispatcher with inserted messages only.
     // Only dispatch if the agent is not tombstoned (resolver returns non-null).
-    if (resolveAgent('', agent.remoteId) != null) {
+    if (resolveAgent(agent.remoteId) != null) {
       await dispatcher.handlePulledMessages(
         messages: inserted,
         resolveAgent: resolveAgent,

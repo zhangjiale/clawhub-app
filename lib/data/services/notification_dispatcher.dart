@@ -125,8 +125,7 @@ class NotificationDispatcher implements IBackgroundSyncNotifier {
   @override
   Future<void> handlePulledMessages({
     required List<Message> messages,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
+    required Agent? Function(String agentRemoteId) resolveAgent,
   }) async {
     final prefs = prefsProvider();
 

@@ -189,8 +189,7 @@ class _BackgroundIsolateNotifier implements IBackgroundSyncNotifier {
   @override
   Future<void> handlePulledMessages({
     required List<Message> messages,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
+    required Agent? Function(String agentRemoteId) resolveAgent,
   }) async {
     final settingsRepo = DriftSettingsRepo(_db, logger: _logger);
     final prefs = await settingsRepo.getPreferences();

@@ -37,8 +37,7 @@ class BackgroundNotifierShared {
   /// can control time.
   static Future<List<String>> enqueuePulled({
     required List<Message> messages,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
+    required Agent? Function(String agentRemoteId) resolveAgent,
     required UserPreferences prefs,
     required EvaluateNotificationUseCase evaluator,
     required INotificationRepo repo,
@@ -59,9 +58,9 @@ class BackgroundNotifierShared {
       if (msg.serverId == null) continue;
 
       // Message has no instanceId field; the caller (BackgroundSyncRunner)
-      // knows the instance and resolves it via the closure. We pass the
-      // agentId (remote ID) as the second argument.
-      final agent = resolveAgent('', msg.agentId);
+      // knows the instance and closes over it when building resolveAgent, so
+      // the lookup only needs the agentId (remote ID) carried on the message.
+      final agent = resolveAgent(msg.agentId);
       if (agent == null) continue;
 
       final event = ReplyEvent(

@@ -778,7 +778,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // NEVER show — background pull routes through pending repo only.
@@ -796,7 +796,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // The message was evaluated as ShowDecision (notifications ON, DND off),
@@ -826,7 +826,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // Suppressed by DND but still enqueued (DndSuppressedDecision).
@@ -844,7 +844,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // DroppedDecision -> no enqueue, no LRU slot.
@@ -861,7 +861,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => null, // tombstoned
+        resolveAgent: (aid) => null, // tombstoned
       );
 
       // Null agent -> dropped before evaluation; no enqueue, no LRU.
@@ -879,7 +879,7 @@ void main() {
       // First pull — enqueues and records in LRU.
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
       expect(d.isNotified('s1'), isTrue);
 
@@ -887,7 +887,7 @@ void main() {
       // (ON CONFLICT DO NOTHING). Dispatcher must not throw.
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // No show() calls ever.
@@ -924,7 +924,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [msg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // Non-agent messages are skipped.
@@ -952,7 +952,7 @@ void main() {
 
       await d.handlePulledMessages(
         messages: [nullServerMsg],
-        resolveAgent: (iid, aid) => _makeAgent(name: 'Claw'),
+        resolveAgent: (aid) => _makeAgent(name: 'Claw'),
       );
 
       // null serverId skipped (unique index can't dedup).
