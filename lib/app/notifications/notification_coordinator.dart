@@ -5,10 +5,8 @@ import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
-import 'package:claw_hub/core/lifecycle/i_background_sync_notifier.dart';
 import 'package:claw_hub/data/services/notification_dispatcher.dart';
 import 'package:claw_hub/domain/models/enums.dart';
-import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/notification_event.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
@@ -80,11 +78,6 @@ class NotificationCoordinator {
   /// start() 前为 null；dispose() 据此判断是否需清理，避免访问未初始化的
   /// late 字段抛 LateInitializationError。
   NotificationDispatcher? _dispatcher;
-
-  /// Exposes the dispatcher as [IBackgroundSyncNotifier] for the provider
-  /// wiring. Returns a no-op notifier when not started (safe default).
-  IBackgroundSyncNotifier get notifier =>
-      _dispatcher ?? _NoOpBackgroundSyncNotifier();
 
   /// US-018: reseed the dispatcher's in-memory dedup LRU from persisted
   /// pending notifications. Called on main-isolate cold start so the live
@@ -379,18 +372,5 @@ class _InstanceSubscriptions {
   Future<void> cancel() async {
     await message.cancel();
     await connection.cancel();
-  }
-}
-
-/// No-op [IBackgroundSyncNotifier] used as a safe default when the
-/// coordinator has not been started yet.
-class _NoOpBackgroundSyncNotifier implements IBackgroundSyncNotifier {
-  @override
-  Future<void> handlePulledMessages({
-    required List<Message> messages,
-    required Agent? Function(String instanceId, String agentRemoteId)
-    resolveAgent,
-  }) async {
-    // No-op: coordinator not started yet.
   }
 }
