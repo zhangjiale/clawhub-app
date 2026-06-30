@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
@@ -18,7 +19,10 @@ import 'package:claw_hub/domain/models/user_preferences.dart';
 ///   并通知 [NotificationCoordinator.onPrefsChanged] 重排 DND Timer
 /// - 启动 [NotificationCoordinator] (含 dispatcher 接线)
 /// - 启动时若不在 DND 且有积压 → 补发汇总
-class NotificationBootstrap {
+/// - US-018: 注册 [WidgetsBindingObserver] 监听 app 生命周期
+///   (paused → 打开 gate, resumed → 关闭 gate)
+/// - US-018: 冷启动时 warmup dispatcher LRU + 确保后台同步已被调度
+class NotificationBootstrap with WidgetsBindingObserver {
   final WidgetRef _ref;
   StreamSubscription<UserPreferences>? _prefsSub;
   bool _initialized = false;
@@ -80,9 +84,47 @@ class NotificationBootstrap {
     } catch (e, st) {
       logger.error('[NotificationBootstrap] coordinator start failed: $e', st);
     }
+
+    // US-018: reseed in-memory dedup LRU from persisted pending notifications
+    // so the live messageStream doesn't re-notify messages the background
+    // isolate already enqueued before this cold start.
+    try {
+      await _ref
+          .read(notificationCoordinatorProvider)
+          .warmupDispatcherFromPending();
+    } catch (e, st) {
+      logger.error(
+        '[NotificationBootstrap] warmupDispatcherFromPending failed: $e',
+        st,
+      );
+    }
+
+    // US-018: schedule background sync + observe app lifecycle.
+    try {
+      await _ref.read(backgroundSyncSchedulerProvider).ensureScheduled();
+      WidgetsBinding.instance.addObserver(this);
+    } catch (e, st) {
+      logger.error('[NotificationBootstrap] scheduler init failed: $e', st);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final scheduler = _ref.read(backgroundSyncSchedulerProvider);
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        // best-effort; gate write is async (see spec Known Risk).
+        scheduler.onAppPaused();
+      case AppLifecycleState.resumed:
+        scheduler.onAppResumed();
+      default:
+        break;
+    }
   }
 
   Future<void> dispose() async {
+    WidgetsBinding.instance.removeObserver(this);
     await _prefsSub?.cancel();
     _prefsSub = null;
   }

@@ -312,6 +312,9 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
     instanceRepo: ref.watch(instanceRepoProvider),
     agentRepo: ref.watch(agentRepoProvider),
     connectivity: ref.watch(connectivityProvider),
+    onInstancesChanged: ref
+        .watch(backgroundSyncSchedulerProvider)
+        .notifyInstancesChanged,
   );
 
   // 订阅编排器生命周期事件（替代旧的三段回调闭包）。

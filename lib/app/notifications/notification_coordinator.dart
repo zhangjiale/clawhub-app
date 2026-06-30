@@ -85,6 +85,17 @@ class NotificationCoordinator {
   /// wiring. Returns a no-op notifier when not started (safe default).
   IBackgroundSyncNotifier get notifier =>
       _dispatcher ?? _NoOpBackgroundSyncNotifier();
+
+  /// US-018: reseed the dispatcher's in-memory dedup LRU from persisted
+  /// pending notifications. Called on main-isolate cold start so the live
+  /// messageStream doesn't re-notify messages the background isolate enqueued.
+  ///
+  /// Must be called AFTER [start()] — [_dispatcher] is null before start.
+  /// Null-safe: if [start()] failed or was never called, this is a no-op.
+  Future<void> warmupDispatcherFromPending() async {
+    await _dispatcher?.warmupFromPending();
+  }
+
   bool _started = false;
   bool _disposed = false;
 

@@ -94,6 +94,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
   /// 测试可注入 [Duration.zero] 以避免测试中的真实延迟。
   final Duration _syncLoopCooldown;
 
+  /// US-018: optional callback to notify background-sync scheduler that the
+  /// instance set changed. Null in tests / when background sync is disabled.
+  final Future<void> Function()? _onInstancesChanged;
+
   ConnectionOrchestrator({
     required this._gatewayClient,
     required this._instanceRepo,
@@ -101,6 +105,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     IConnectivity? connectivity,
     DateTime Function()? clock,
     this._syncLoopCooldown = const Duration(seconds: 1),
+    this._onInstancesChanged,
   }) : _connectivity = connectivity ?? ConnectivityAdapter(),
        _clock = clock ?? (() => DateTime.now());
 
@@ -168,17 +173,20 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     if (_connectionSubscriptions.containsKey(instance.id)) {
       // 编辑已有实例：连接已存在，不需重连。
       // 若需强制重连（如 token 变化），用户可通过 UI 手动刷新。
+      await _notifyInstancesChanged();
       return;
     }
 
     // 新建实例：建立初始连接
     await _connect(instance);
+    await _notifyInstancesChanged();
   }
 
   /// 实例删除后调用。
   @override
   Future<void> onInstanceDeleted(String instanceId) async {
     await _disconnect(instanceId);
+    await _notifyInstancesChanged();
   }
 
   /// 手动触发重连（如用户在 UI 点击刷新按钮）。
@@ -651,6 +659,17 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       debugPrint(
         '[ConnectionOrchestrator] Failed to update health status: $error',
       );
+    }
+  }
+
+  /// Best-effort notification to the background-sync scheduler that the
+  /// instance set changed. Errors are swallowed (background sync scheduling
+  /// is best-effort; it must not break the orchestrator's core lifecycle).
+  Future<void> _notifyInstancesChanged() async {
+    try {
+      await _onInstancesChanged?.call();
+    } catch (_) {
+      // Background sync scheduling is best-effort.
     }
   }
 
