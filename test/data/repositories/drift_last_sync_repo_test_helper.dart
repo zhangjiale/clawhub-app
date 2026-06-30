@@ -16,7 +16,3 @@ Future<RepoHarness> openInMemory() async {
 }
 
 DriftLastSyncRepo makeRepo(AppDatabase db) => DriftLastSyncRepo(db);
-
-extension on RepoHarness {
-  Future<void> close() async => await db.close();
-}
