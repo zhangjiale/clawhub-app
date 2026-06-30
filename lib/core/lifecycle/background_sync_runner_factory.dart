@@ -2,6 +2,8 @@ import 'package:claw_hub/app/config/app_config.dart';
 import 'package:claw_hub/app/config/platform_info.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
+import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
+import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
@@ -25,6 +27,64 @@ import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/usecases/evaluate_notification.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:workmanager/workmanager.dart';
+
+// ---------------------------------------------------------------------------
+// buildGatewayClient — shared Gateway constructor (main + background isolate)
+// ---------------------------------------------------------------------------
+
+/// Constructs the production [WsGatewayClient] with the canonical
+/// [ConnectionConfig] (locale / platform / clientId / deviceFamily /
+/// clientDisplayName / clientVersion).
+///
+/// Shared between the main isolate (`wsGatewayClientProvider` in
+/// providers.dart) and the background isolate ([callbackDispatcher]) so the
+/// ConnectionConfig + platform-detection logic lives in exactly one place —
+/// a protocol upgrade changes one function, not two parallel constructions.
+///
+/// [identityProvider] / [deviceTokenStore] are optional: the main isolate
+/// passes its Riverpod-provided instances (preserving test overrides); the
+/// background isolate omits them and gets the secure-storage-backed defaults
+/// (identical to `deviceIdentityProvider` / `deviceTokenStoreProvider`).
+///
+/// [modelIdentifierLoader] is omitted by the background isolate: it is a
+/// FutureProvider backed by a platform channel in the main isolate, which has
+/// no ProviderScope in the background isolate. The gateway tolerates a
+/// missing modelIdentifier (diagnostic only, not auth-critical).
+WsGatewayClient buildGatewayClient({
+  required ILogger logger,
+  IDeviceIdentityProvider? identityProvider,
+  IDeviceTokenStore? deviceTokenStore,
+  Future<String?> Function()? modelIdentifierLoader,
+}) {
+  final os = platformOS(); // 'ios', 'android', 'macos', 'web', ...
+  final clientId = ClientIds.forPlatform(os);
+  final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
+
+  // TODO: read locale from PlatformDispatcher.instance.locale when
+  // i18n is implemented.
+  return WsGatewayClient(
+    identityProvider:
+        identityProvider ??
+        Ed25519IdentityProvider(
+          secureStorage: const FlutterSecureStorage(),
+          logger: logger,
+        ),
+    config: ConnectionConfig(
+      locale: 'zh-CN',
+      platform: os,
+      clientId: clientId,
+      deviceFamily: deviceFamily,
+      clientDisplayName: '虾Hub',
+      clientVersion: AppClientInfo.version,
+    ),
+    modelIdentifierLoader: modelIdentifierLoader,
+    deviceTokenStore:
+        deviceTokenStore ??
+        SecureStorageDeviceTokenStore(
+          secureStorage: const FlutterSecureStorage(),
+        ),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // callbackDispatcher — background isolate entry point
@@ -61,36 +121,13 @@ void callbackDispatcher() {
         return true;
       }
 
-      // 3. Build gateway client for background isolate
-      //    Ed25519IdentityProvider reads from flutter_secure_storage (same
-      //    process — keychain access works).
-      //    Mirror the main isolate's ConnectionConfig (providers.dart:238-263)
-      //    as closely as feasible without a ProviderScope.
-      final os = platformOS();
-      final clientId = ClientIds.forPlatform(os);
-      final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
-      final gateway = WsGatewayClient(
-        identityProvider: Ed25519IdentityProvider(
-          secureStorage: const FlutterSecureStorage(),
-          logger: logger,
-        ),
-        config: ConnectionConfig(
-          locale: 'zh-CN',
-          platform: os,
-          clientId: clientId,
-          deviceFamily: deviceFamily,
-          clientDisplayName: '虾Hub',
-          clientVersion: AppClientInfo.version,
-        ),
-        // modelIdentifierLoader is omitted here: it's a FutureProvider in the
-        // main isolate (deviceModelIdentifierProvider) that reads from
-        // platform channel. The background isolate has no ProviderScope.
-        // The gateway tolerates a missing modelIdentifier — it's diagnostic,
-        // not auth-critical.
-        deviceTokenStore: SecureStorageDeviceTokenStore(
-          secureStorage: const FlutterSecureStorage(),
-        ),
-      );
+      // 3. Build gateway client for background isolate.
+      //    Shared with the main isolate's wsGatewayClientProvider via
+      //    buildGatewayClient() — only modelIdentifierLoader differs (omitted
+      //    here: no ProviderScope / platform channel in the background
+      //    isolate; the gateway tolerates a missing modelIdentifier —
+      //    diagnostic only, not auth-critical).
+      final gateway = buildGatewayClient(logger: logger);
 
       // 4. Build and run the sync runner
       final notifier = _BackgroundIsolateNotifier(db, logger);

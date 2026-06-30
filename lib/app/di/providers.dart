@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:claw_hub/core/acl/ed25519_identity_provider.dart';
-import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
@@ -39,15 +38,14 @@ import 'package:claw_hub/domain/usecases/outbox_processor.dart';
 import 'package:claw_hub/domain/usecases/message_catch_up_service.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/connection/instance_event.dart';
-import 'package:claw_hub/app/config/app_config.dart';
 import 'package:claw_hub/app/config/device_model_loader.dart';
-import 'package:claw_hub/app/config/platform_info.dart';
 import 'package:claw_hub/app/notifications/notification_coordinator.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/data/repositories/drift_notification_repo.dart';
 import 'package:claw_hub/data/services/local_notification_service.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_prefs_shared_prefs.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_runner_factory.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_workmanager_backend.dart';
 import 'package:claw_hub/core/lifecycle/i_background_sync_prefs.dart';
@@ -233,30 +231,17 @@ final deviceModelIdentifierProvider = FutureProvider<String?>((ref) {
 /// 开发/调试时如需使用 Mock 数据，将 [gatewayClientProvider] 的返回值
 /// 改回 `ref.watch(mockGatewayClientProvider)` 即可全局切回 Mock。
 ///
-/// 自动检测运行平台（iOS / Android），选择对应的 [ClientIds] 枚举值，
-/// 确保 Gateway 将虾Hub 识别为官方客户端。
+/// Gateway 构造（平台检测 / ConnectionConfig）由 [buildGatewayClient] 统一
+/// 提供，与后台隔离态 callbackDispatcher 共享，避免两处漂移。
 final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
-  final os = platformOS(); // 'ios', 'android', 'macos', 'web', ...
-  final clientId = ClientIds.forPlatform(os);
-  final deviceFamily = os == 'ios' || os == 'android' ? 'phone' : 'desktop';
-
-  // TODO: read locale from PlatformDispatcher.instance.locale when
-  // i18n is implemented.
-  final client = WsGatewayClient(
+  // 主隔离态额外注入 modelIdentifierLoader (FutureProvider 缓存设备型号，
+  // 避免每次 reconnect 重新走 platform channel) 并透传可被测试 override 的
+  // identityProvider / deviceTokenStore provider。
+  final client = buildGatewayClient(
+    logger: ref.watch(loggerProvider),
     identityProvider: ref.watch(deviceIdentityProvider),
-    config: ConnectionConfig(
-      locale: 'zh-CN',
-      platform: os,
-      clientId: clientId,
-      deviceFamily: deviceFamily,
-      clientDisplayName: '虾Hub',
-      clientVersion: AppClientInfo.version,
-    ),
-    // 设备型号在 DI 容器启动时解析一次并缓存,connect 时只读取缓存值,
-    // 避免每次 reconnect 都重新走 platform channel(10-50ms 阻塞)。
-    modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
-    // 差距 #1: 持久化 deviceToken，后续重连优先复用。
     deviceTokenStore: ref.watch(deviceTokenStoreProvider),
+    modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
   );
   ref.onDispose(() => client.dispose());
   return client;
