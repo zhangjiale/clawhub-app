@@ -82,6 +82,18 @@ class _FakeNotificationRepo implements INotificationRepo {
   }
 
   @override
+  Future<List<int>> enqueueBatch(
+    List<PendingNotification> notifications,
+  ) async {
+    if (notifications.isEmpty) return const <int>[];
+    final ids = <int>[];
+    for (final n in notifications) {
+      ids.add(await enqueue(n));
+    }
+    return ids;
+  }
+
+  @override
   Future<List<PendingNotification>> getPending() async =>
       _store.where((n) => !n.delivered).toList();
 
@@ -726,6 +738,9 @@ class _CountingNotificationRepo implements INotificationRepo {
 
   @override
   Future<int> enqueue(PendingNotification n) => _inner.enqueue(n);
+  @override
+  Future<List<int>> enqueueBatch(List<PendingNotification> notifications) =>
+      _inner.enqueueBatch(notifications);
   @override
   Future<List<PendingNotification>> getPending() {
     getPendingCalls++;

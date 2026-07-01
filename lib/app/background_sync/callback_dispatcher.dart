@@ -26,8 +26,6 @@ import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_prefs_shared_prefs.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_runner.dart';
 import 'package:claw_hub/core/lifecycle/i_background_sync_notifier.dart';
-import 'package:claw_hub/data/local/database/database.dart'
-    hide Message, Agent, PendingNotification;
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/data/repositories/drift_agent_repo.dart';
 import 'package:claw_hub/data/repositories/drift_instance_repo.dart';
@@ -38,9 +36,20 @@ import 'package:claw_hub/data/repositories/drift_settings_repo.dart';
 import 'package:claw_hub/data/services/background_notifier_shared.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/user_preferences.dart';
+import 'package:claw_hub/domain/repositories/i_notification_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_notification.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:workmanager/workmanager.dart';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Top-level logger reused across every [callbackDispatcher] invocation.
+/// The workmanager plugin spins up a fresh isolate per task; this constant
+/// is intentionally stateless so it's safe to capture into closures.
+const ILogger _kBgSyncLogger = DebugPrintLogger();
 
 // ---------------------------------------------------------------------------
 // buildGatewayClient — shared Gateway constructor (main + background isolate)
@@ -112,7 +121,7 @@ WsGatewayClient buildGatewayClient({
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
-    final logger = const DebugPrintLogger();
+    final logger = _kBgSyncLogger;
     try {
       final db = await createAppDatabase();
 
@@ -144,14 +153,24 @@ void callbackDispatcher() {
       final gateway = buildGatewayClient(logger: logger);
 
       // 4. Build and run the sync runner
-      final notifier = _BackgroundIsolateNotifier(db, logger);
+      final notifier = _BackgroundIsolateNotifier(
+        prefs: prefs,
+        evaluator: EvaluateNotificationUseCase(),
+        notificationRepo: DriftNotificationRepo(db),
+        logger: logger,
+      );
+      // US-018 — message merge + dedup happen inside the runner via
+      // IMessageRepo.batchInsertByIndexedIds (per-agent cursor refactor,
+      // see background_sync_runner.dart:_syncAgent). The runner does NOT
+      // take a separate mergeUseCase — concurrency guards live in the repo.
+      final messageRepoForRunner = DriftMessageRepo(db);
       final runner = BackgroundSyncRunner(
         gate: gate,
         settingsRepo: settingsRepo,
         instanceRepo: DriftInstanceRepo(db),
         gatewayClient: gateway,
         agentRepo: DriftAgentRepo(db),
-        messageRepo: DriftMessageRepo(db),
+        messageRepo: messageRepoForRunner,
         lastSyncRepo: DriftLastSyncRepo(db),
         dispatcher: notifier,
         budget: BackgroundSyncBudget(),
@@ -178,30 +197,35 @@ void callbackDispatcher() {
 /// through the persistent pending_notifications path (same contract as the
 /// main NotificationDispatcher.handlePulledMessages, but without the live
 /// event stream / DND timer). Reuses BackgroundNotifierShared.enqueuePulled.
+///
+/// All dependencies are injected so each `handlePulledMessages` call avoids
+/// re-reading prefs or rebuilding repos — they were already constructed once
+/// in [callbackDispatcher].
 class _BackgroundIsolateNotifier implements IBackgroundSyncNotifier {
-  final AppDatabase _db;
-  final ILogger _logger;
-  final EvaluateNotificationUseCase _evaluator;
+  final UserPreferences prefs;
+  final EvaluateNotificationUseCase evaluator;
+  final INotificationRepo notificationRepo;
+  final ILogger logger;
 
-  _BackgroundIsolateNotifier(this._db, this._logger)
-    : _evaluator = EvaluateNotificationUseCase();
+  _BackgroundIsolateNotifier({
+    required this.prefs,
+    required this.evaluator,
+    required this.notificationRepo,
+    required this.logger,
+  });
 
   @override
   Future<void> handlePulledMessages({
     required List<Message> messages,
     required Agent? Function(String agentRemoteId) resolveAgent,
   }) async {
-    final settingsRepo = DriftSettingsRepo(_db, logger: _logger);
-    final prefs = await settingsRepo.getPreferences();
-    final notificationRepo = DriftNotificationRepo(_db);
-
     await BackgroundNotifierShared.enqueuePulled(
       messages: messages,
       resolveAgent: resolveAgent,
       prefs: prefs,
-      evaluator: _evaluator,
+      evaluator: evaluator,
       repo: notificationRepo,
-      logger: _logger,
+      logger: logger,
     );
   }
 }

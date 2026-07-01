@@ -39,11 +39,17 @@ class NotificationBootstrap with WidgetsBindingObserver {
     final logger = _ref.read(loggerProvider);
     final service = _ref.read(iLocalNotificationServiceProvider);
 
-    try {
-      await service.initialize();
-    } catch (e, st) {
-      logger.error('[NotificationBootstrap] service initialize failed: $e', st);
+    // Local helper — most init steps are best-effort and only need a logged
+    // failure; this collapses the try/catch boilerplate.
+    Future<void> guarded(String name, Future<void> Function() op) async {
+      try {
+        await op();
+      } catch (e, st) {
+        logger.error('[NotificationBootstrap] $name failed: $e', st);
+      }
     }
+
+    await guarded('service initialize', () => service.initialize());
 
     // 注册点击深链回调 (路由跳转逻辑留在 app 层，data 层不反向依赖 router)。
     service.setupOnTap(handleNotificationTap);
@@ -60,7 +66,7 @@ class NotificationBootstrap with WidgetsBindingObserver {
     );
 
     // 首次同步一次当前 prefs (流的首事件可能延迟)。
-    try {
+    await guarded('initial prefs/permission', () async {
       final prefs = await _ref.read(settingsRepoProvider).getPreferences();
       _ref.read(notificationPrefsHolderProvider.notifier).state = prefs;
 
@@ -68,44 +74,32 @@ class NotificationBootstrap with WidgetsBindingObserver {
       if (prefs.notificationsEnabled) {
         await service.requestPermissions();
       }
-    } catch (e, st) {
-      logger.error(
-        '[NotificationBootstrap] initial prefs/permission failed: $e',
-        st,
-      );
-    }
+    });
 
     // 启动 coordinator (含 dispatcher 接线、实例订阅、DND Timer)。
     // coordinator.start() 内部按当前是否在 DND 决定：
     // 不在 → 立即 flushDndSummary 补发跨重启积压，并排定下一个 DND 起点；
     // 在   → 排定 DND 结束时刻定时器。
-    try {
-      await _ref.read(notificationCoordinatorProvider).start();
-    } catch (e, st) {
-      logger.error('[NotificationBootstrap] coordinator start failed: $e', st);
-    }
+    await guarded(
+      'coordinator start',
+      () => _ref.read(notificationCoordinatorProvider).start(),
+    );
 
     // US-018: reseed in-memory dedup LRU from persisted pending notifications
     // so the live messageStream doesn't re-notify messages the background
     // isolate already enqueued before this cold start.
-    try {
-      await _ref
+    await guarded(
+      'warmupDispatcherFromPending',
+      () => _ref
           .read(notificationCoordinatorProvider)
-          .warmupDispatcherFromPending();
-    } catch (e, st) {
-      logger.error(
-        '[NotificationBootstrap] warmupDispatcherFromPending failed: $e',
-        st,
-      );
-    }
+          .warmupDispatcherFromPending(),
+    );
 
     // US-018: schedule background sync + observe app lifecycle.
-    try {
+    await guarded('scheduler init', () async {
       await _ref.read(backgroundSyncSchedulerProvider).ensureScheduled();
       WidgetsBinding.instance.addObserver(this);
-    } catch (e, st) {
-      logger.error('[NotificationBootstrap] scheduler init failed: $e', st);
-    }
+    });
   }
 
   @override
@@ -114,10 +108,24 @@ class NotificationBootstrap with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
+        // `inactive` covers transient foreground losses (control-center pull,
+        // incoming call, app switcher); treat as paused so the gate flips
+        // off and a background tick can run if the user lingers away.
         // best-effort; gate write is async (see spec Known Risk).
         scheduler.onAppPaused();
       case AppLifecycleState.resumed:
         scheduler.onAppResumed();
+        // US-018 — on resume, re-seed the dispatcher's in-memory
+        // `_notifiedKeys` LRU from the pending_notifications table.
+        // Without this, messages the background isolate enqueued
+        // while the app was paused would be re-fired by the live
+        // messageStream the moment the app comes back to the
+        // foreground (duplicate notification bug).
+        unawaited(
+          _ref
+              .read(notificationCoordinatorProvider)
+              .warmupDispatcherFromPending(),
+        );
       default:
         break;
     }
