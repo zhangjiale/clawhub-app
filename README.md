@@ -180,33 +180,51 @@ dart run build_runner watch --delete-conflicting-outputs
 
 ### Pre-runApp Initialization (Startup Guardrail)
 
-The pre-`runApp` startup chain (`Workmanager().initialize(...)` + `createAppDatabase()` + `runApp(ProviderScope(...))`) lives in **`lib/app/bootstrap.dart`** and is wrapped in `runZonedGuarded` inside `main()`. Any exception thrown by these awaits is caught and surfaced as a visible `StartupFatalScreen` (icon + error message + collapsible stack trace + Retry button) instead of a frozen splash.
+The pre-`runApp` startup chain (`Workmanager().initialize(...)` + `createAppDatabase()` + `runApp(ProviderScope(...))`) lives in **`lib/app/bootstrap.dart`** and is wrapped in `runZonedGuarded` inside `main()`. Any exception thrown by these awaits is caught and surfaced as a visible fatal screen (icon + error message + collapsible stack trace + Retry button — rendered via `DefaultErrorFallback` wrapped in a `MaterialApp` using `AppTheme.darkTheme`) instead of a frozen splash.
 
-**If you need to add a new pre-`runApp` initialization step** — another plugin, secure-storage pre-warm, locale load, asset precache, etc. — **add it inside `bootstrapApp()` in `lib/app/bootstrap.dart`**, not directly in `main()`. The zone guardrail only covers what `bootstrapApp` calls.
+**If you need to add a new pre-`runApp` initialization step** — another plugin, secure-storage pre-warm, locale load, asset precache, etc. — **add it inside `bootstrapApp()` in `lib/app/bootstrap.dart`**, not directly in `main()`. The zone guardrail only covers what `bootstrapApp` calls. `bootstrapApp` exposes a fixed parameter set (no generic `yourStep:` slot) — add a new parameter alongside `initializeWorkmanager` if your step needs the same try/catch treatment.
 
-Pattern (replace `yourStep()` with whatever you need):
+Pattern for adding a new step (illustrative — adjust to your real shape):
 
 ```dart
-// in lib/main.dart, inside the bootstrapApp call:
-bootstrapApp(
-  initializeWorkmanager: () => Workmanager().initialize(...),
-  createDatabase: createAppDatabase,
-  yourStep: () => doYourExpensiveStartup(),  // <- add new await here
-  buildSuccess: (db) => ProviderScope(...),
-  showFatal: (e, st) => runApp(StartupFatalScreen(...)),
-);
+// in lib/app/bootstrap.dart — add a new typedef + parameter:
+typedef YourStep = Future<void> Function();
 
-// in lib/app/bootstrap.dart, inside the try block:
-try {
-  await initializeWorkmanager();
-  await yourStep();                           // <- add new await here
+Future<void> bootstrapApp({
+  required WorkmanagerInitializer initializeWorkmanager,
+  required YourStep yourStep,                       // <- new param
+  required DatabaseFactory createDatabase,
+  required Widget Function(AppDatabase database) buildSuccess,
+  required void Function(Object error, StackTrace stackTrace) showFatal,
+}) async {
   ...
-  final database = await createDatabase();
-  runApp(buildSuccess(database));
-} catch (error, stackTrace) {
-  _logger.error('[bootstrap] startup failed: $error', stackTrace);
-  showFatal(error, stackTrace);
+  try {
+    await initializeWorkmanager();
+    await yourStep();                               // <- new await
+    final database = await createDatabase();
+    runApp(buildSuccess(database));
+  } catch (error, stackTrace) {
+    _logger.error('[bootstrap] startup failed: $error', stackTrace);
+    showFatal(error, stackTrace);
+  }
 }
+
+// in lib/main.dart — wire it up at the bootstrapApp call site:
+bootstrapApp(
+  initializeWorkmanager: () => Workmanager().initialize(callbackDispatcher),
+  yourStep: () => doYourExpensiveStartup(),        // <- pass it here
+  createDatabase: createAppDatabase,
+  buildSuccess: (db) => ProviderScope(...),
+  showFatal: (e, st) => runApp(                     // fatal screen tree
+    MaterialApp(                                    // mirrors what's
+      debugShowCheckedModeBanner: false,            // actually mounted
+      theme: AppTheme.darkTheme,                    // on a fatal
+      darkTheme: AppTheme.darkTheme,                // startup failure
+      themeMode: ThemeMode.dark,
+      home: Scaffold(body: SafeArea(child: DefaultErrorFallback(error: e, stackTrace: st, onRetry: () => main()))),
+    ),
+  ),
+);
 ```
 
 If your new step is a `Future<void> Function()` (no return value), name it after its purpose (e.g. `prewarmSecureStorage`, `loadLocale`) and inject it the same way as `initializeWorkmanager`. If you need a return value (e.g. a parsed config), pass a typed `Function` and have `bootstrapApp` thread it through to `buildSuccess`.

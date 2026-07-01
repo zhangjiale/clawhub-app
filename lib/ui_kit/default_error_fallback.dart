@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// Default error UI used by both the global `ErrorWidget.builder` (in
-/// `lib/app/bootstrap.dart`) and the `StartupFatalScreen` for fatal
+/// Default error UI used by both the global `ErrorWidget.builder` (set in
+/// `lib/app/bootstrap.dart`) and `main.dart`'s inline fatal-screen body for
 /// pre-`runApp` startup failures.
 ///
 /// All fields are optional so existing call sites that only pass `error`

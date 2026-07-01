@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:claw_hub/app/bootstrap.dart';
@@ -12,20 +11,15 @@ import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
 import 'package:claw_hub/app/background_sync/callback_dispatcher.dart';
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
-import 'package:claw_hub/ui_kit/startup_fatal_screen.dart';
+import 'package:claw_hub/ui_kit/default_error_fallback.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
 
-/// Module-scoped flag that survives for the lifetime of the isolate.
-/// `WidgetsFlutterBinding.ensureInitialized()` can only be called once per
-/// isolate; the Retry button on the fatal screen calls `main()` and we must
-/// not re-init the binding on retry.
-bool _bindingInitialized = false;
-
 Future<void> main() async {
-  if (!_bindingInitialized) {
-    WidgetsFlutterBinding.ensureInitialized();
-    _bindingInitialized = true;
-  }
+  // ensureInitialized() is documented as safe to call multiple times — the
+  // fatal-screen Retry button re-enters main() and we want a fresh binding
+  // path (Flutter internally short-circuits re-init).
+  WidgetsFlutterBinding.ensureInitialized();
+
   runZonedGuarded(
     () => bootstrapApp(
       // US-018: register the background-sync entry point. MUST happen before
@@ -52,36 +46,44 @@ Future<void> main() async {
         child: const ClawHubApp(),
       ),
       showFatal: (error, stackTrace) => runApp(
-        StartupFatalScreen(error: error, stackTrace: stackTrace, onRetry: main),
+        // Use AppTheme.darkTheme so the fatal screen matches the running
+        // app's look — without these args MaterialApp falls back to
+        // ThemeData.light(), producing a jarring light-on-dark flip on
+        // startup failure.
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.darkTheme,
+          darkTheme: AppTheme.darkTheme,
+          themeMode: ThemeMode.dark,
+          home: Scaffold(
+            body: SafeArea(
+              child: DefaultErrorFallback(
+                error: error,
+                stackTrace: stackTrace,
+                // `() => main()` (not `main`) keeps the VoidCallback
+                // assignment explicit and lets the framework's
+                // `onPressed` handler fire-and-forget the Future — any
+                // synchronous throw inside `main` is caught by the
+                // framework's error pipeline rather than swallowed by
+                // an implicit Future<void> → VoidCallback cast.
+                onRetry: () => main(),
+              ),
+            ),
+          ),
+        ),
       ),
     ),
-    _onZoneError,
+    // Build/gesture/layout errors are routed to FlutterError.onError /
+    // ErrorWidget.builder (set in bootstrap.dart). The zone only sees async
+    // orphans that escape bootstrapApp's try/catch — for those we MUST NOT
+    // re-runApp, because the real ProviderScope is already mounted and
+    // re-running would dispose databaseProvider and drop all in-memory state
+    // (drafts, view-model state, nav stack). Log-only is the intended sink.
+    (error, stackTrace) => const DebugPrintLogger().error(
+      '[main] uncaught async error: $error',
+      stackTrace,
+    ),
   );
-}
-
-/// Handler for uncaught async errors that escape [bootstrapApp]'s
-/// inner try/catch AND the `await` chain — e.g. an un-awaited Future that
-/// throws, a Timer/microtask callback that throws, or a Stream with no
-/// `onError` listener.
-///
-/// **Why this MUST NOT call `runApp`:** by the time such an error lands
-/// here, [bootstrapApp] has already mounted the real app (runApp was
-/// called inside this zone). Calling `runApp` again would unmount the
-/// existing `ProviderScope`, which disposes `databaseProvider` and fires
-/// its `ref.onDispose(() => database.close())` — closing the database and
-/// dropping all in-memory state (drafts, view-model state, nav stack) for
-/// a single transient async error. The cure would be worse than the disease.
-///
-/// pre-runApp startup failures are a different beast: there the
-/// `ProviderScope` is not yet mounted, so [bootstrapApp]'s `showFatal`
-/// path CAN safely `runApp(StartupFatalScreen)`. This handler only ever
-/// sees post-mount async orphans, for which `runApp(fatal)` is a misfit.
-///
-/// Build/gesture/layout errors do not enter the zone — they are routed to
-/// `FlutterError.onError` / `ErrorWidget.builder` (set in `bootstrap.dart`).
-void _onZoneError(Object error, StackTrace stackTrace) {
-  const logger = DebugPrintLogger();
-  logger.error('[main] uncaught async error: $error', stackTrace);
 }
 
 /// 应用启动后初始化连接编排器。

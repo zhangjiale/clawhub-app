@@ -40,16 +40,25 @@ Future<void> bootstrapApp({
   required Widget Function(AppDatabase database) buildSuccess,
   required void Function(Object error, StackTrace stackTrace) showFatal,
 }) async {
+  // Install the global error widget before the first await. The builder
+  // is harmless before runApp (no widget tree exists yet, so the
+  // framework can't invoke it during the pre-runApp awaits). Installing
+  // it up-front matters because it persists for the lifetime of the
+  // isolate and covers two real cases:
+  //   1. A synchronous build error inside buildSuccess(database) after
+  //      runApp — without an early install, the builder would still be
+  //      set, but only because this function runs every time; on a Retry
+  //      re-entry, the previous successful install is what catches it.
+  //   2. A build error inside the post-runApp widget tree (any frame)
+  //      — ErrorWidget.builder is global state; setting it once here
+  //      means we don't need to re-install it on every Retry re-entry
+  //      or worry about order-of-operations between buildSuccess and
+  //      the error widget.
+  ErrorWidget.builder = (details) =>
+      DefaultErrorFallback(error: details.exception, stackTrace: details.stack);
+
   try {
     await initializeWorkmanager();
-
-    // Install the global error widget so any build-time error in the tree
-    // (not just startup failures) is presented via the same UI.
-    ErrorWidget.builder = (details) => DefaultErrorFallback(
-      error: details.exception,
-      stackTrace: details.stack,
-    );
-
     final database = await createDatabase();
     runApp(buildSuccess(database));
   } catch (error, stackTrace) {

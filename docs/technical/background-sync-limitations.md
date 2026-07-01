@@ -138,10 +138,11 @@ thrown exception. The error message names the missing Pigeon channel.
 
 ### Mitigations already in place
 
-- The current `main.dart` is wrapped in `runZonedGuarded(bootstrapApp(...), _onZoneError)`
+- The current `main.dart` is wrapped in `runZonedGuarded(bootstrapApp(...), <inline zone error handler>)`
   (see `lib/app/bootstrap.dart`). Any pre-`runApp` exception surfaces as
-  a `StartupFatalScreen` with the error message + collapsible stack
-  trace + a Retry button. This is the developer-facing fail-fast
+  a fatal screen (`MaterialApp` + `DefaultErrorFallback` with the error
+  message + collapsible stack trace + a Retry button that re-enters
+  `main()`). This is the developer-facing fail-fast
   guardrail added 2026-07-01 to prevent a future similar bug from
   silently stranding the user on a blank splash.
 - `defaultErrorFallback` now actually renders the `error` field
@@ -151,12 +152,12 @@ thrown exception. The error message names the missing Pigeon channel.
 
 The pre-`runApp` startup chain (`Workmanager().initialize(...)` +
 `createAppDatabase()` + `runApp(ProviderScope(...))`) is guarded by
-`runZonedGuarded(bootstrapApp(...), _onZoneError)` in `lib/main.dart`.
-The `bootstrapApp` function in `lib/app/bootstrap.dart` is the
-single composition point for pre-`ProviderScope` initialization; any
-thrown exception from those awaits surfaces as a
-`StartupFatalScreen` with the error message, collapsible stack trace,
-and a Retry button.
+`runZonedGuarded(bootstrapApp(...), <inline zone error handler>)` in
+`lib/main.dart`. The `bootstrapApp` function in `lib/app/bootstrap.dart`
+is the single composition point for pre-`ProviderScope` initialization;
+any thrown exception from those awaits surfaces as a fatal screen
+(`MaterialApp` + `DefaultErrorFallback`) with the error message,
+collapsible stack trace, and a Retry button.
 
 The guardrail is **developer-facing** more than user-facing — the bug
 is reliably diagnosable from `error + stackTrace` alone. We do NOT
