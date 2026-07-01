@@ -14,27 +14,35 @@ void main() {
 
   test('get_returnsNullWhenAbsent', () async {
     final repo = helper.makeRepo(db);
-    expect(await repo.get('inst-a'), isNull);
+    expect(await repo.get('inst-a', 'agent-x'), isNull);
   });
 
   test('upsert_thenGet_returnsMsEpoch', () async {
     final repo = helper.makeRepo(db);
-    await repo.upsert('inst-a', 1700000000000);
-    expect(await repo.get('inst-a'), 1700000000000);
+    await repo.upsert('inst-a', 'agent-x', 1700000000000);
+    expect(await repo.get('inst-a', 'agent-x'), 1700000000000);
   });
 
   test('upsert_overwritesExisting', () async {
     final repo = helper.makeRepo(db);
-    await repo.upsert('inst-a', 1000);
-    await repo.upsert('inst-a', 2000);
-    expect(await repo.get('inst-a'), 2000);
+    await repo.upsert('inst-a', 'agent-x', 1000);
+    await repo.upsert('inst-a', 'agent-x', 2000);
+    expect(await repo.get('inst-a', 'agent-x'), 2000);
   });
 
   test('upsert_isPerInstanceIndependent', () async {
     final repo = helper.makeRepo(db);
-    await repo.upsert('inst-a', 1000);
-    await repo.upsert('inst-b', 2000);
-    expect(await repo.get('inst-a'), 1000);
-    expect(await repo.get('inst-b'), 2000);
+    await repo.upsert('inst-a', 'agent-x', 1000);
+    await repo.upsert('inst-b', 'agent-x', 2000);
+    expect(await repo.get('inst-a', 'agent-x'), 1000);
+    expect(await repo.get('inst-b', 'agent-x'), 2000);
+  });
+
+  test('upsert_isPerAgentIndependent', () async {
+    final repo = helper.makeRepo(db);
+    await repo.upsert('inst-a', 'agent-1', 1000);
+    await repo.upsert('inst-a', 'agent-2', 2000);
+    expect(await repo.get('inst-a', 'agent-1'), 1000);
+    expect(await repo.get('inst-a', 'agent-2'), 2000);
   });
 }
