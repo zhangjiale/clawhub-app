@@ -1199,6 +1199,23 @@ void main() {
           .toList();
       expect(a1Fetch, isNotEmpty, reason: 'a1 must be fetched');
 
+      // Direct pin of the bug: the t=350 message must survive the
+      // `>= lastSyncMs` filter inside `_syncAgent` and reach
+      // `batchInsertByIndexedIds`. Without this assertion, a regression
+      // that decoupled `maxTimestamp` from the actually-inserted batch
+      // (e.g. "fixing" it to mean max-requested) would still pass the
+      // cursor-advance check below.
+      final captured = verify(
+        () => messageRepo.batchInsertByIndexedIds(captureAny()),
+      ).captured;
+      expect(captured, isNotEmpty, reason: 'a1 batch insert must be called');
+      final inserted = captured.single as List<Message>;
+      expect(
+        inserted.any((m) => m.timestamp == 350 && m.serverId == 's350'),
+        isTrue,
+        reason: 't=350 must survive the >= 300 filter (the bug drop)',
+      );
+
       // a1's cursor advances to its own max (350), NOT a2's (500).
       verify(() => lastSyncRepo.upsert('i1', 'a1', 350)).called(1);
     });
