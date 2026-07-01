@@ -742,6 +742,45 @@ void main() {
       verify(() => messageRepo.batchInsertByIndexedIds(any())).called(1);
     });
 
+    test('executeOnce_hiddenAgent_resolverReturnsNull', () async {
+      final inst = _inst('i1');
+      final hidden = Agent(
+        localId: 'l',
+        remoteId: 'a1',
+        instanceId: 'i1',
+        name: 'a1',
+        hiddenAt: 12345,
+      );
+
+      when(
+        () => settingsRepo.getPreferences(),
+      ).thenAnswer((_) async => UserPreferences.defaults());
+      when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
+      when(
+        () => agentRepo.getAllByInstanceId('i1'),
+      ).thenAnswer((_) async => [hidden]);
+
+      gateway.setHistory('i1', 'a1', [
+        (
+          messages: [_msg(clientId: 'c1', serverId: 's1', timestamp: 100)],
+          nextCursor: null,
+        ),
+      ]);
+
+      when(
+        () => messageRepo.batchInsertByIndexedIds(any()),
+      ).thenAnswer((inv) async => inv.positionalArguments[0] as List<Message>);
+
+      await runner.executeOnce();
+
+      // Hidden: dispatcher NOT called
+      expect(dispatcher.callCount, 0);
+      expect(dispatcher.enqueuedServerIds.length, 0);
+      // Messages still inserted
+      verify(() => messageRepo.batchInsertByIndexedIds(any())).called(1);
+    });
+
     // -----------------------------------------------------------------------
     // Per-instance isolation
     // -----------------------------------------------------------------------
@@ -796,7 +835,7 @@ void main() {
     // -----------------------------------------------------------------------
     // Zero messages
     // -----------------------------------------------------------------------
-    test('executeOnce_zeroMessages_stillUpdatesLastSync', () async {
+    test('executeOnce_zeroMessages_stillAdvancesCursor', () async {
       final inst = _inst('i1');
 
       when(
