@@ -178,6 +178,43 @@ dart run build_runner build --delete-conflicting-outputs
 dart run build_runner watch --delete-conflicting-outputs
 ```
 
+### Pre-runApp Initialization (Startup Guardrail)
+
+The pre-`runApp` startup chain (`Workmanager().initialize(...)` + `createAppDatabase()` + `runApp(ProviderScope(...))`) lives in **`lib/app/bootstrap.dart`** and is wrapped in `runZonedGuarded` inside `main()`. Any exception thrown by these awaits is caught and surfaced as a visible `StartupFatalScreen` (icon + error message + collapsible stack trace + Retry button) instead of a frozen splash.
+
+**If you need to add a new pre-`runApp` initialization step** — another plugin, secure-storage pre-warm, locale load, asset precache, etc. — **add it inside `bootstrapApp()` in `lib/app/bootstrap.dart`**, not directly in `main()`. The zone guardrail only covers what `bootstrapApp` calls.
+
+Pattern (replace `yourStep()` with whatever you need):
+
+```dart
+// in lib/main.dart, inside the bootstrapApp call:
+bootstrapApp(
+  initializeWorkmanager: () => Workmanager().initialize(...),
+  createDatabase: createAppDatabase,
+  yourStep: () => doYourExpensiveStartup(),  // <- add new await here
+  buildSuccess: (db) => ProviderScope(...),
+  showFatal: (e, st) => runApp(StartupFatalScreen(...)),
+);
+
+// in lib/app/bootstrap.dart, inside the try block:
+try {
+  await initializeWorkmanager();
+  await yourStep();                           // <- add new await here
+  ...
+  final database = await createDatabase();
+  runApp(buildSuccess(database));
+} catch (error, stackTrace) {
+  _logger.error('[bootstrap] startup failed: $error', stackTrace);
+  showFatal(error, stackTrace);
+}
+```
+
+If your new step is a `Future<void> Function()` (no return value), name it after its purpose (e.g. `prewarmSecureStorage`, `loadLocale`) and inject it the same way as `initializeWorkmanager`. If you need a return value (e.g. a parsed config), pass a typed `Function` and have `bootstrapApp` thread it through to `buildSuccess`.
+
+The bootstrap is also unit-testable: see `test/app/bootstrap_test.dart` for the pattern. A guardrail with no test is a hope.
+
+Why this matters: a 2026-07-01 incident showed that an unhandled `PlatformException` from `Workmanager().initialize(...)` stranded the app on a blank Android splash (with the engine never producing a first frame), producing infinite `W/VRI[MainActivity]: performTraversals: cancelAndRedraw ...` log spam and no visible UI to diagnose from. The startup guardrail was added in response. See [docs/technical/background-sync-limitations.md](docs/technical/background-sync-limitations.md) for the full incident post-mortem and the workmanager 0.9.0 manifest trap.
+
 ## Contributing
 
 Issues and pull requests are welcome. Before submitting, please read:
