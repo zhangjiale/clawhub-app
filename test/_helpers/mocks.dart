@@ -13,14 +13,21 @@
 // instances per test gives the dedup benefit without the cross-test state
 // contamination.
 
+import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
+import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
+import 'package:claw_hub/core/lifecycle/i_background_sync_prefs.dart';
 import 'package:claw_hub/domain/repositories/i_activity_repo.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/repositories/i_achievement_repo.dart';
+import 'package:claw_hub/domain/repositories/i_conversation_repo.dart';
 import 'package:claw_hub/domain/repositories/i_instance_repo.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
+import 'package:claw_hub/domain/usecases/merge_inbound_message.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockAgentRepo extends Mock implements IAgentRepo {}
@@ -28,6 +35,10 @@ class MockAgentRepo extends Mock implements IAgentRepo {}
 class MockInstanceRepo extends Mock implements IInstanceRepo {}
 
 class MockMessageRepo extends Mock implements IMessageRepo {}
+
+class MockConversationRepo extends Mock implements IConversationRepo {}
+
+class MockMergeUseCase extends Mock implements MergeInboundMessageUseCase {}
 
 class MockAchievementRepo extends Mock implements IAchievementRepo {}
 
@@ -43,3 +54,41 @@ class MockEvaluateAchievementsUseCase extends Mock
 /// a logger without verifying, use [FakeLogger] from `fake_logger.dart`
 /// instead — cheaper and signals intent ("I don't care what was logged").
 class MockILogger extends Mock implements ILogger {}
+
+// ---------------------------------------------------------------------------
+// Background-sync fakes (shared between widget / integration / lifecycle tests
+// that need to stub the workmanager + prefs plumbing).
+// ---------------------------------------------------------------------------
+
+/// No-op [IBackgroundSyncPrefs] for tests that don't assert on gate state.
+/// Tests that need a writable/observable fake should define one locally —
+/// the lifecycle tests use specialized recording fakes (`_FakePrefs` etc.).
+class FakeBackgroundSyncPrefs implements IBackgroundSyncPrefs {
+  const FakeBackgroundSyncPrefs();
+  @override
+  Future<bool> get mainActive async => false;
+  @override
+  Future<void> setMainActive(bool active) async {}
+  @override
+  Future<void> clear() async {}
+}
+
+/// No-op [WorkmanagerBackend] — prevents real plugin calls in tests.
+class NoOpWorkmanagerBackend implements WorkmanagerBackend {
+  const NoOpWorkmanagerBackend();
+  @override
+  Future<void> enqueueUniquePeriodic() async {}
+  @override
+  Future<void> cancelUniqueWork() async {}
+}
+
+/// Scheduler override that replaces the real [backgroundSyncSchedulerProvider]
+/// with one backed by no-op fakes. Drop into a ProviderScope's `overrides:`
+/// list to neutralize the workmanager plugin in widget / integration tests.
+final Override noOpBackgroundSyncSchedulerOverride =
+    backgroundSyncSchedulerProvider.overrideWith(
+      (ref) => BackgroundSyncScheduler(
+        gate: BackgroundSyncGate(prefs: const FakeBackgroundSyncPrefs()),
+        backend: const NoOpWorkmanagerBackend(),
+      ),
+    );

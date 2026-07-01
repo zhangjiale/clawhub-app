@@ -127,23 +127,18 @@ class NotificationDispatcher implements IBackgroundSyncNotifier {
     required List<Message> messages,
     required Agent? Function(String agentRemoteId) resolveAgent,
   }) async {
-    final prefs = prefsProvider();
-
-    final enqueuedKeys = await BackgroundNotifierShared.enqueuePulled(
+    await BackgroundNotifierShared.enqueuePulled(
       messages: messages,
       resolveAgent: resolveAgent,
-      prefs: prefs,
+      prefs: prefsProvider(),
       evaluator: evaluator,
       repo: repo,
       logger: logger,
       clock: clock,
+      // Record each enqueued dedup key in the in-memory LRU so concurrent
+      // live events for the same serverId are suppressed this session.
+      onEnqueued: _recordNotified,
     );
-
-    // Record enqueued dedup keys in the in-memory LRU so concurrent live
-    // events for the same serverId are suppressed this session.
-    for (final key in enqueuedKeys) {
-      _recordNotified(key);
-    }
   }
 
   /// Reseed the in-memory dedup LRU from persisted pending notifications.
@@ -293,16 +288,13 @@ class NotificationDispatcher implements IBackgroundSyncNotifier {
       // 仅回复类入静默队列 (错误/连接变化在 DND 内静默丢弃，不补发)。
       return;
     }
-    final summary = event.contentPreview;
+    // Build the row via the shared factory so the row shape lives in one
+    // place (same as BackgroundNotifierShared.enqueuePulled) — a future
+    // PendingNotification field addition only needs to update the factory.
     await repo.enqueue(
-      PendingNotification(
-        id: 0,
-        agentId: event.agentId,
-        instanceId: event.instanceId,
-        agentName: event.agentName,
-        summary: summary,
-        createdAt: clock().millisecondsSinceEpoch ~/ 1000,
-        messageServerId: event.messageServerId,
+      PendingNotification.fromReplyEvent(
+        event,
+        nowEpochSeconds: clock().millisecondsSinceEpoch ~/ 1000,
       ),
     );
   }

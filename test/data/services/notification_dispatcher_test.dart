@@ -124,6 +124,23 @@ class _FakeNotificationRepo implements INotificationRepo {
   }
 
   @override
+  Future<List<int>> enqueueBatch(
+    List<PendingNotification> notifications,
+  ) async {
+    // Empty → no-op (per INotificationRepo contract).
+    if (notifications.isEmpty) return const <int>[];
+    // Same per-row dedup semantics as the single-row [enqueue]; the
+    // production batch path runs inside a single transaction in
+    // DriftNotificationRepo, but the test fake uses a loop since
+    // transactions aren't observable to behavioral assertions anyway.
+    final ids = <int>[];
+    for (final n in notifications) {
+      ids.add(await enqueue(n));
+    }
+    return ids;
+  }
+
+  @override
   Future<List<PendingNotification>> getPending() async {
     // Combine preloaded + runtime enqueued; preloaded are "persisted" before
     // the dispatcher exists, simulating what warmupFromPending reads from DB.

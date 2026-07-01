@@ -669,6 +669,7 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     try {
       await _onInstancesChanged?.call();
     } catch (_) {
+      // iron-law-allow: Law8 -- best-effort scheduler notify; must not break the orchestrator's core lifecycle (mirrors _updateHealthStatus).
       // Background sync scheduling is best-effort.
     }
   }
