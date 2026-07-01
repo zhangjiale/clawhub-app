@@ -79,3 +79,12 @@ memory/
 # *.freezed.dart
 # *.gr.dart
 .worktrees/
+
+# Debug-session diff dumps (created by superpowers test outputs,
+# claude-code guide agents, etc.). Pure scratch — never review-tracked.
+all_diff.txt
+working_tree_diff.txt
+unpushed_commits_diff.txt
+*test_output*.txt
+*findings.json
+!review-findings.json
