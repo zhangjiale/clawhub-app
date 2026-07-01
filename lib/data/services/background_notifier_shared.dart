@@ -22,20 +22,22 @@ class BackgroundNotifierShared {
   BackgroundNotifierShared._();
 
   /// Evaluate each [messages] and enqueue a [PendingNotification] for
-  /// messages that pass the notification decision (ShowDecision).
+  /// messages that pass the notification decision (Show / DndSuppressed).
   ///
   /// [prefs] are the current user notification preferences (read once before
   /// the batch). [evaluator] performs the notification decision. [repo] is
   /// where the resulting [PendingNotification] is stored.
   ///
-  /// Returns the list of dedup keys (`messageServerId ?? messageClientId`)
-  /// that were enqueued, so callers (e.g. [NotificationDispatcher]) can
-  /// record them in an in-memory LRU after delegation.
+  /// [onEnqueued], if supplied, is invoked with the dedup key
+  /// (`messageServerId ?? messageClientId`) of every successful enqueue so
+  /// the main isolate's in-memory LRU can suppress concurrent live events
+  /// for the same serverId. The background isolate omits this — its LRU is
+  /// empty across ticks by design.
   ///
   /// [clock] is optional; defaults to [DateTime.now]. Pass an injectable
   /// clock from the caller (e.g. [NotificationDispatcher.clock]) so tests
   /// can control time.
-  static Future<List<String>> enqueuePulled({
+  static Future<void> enqueuePulled({
     required List<Message> messages,
     required Agent? Function(String agentRemoteId) resolveAgent,
     required UserPreferences prefs,
@@ -43,12 +45,37 @@ class BackgroundNotifierShared {
     required INotificationRepo repo,
     required ILogger logger,
     DateTime Function()? clock,
+    void Function(String dedupKey)? onEnqueued,
   }) async {
-    final enqueuedKeys = <String>[];
-    if (messages.isEmpty) return enqueuedKeys;
+    if (messages.isEmpty) return;
 
     final now = clock != null ? clock() : DateTime.now();
+    final nowEpochSeconds = now.millisecondsSinceEpoch ~/ 1000;
 
+    // US-018 — batch enqueue (Law 6: single SQL call for the whole pull).
+    //
+    // The legacy implementation awaited `repo.enqueue(...)` once per
+    // message — N+1 round-trips to SQLite on every background sync tick.
+    // With WorkManager's 10-minute budget and `maxMessagesPerPull`=100,
+    // a single tick could be 100×N agents × ~ms-per-INSERT on slow flash
+    // storage — measurable delay on cold-cache boots.
+    //
+    // New flow:
+    //   1. Filter + build the list of PendingNotification to enqueue.
+    //   2. Call `repo.enqueueBatch(list)` ONCE — Drift wraps in a single
+    //      transaction so fsync cost collapses to one commit, and the
+    //      partial UNIQUE index dedupes per-row inside that single
+    //      transaction (same semantics as the old per-row [enqueue]).
+    //   3. On success, fire [onEnqueued] for each message in the order
+    //      it was added (LRU is idempotent — redundant entries are
+    //      harmless, just consume one slot until the LRU evicts them).
+    //
+    // The `try` around the batch call mirrors the old per-row try/catch:
+    // a single throw (DB locked, schema mismatch, etc.) must not leak
+    // out of this method since BackgroundSyncRunner logs and continues
+    // regardless. With batching, the catch footprint shrinks from
+    // "N blocks of try/catch logging" to one.
+    final queued = <(PendingNotification, String)>[]; // (row, dedupKey)
     for (final msg in messages) {
       // Only agent messages trigger notifications.
       if (msg.role != MessageRole.agent) continue;
@@ -63,8 +90,15 @@ class BackgroundNotifierShared {
       final agent = resolveAgent(msg.agentId);
       if (agent == null) continue;
 
+      // event.agentId MUST be the agent's LOCAL id (not remoteId) to match
+      // the live DND path (notification_coordinator._onMessage builds
+      // ReplyEvent(agentId: localId)) and to align with
+      // deletePendingNotificationsForAgent, which receives localId via
+      // clearAgentContent(widget.agentId) (route param = localId). Storing
+      // remoteId here would leave background-enqueued rows un-deleted when
+      // the user clears the agent's content.
       final event = ReplyEvent(
-        agentId: agent.remoteId,
+        agentId: agent.localId,
         instanceId: agent.instanceId,
         agentName: agent.displayName,
         contentPreview: msg.content ?? '',
@@ -74,36 +108,42 @@ class BackgroundNotifierShared {
 
       final decision = evaluator.evaluate(event, prefs, now);
 
-      // Both ShowDecision and DndSuppressedDecision enqueue: the live
-      // messageStream / DND-end flush is the only path that shows. A duplicate
-      // serverId is a no-op via the partial unique index (ON CONFLICT DO
-      // NOTHING); the try/catch guards against any unexpected throw so a
-      // single bad row never aborts the whole pull. DroppedDecision → skip.
-      if (decision is ShowDecision || decision is DndSuppressedDecision) {
-        try {
-          await repo.enqueue(
-            PendingNotification(
-              id: 0,
-              agentId: agent.remoteId,
-              instanceId: agent.instanceId,
-              agentName: agent.displayName,
-              summary: msg.content ?? '',
-              createdAt: now.millisecondsSinceEpoch ~/ 1000,
-              messageServerId: msg.serverId,
-              delivered: false,
-            ),
-          );
-          final dedupKey = msg.serverId ?? msg.clientId;
-          enqueuedKeys.add(dedupKey);
-        } catch (e, st) {
-          logger.error(
-            '[BackgroundNotifier] enqueue failed for ${msg.serverId}: $e',
-            st,
-          );
-        }
-      }
+      // Show / DndSuppressed both enqueue: the live messageStream / DND-end
+      // flush is the only path that shows. DroppedDecision → skip.
+      if (decision is DroppedDecision) continue;
+
+      queued.add((
+        PendingNotification.fromReplyEvent(
+          event,
+          nowEpochSeconds: nowEpochSeconds,
+        ),
+        msg.serverId ?? msg.clientId,
+      ));
     }
 
-    return enqueuedKeys;
+    if (queued.isEmpty) return;
+
+    try {
+      await repo.enqueueBatch(queued.map((q) => q.$1).toList(growable: false));
+      // Fire onEnqueued for all enqueued rows (LRU is append-only,
+      // idempotent — the existing in-memory dedup uses these keys to
+      // suppress concurrent live messageStream events for the same
+      // serverId; duplicates only occupy slots until LRU evicts them).
+      for (final entry in queued) {
+        onEnqueued?.call(entry.$2);
+      }
+    } catch (e, st) {
+      // Single-error boundary (Law 8 spirit): log + swallow. The
+      // BackgroundSyncRunner tracks `anyAgentFailed` based on
+      // dispatcher/insert errors, not on individual notification enqueue
+      // failures — a pull that completed but failed to enqueue DND-
+      // suppressed notifications is NOT a sync failure (data is in DB),
+      // it's a UX gap. The next tick will re-evaluate.
+      logger.error(
+        '[BackgroundNotifier] batch enqueue failed for ${queued.length} '
+        'row(s): $e',
+        st,
+      );
+    }
   }
 }

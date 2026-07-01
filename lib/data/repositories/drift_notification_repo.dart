@@ -33,6 +33,43 @@ class DriftNotificationRepo implements INotificationRepo {
   }
 
   @override
+  Future<List<int>> enqueueBatch(
+    List<PendingNotification> notifications,
+  ) async {
+    // Empty → no-op (avoids empty VALUES SQL clause; interface contract).
+    if (notifications.isEmpty) return const <int>[];
+
+    // Single transaction across all inserts (US-018): one round-trip to
+    // sqlite (full block commit) instead of N individual fsyncs. The
+    // partial UNIQUE index `pending_notifications_by_server` enforces
+    // (instance_id, message_server_id) dedup server-side via
+    // ON CONFLICT DO NOTHING, matching single-row [enqueue]'s contract.
+    // This is a sequence rather than a single multi-row INSERT because
+    // the drift generated code maps `insertPendingNotification` to a
+    // typed customInsert; refactoring to `batch(insertAll)` would
+    // require a generated query rewrite and codegen — accepted N+1
+    // measured on cold storage vs the codegen churn is a wash, but the
+    // transaction collapses fsync cost which is the dominant latency
+    // contributor on flash storage.
+    return _database.transaction(() async {
+      final ids = <int>[];
+      for (final n in notifications) {
+        // iron-law-allow: Law6 -- drift codegen maps insertPendingNotification to a typed customInsert, blocking a single multi-row INSERT without a generated-query rewrite; the transaction collapses the dominant fsync cost (see rationale above).
+        final id = await _database.insertPendingNotification(
+          n.agentId,
+          n.instanceId,
+          n.agentName,
+          n.summary,
+          n.createdAt,
+          n.messageServerId,
+        );
+        ids.add(id);
+      }
+      return ids;
+    });
+  }
+
+  @override
   Future<List<PendingNotification>> getPending() async {
     final rows = await _database.getPendingNotifications().get();
     // Law 6: 一次性 map 整批，不逐条 await。
