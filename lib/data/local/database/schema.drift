@@ -484,17 +484,20 @@ deletePendingNotificationsForAgent:
 DELETE FROM pending_notifications WHERE agent_id = :agentId;
 
 -- ============================================================
--- 9. Background Sync State — per-instance last sync cursor
+-- 9. Background Sync State — per-(instance, agent) last sync cursor
 -- ============================================================
-CREATE TABLE sync_state (
-    instance_id TEXT PRIMARY KEY,
-    last_sync_at INTEGER NOT NULL
+CREATE TABLE sync_state_agent (
+    instance_id     TEXT NOT NULL,
+    agent_remote_id TEXT NOT NULL,
+    last_sync_at    INTEGER NOT NULL,
+    PRIMARY KEY (instance_id, agent_remote_id)
 );
 
 getLastSyncAt:
-SELECT last_sync_at FROM sync_state WHERE instance_id = :instanceId;
+SELECT last_sync_at FROM sync_state_agent
+WHERE instance_id = :instanceId AND agent_remote_id = :agentRemoteId;
 
 upsertLastSyncAt:
-INSERT INTO sync_state (instance_id, last_sync_at)
-VALUES (:instanceId, :lastSyncAt)
-ON CONFLICT(instance_id) DO UPDATE SET last_sync_at = :lastSyncAt;
+INSERT INTO sync_state_agent (instance_id, agent_remote_id, last_sync_at)
+VALUES (:instanceId, :agentRemoteId, :lastSyncAt)
+ON CONFLICT(instance_id, agent_remote_id) DO UPDATE SET last_sync_at = :lastSyncAt;

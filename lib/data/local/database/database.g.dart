@@ -4723,21 +4723,33 @@ class PendingNotificationsCompanion
   }
 }
 
-class SyncState extends Table with TableInfo<SyncState, SyncStateData> {
+class SyncStateAgent extends Table
+    with TableInfo<SyncStateAgent, SyncStateAgentData> {
   @override
   final GeneratedDatabase attachedDatabase;
   final String? _alias;
-  SyncState(this.attachedDatabase, [this._alias]);
+  SyncStateAgent(this.attachedDatabase, [this._alias]);
   static const VerificationMeta _instanceIdMeta = const VerificationMeta(
     'instanceId',
   );
   late final GeneratedColumn<String> instanceId = GeneratedColumn<String>(
     'instance_id',
     aliasedName,
-    true,
+    false,
     type: DriftSqlType.string,
-    requiredDuringInsert: false,
-    $customConstraints: 'PRIMARY KEY',
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  static const VerificationMeta _agentRemoteIdMeta = const VerificationMeta(
+    'agentRemoteId',
+  );
+  late final GeneratedColumn<String> agentRemoteId = GeneratedColumn<String>(
+    'agent_remote_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
   );
   static const VerificationMeta _lastSyncAtMeta = const VerificationMeta(
     'lastSyncAt',
@@ -4751,15 +4763,15 @@ class SyncState extends Table with TableInfo<SyncState, SyncStateData> {
     $customConstraints: 'NOT NULL',
   );
   @override
-  List<GeneratedColumn> get $columns => [instanceId, lastSyncAt];
+  List<GeneratedColumn> get $columns => [instanceId, agentRemoteId, lastSyncAt];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
   String get actualTableName => $name;
-  static const String $name = 'sync_state';
+  static const String $name = 'sync_state_agent';
   @override
   VerificationContext validateIntegrity(
-    Insertable<SyncStateData> instance, {
+    Insertable<SyncStateAgentData> instance, {
     bool isInserting = false,
   }) {
     final context = VerificationContext();
@@ -4769,6 +4781,19 @@ class SyncState extends Table with TableInfo<SyncState, SyncStateData> {
         _instanceIdMeta,
         instanceId.isAcceptableOrUnknown(data['instance_id']!, _instanceIdMeta),
       );
+    } else if (isInserting) {
+      context.missing(_instanceIdMeta);
+    }
+    if (data.containsKey('agent_remote_id')) {
+      context.handle(
+        _agentRemoteIdMeta,
+        agentRemoteId.isAcceptableOrUnknown(
+          data['agent_remote_id']!,
+          _agentRemoteIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_agentRemoteIdMeta);
     }
     if (data.containsKey('last_sync_at')) {
       context.handle(
@@ -4785,15 +4810,19 @@ class SyncState extends Table with TableInfo<SyncState, SyncStateData> {
   }
 
   @override
-  Set<GeneratedColumn> get $primaryKey => {instanceId};
+  Set<GeneratedColumn> get $primaryKey => {instanceId, agentRemoteId};
   @override
-  SyncStateData map(Map<String, dynamic> data, {String? tablePrefix}) {
+  SyncStateAgentData map(Map<String, dynamic> data, {String? tablePrefix}) {
     final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return SyncStateData(
+    return SyncStateAgentData(
       instanceId: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}instance_id'],
-      ),
+      )!,
+      agentRemoteId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_remote_id'],
+      )!,
       lastSyncAt: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}last_sync_at'],
@@ -4802,44 +4831,53 @@ class SyncState extends Table with TableInfo<SyncState, SyncStateData> {
   }
 
   @override
-  SyncState createAlias(String alias) {
-    return SyncState(attachedDatabase, alias);
+  SyncStateAgent createAlias(String alias) {
+    return SyncStateAgent(attachedDatabase, alias);
   }
 
+  @override
+  List<String> get customConstraints => const [
+    'PRIMARY KEY(instance_id, agent_remote_id)',
+  ];
   @override
   bool get dontWriteConstraints => true;
 }
 
-class SyncStateData extends DataClass implements Insertable<SyncStateData> {
-  final String? instanceId;
+class SyncStateAgentData extends DataClass
+    implements Insertable<SyncStateAgentData> {
+  final String instanceId;
+  final String agentRemoteId;
   final int lastSyncAt;
-  const SyncStateData({this.instanceId, required this.lastSyncAt});
+  const SyncStateAgentData({
+    required this.instanceId,
+    required this.agentRemoteId,
+    required this.lastSyncAt,
+  });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
-    if (!nullToAbsent || instanceId != null) {
-      map['instance_id'] = Variable<String>(instanceId);
-    }
+    map['instance_id'] = Variable<String>(instanceId);
+    map['agent_remote_id'] = Variable<String>(agentRemoteId);
     map['last_sync_at'] = Variable<int>(lastSyncAt);
     return map;
   }
 
-  SyncStateCompanion toCompanion(bool nullToAbsent) {
-    return SyncStateCompanion(
-      instanceId: instanceId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(instanceId),
+  SyncStateAgentCompanion toCompanion(bool nullToAbsent) {
+    return SyncStateAgentCompanion(
+      instanceId: Value(instanceId),
+      agentRemoteId: Value(agentRemoteId),
       lastSyncAt: Value(lastSyncAt),
     );
   }
 
-  factory SyncStateData.fromJson(
+  factory SyncStateAgentData.fromJson(
     Map<String, dynamic> json, {
     ValueSerializer? serializer,
   }) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
-    return SyncStateData(
-      instanceId: serializer.fromJson<String?>(json['instance_id']),
+    return SyncStateAgentData(
+      instanceId: serializer.fromJson<String>(json['instance_id']),
+      agentRemoteId: serializer.fromJson<String>(json['agent_remote_id']),
       lastSyncAt: serializer.fromJson<int>(json['last_sync_at']),
     );
   }
@@ -4847,23 +4885,29 @@ class SyncStateData extends DataClass implements Insertable<SyncStateData> {
   Map<String, dynamic> toJson({ValueSerializer? serializer}) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
-      'instance_id': serializer.toJson<String?>(instanceId),
+      'instance_id': serializer.toJson<String>(instanceId),
+      'agent_remote_id': serializer.toJson<String>(agentRemoteId),
       'last_sync_at': serializer.toJson<int>(lastSyncAt),
     };
   }
 
-  SyncStateData copyWith({
-    Value<String?> instanceId = const Value.absent(),
+  SyncStateAgentData copyWith({
+    String? instanceId,
+    String? agentRemoteId,
     int? lastSyncAt,
-  }) => SyncStateData(
-    instanceId: instanceId.present ? instanceId.value : this.instanceId,
+  }) => SyncStateAgentData(
+    instanceId: instanceId ?? this.instanceId,
+    agentRemoteId: agentRemoteId ?? this.agentRemoteId,
     lastSyncAt: lastSyncAt ?? this.lastSyncAt,
   );
-  SyncStateData copyWithCompanion(SyncStateCompanion data) {
-    return SyncStateData(
+  SyncStateAgentData copyWithCompanion(SyncStateAgentCompanion data) {
+    return SyncStateAgentData(
       instanceId: data.instanceId.present
           ? data.instanceId.value
           : this.instanceId,
+      agentRemoteId: data.agentRemoteId.present
+          ? data.agentRemoteId.value
+          : this.agentRemoteId,
       lastSyncAt: data.lastSyncAt.present
           ? data.lastSyncAt.value
           : this.lastSyncAt,
@@ -4872,56 +4916,67 @@ class SyncStateData extends DataClass implements Insertable<SyncStateData> {
 
   @override
   String toString() {
-    return (StringBuffer('SyncStateData(')
+    return (StringBuffer('SyncStateAgentData(')
           ..write('instanceId: $instanceId, ')
+          ..write('agentRemoteId: $agentRemoteId, ')
           ..write('lastSyncAt: $lastSyncAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(instanceId, lastSyncAt);
+  int get hashCode => Object.hash(instanceId, agentRemoteId, lastSyncAt);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      (other is SyncStateData &&
+      (other is SyncStateAgentData &&
           other.instanceId == this.instanceId &&
+          other.agentRemoteId == this.agentRemoteId &&
           other.lastSyncAt == this.lastSyncAt);
 }
 
-class SyncStateCompanion extends UpdateCompanion<SyncStateData> {
-  final Value<String?> instanceId;
+class SyncStateAgentCompanion extends UpdateCompanion<SyncStateAgentData> {
+  final Value<String> instanceId;
+  final Value<String> agentRemoteId;
   final Value<int> lastSyncAt;
   final Value<int> rowid;
-  const SyncStateCompanion({
+  const SyncStateAgentCompanion({
     this.instanceId = const Value.absent(),
+    this.agentRemoteId = const Value.absent(),
     this.lastSyncAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
-  SyncStateCompanion.insert({
-    this.instanceId = const Value.absent(),
+  SyncStateAgentCompanion.insert({
+    required String instanceId,
+    required String agentRemoteId,
     required int lastSyncAt,
     this.rowid = const Value.absent(),
-  }) : lastSyncAt = Value(lastSyncAt);
-  static Insertable<SyncStateData> custom({
+  }) : instanceId = Value(instanceId),
+       agentRemoteId = Value(agentRemoteId),
+       lastSyncAt = Value(lastSyncAt);
+  static Insertable<SyncStateAgentData> custom({
     Expression<String>? instanceId,
+    Expression<String>? agentRemoteId,
     Expression<int>? lastSyncAt,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (instanceId != null) 'instance_id': instanceId,
+      if (agentRemoteId != null) 'agent_remote_id': agentRemoteId,
       if (lastSyncAt != null) 'last_sync_at': lastSyncAt,
       if (rowid != null) 'rowid': rowid,
     });
   }
 
-  SyncStateCompanion copyWith({
-    Value<String?>? instanceId,
+  SyncStateAgentCompanion copyWith({
+    Value<String>? instanceId,
+    Value<String>? agentRemoteId,
     Value<int>? lastSyncAt,
     Value<int>? rowid,
   }) {
-    return SyncStateCompanion(
+    return SyncStateAgentCompanion(
       instanceId: instanceId ?? this.instanceId,
+      agentRemoteId: agentRemoteId ?? this.agentRemoteId,
       lastSyncAt: lastSyncAt ?? this.lastSyncAt,
       rowid: rowid ?? this.rowid,
     );
@@ -4932,6 +4987,9 @@ class SyncStateCompanion extends UpdateCompanion<SyncStateData> {
     final map = <String, Expression>{};
     if (instanceId.present) {
       map['instance_id'] = Variable<String>(instanceId.value);
+    }
+    if (agentRemoteId.present) {
+      map['agent_remote_id'] = Variable<String>(agentRemoteId.value);
     }
     if (lastSyncAt.present) {
       map['last_sync_at'] = Variable<int>(lastSyncAt.value);
@@ -4944,8 +5002,9 @@ class SyncStateCompanion extends UpdateCompanion<SyncStateData> {
 
   @override
   String toString() {
-    return (StringBuffer('SyncStateCompanion(')
+    return (StringBuffer('SyncStateAgentCompanion(')
           ..write('instanceId: $instanceId, ')
+          ..write('agentRemoteId: $agentRemoteId, ')
           ..write('lastSyncAt: $lastSyncAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -5014,7 +5073,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final PendingNotifications pendingNotifications = PendingNotifications(
     this,
   );
-  late final SyncState syncState = SyncState(this);
+  late final SyncStateAgent syncStateAgent = SyncStateAgent(this);
   Selectable<Instance> getAllInstances() {
     return customSelect(
       'SELECT * FROM instances ORDER BY last_connected_at DESC',
@@ -5705,19 +5764,30 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
-  Selectable<int> getLastSyncAt(String? instanceId) {
+  Selectable<int> getLastSyncAt(String instanceId, String agentRemoteId) {
     return customSelect(
-      'SELECT last_sync_at FROM sync_state WHERE instance_id = ?1',
-      variables: [Variable<String>(instanceId)],
-      readsFrom: {syncState},
+      'SELECT last_sync_at FROM sync_state_agent WHERE instance_id = ?1 AND agent_remote_id = ?2',
+      variables: [
+        Variable<String>(instanceId),
+        Variable<String>(agentRemoteId),
+      ],
+      readsFrom: {syncStateAgent},
     ).map((QueryRow row) => row.read<int>('last_sync_at'));
   }
 
-  Future<int> upsertLastSyncAt(String? instanceId, int lastSyncAt) {
+  Future<int> upsertLastSyncAt(
+    String instanceId,
+    String agentRemoteId,
+    int lastSyncAt,
+  ) {
     return customInsert(
-      'INSERT INTO sync_state (instance_id, last_sync_at) VALUES (?1, ?2) ON CONFLICT (instance_id) DO UPDATE SET last_sync_at = ?2',
-      variables: [Variable<String>(instanceId), Variable<int>(lastSyncAt)],
-      updates: {syncState},
+      'INSERT INTO sync_state_agent (instance_id, agent_remote_id, last_sync_at) VALUES (?1, ?2, ?3) ON CONFLICT (instance_id, agent_remote_id) DO UPDATE SET last_sync_at = ?3',
+      variables: [
+        Variable<String>(instanceId),
+        Variable<String>(agentRemoteId),
+        Variable<int>(lastSyncAt),
+      ],
+      updates: {syncStateAgent},
     );
   }
 
@@ -5746,7 +5816,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     userPreferences,
     achievementUnlocks,
     pendingNotifications,
-    syncState,
+    syncStateAgent,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -8039,21 +8109,24 @@ typedef $PendingNotificationsProcessedTableManager =
       PendingNotification,
       PrefetchHooks Function()
     >;
-typedef $SyncStateCreateCompanionBuilder =
-    SyncStateCompanion Function({
-      Value<String?> instanceId,
+typedef $SyncStateAgentCreateCompanionBuilder =
+    SyncStateAgentCompanion Function({
+      required String instanceId,
+      required String agentRemoteId,
       required int lastSyncAt,
       Value<int> rowid,
     });
-typedef $SyncStateUpdateCompanionBuilder =
-    SyncStateCompanion Function({
-      Value<String?> instanceId,
+typedef $SyncStateAgentUpdateCompanionBuilder =
+    SyncStateAgentCompanion Function({
+      Value<String> instanceId,
+      Value<String> agentRemoteId,
       Value<int> lastSyncAt,
       Value<int> rowid,
     });
 
-class $SyncStateFilterComposer extends Composer<_$AppDatabase, SyncState> {
-  $SyncStateFilterComposer({
+class $SyncStateAgentFilterComposer
+    extends Composer<_$AppDatabase, SyncStateAgent> {
+  $SyncStateAgentFilterComposer({
     required super.$db,
     required super.$table,
     super.joinBuilder,
@@ -8065,14 +8138,20 @@ class $SyncStateFilterComposer extends Composer<_$AppDatabase, SyncState> {
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get agentRemoteId => $composableBuilder(
+    column: $table.agentRemoteId,
+    builder: (column) => ColumnFilters(column),
+  );
+
   ColumnFilters<int> get lastSyncAt => $composableBuilder(
     column: $table.lastSyncAt,
     builder: (column) => ColumnFilters(column),
   );
 }
 
-class $SyncStateOrderingComposer extends Composer<_$AppDatabase, SyncState> {
-  $SyncStateOrderingComposer({
+class $SyncStateAgentOrderingComposer
+    extends Composer<_$AppDatabase, SyncStateAgent> {
+  $SyncStateAgentOrderingComposer({
     required super.$db,
     required super.$table,
     super.joinBuilder,
@@ -8084,14 +8163,20 @@ class $SyncStateOrderingComposer extends Composer<_$AppDatabase, SyncState> {
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get agentRemoteId => $composableBuilder(
+    column: $table.agentRemoteId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get lastSyncAt => $composableBuilder(
     column: $table.lastSyncAt,
     builder: (column) => ColumnOrderings(column),
   );
 }
 
-class $SyncStateAnnotationComposer extends Composer<_$AppDatabase, SyncState> {
-  $SyncStateAnnotationComposer({
+class $SyncStateAgentAnnotationComposer
+    extends Composer<_$AppDatabase, SyncStateAgent> {
+  $SyncStateAgentAnnotationComposer({
     required super.$db,
     required super.$table,
     super.joinBuilder,
@@ -8103,58 +8188,67 @@ class $SyncStateAnnotationComposer extends Composer<_$AppDatabase, SyncState> {
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get agentRemoteId => $composableBuilder(
+    column: $table.agentRemoteId,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<int> get lastSyncAt => $composableBuilder(
     column: $table.lastSyncAt,
     builder: (column) => column,
   );
 }
 
-class $SyncStateTableManager
+class $SyncStateAgentTableManager
     extends
         RootTableManager<
           _$AppDatabase,
-          SyncState,
-          SyncStateData,
-          $SyncStateFilterComposer,
-          $SyncStateOrderingComposer,
-          $SyncStateAnnotationComposer,
-          $SyncStateCreateCompanionBuilder,
-          $SyncStateUpdateCompanionBuilder,
+          SyncStateAgent,
+          SyncStateAgentData,
+          $SyncStateAgentFilterComposer,
+          $SyncStateAgentOrderingComposer,
+          $SyncStateAgentAnnotationComposer,
+          $SyncStateAgentCreateCompanionBuilder,
+          $SyncStateAgentUpdateCompanionBuilder,
           (
-            SyncStateData,
-            BaseReferences<_$AppDatabase, SyncState, SyncStateData>,
+            SyncStateAgentData,
+            BaseReferences<_$AppDatabase, SyncStateAgent, SyncStateAgentData>,
           ),
-          SyncStateData,
+          SyncStateAgentData,
           PrefetchHooks Function()
         > {
-  $SyncStateTableManager(_$AppDatabase db, SyncState table)
+  $SyncStateAgentTableManager(_$AppDatabase db, SyncStateAgent table)
     : super(
         TableManagerState(
           db: db,
           table: table,
           createFilteringComposer: () =>
-              $SyncStateFilterComposer($db: db, $table: table),
+              $SyncStateAgentFilterComposer($db: db, $table: table),
           createOrderingComposer: () =>
-              $SyncStateOrderingComposer($db: db, $table: table),
+              $SyncStateAgentOrderingComposer($db: db, $table: table),
           createComputedFieldComposer: () =>
-              $SyncStateAnnotationComposer($db: db, $table: table),
+              $SyncStateAgentAnnotationComposer($db: db, $table: table),
           updateCompanionCallback:
               ({
-                Value<String?> instanceId = const Value.absent(),
+                Value<String> instanceId = const Value.absent(),
+                Value<String> agentRemoteId = const Value.absent(),
                 Value<int> lastSyncAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
-              }) => SyncStateCompanion(
+              }) => SyncStateAgentCompanion(
                 instanceId: instanceId,
+                agentRemoteId: agentRemoteId,
                 lastSyncAt: lastSyncAt,
                 rowid: rowid,
               ),
           createCompanionCallback:
               ({
-                Value<String?> instanceId = const Value.absent(),
+                required String instanceId,
+                required String agentRemoteId,
                 required int lastSyncAt,
                 Value<int> rowid = const Value.absent(),
-              }) => SyncStateCompanion.insert(
+              }) => SyncStateAgentCompanion.insert(
                 instanceId: instanceId,
+                agentRemoteId: agentRemoteId,
                 lastSyncAt: lastSyncAt,
                 rowid: rowid,
               ),
@@ -8166,18 +8260,21 @@ class $SyncStateTableManager
       );
 }
 
-typedef $SyncStateProcessedTableManager =
+typedef $SyncStateAgentProcessedTableManager =
     ProcessedTableManager<
       _$AppDatabase,
-      SyncState,
-      SyncStateData,
-      $SyncStateFilterComposer,
-      $SyncStateOrderingComposer,
-      $SyncStateAnnotationComposer,
-      $SyncStateCreateCompanionBuilder,
-      $SyncStateUpdateCompanionBuilder,
-      (SyncStateData, BaseReferences<_$AppDatabase, SyncState, SyncStateData>),
-      SyncStateData,
+      SyncStateAgent,
+      SyncStateAgentData,
+      $SyncStateAgentFilterComposer,
+      $SyncStateAgentOrderingComposer,
+      $SyncStateAgentAnnotationComposer,
+      $SyncStateAgentCreateCompanionBuilder,
+      $SyncStateAgentUpdateCompanionBuilder,
+      (
+        SyncStateAgentData,
+        BaseReferences<_$AppDatabase, SyncStateAgent, SyncStateAgentData>,
+      ),
+      SyncStateAgentData,
       PrefetchHooks Function()
     >;
 
@@ -8199,6 +8296,6 @@ class $AppDatabaseManager {
       $AchievementUnlocksTableManager(_db, _db.achievementUnlocks);
   $PendingNotificationsTableManager get pendingNotifications =>
       $PendingNotificationsTableManager(_db, _db.pendingNotifications);
-  $SyncStateTableManager get syncState =>
-      $SyncStateTableManager(_db, _db.syncState);
+  $SyncStateAgentTableManager get syncStateAgent =>
+      $SyncStateAgentTableManager(_db, _db.syncStateAgent);
 }

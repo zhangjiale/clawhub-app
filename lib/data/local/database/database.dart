@@ -29,7 +29,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration {
@@ -128,7 +128,12 @@ class AppDatabase extends _$AppDatabase {
           // user_preferences, and backfills the singleton settings row to
           // background_sync_enabled = 1 (default ON). Note: last_sync_at is
           // not backfilled — first background tick uses now()-1h.
-          await migrator.createTable(syncState);
+          await customStatement('''
+            CREATE TABLE IF NOT EXISTS sync_state (
+              instance_id TEXT PRIMARY KEY,
+              last_sync_at INTEGER NOT NULL
+            );
+          ''');
           // US-018: background_sync_enabled toggle (default ON = 1).
           await migrator.addColumn(
             userPreferences,
@@ -137,6 +142,18 @@ class AppDatabase extends _$AppDatabase {
           await customStatement(
             'UPDATE user_preferences SET background_sync_enabled = 1 WHERE id = 1',
           );
+        }
+        if (from < 9) {
+          // US-018 fix: cursor moved from per-instance to
+          // per-(instance, agent_remote_id). The old sync_state's
+          // last_sync_at was the cross-agent MAX; backfilling it to each
+          // agent would perpetuate the cross-agent message-loss bug, so
+          // drop without backfill. First tick re-walks from null (=0);
+          // merge dedup idempotently skips already-inserted rows by
+          // clientId/serverId and re-covers recently-lost slow-agent
+          // messages (bounded by maxPagesPerAgent=5 / maxMessagesPerPull=100).
+          await migrator.deleteTable('sync_state');
+          await migrator.createTable(syncStateAgent);
         }
       },
     );

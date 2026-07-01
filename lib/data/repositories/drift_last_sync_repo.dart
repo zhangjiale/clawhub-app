@@ -6,14 +6,18 @@ class DriftLastSyncRepo implements ILastSyncRepo {
   DriftLastSyncRepo(this._database);
 
   @override
-  Future<int?> get(String instanceId) async {
-    final rows = await _database.getLastSyncAt(instanceId).get();
+  Future<int?> get(String instanceId, String agentRemoteId) async {
+    final rows = await _database.getLastSyncAt(instanceId, agentRemoteId).get();
     if (rows.isEmpty) return null;
     return rows.first;
   }
 
   @override
-  Future<void> upsert(String instanceId, int msEpoch) async {
-    await _database.upsertLastSyncAt(instanceId, msEpoch);
+  Future<void> upsert(
+    String instanceId,
+    String agentRemoteId,
+    int msEpoch,
+  ) async {
+    await _database.upsertLastSyncAt(instanceId, agentRemoteId, msEpoch);
   }
 }
