@@ -18,6 +18,22 @@ abstract class INotificationRepo {
   /// 不依赖返回值判断去重。
   Future<int> enqueue(PendingNotification notification);
 
+  /// 批量入队多条静默通知（Law 6：单事务，避免逐条 round-trip）。
+  ///
+  /// 为什么需要这个方法：[BackgroundNotifierShared.enqueuePulled] 在背景
+  /// tick 中处理一批被拉取的消息（最多 `maxMessagesPerPull`=100 条 × N
+  /// Agent），逐条 [enqueue] 会在慢存储设备上累积明显的延迟，可能阻塞
+  /// WorkManager 10 分钟预算。批量入队必须：
+  /// - 在单个事务里完成所有插入（全成功 / 全回滚语义）
+  /// - 沿用相同的 serverId 唯一索引去重（与单条 enqueue 一致）
+  /// - 返回新插入的 rowid 列表（顺序与输入一致；被去重的项仍返回
+  ///   对应现有 rowid，便于调用方按位对账）
+  ///
+  /// 空列表必须为 no-op（不允许对空 IN/VALUES 触发非法 SQL）。
+  /// 调用方若需要按行去重反馈，应基于二次查询 [countPending] /
+  /// [getPending]，而非依赖返回值列表。
+  Future<List<int>> enqueueBatch(List<PendingNotification> notifications);
+
   /// 取所有未投递 (delivered=false) 的条目，按 createdAt 升序。
   Future<List<PendingNotification>> getPending();
 

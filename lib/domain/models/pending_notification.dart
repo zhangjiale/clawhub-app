@@ -5,6 +5,10 @@
 ///
 /// 纯 domain 模型 (Law 1)，无 Flutter / drift 依赖。Drift 行 ↔ 本模型的
 /// 映射在 data/local/mapping/notification_mapping.dart 中完成。
+library;
+
+import 'notification_event.dart';
+
 class PendingNotification {
   /// 自增主键 (Drift rowid)；新建未持久化时为 0。
   final int id;
@@ -64,6 +68,28 @@ class PendingNotification {
   /// (内存 LRU 集合，不入 DB 约束)。
   String? get dedupKey =>
       messageServerId == null ? null : '$instanceId:$messageServerId';
+
+  /// Build a fresh (id=0, undelivered) row from a [ReplyEvent].
+  ///
+  /// Shared by both the live [NotificationDispatcher] DND path and the
+  /// background-isolate [BackgroundNotifierShared] pull path so the row shape
+  /// is defined exactly once. `createdAt` is supplied via [nowEpochSeconds] so
+  /// tests can inject a fixed clock; production callers pass
+  /// `DateTime.now().millisecondsSinceEpoch ~/ 1000`.
+  factory PendingNotification.fromReplyEvent(
+    ReplyEvent event, {
+    required int nowEpochSeconds,
+  }) {
+    return PendingNotification(
+      id: 0,
+      agentId: event.agentId,
+      instanceId: event.instanceId,
+      agentName: event.agentName,
+      summary: event.contentPreview,
+      createdAt: nowEpochSeconds,
+      messageServerId: event.messageServerId,
+    );
+  }
 
   @override
   bool operator ==(Object other) =>

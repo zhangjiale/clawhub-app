@@ -15,6 +15,22 @@ class _FakeNotificationRepo implements INotificationRepo {
   }
 
   @override
+  Future<List<int>> enqueueBatch(
+    List<PendingNotification> notifications,
+  ) async {
+    // Empty → no-op (matches DriftNotificationRepo contract).
+    if (notifications.isEmpty) return const <int>[];
+    // Iterate calling per-row enqueue — fakes don't share transaction
+    // semantics with Drift; behavioral contract is the rowid list
+    // shape and dedup (out of scope for this minimal fake).
+    final ids = <int>[];
+    for (final n in notifications) {
+      ids.add(await enqueue(n));
+    }
+    return ids;
+  }
+
+  @override
   Future<List<PendingNotification>> getPending() async {
     return _store.where((n) => !n.delivered).toList();
   }
@@ -113,5 +129,48 @@ void main() {
     await repo.enqueue(_n('b'));
     await repo.enqueue(_n('c'));
     expect(await repo.countPending(), 3);
+  });
+
+  // ===========================================================================
+  // enqueueBatch — Law 6 batch contract (US-018 F8 fix).
+  //
+  // BackgroundNotifierShared.enqueuePulled processes one tick's worth of
+  // pulled messages. With maxMessagesPerPull=100 across N agents, the
+  // legacy per-row enqueue produced N+1 round-trips that visibly stalled
+  // the WorkManager 10-minute budget on slow flash storage. The repo
+  // now exposes a single-call batch entry point. This file is the LAW 17
+  // contract test that pins the surface.
+  // ===========================================================================
+
+  test('enqueueBatch assigns ids and persists all rows', () async {
+    final ids = await repo.enqueueBatch([
+      _n('a', serverId: 's1'),
+      _n('b', serverId: 's2'),
+      _n('c', serverId: 's3'),
+    ]);
+    expect(ids.length, 3);
+    expect(ids.every((id) => id > 0), isTrue);
+    // All ids unique — order matches input order.
+    expect(ids.toSet().length, 3);
+    expect(await repo.countPending(), 3);
+  });
+
+  test(
+    'enqueueBatch empty list returns empty list and does not change state',
+    () async {
+      // Pre-load a row so we can assert "no-op, not even a delete".
+      await repo.enqueue(_n('a'));
+      final beforePending = await repo.countPending();
+
+      final ids = await repo.enqueueBatch(const []);
+      expect(ids, isEmpty);
+      expect(await repo.countPending(), beforePending);
+    },
+  );
+
+  test('enqueueBatch single row behaves like enqueue', () async {
+    final ids = await repo.enqueueBatch([_n('solo', serverId: 's1')]);
+    expect(ids.length, 1);
+    expect(await repo.countPending(), 1);
   });
 }
