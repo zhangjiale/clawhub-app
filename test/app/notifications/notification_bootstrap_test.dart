@@ -1,10 +1,8 @@
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
 import 'package:claw_hub/app/notifications/notification_coordinator.dart';
-import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
-import 'package:claw_hub/domain/repositories/i_settings_repo.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -28,23 +26,6 @@ class _MockWidgetRef extends Mock implements WidgetRef {}
 class _MockCoordinator extends Mock implements NotificationCoordinator {}
 
 class _MockScheduler extends Mock implements BackgroundSyncScheduler {}
-
-class _FakeLogger implements ILogger {
-  @override
-  void info(String m) {}
-  @override
-  void error(String m, [StackTrace? s]) {}
-}
-
-class _FakeSettingsRepo implements ISettingsRepo {
-  @override
-  Stream<UserPreferences> watchPreferences() =>
-      const Stream<UserPreferences>.empty();
-  @override
-  Future<UserPreferences> getPreferences() async => UserPreferences.defaults();
-  @override
-  noSuchMethod(Invocation i) => super.noSuchMethod(i);
-}
 
 void main() {
   setUpAll(() {

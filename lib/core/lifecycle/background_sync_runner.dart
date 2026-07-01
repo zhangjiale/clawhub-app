@@ -138,7 +138,6 @@ class BackgroundSyncRunner {
 
       // Per-agent cursor walk
       int totalInserted = 0;
-      bool budgetExpired = false;
 
       // Build the resolveAgent closure once, shared across all agents.
       // It closes over the real instanceId (the caller already has it in
@@ -152,7 +151,6 @@ class BackgroundSyncRunner {
       for (final agent in agents) {
         if (totalInserted >= budget.maxMessagesPerPull) break;
         if (now() >= deadline) {
-          budgetExpired = true;
           logger.info('Instance ${instance.id}: per-instance budget expired');
           break;
         }
