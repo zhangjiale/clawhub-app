@@ -34,9 +34,9 @@ Future<void> main() async {
       // NOT called) so flutter_secure_storage keychain access works
       // cross-isolate.
       initializeWorkmanager: () => Workmanager().initialize(
+        // workmanager 0.9: isInDebugMode is deprecated and has no effect
+        // (confirmed in workmanager_impl.dart:122-127). Omit it entirely.
         callbackDispatcher,
-        // ignore: deprecated_member_use
-        isInDebugMode: kDebugMode,
       ),
       createDatabase: createAppDatabase,
       buildSuccess: (database) => ProviderScope(
@@ -59,16 +59,29 @@ Future<void> main() async {
   );
 }
 
-/// Last-resort handler for uncaught errors that escape [bootstrapApp]'s
-/// inner try/catch AND the `await` chain (e.g. errors from a microtask
-/// scheduled in a future tick). Mirrors the bootstrap-failure path so the
-/// user always sees a visible error screen instead of a frozen splash.
+/// Handler for uncaught async errors that escape [bootstrapApp]'s
+/// inner try/catch AND the `await` chain — e.g. an un-awaited Future that
+/// throws, a Timer/microtask callback that throws, or a Stream with no
+/// `onError` listener.
+///
+/// **Why this MUST NOT call `runApp`:** by the time such an error lands
+/// here, [bootstrapApp] has already mounted the real app (runApp was
+/// called inside this zone). Calling `runApp` again would unmount the
+/// existing `ProviderScope`, which disposes `databaseProvider` and fires
+/// its `ref.onDispose(() => database.close())` — closing the database and
+/// dropping all in-memory state (drafts, view-model state, nav stack) for
+/// a single transient async error. The cure would be worse than the disease.
+///
+/// pre-runApp startup failures are a different beast: there the
+/// `ProviderScope` is not yet mounted, so [bootstrapApp]'s `showFatal`
+/// path CAN safely `runApp(StartupFatalScreen)`. This handler only ever
+/// sees post-mount async orphans, for which `runApp(fatal)` is a misfit.
+///
+/// Build/gesture/layout errors do not enter the zone — they are routed to
+/// `FlutterError.onError` / `ErrorWidget.builder` (set in `bootstrap.dart`).
 void _onZoneError(Object error, StackTrace stackTrace) {
   const logger = DebugPrintLogger();
-  logger.error('[main] uncaught zone error: $error', stackTrace);
-  runApp(
-    StartupFatalScreen(error: error, stackTrace: stackTrace, onRetry: main),
-  );
+  logger.error('[main] uncaught async error: $error', stackTrace);
 }
 
 /// 应用启动后初始化连接编排器。

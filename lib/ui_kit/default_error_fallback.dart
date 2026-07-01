@@ -11,7 +11,7 @@ import 'package:flutter/material.dart';
 /// * [error] — the exception object; rendered as text (up to 6 lines).
 /// * [stackTrace] — when provided, rendered in a collapsed `ExpansionTile`
 ///   so a developer can expand to read the full Dart stack.
-/// * [onRetry] — when provided, a "Retry" `FilledButton` is shown. Wired
+/// * [onRetry] — when provided, a "重试" `FilledButton` is shown. Wired
 ///   up by the startup-fatal screen to re-run `main()`.
 class DefaultErrorFallback extends StatelessWidget {
   final Object? error;
@@ -35,7 +35,7 @@ class DefaultErrorFallback extends StatelessWidget {
         children: [
           Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
           const SizedBox(height: 16),
-          Text('Something went wrong', style: theme.textTheme.titleMedium),
+          Text('应用出现了问题', style: theme.textTheme.titleMedium),
           if (error != null) ...[
             const SizedBox(height: 12),
             Text(
@@ -53,13 +53,13 @@ class DefaultErrorFallback extends StatelessWidget {
             FilledButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: const Text('重试'),
             ),
           ],
           if (stackTrace != null) ...[
             const SizedBox(height: 16),
             ExpansionTile(
-              title: const Text('Stack trace'),
+              title: const Text('堆栈信息'),
               childrenPadding: const EdgeInsets.all(8),
               children: [
                 Text(stackTrace.toString(), style: theme.textTheme.bodySmall),
