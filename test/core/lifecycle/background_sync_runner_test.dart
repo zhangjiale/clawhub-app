@@ -346,8 +346,10 @@ void main() {
       budget = const BackgroundSyncBudget();
 
       // Default stubs for mocks used in most tests
-      when(() => lastSyncRepo.get(any())).thenAnswer((_) async => null);
-      when(() => lastSyncRepo.upsert(any(), any())).thenAnswer((_) async {});
+      when(() => lastSyncRepo.get(any(), any())).thenAnswer((_) async => null);
+      when(
+        () => lastSyncRepo.upsert(any(), any(), any()),
+      ).thenAnswer((_) async {});
       when(
         () => messageRepo.batchInsertByIndexedIds(any()),
       ).thenAnswer((inv) async => inv.positionalArguments[0] as List<Message>);
@@ -397,7 +399,7 @@ void main() {
       expect(gateway.connectCount, 0);
     });
 
-    test('executeOnce_noAgents_stillConnectsAndUpdatesLastSync', () async {
+    test('executeOnce_noAgents_connectsWithoutUpsert', () async {
       final inst = _inst('i1');
       when(
         () => settingsRepo.getPreferences(),
@@ -409,7 +411,9 @@ void main() {
 
       await runner.executeOnce();
       expect(gateway.connectCount, 1);
-      verify(() => lastSyncRepo.upsert('i1', clock.now())).called(1);
+      // No agents → no cursor to write. Must NOT upsert (pre-fix wrote
+      // now() — a phantom "synced" marker for a tick that synced nothing).
+      verifyNever(() => lastSyncRepo.upsert(any(), any(), any()));
     });
 
     // -----------------------------------------------------------------------
@@ -421,7 +425,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 100);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 100);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -455,7 +459,7 @@ void main() {
       expect(gateway.fetchHistoryCalls[1].cursor, 'cur1');
 
       // last_sync_at = max(200, 100) = 200
-      verify(() => lastSyncRepo.upsert('i1', 200)).called(1);
+      verify(() => lastSyncRepo.upsert('i1', 'a1', 200)).called(1);
     });
 
     // -----------------------------------------------------------------------
@@ -485,7 +489,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -537,7 +541,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -594,7 +598,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -610,7 +614,7 @@ void main() {
       await runner.executeOnce();
 
       expect(gateway.connectCount, 1);
-      verifyNever(() => lastSyncRepo.upsert(any(), any()));
+      verifyNever(() => lastSyncRepo.upsert(any(), any(), any()));
     });
 
     // -----------------------------------------------------------------------
@@ -645,7 +649,7 @@ void main() {
       await runner.executeOnce();
 
       expect(gateway.connectCount, 1);
-      verifyNever(() => lastSyncRepo.upsert(any(), any()));
+      verifyNever(() => lastSyncRepo.upsert(any(), any(), any()));
       expect(gateway.fetchHistoryCalls.length, 0);
     });
 
@@ -677,7 +681,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -693,7 +697,7 @@ void main() {
       await runner.executeOnce();
 
       verifyNever(() => messageRepo.batchInsertByIndexedIds(any()));
-      verifyNever(() => lastSyncRepo.upsert(any(), any()));
+      verifyNever(() => lastSyncRepo.upsert(any(), any(), any()));
     });
 
     // -----------------------------------------------------------------------
@@ -713,7 +717,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [tombstoned]);
@@ -783,9 +787,9 @@ void main() {
         await runner.executeOnce();
 
         // iA failed → no upsert
-        verifyNever(() => lastSyncRepo.upsert('iA', any()));
+        verifyNever(() => lastSyncRepo.upsert('iA', any(), any()));
         // iB succeeded → upsert with max ts
-        verify(() => lastSyncRepo.upsert('iB', 200)).called(1);
+        verify(() => lastSyncRepo.upsert('iB', 'a1', 200)).called(1);
       },
     );
 
@@ -799,7 +803,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -809,7 +813,7 @@ void main() {
       await runner.executeOnce();
 
       verifyNever(() => messageRepo.batchInsertByIndexedIds(any()));
-      verify(() => lastSyncRepo.upsert('i1', clock.now())).called(1);
+      verify(() => lastSyncRepo.upsert('i1', 'a1', clock.now())).called(1);
     });
 
     // -----------------------------------------------------------------------
@@ -822,7 +826,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -868,7 +872,7 @@ void main() {
           () => settingsRepo.getPreferences(),
         ).thenAnswer((_) async => UserPreferences.defaults());
         when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-        when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+        when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
         when(
           () => agentRepo.getAllByInstanceId('i1'),
         ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -900,7 +904,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -929,7 +933,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -945,7 +949,7 @@ void main() {
       await runner.executeOnce();
 
       verifyNever(() => messageRepo.batchInsertByIndexedIds(any()));
-      verifyNever(() => lastSyncRepo.upsert(any(), any()));
+      verifyNever(() => lastSyncRepo.upsert(any(), any(), any()));
     });
 
     // -----------------------------------------------------------------------
@@ -958,7 +962,7 @@ void main() {
         () => settingsRepo.getPreferences(),
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 0);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 0);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -1016,8 +1020,9 @@ void main() {
 
       expect(gateway.connectCount, 2);
       expect(gateway.fetchHistoryCalls.length, 3);
-      verify(() => lastSyncRepo.upsert('i1', 200)).called(1);
-      verify(() => lastSyncRepo.upsert('i2', 300)).called(1);
+      verify(() => lastSyncRepo.upsert('i1', 'a1', 100)).called(1);
+      verify(() => lastSyncRepo.upsert('i1', 'a2', 200)).called(1);
+      verify(() => lastSyncRepo.upsert('i2', 'b1', 300)).called(1);
     });
 
     // -----------------------------------------------------------------------
@@ -1052,10 +1057,10 @@ void main() {
 
       // iA: connect WAS called, but last_sync_at MUST NOT be updated.
       expect(gateway.connectCount, 2);
-      verifyNever(() => lastSyncRepo.upsert('iA', any()));
+      verifyNever(() => lastSyncRepo.upsert('iA', any(), any()));
 
       // iB: fully synced — last_sync_at IS updated.
-      verify(() => lastSyncRepo.upsert('iB', any())).called(1);
+      verify(() => lastSyncRepo.upsert('iB', 'a1', any())).called(1);
     });
 
     // -----------------------------------------------------------------------
@@ -1069,7 +1074,7 @@ void main() {
       ).thenAnswer((_) async => UserPreferences.defaults());
       when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
       // Override default lastSyncRepo stub: lastSyncMs = 500
-      when(() => lastSyncRepo.get('i1')).thenAnswer((_) async => 500);
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 500);
       when(
         () => agentRepo.getAllByInstanceId('i1'),
       ).thenAnswer((_) async => [_agent('a1', 'i1')]);
@@ -1101,6 +1106,62 @@ void main() {
       // Should have fetched only 2 pages (not maxPagesPerAgent=5),
       // because oldest on page 1 (400) is < lastSyncMs (500).
       expect(gateway.fetchHistoryCalls.length, 2);
+    });
+
+    // =========================================================================
+    // Regression: per-instance cursor caused cross-agent message loss.
+    // Two agents, same instance, different message velocities. The slower
+    // agent's new messages (timestamp between its own high-water mark and the
+    // faster agent's higher max) must NOT be dropped by the >= lastSyncMs
+    // filter. This test is the living documentation of the bug.
+    // =========================================================================
+    test('pins_crossAgentMessageLoss', () async {
+      final inst = _inst('i1');
+
+      when(
+        () => settingsRepo.getPreferences(),
+      ).thenAnswer((_) async => UserPreferences.defaults());
+      when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
+      when(
+        () => agentRepo.getAllByInstanceId('i1'),
+      ).thenAnswer((_) async => [_agent('a1', 'i1'), _agent('a2', 'i1')]);
+
+      // Pretend a prior tick already synced: agent a1 up to t=300,
+      // agent a2 up to t=500. (Under the old per-instance cursor, both
+      // would share cursor=500.)
+      when(() => lastSyncRepo.get('i1', 'a1')).thenAnswer((_) async => 300);
+      when(() => lastSyncRepo.get('i1', 'a2')).thenAnswer((_) async => 500);
+
+      // a1 gets a NEW message at t=350 — strictly between its own high-water
+      // (300) and a2's (500). Under the old per-instance cursor (500) this
+      // message is dropped by `if (msg.timestamp >= lastSyncMs)`.
+      gateway.setHistory('i1', 'a1', [
+        (
+          messages: [_msg(clientId: 'c350', serverId: 's350', timestamp: 350)],
+          nextCursor: null,
+        ),
+      ]);
+      // a2 has no new messages (its page is empty / all below cursor).
+      gateway.setHistory('i1', 'a2', [
+        (messages: <Message>[], nextCursor: null),
+      ]);
+
+      // Pass through all messages as inserted.
+      when(
+        () => messageRepo.batchInsertByIndexedIds(any()),
+      ).thenAnswer((inv) async => inv.positionalArguments[0] as List<Message>);
+
+      await runner.executeOnce();
+
+      // The bug: a1's t=350 message was inserted (not dropped).
+      // Fetch was attempted for a1 (the slow agent).
+      final a1Fetch = gateway.fetchHistoryCalls
+          .where((c) => c.instanceId == 'i1' && c.agentId == 'a1')
+          .toList();
+      expect(a1Fetch, isNotEmpty, reason: 'a1 must be fetched');
+
+      // a1's cursor advances to its own max (350), NOT a2's (500).
+      verify(() => lastSyncRepo.upsert('i1', 'a1', 350)).called(1);
     });
   });
 }

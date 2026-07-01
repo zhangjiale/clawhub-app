@@ -131,34 +131,22 @@ class BackgroundSyncRunner {
       // Load agents for this instance
       final agents = await agentRepo.getAllByInstanceId(instance.id);
       if (agents.isEmpty) {
-        logger.info(
-          'Instance ${instance.id}: no agents, updating last_sync_at',
-        );
-        lastSyncRepo.upsert(instance.id, now());
+        logger.info('Instance ${instance.id}: no agents, skipping cursor');
         await gatewayClient.disconnect(instance.id);
         return;
       }
 
       // Per-agent cursor walk
       int totalInserted = 0;
-      int maxServerTs = -1;
       bool budgetExpired = false;
-      bool anyAgentFailed = false;
-
-      // Snapshot lastSyncMs once per instance for consistent filtering
-      final lastSyncMs = await lastSyncRepo.get(instance.id) ?? 0;
 
       // Build the resolveAgent closure once, shared across all agents.
       // It closes over the real instanceId (the caller already has it in
       // scope), so the lookup only needs the agentRemoteId.
-      final byRemote = <String, Agent>{};
-      for (final a in agents) {
-        byRemote[a.remoteId] = a;
-      }
+      final byRemote = <String, Agent>{for (final a in agents) a.remoteId: a};
       Agent? resolveAgent(String remoteId) {
         final a = byRemote[remoteId];
-        if (a == null || a.isRemoved) return null;
-        return a;
+        return (a == null || a.isRemoved || a.isHidden) ? null : a;
       }
 
       for (final agent in agents) {
@@ -169,36 +157,54 @@ class BackgroundSyncRunner {
           break;
         }
 
-        final result = await _syncAgent(
-          instance: instance,
-          agent: agent,
-          lastSyncMs: lastSyncMs,
-          maxMessagesPerPull: budget.maxMessagesPerPull - totalInserted,
-          deadline: deadline,
-          resolveAgent: resolveAgent,
-        );
+        // Per-agent cursor: prevents cross-agent message loss. A shared
+        // per-instance cursor lets a faster agent's max timestamp overwrite a
+        // slower agent's high-water mark, dropping the slower agent's newer
+        // messages via the >= lastSyncMs filter (see regression test
+        // pins_crossAgentMessageLoss). Read per-agent, before the fetch.
+        final lastSyncMs =
+            await lastSyncRepo.get(instance.id, agent.remoteId) ?? 0;
 
-        if (result.failed) {
-          anyAgentFailed = true;
+        SyncAgentResult result;
+        try {
+          result = await _syncAgent(
+            instance: instance,
+            agent: agent,
+            lastSyncMs: lastSyncMs,
+            maxMessagesPerPull: budget.maxMessagesPerPull - totalInserted,
+            deadline: deadline,
+            resolveAgent: resolveAgent,
+          );
+        } catch (e, st) {
+          logger.error(
+            'Agent ${agent.remoteId} sync threw on ${instance.id}: $e — '
+            'isolating to this agent, continuing with others',
+            st,
+          );
+          continue; // keep processing remaining agents; cursor not advanced
         }
+
         totalInserted += result.insertedCount;
-        if (result.maxTimestamp > maxServerTs) {
-          maxServerTs = result.maxTimestamp;
-        }
-      }
 
-      // Update last_sync_at
-      if (budgetExpired || anyAgentFailed) {
-        // Graceful skip: don't update last_sync_at
-        logger.info(
-          'Instance ${instance.id}: sync incomplete, last_sync_at not updated',
-        );
-      } else {
-        final lastSyncVal = maxServerTs > 0 ? maxServerTs : now();
-        lastSyncRepo.upsert(instance.id, lastSyncVal);
-        logger.info(
-          'Instance ${instance.id}: synced, last_sync_at=$lastSyncVal',
-        );
+        // Advance ONLY this agent's cursor on success. A failed agent's
+        // cursor stays put → re-walks next tick (merge dedup skips
+        // already-inserted rows). Per-agent isolation means one agent's
+        // failure no longer blocks other agents' cursor advancement.
+        if (!result.failed) {
+          final lastSyncVal = result.maxTimestamp > 0
+              ? result.maxTimestamp
+              : now();
+          await lastSyncRepo.upsert(instance.id, agent.remoteId, lastSyncVal);
+          logger.info(
+            'Instance ${instance.id}/${agent.remoteId}: synced, '
+            'last_sync_at=$lastSyncVal',
+          );
+        } else {
+          logger.info(
+            'Instance ${instance.id}/${agent.remoteId}: incomplete, '
+            'last_sync_at not updated',
+          );
+        }
       }
 
       await gatewayClient.disconnect(instance.id);
