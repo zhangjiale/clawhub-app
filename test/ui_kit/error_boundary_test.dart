@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:claw_hub/ui_kit/default_error_fallback.dart';
 import 'package:claw_hub/ui_kit/error_boundary.dart';
 
 void main() {
@@ -7,19 +8,16 @@ void main() {
     testWidgets('renders child when no error', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
-          home: Scaffold(
-            body: ErrorBoundary(
-              child: Text('All good'),
-            ),
-          ),
+          home: Scaffold(body: ErrorBoundary(child: Text('All good'))),
         ),
       );
 
       expect(find.text('All good'), findsOneWidget);
     });
 
-    testWidgets('renders default fallback when child throws (global builder)',
-        (tester) async {
+    testWidgets('renders default fallback when child throws (global builder)', (
+      tester,
+    ) async {
       // The global ErrorWidget.builder is set in main().
       // We set it manually here for test isolation, saving and restoring
       // the previous builder to avoid polluting other tests.
@@ -28,11 +26,7 @@ void main() {
 
       await tester.pumpWidget(
         const MaterialApp(
-          home: Scaffold(
-            body: ErrorBoundary(
-              child: _ThrowingWidget(),
-            ),
-          ),
+          home: Scaffold(body: ErrorBoundary(child: _ThrowingWidget())),
         ),
       );
 
@@ -54,9 +48,7 @@ void main() {
     testWidgets('renders error icon and message', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
-          home: Scaffold(
-            body: DefaultErrorFallback(error: 'Test'),
-          ),
+          home: Scaffold(body: DefaultErrorFallback(error: 'Test')),
         ),
       );
 
