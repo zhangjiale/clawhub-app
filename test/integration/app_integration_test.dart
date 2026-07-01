@@ -6,11 +6,10 @@ import 'package:drift/native.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
-import 'package:claw_hub/core/lifecycle/i_background_sync_prefs.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/main.dart';
+
+import '../_helpers/mocks.dart' show noOpBackgroundSyncSchedulerOverride;
 
 /// Headless 测试用的 [ILocalNotificationService] 替身。
 ///
@@ -39,36 +38,9 @@ class _FakeLocalNotificationService implements ILocalNotificationService {
   Future<void> dispose() async {}
 }
 
-class _NoOpWorkmanagerBackend implements WorkmanagerBackend {
-  @override
-  Future<void> enqueueUniquePeriodic() async {}
-
-  @override
-  Future<void> cancelUniqueWork() async {}
-}
-
-class _NoOpSyncPrefs implements IBackgroundSyncPrefs {
-  @override
-  Future<bool> get mainActive async => false;
-
-  @override
-  Future<void> setMainActive(bool active) async {}
-
-  @override
-  Future<void> clear() async {}
-}
-
 /// 通知服务 override —— appTestHarness 与 inline ProviderContainer 共用。
 final _notificationServiceOverride = iLocalNotificationServiceProvider
     .overrideWith((_) => _FakeLocalNotificationService());
-
-/// Scheduler override — prevents real workmanager calls in tests.
-final _schedulerOverride = backgroundSyncSchedulerProvider.overrideWith(
-  (ref) => BackgroundSyncScheduler(
-    gate: BackgroundSyncGate(prefs: _NoOpSyncPrefs()),
-    backend: _NoOpWorkmanagerBackend(),
-  ),
-);
 
 /// Test helper — creates a fully wired app with in-memory SQLite and
 /// MockGatewayClient, matching the production ProviderScope setup but
@@ -85,7 +57,7 @@ ProviderScope appTestHarness({required Widget child}) {
         (ref) => ref.watch(mockGatewayClientProvider),
       ),
       _notificationServiceOverride,
-      _schedulerOverride,
+      noOpBackgroundSyncSchedulerOverride,
     ],
     child: child,
   );
@@ -125,7 +97,7 @@ void main() {
             (ref) => ref.watch(mockGatewayClientProvider),
           ),
           _notificationServiceOverride,
-          _schedulerOverride,
+          noOpBackgroundSyncSchedulerOverride,
         ],
       );
       addTearDown(container.dispose);

@@ -3,38 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/native.dart';
 import 'package:claw_hub/app/di/providers.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
-import 'package:claw_hub/core/lifecycle/i_background_sync_prefs.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
 import 'package:claw_hub/main.dart';
 
-class _NoOpWorkmanagerBackend implements WorkmanagerBackend {
-  @override
-  Future<void> enqueueUniquePeriodic() async {}
-
-  @override
-  Future<void> cancelUniqueWork() async {}
-}
-
-class _NoOpSyncPrefs implements IBackgroundSyncPrefs {
-  @override
-  Future<bool> get mainActive async => false;
-
-  @override
-  Future<void> setMainActive(bool active) async {}
-
-  @override
-  Future<void> clear() async {}
-}
-
-/// Scheduler override — prevents real workmanager calls in tests.
-final _schedulerOverride = backgroundSyncSchedulerProvider.overrideWith(
-  (ref) => BackgroundSyncScheduler(
-    gate: BackgroundSyncGate(prefs: _NoOpSyncPrefs()),
-    backend: _NoOpWorkmanagerBackend(),
-  ),
-);
+import '_helpers/mocks.dart' show noOpBackgroundSyncSchedulerOverride;
 
 /// Helper: create an in-memory database ProviderScope for widget tests.
 ProviderScope _testProviderScope({required Widget child}) {
@@ -45,7 +17,7 @@ ProviderScope _testProviderScope({required Widget child}) {
         ref.onDispose(() => memDb.close());
         return memDb;
       }),
-      _schedulerOverride,
+      noOpBackgroundSyncSchedulerOverride,
     ],
     child: child,
   );
@@ -76,7 +48,7 @@ void main() {
           ref.onDispose(() => memDb.close());
           return memDb;
         }),
-        _schedulerOverride,
+        noOpBackgroundSyncSchedulerOverride,
       ],
     );
     addTearDown(container.dispose);

@@ -5,14 +5,13 @@ import 'package:go_router/go_router.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
-import 'package:claw_hub/core/lifecycle/background_sync_scheduler.dart';
-import 'package:claw_hub/core/lifecycle/i_background_sync_prefs.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/features/instance_manager/instance_list_page.dart';
 import 'package:claw_hub/features/instance_manager/add_instance_page.dart';
+
+import '../../_helpers/mocks.dart' show noOpBackgroundSyncSchedulerOverride;
 
 /// Integration tests for the save → pop → list refresh cross-page flow.
 ///
@@ -28,25 +27,6 @@ import 'package:claw_hub/features/instance_manager/add_instance_page.dart';
 /// context.push/pop, MockGatewayClient.testConnection, provider invalidation,
 /// and InstanceCard health status rendering. Single-page widget tests missed
 /// this because they never tested the navigation + data-refresh interaction.
-class _NoOpWorkmanagerBackend implements WorkmanagerBackend {
-  @override
-  Future<void> enqueueUniquePeriodic() async {}
-
-  @override
-  Future<void> cancelUniqueWork() async {}
-}
-
-class _NoOpSyncPrefs implements IBackgroundSyncPrefs {
-  @override
-  Future<bool> get mainActive async => false;
-
-  @override
-  Future<void> setMainActive(bool active) async {}
-
-  @override
-  Future<void> clear() async {}
-}
-
 void main() {
   late InMemoryInstanceRepo instanceRepo;
 
@@ -84,12 +64,7 @@ void main() {
         instanceRepoProvider.overrideWith((ref) => instanceRepo),
         agentRepoProvider.overrideWith((ref) => InMemoryAgentRepo()),
         gatewayClientProvider.overrideWith((ref) => MockGatewayClient()),
-        backgroundSyncSchedulerProvider.overrideWith(
-          (ref) => BackgroundSyncScheduler(
-            gate: BackgroundSyncGate(prefs: _NoOpSyncPrefs()),
-            backend: _NoOpWorkmanagerBackend(),
-          ),
-        ),
+        noOpBackgroundSyncSchedulerOverride,
       ],
       child: MaterialApp.router(routerConfig: router),
     );

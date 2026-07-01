@@ -13,36 +13,58 @@ import 'package:claw_hub/ui_kit/error_boundary.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // SYSTEMATIC-DEBUGGING: boundary markers to localize the Android splash-hang.
+  // The predraw-listener loop (performTraversals: cancelAndRedraw) means the
+  // first frame never renders. These prints reveal exactly which await blocks
+  // (or whether the Dart isolate never starts at all → no [BOOT] lines).
+  // TEMPORARY — remove once root cause is confirmed.
+  debugPrint('[BOOT] main: binding initialized');
 
-  // US-018: register the background-sync entry point. MUST happen before
-  // runApp so workmanager can dispatch to callbackDispatcher from a background
-  // isolate. Same-process (enableSeparateBackgroundProcess is NOT called) so
-  // flutter_secure_storage keychain access works cross-isolate.
-  await Workmanager().initialize(callbackDispatcher, isInDebugMode: kDebugMode);
+  try {
+    debugPrint('[BOOT] main: workmanager.initialize START');
+    // US-018: register the background-sync entry point. MUST happen before
+    // runApp so workmanager can dispatch to callbackDispatcher from a background
+    // isolate. Same-process (enableSeparateBackgroundProcess is NOT called) so
+    // flutter_secure_storage keychain access works cross-isolate.
+    await Workmanager().initialize(
+      callbackDispatcher,
+      isInDebugMode: kDebugMode,
+    );
+    debugPrint('[BOOT] main: workmanager.initialize DONE');
 
-  // Set global error widget fallback once — avoids the multi-instance
-  // conflict that would occur if set per ErrorBoundary widget.
-  ErrorWidget.builder = (details) => const DefaultErrorFallback();
+    // Set global error widget fallback once — avoids the multi-instance
+    // conflict that would occur if set per ErrorBoundary widget.
+    ErrorWidget.builder = (details) => const DefaultErrorFallback();
 
-  // Initialize Drift/SQLite database before the app starts.
-  // This ensures all Riverpod providers that depend on databaseProvider
-  // have a valid database instance from the first frame.
-  final database = await createAppDatabase();
+    // Initialize Drift/SQLite database before the app starts.
+    // This ensures all Riverpod providers that depend on databaseProvider
+    // have a valid database instance from the first frame.
+    debugPrint('[BOOT] main: createAppDatabase START');
+    final database = await createAppDatabase();
+    debugPrint('[BOOT] main: createAppDatabase DONE');
 
-  runApp(
-    ProviderScope(
-      overrides: [
-        // overrideWith (not overrideWithValue) lets us register an
-        // onDispose hook that closes the DB when the ProviderScope
-        // is torn down (hot-restart, test teardown, app exit).
-        databaseProvider.overrideWith((ref) {
-          ref.onDispose(() => database.close());
-          return database;
-        }),
-      ],
-      child: const ClawHubApp(),
-    ),
-  );
+    debugPrint('[BOOT] main: runApp START');
+    runApp(
+      ProviderScope(
+        overrides: [
+          // overrideWith (not overrideWithValue) lets us register an
+          // onDispose hook that closes the DB when the ProviderScope
+          // is torn down (hot-restart, test teardown, app exit).
+          databaseProvider.overrideWith((ref) {
+            ref.onDispose(() => database.close());
+            return database;
+          }),
+        ],
+        child: const ClawHubApp(),
+      ),
+    );
+    debugPrint('[BOOT] main: runApp DONE — first frame pipeline pending');
+  } catch (e, st) {
+    // If an exception is thrown before runApp, the splash is held forever and
+    // the error may not be visible. Surface it explicitly.
+    debugPrint('[BOOT] main: FATAL during startup: $e\n$st');
+    rethrow;
+  }
 }
 
 /// 应用启动后初始化连接编排器。
