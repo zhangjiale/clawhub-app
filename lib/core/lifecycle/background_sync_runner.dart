@@ -283,10 +283,12 @@ class BackgroundSyncRunner {
         // oldest message on this page is before lastSyncMs, all further
         // pages are entirely stale.
         if (page.messages.isNotEmpty) {
-          var oldestOnPage = page.messages.first.timestamp;
-          for (final m in page.messages) {
-            if (m.timestamp < oldestOnPage) oldestOnPage = m.timestamp;
-          }
+          // Idiomatic min via reduce: clearer than a manual var+for loop,
+          // equivalent O(n) work. Returns the smallest timestamp on this
+          // page — used to decide whether all further pages are stale.
+          final oldestOnPage = page.messages
+              .map((m) => m.timestamp)
+              .reduce((a, b) => a < b ? a : b);
           if (oldestOnPage < lastSyncMs) break;
         }
 
