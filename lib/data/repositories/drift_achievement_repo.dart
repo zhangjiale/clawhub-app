@@ -74,38 +74,43 @@ class DriftAchievementRepo implements IAchievementRepo {
 
   @override
   Future<AgentStats> computeStats(String agentId) async {
-    // Transaction keeps the 3 queries on the same snapshot for consistency.
-    // Merged query replaces 3 separate messages-table scans (countDialogs,
-    // getMessageCount, getTimestampRange) with one.
-    return _database.transaction(() async {
-      final results = await Future.wait([
-        _database.getMessageStatsForAgent(agentId),
-        _database.countToolCallsForAgent(agentId),
-        _database.getActiveDayBucketsForAgent(agentId),
-      ]);
+    // F5: 三个 SELECT 是独立读,不需要 snapshot consistency。stat 是用户视图,
+    // 边界场景(读 1 与读 2 之间新增消息)造成的轻微不一致可接受。原本包在
+    // _database.transaction() 里有两个问题:
+    //   1. Drift transaction 在单连接上 BEGIN,Future.wait 在同一连接上
+    //      串行执行 —— claim 是 cosmetic parallelism。
+    //   2. 阻碍未来多连接 pool 的真正并行 (Drift NativeDatabase 默认单
+    //      连接,但若未来调 connectionPool 即可生效)。
+    //
+    // 移出 transaction 后,3 SELECT 各自从 pool 取连接、并发调度。Behavior
+    // 对外不变 (return 值仍一致,只要不是 strict-snapshot 场景)。
+    final results = await Future.wait([
+      _database.getMessageStatsForAgent(agentId),
+      _database.countToolCallsForAgent(agentId),
+      _database.getActiveDayBucketsForAgent(agentId),
+    ]);
 
-      final msgStats =
-          results[0]
-              as ({int dialogs, int messages, int? firstMsg, int? lastMsg})?;
-      final totalToolCalls = results[1] as int;
-      final dayBuckets = results[2] as List<int>;
+    final msgStats =
+        results[0]
+            as ({int dialogs, int messages, int? firstMsg, int? lastMsg})?;
+    final totalToolCalls = results[1] as int;
+    final dayBuckets = results[2] as List<int>;
 
-      return AgentStats(
-        agentId: agentId,
-        totalDialogs: msgStats?.dialogs ?? 0,
-        totalMessages: msgStats?.messages ?? 0,
-        totalToolCalls: totalToolCalls,
-        activeDays: dayBuckets.length,
-        // Fix: previous code used `now ~/ 86400` (seconds) while SQL
-        // uses `timestamp / 86400000` (ms), causing currentStreak to
-        // always be 0. Both sides now use millisecond day-indexes.
-        currentStreak: computeCurrentStreak(
-          dayBuckets,
-          todayBucket: DateTime.now().millisecondsSinceEpoch ~/ 86400000,
-        ),
-        firstDialogDate: msgStats?.firstMsg,
-        lastDialogDate: msgStats?.lastMsg,
-      );
-    });
+    return AgentStats(
+      agentId: agentId,
+      totalDialogs: msgStats?.dialogs ?? 0,
+      totalMessages: msgStats?.messages ?? 0,
+      totalToolCalls: totalToolCalls,
+      activeDays: dayBuckets.length,
+      // 上下游都用 millisecond day-indexes (86400000 ms)。原 spec 用了
+      // `now ~/ 86400`(秒),与 SQL `/86400000`(毫秒)错位 → currentStreak
+      // 永远 0。Fix 已合入 (#fixed in prior round)。
+      currentStreak: computeCurrentStreak(
+        dayBuckets,
+        todayBucket: DateTime.now().millisecondsSinceEpoch ~/ 86400000,
+      ),
+      firstDialogDate: msgStats?.firstMsg,
+      lastDialogDate: msgStats?.lastMsg,
+    );
   }
 }

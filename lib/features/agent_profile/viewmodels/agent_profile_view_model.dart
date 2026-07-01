@@ -342,54 +342,84 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     }
   }
 
+  /// Generic best-effort wrapper shared by every `_safe*` helper below.
+  ///
+  /// On exception: logs via [_logger] with the format
+  /// `'{label} failed for {id}: {error}'` and returns [fallback]. The
+  /// exception itself is NOT rethrown — the parent (`refresh`,
+  /// `achievementRefresh`) is designed to surface partial data when one
+  /// of the parallel loaders fails.
+  ///
+  /// Why a single helper, not four private methods:
+  /// - The original 4× `_safe*` methods had identical shape (try / log /
+  ///   fallback). Splitting them meant 4 catch blocks, 4 log strings, and
+  ///   4 places to update if the log format ever changes. F12 collapsed
+  ///   them to 4 callers + 1 helper (~30-line reduction).
+  /// - The helper is private (`_`) and not exposed as a UseCase because
+  ///   it's a thin presentation-layer concern (Logger + best-effort
+  ///   fallback), not domain logic.
+  Future<T> _safely<T>(
+    String label,
+    String id,
+    Future<T> Function() body,
+    T fallback,
+  ) async {
+    try {
+      return await body();
+    } catch (error, stackTrace) {
+      _logger.error('$label failed for $id: $error', stackTrace);
+      return fallback;
+    }
+  }
+
   /// Best-effort loaders used by [refresh]. Each returns a sentinel value
   /// on failure (null / 0 / const []) so the parent can proceed without
   /// the dependent state but still surface the partial data.
-  Future<Instance?> _safeGetInstance(String instanceId) async {
-    try {
-      return await _instanceRepo.getById(instanceId);
-    } catch (error, stackTrace) {
-      _logger.error(
-        'Instance lookup failed for $instanceId: $error',
-        stackTrace,
-      );
-      return null;
-    }
+  Future<Instance?> _safeGetInstance(String instanceId) {
+    return _safely<Instance?>(
+      'Instance lookup',
+      instanceId,
+      () => _instanceRepo.getById(instanceId),
+      null,
+    );
   }
 
-  Future<int> _safeGetMessageCount(String id) async {
-    try {
-      return await _messageRepo.getMessageCount(id);
-    } catch (error, stackTrace) {
-      _logger.error('Message count lookup failed for $id: $error', stackTrace);
-      return 0;
-    }
+  Future<int> _safeGetMessageCount(String id) {
+    return _safely<int>(
+      'Message count lookup',
+      id,
+      () => _messageRepo.getMessageCount(id),
+      0,
+    );
   }
 
   Future<_AchievementResult?> _safeEvaluateAchievements(String id) async {
-    try {
-      final result = await _evaluateAchievements.execute(id);
-      return (
-        stats: result.stats,
-        achievements: result.achievements,
-        freshUnlocks: result.freshUnlocks,
-      );
-    } catch (error, stackTrace) {
-      _logger.error(
-        'Stats/achievement load failed for $id: $error',
-        stackTrace,
-      );
-      return null;
-    }
+    // The body returns _AchievementResult, not the raw EvaluateAchievementsResult,
+    // so we wrap the conversion in a local lambda. _safely() still owns the
+    // try/catch — exceptions from the use case propagate through the lambda.
+    final result = await _safely<_AchievementResult?>(
+      'Stats/achievement load',
+      id,
+      () async {
+        final r = await _evaluateAchievements.execute(id);
+        return (
+          stats: r.stats,
+          achievements: r.achievements,
+          freshUnlocks: r.freshUnlocks,
+        );
+      },
+      null,
+    );
+    return result;
   }
 
-  Future<List<DailyActivity>> _safeGetDailyActivity(String id) async {
-    try {
-      return await _activityRepo.getDailyActivity(id);
-    } catch (error, stackTrace) {
-      _logger.error('Daily activity load failed for $id: $error', stackTrace);
-      return const [];
-    }
+  Future<List<DailyActivity>> _safeGetDailyActivity(String id) {
+    return _safely<List<DailyActivity>>(
+      'Daily activity load',
+      id,
+      () => _activityRepo.getDailyActivity(id),
+      const [],
+    );
   }
 
   /// 局部刷新入口 — 只更新 stats/achievements/newUnlocks 三个字段,
@@ -472,14 +502,11 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
     // 或状态未知时用户仍能编辑/保存，造成 DB 与 Gateway 不一致。
     // US-021 v1.2 修复：阻断必须 surface saveError，否则 UI 看不到反馈。
     // 区分 null（未加载）和 tombstoned（已删除）两条文案。
-    if (agent == null) {
-      _logger.info('saveProfile blocked: agent not loaded');
-      _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
-      return;
-    }
-    if (agent!.isRemoved) {
-      _logger.info('saveProfile blocked: agent tombstoned');
-      _updateState((s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法保存'));
+    if (!_checkSaveAllowed(
+      opTag: 'saveProfile',
+      notLoadedMsg: '数据尚未加载完成，请稍后再试',
+      removedMsg: '该 Agent 已被 Gateway 移除，无法保存',
+    )) {
       return;
     }
     if (state.isSaving) return;
@@ -512,16 +539,11 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
   Future<void> updateAvatar(Uint8List imageBytes) async {
     // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝写入头像。
     // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
-    if (agent == null) {
-      _logger.info('updateAvatar blocked: agent not loaded');
-      _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
-      return;
-    }
-    if (agent!.isRemoved) {
-      _logger.info('updateAvatar blocked: agent tombstoned');
-      _updateState(
-        (s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法上传头像'),
-      );
+    if (!_checkSaveAllowed(
+      opTag: 'updateAvatar',
+      notLoadedMsg: '数据尚未加载完成，请稍后再试',
+      removedMsg: '该 Agent 已被 Gateway 移除，无法上传头像',
+    )) {
       return;
     }
     return _runAvatarOp(
@@ -557,16 +579,11 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
   Future<void> removeAvatar() async {
     // US-021 v1.1: tombstoned 或尚未加载的 agent 拒绝清除头像（同样不会触达 DB）。
     // US-021 v1.2 修复：阻断必须 surface saveError（见 saveProfile 注释）。
-    if (agent == null) {
-      _logger.info('removeAvatar blocked: agent not loaded');
-      _updateState((s) => s.copyWith(saveError: '数据尚未加载完成，请稍后再试'));
-      return;
-    }
-    if (agent!.isRemoved) {
-      _logger.info('removeAvatar blocked: agent tombstoned');
-      _updateState(
-        (s) => s.copyWith(saveError: '该 Agent 已被 Gateway 移除，无法移除头像'),
-      );
+    if (!_checkSaveAllowed(
+      opTag: 'removeAvatar',
+      notLoadedMsg: '数据尚未加载完成，请稍后再试',
+      removedMsg: '该 Agent 已被 Gateway 移除，无法移除头像',
+    )) {
       return;
     }
     return _runAvatarOp(
@@ -596,6 +613,39 @@ class AgentProfileViewModel extends StateNotifier<AgentProfileState>
         }
       },
     );
+  }
+
+  /// 统一的"是否允许写入"守卫 — 三个公开写入入口（saveProfile /
+  /// updateAvatar / removeAvatar）共享同一组前置检查：
+  ///   1. agent 尚未加载（null） → 阻断 + 文案
+  ///   2. agent 已被 Gateway 移除（isRemoved） → 阻断 + 文案
+  ///   3. 已在保存中（isSaving）→ 静默 return（调用方自己检查）
+  ///
+  /// 返回 true 表示允许继续；false 表示已 surface saveError 给 UI。
+  ///
+  /// 为什么不合并 isSaving 检查：saveProfile 自己在外面检查（要早于
+  /// _updateState 设 isSaving=true），avatar 路径在 _runAvatarOp 里检查
+  /// —— 不同位置保留更好。
+  ///
+  /// 抽这个 helper 的动机（F14）：3 处守卫原本各自维护字符串文案，
+  /// 修改"数据尚未加载完成"这种通用文案时要在 3 处同步改。提取后
+  /// 任何文案调整只动一处。
+  bool _checkSaveAllowed({
+    required String opTag,
+    required String notLoadedMsg,
+    required String removedMsg,
+  }) {
+    if (agent == null) {
+      _logger.info('$opTag blocked: agent not loaded');
+      _updateState((s) => s.copyWith(saveError: notLoadedMsg));
+      return false;
+    }
+    if (agent!.isRemoved) {
+      _logger.info('$opTag blocked: agent tombstoned');
+      _updateState((s) => s.copyWith(saveError: removedMsg));
+      return false;
+    }
+    return true;
   }
 
   /// 头像变更操作的公共骨架 —— 共享 isSaving 守卫、状态更新、刷新、

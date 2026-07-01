@@ -190,5 +190,63 @@ void main() {
       expect(result.first.dayBucket, todayBucket - 6);
       expect(result.last.dayBucket, todayBucket);
     });
+
+    // F1 (review-findings.json): SQL `timestamp / 86400000` returns REAL for
+    // any timestamp not exactly divisible by 86400000 (i.e., any non-midnight
+    // UTC millisecond). `row.read<int>('day_bucket')` either throws or coerces
+    // to 0, breaking daily-activity chart + currentStreak + streak_7/30
+    // achievements for real-world chat messages.
+    //
+    // RED: seed a message at 14:30:15.500 UTC (fractional ms to maximize
+    // REAL rounding hazard), then assert it appears in today's bucket with
+    // count=1. If this fails with InvalidDataException or count=0, the bug
+    // is confirmed.
+    test('non-midnight timestamp still buckets to correct day '
+        '(F1 SQL REAL regression guard)', () async {
+      final msgTime = DateTime.utc(2024, 6, 15, 14, 30, 15, 500);
+      await _insertMessage(
+        database,
+        clientId: 'non-midnight',
+        agentId: 'agent-1',
+        timestampMs: msgTime.millisecondsSinceEpoch,
+      );
+
+      final result = await repo.getDailyActivity('agent-1', now: todayUtc);
+      expect(result.last.dayBucket, todayBucket);
+      expect(
+        result.last.messageCount,
+        1,
+        reason:
+            'non-midnight UTC timestamp 14:30:15.500 must bucket to today '
+            'with count=1. If 0, the SQL `timestamp / 86400000` is returning '
+            'REAL that Drift `row.read<int>` cannot consume (F1).',
+      );
+    });
+
+    // Boundary test: timestamp at 23:59:59.999 of day-1 (just before midnight
+    // rollover). Real-world scenarios include server-side timestamps with
+    // ms precision. If truncation misbehaves near integer boundaries, this
+    // catches it.
+    test('23:59:59.999 UTC timestamp still buckets to source day, not next '
+        '(F1 boundary guard)', () async {
+      final msgTime = DateTime.utc(2024, 6, 15, 23, 59, 59, 999);
+      final ts = msgTime.millisecondsSinceEpoch;
+      expect(
+        ts % 86400000,
+        isNot(equals(0)),
+        reason: 'sanity: timestamp must not be exact midnight',
+      );
+      await _insertMessage(
+        database,
+        clientId: 'late-evening',
+        agentId: 'agent-1',
+        timestampMs: ts,
+      );
+
+      final result = await repo.getDailyActivity('agent-1', now: todayUtc);
+      // msgTime is on 2024-06-15 = todayBucket (todayUtc is midnight 06-15)
+      expect(result.last.dayBucket, todayBucket);
+      expect(result.last.messageCount, 1);
+    });
   });
 }

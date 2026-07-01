@@ -50,6 +50,34 @@ void main() {
       verify(() => repo.computeStats('a1')).called(1);
     });
 
+    // F13 (review-findings.json): regression guard against re-introducing a
+    // `getStats`/`saveStats` cache layer. The interface contract
+    // (i_achievement_repo.dart:11-24) explicitly forbids cache methods; this
+    // test pins the BEHAVIORAL corollary — every execute() must hit
+    // computeStats (no in-memory or repo-side shortcut).
+    //
+    // If someone re-adds cache methods, this test fails because the new
+    // code path skips computeStats. Mocktail `verifyNever` can't enforce
+    // absent methods, so we use a positive-multiplicity check instead.
+    test('computeStats is called on every execute — no cache bypass '
+        '(F13 no-cache regression guard)', () async {
+      when(
+        () => repo.computeStats('a1'),
+      ).thenAnswer((_) async => AgentStats(agentId: 'a1'));
+      when(
+        () => repo.getUnlocks('a1'),
+      ).thenAnswer((_) async => buildAchievementList({}, {}));
+
+      await useCase.execute('a1');
+      await useCase.execute('a1');
+      await useCase.execute('a1');
+
+      // Three executes → three computeStats invocations. If a future
+      // `getStats`/`saveStats` cache layer is introduced and bypasses
+      // computeStats on subsequent calls, this assertion fails.
+      verify(() => repo.computeStats('a1')).called(3);
+    });
+
     test('returns all achievements with correct unlock status', () async {
       final stats = AgentStats(
         agentId: 'a1',
@@ -131,6 +159,73 @@ void main() {
       when(() => repo.computeStats('a1')).thenThrow(Exception('DB error'));
 
       expect(() => useCase.execute('a1'), throwsException);
+    });
+
+    // T-CONCURRENT-DEDUP: F4 (review-findings.json) — when two concurrent
+    // execute() calls race for the same agentId (chat message checker +
+    // profile-page listener both fire simultaneously), the achievement
+    // must only appear in freshUnlocks ONCE across both calls. Currently
+    // the use case lets both calls read existingUnlocks=[] before either
+    // commits batchUnlock, so both return freshUnlocks=[first_dialog],
+    // and the UI celebration animation fires twice for one unlock.
+    //
+    // Fix contract: per-agentId in-flight serialization at the use case.
+    // Call A starts first → returns freshUnlocks=[first_dialog]. Call B
+    // awaits Call A's future, then makes a FRESH call (sees updated
+    // existingUnlocks), returns freshUnlocks=[].
+    test('two concurrent execute(agentId) calls dedup freshUnlocks '
+        '(F4: UI celebration fires once)', () async {
+      final stats = AgentStats(agentId: 'a1', totalDialogs: 1);
+      // Both calls start with no unlocks; first call unlocks first_dialog
+      // and returns the updated list (DB-level INSERT OR IGNORE ensures
+      // the row exists); second call sees existingUnlocks includes
+      // first_dialog → freshUnlocks=[].
+      when(() => repo.computeStats('a1')).thenAnswer((_) async => stats);
+      // First call: no unlocks yet
+      when(
+        () => repo.getUnlocks('a1'),
+      ).thenAnswer((_) async => buildAchievementList({}, {}));
+      // After batchUnlock runs, subsequent getUnlocks sees first_dialog.
+      // We can't easily change the stub mid-test; use thenAnswer with a
+      // mutable backing field to flip behavior after the first batchUnlock.
+      var batchUnlockCount = 0;
+      when(() => repo.batchUnlock('a1', any())).thenAnswer((invocation) async {
+        batchUnlockCount++;
+        // First batchUnlock returns first_dialog unlocked; subsequent
+        // calls return same (DB-level dedup is the contract).
+        return buildAchievementList({'first_dialog'}, {'first_dialog': 200});
+      });
+      // After first batchUnlock, getUnlocks should reflect the new state.
+      // Override the stub so subsequent calls return the unlocked list.
+      when(() => repo.getUnlocks('a1')).thenAnswer((invocation) async {
+        if (batchUnlockCount == 0) {
+          return buildAchievementList({}, {});
+        }
+        return buildAchievementList({'first_dialog'}, {'first_dialog': 200});
+      });
+
+      // Fire two concurrent execute() calls. Use unawaited to actually
+      // start both before awaiting.
+      final futureA = useCase.execute('a1');
+      final futureB = useCase.execute('a1');
+
+      final results = await Future.wait([futureA, futureB]);
+
+      // Combined freshUnlocks must contain 'first_dialog' exactly once.
+      final allFresh = [...results[0].freshUnlocks, ...results[1].freshUnlocks];
+      final firstDialogCount = allFresh
+          .where((a) => a.id == 'first_dialog')
+          .length;
+      expect(
+        firstDialogCount,
+        equals(1),
+        reason:
+            'F4: two concurrent execute() calls must NOT both report '
+            'first_dialog as a fresh unlock. Current bug: both return '
+            'freshUnlocks=[first_dialog], causing UI celebration twice. '
+            'Fix contract: second call awaits first, then sees updated '
+            'existingUnlocks → freshUnlocks=empty.',
+      );
     });
 
     // T-LAW17-CONCURRENT: Domain Law 17 contract — computeStats and

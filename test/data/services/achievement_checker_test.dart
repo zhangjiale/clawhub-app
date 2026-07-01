@@ -2,14 +2,12 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
-import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/data/services/achievement_checker.dart';
 import 'package:claw_hub/domain/models/agent_stats.dart';
 import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
+import '../../_helpers/mocks.dart';
 
 class MockUseCase extends Mock implements EvaluateAchievementsUseCase {}
-
-class MockLogger extends Mock implements ILogger {}
 
 void main() {
   setUpAll(() {
@@ -18,12 +16,12 @@ void main() {
 
   group('AchievementChecker', () {
     late MockUseCase useCase;
-    late MockLogger logger;
+    late MockILogger logger;
     late AchievementChecker checker;
 
     setUp(() {
       useCase = MockUseCase();
-      logger = MockLogger();
+      logger = MockILogger();
       checker = AchievementChecker(useCase, logger);
       when(() => useCase.execute(any())).thenAnswer(
         (_) async => EvaluateAchievementsResult(
@@ -34,6 +32,14 @@ void main() {
       );
       when(() => logger.error(any(), any())).thenReturn(null);
     });
+
+    // T-EVICTION-CLOCK: build a checker with a controllable Clock so the
+    // time-eviction branch (line ~96: `removeWhere((_, t) => now.difference(t) > _maxAge)`)
+    // can be exercised deterministically. Used by the F7 time-eviction tests
+    // below; default `DateTime.now` for the rest of the suite.
+    AchievementChecker buildCheckerWithClock(DateTime Function() clock) {
+      return AchievementChecker(useCase, logger, clock: clock);
+    }
 
     // 3A: use case.execute() 不再有 forceRecompute named param。
     // AchievementChecker 仍然在每次 chat 事件后 fire-and-forget 调一次,
@@ -302,5 +308,87 @@ void main() {
         );
       },
     );
+
+    // F7 (review-findings.json): real time-eviction test using controllable
+    // Clock. The T-EVICTION-02 above only asserts constants are positive;
+    // this one exercises the actual `removeWhere((_, t) => now.difference(t) > _maxAge)`
+    // branch at achievement_checker.dart by:
+    //   1. seeding entries at time T0 (all fresh)
+    //   2. advancing the clock past `_maxAge`
+    //   3. inserting one more entry to trigger cap-bound sweep
+    //   4. asserting stale entries are evicted, fresh one survives
+    test('time-eviction removes entries older than _maxAge on cap-bound sweep '
+        '(F7 real eviction branch)', () async {
+      var now = DateTime.utc(2026, 1, 1, 12, 0, 0);
+      final checker = buildCheckerWithClock(() => now);
+
+      const cap = AchievementChecker.debugMaxEntries;
+      // Fill map to exactly the cap with all-fresh entries (timestamp T0).
+      for (var i = 0; i < cap; i++) {
+        checker.check('stale-$i');
+        // Avoid minInterval debounce by jumping clock forward each call.
+        now = now.add(const Duration(seconds: 6));
+      }
+      expect(checker.debugLastChecks.length, cap);
+
+      // Advance the clock by `_maxAge + 1m` — all `stale-*` entries are now
+      // older than `_maxAge` and should be evicted on the next sweep.
+      now = now.add(
+        AchievementChecker.debugMaxAge + const Duration(minutes: 1),
+      );
+
+      // Trigger the sweep by inserting one more entry (length was at cap
+      // before this call, so the `>= _maxEntries` branch fires).
+      checker.check('fresh-1');
+      await Future<void>.delayed(Duration.zero);
+
+      // All stale-* entries evicted; only fresh-1 remains.
+      expect(
+        checker.debugLastChecks.length,
+        1,
+        reason:
+            'All stale-* entries (older than _maxAge) must be evicted by '
+            'the cap-bound sweep; only the just-inserted fresh-1 remains.',
+      );
+      expect(checker.debugLastChecks.containsKey('fresh-1'), isTrue);
+      for (var i = 0; i < cap; i++) {
+        expect(
+          checker.debugLastChecks.containsKey('stale-$i'),
+          isFalse,
+          reason:
+              'stale-$i must have been evicted (timestamp older '
+              'than _maxAge)',
+        );
+      }
+    });
+
+    // F7 inverse: fresh entries within _maxAge survive the sweep.
+    test('time-eviction preserves entries within _maxAge on cap-bound sweep '
+        '(F7 negative path)', () async {
+      var now = DateTime.utc(2026, 1, 1, 12, 0, 0);
+      final checker = buildCheckerWithClock(() => now);
+
+      const cap = AchievementChecker.debugMaxEntries;
+      for (var i = 0; i < cap; i++) {
+        checker.check('recent-$i');
+        now = now.add(const Duration(seconds: 6));
+      }
+      expect(checker.debugLastChecks.length, cap);
+
+      // Advance only 1 minute — well within _maxAge (30 min default).
+      now = now.add(const Duration(minutes: 1));
+
+      // Trigger sweep by inserting one more entry.
+      checker.check('recent-extra');
+      await Future<void>.delayed(Duration.zero);
+
+      // All `recent-*` (within _maxAge) survive; new `recent-extra` also
+      // present. Total = cap + 1 (no eviction triggered by stale age).
+      expect(checker.debugLastChecks.length, cap + 1);
+      for (var i = 0; i < cap; i++) {
+        expect(checker.debugLastChecks.containsKey('recent-$i'), isTrue);
+      }
+      expect(checker.debugLastChecks.containsKey('recent-extra'), isTrue);
+    });
   });
 }

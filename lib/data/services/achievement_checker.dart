@@ -7,6 +7,12 @@ import 'package:claw_hub/domain/usecases/evaluate_achievements.dart';
 // `@visibleForTesting` annotation — explicit dep on package:meta in pubspec.
 import 'package:meta/meta.dart';
 
+/// Time source for debounce + eviction logic. Injectable for tests so the
+/// time-based eviction branch at [_lastChecks.removeWhere] can be exercised
+/// deterministically without `fakeAsync`. Production callers leave this
+/// defaulted to `DateTime.now`.
+typedef Clock = DateTime Function();
+
 /// 独立的成就检查服务 — 不继承 StateNotifier，不持有 UI 状态。
 ///
 /// 依赖 [EvaluateAchievementsUseCase] 执行「缓存优先→评估→批量解锁」管线，
@@ -16,6 +22,7 @@ import 'package:meta/meta.dart';
 class AchievementChecker implements IAchievementChecker {
   final EvaluateAchievementsUseCase _useCase;
   final ILogger _logger;
+  final Clock _clock;
 
   /// Per-agent 防抖：记录每个 agent 上次检查的时间，避免快速连续消息
   /// 触发重复的 computeStats 查询。
@@ -68,7 +75,8 @@ class AchievementChecker implements IAchievementChecker {
   @visibleForTesting
   Map<String, DateTime> get debugLastChecks => UnmodifiableMapView(_lastChecks);
 
-  AchievementChecker(this._useCase, this._logger);
+  AchievementChecker(this._useCase, this._logger, {Clock? clock})
+    : _clock = clock ?? DateTime.now;
 
   @override
   Stream<String> get updates => _updates.stream;
@@ -89,7 +97,7 @@ class AchievementChecker implements IAchievementChecker {
   void check(String agentId) {
     // Post-dispose guard — calling check() after dispose() must be a no-op.
     if (_updates.isClosed) return;
-    final now = DateTime.now();
+    final now = _clock();
 
     // Evict stale entries when the map grows beyond the cap.
     if (_lastChecks.length >= _maxEntries) {
