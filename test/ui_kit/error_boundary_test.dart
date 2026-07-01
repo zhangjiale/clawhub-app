@@ -1,3 +1,8 @@
+// ErrorBoundary is marked @Deprecated as a no-op seam (see the widget's
+// dartdoc). These tests deliberately exercise that deprecated seam to keep
+// its passthrough + global-builder behavior as a regression guard, so the
+// deprecation lint is expected here.
+// ignore_for_file: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/ui_kit/default_error_fallback.dart';
@@ -37,7 +42,7 @@ void main() {
       await tester.pump();
       // Default fallback shows error icon and message
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
-      expect(find.text('Something went wrong'), findsOneWidget);
+      expect(find.text('应用出现了问题'), findsOneWidget);
 
       // Restore previous builder to avoid cross-test pollution
       ErrorWidget.builder = previousBuilder;
@@ -53,7 +58,7 @@ void main() {
       );
 
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
-      expect(find.text('Something went wrong'), findsOneWidget);
+      expect(find.text('应用出现了问题'), findsOneWidget);
     });
   });
 }

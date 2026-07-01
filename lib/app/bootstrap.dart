@@ -21,17 +21,19 @@ const _logger = DebugPrintLogger();
 
 /// Runs the pre-`runApp` startup chain with full error capture.
 ///
-/// On success, [buildSuccess] is invoked with the opened database so the
-/// caller can wrap it in a `ProviderScope` and call `runApp`.
+/// On success, calls `runApp([buildSuccess](database))`: [buildSuccess]
+/// returns the root widget (e.g. a `ProviderScope`) and THIS function
+/// mounts it via `runApp`. On failure (any thrown error from
+/// [initializeWorkmanager], [createDatabase], [buildSuccess], or a
+/// synchronous error before the first `await`), [showFatal] is invoked
+/// with `(error, stackTrace)` so the caller can render a fatal screen.
 ///
-/// On failure (any thrown error from [initializeWorkmanager] or
-/// [createDatabase], or a synchronous error before any `await`), [showFatal]
-/// is invoked with `(error, stackTrace)` so the caller can call
-/// `runApp(StartupFatalScreen(...))`.
-///
-/// [buildSuccess] is responsible for calling `runApp` itself — this
-/// function is `runApp`-free and therefore unit-testable under
-/// `TestWidgetsFlutterBinding`.
+/// Testability: because this function calls `runApp` on the success path,
+/// success-path tests assert via the [buildSuccess] callback's side-effect
+/// (e.g. capture the database it received) rather than by observing
+/// `runApp`. The failure path is tested by passing a throwing
+/// [initializeWorkmanager] / [createDatabase] and asserting [showFatal] was
+/// invoked.
 Future<void> bootstrapApp({
   required WorkmanagerInitializer initializeWorkmanager,
   required DatabaseFactory createDatabase,

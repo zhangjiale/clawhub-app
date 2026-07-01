@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/app/bootstrap.dart';
 import 'package:claw_hub/data/local/database/database.dart';
 import 'package:claw_hub/ui_kit/startup_fatal_screen.dart';
+import 'package:drift/native.dart';
 
 Future<void> _throwingInitialize() async {
   throw StateError('simulated startup failure');
@@ -48,17 +49,65 @@ void main() {
       await tester.pumpAndSettle();
 
       // The fatal screen must visibly present the error.
-      expect(find.text('Something went wrong'), findsOneWidget);
+      expect(find.text('应用出现了问题'), findsOneWidget);
       expect(find.textContaining('simulated startup failure'), findsOneWidget);
-      expect(find.widgetWithText(FilledButton, 'Retry'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, '重试'), findsOneWidget);
 
       // The stack trace must be discoverable (collapsed in an ExpansionTile).
-      expect(find.text('Stack trace'), findsOneWidget);
+      expect(find.text('堆栈信息'), findsOneWidget);
 
       // Tapping the expansion must reveal the stack trace text.
-      await tester.tap(find.text('Stack trace'));
+      await tester.tap(find.text('堆栈信息'));
       await tester.pumpAndSettle();
       expect(find.textContaining('#0 '), findsWidgets);
     },
   );
+
+  testWidgets('bootstrap mounts the success widget and hands the opened DB to '
+      'buildSuccess on the happy path', (tester) async {
+    AppDatabase? capturedDb;
+    var fatalCalled = false;
+
+    // bootstrapApp sets the global ErrorWidget.builder on the success
+    // path (bootstrap.dart). flutter_test guards against tests leaving
+    // this changed, so save + restore it — same pattern as
+    // test/ui_kit/error_boundary_test.dart.
+    final previousErrorWidgetBuilder = ErrorWidget.builder;
+    ErrorWidget.builder = (details) =>
+        const SizedBox.shrink(); // benign default for the test
+
+    // bootstrapApp calls runApp(...) on the success path; runAsync lets
+    // the real async DB-open complete. We assert via the buildSuccess
+    // side-effect (it captured the DB) rather than the rendered tree,
+    // because runApp's root is not tester.pumpWidget's root.
+    await tester.runAsync(
+      () => bootstrapApp(
+        initializeWorkmanager: () async {},
+        createDatabase: () async => AppDatabase(NativeDatabase.memory()),
+        buildSuccess: (db) {
+          capturedDb = db;
+          return const SizedBox.shrink();
+        },
+        showFatal: (_, _) => fatalCalled = true,
+      ),
+    );
+    // Pump one frame so the binding has no pending frame from runApp.
+    await tester.pump();
+
+    // Restore the global before the test framework's post-test guard
+    // checks it.
+    ErrorWidget.builder = previousErrorWidgetBuilder;
+
+    expect(
+      fatalCalled,
+      isFalse,
+      reason: 'showFatal must not fire on the success path',
+    );
+    expect(
+      capturedDb,
+      isNotNull,
+      reason: 'buildSuccess must receive the opened database',
+    );
+    await capturedDb?.close();
+  });
 }
