@@ -75,6 +75,99 @@ Task 11 checklist.
 - A user with no prior `last_background_sync_at` starts from `now() - 1h`
   (not 24h) to avoid a reply avalanche. Capped by `maxMessagesPerPull = 100`.
 
+## Workmanager Plugin Upgrade Trap (2026-07-01 incident)
+
+**Do NOT add a `tools:node="remove"` block on
+`androidx.work.WorkManagerInitializer` in `android/app/src/main/AndroidManifest.xml`.**
+
+The US-018 manifest currently has the default AndroidX Work initializer
+intact (it was briefly removed in commit `c6f6d94` and restored after a
+splash-hang incident — see commit `fix(android): restore default
+WorkManagerInitializer` and the root-cause analysis below).
+
+### Why this matters
+
+- workmanager **0.5.2** (monolithic plugin) self-initialized AndroidX Work
+  inside `WorkmanagerPlugin.onAttachedToEngine`, so removing the default
+  `androidx.work.WorkManagerInitializer` from the merged manifest was
+  harmless.
+- workmanager **0.9.0+3** (federated: `workmanager` facade +
+  `workmanager_android` impl) does **NOT** self-initialize. It calls
+  `WorkManager.getInstance(context)` and assumes the `androidx.startup`
+  default initializer has already run.
+
+If the default initializer is removed:
+
+1. `WorkManager.getInstance(context)` inside
+   `WorkmanagerPlugin.onAttachedToEngine` throws
+   `IllegalStateException` (or returns uninitialized) **before**
+   `WorkmanagerHostApi.setUp(binding.binaryMessenger, this)` runs.
+2. `setUp` never executes, so the Pigeon handler for
+   `dev.flutter.pigeon.workmanager_platform_interface.WorkmanagerHostApi.initialize`
+   is never registered.
+3. Dart-side `await Workmanager().initialize(...)` receives a `null`
+   reply and throws
+   `PlatformException(channel-error, Unable to establish connection on
+   channel: "...", null, null)`.
+4. `runApp()` is never called.
+5. The Flutter engine never produces a first frame.
+6. Android's `FlutterActivityAndFragmentDelegate` splash-hold
+   `OnPreDrawListener` (`FlutterActivityAndFragmentDelegate$2`) loops
+   forever, generating the log spam
+   `W/VRI[MainActivity]: performTraversals: cancelAndRedraw,
+   mLastPerformTraversalsSkipDrawReasonpredraw_...`.
+
+The user sees a frozen splash. There is no visible UI to diagnose from —
+the splash IS the entire visible surface when `runApp` never runs.
+
+### Why the bug did not surface in `flutter build apk --debug`
+
+`flutter build apk` only verifies that the build succeeds. The
+`flutter run` debug pipeline (JIT, hot reload) can produce a
+functionally-complete APK that crashes on first launch. Build success
+does NOT guarantee a working startup.
+
+### Detection and recovery
+
+Symptom: Android splash + infinite VRI `cancelAndRedraw` log spam.
+Recovery: `flutter clean && flutter pub get && flutter run` after
+verifying the manifest is correct. If the problem persists, add
+boundary `debugPrint` markers in `main()` (the
+`[BOOT] workmanager.initialize START/DONE` pattern) to localize the
+thrown exception. The error message names the missing Pigeon channel.
+
+### Mitigations already in place
+
+- The current `main.dart` is wrapped in `runZonedGuarded(bootstrapApp(...), _onZoneError)`
+  (see `lib/app/bootstrap.dart`). Any pre-`runApp` exception surfaces as
+  a `StartupFatalScreen` with the error message + collapsible stack
+  trace + a Retry button. This is the developer-facing fail-fast
+  guardrail added 2026-07-01 to prevent a future similar bug from
+  silently stranding the user on a blank splash.
+- `defaultErrorFallback` now actually renders the `error` field
+  (previously a latent bug — the parameter was accepted but ignored).
+
+## Startup Fail-Fast Guardrail (2026-07-01)
+
+The pre-`runApp` startup chain (`Workmanager().initialize(...)` +
+`createAppDatabase()` + `runApp(ProviderScope(...))`) is guarded by
+`runZonedGuarded(bootstrapApp(...), _onZoneError)` in `lib/main.dart`.
+The `bootstrapApp` function in `lib/app/bootstrap.dart` is the
+single composition point for pre-`ProviderScope` initialization; any
+thrown exception from those awaits surfaces as a
+`StartupFatalScreen` with the error message, collapsible stack trace,
+and a Retry button.
+
+The guardrail is **developer-facing** more than user-facing — the bug
+is reliably diagnosable from `error + stackTrace` alone. We do NOT
+localize this screen.
+
+If you need to add a new pre-`runApp` initialization step
+(e.g. another plugin, secure-storage pre-warm, locale load), add it
+inside `bootstrapApp` so it is covered by the guardrail. **Do not add
+new pre-`runApp` awaits directly inside `main()`** — they will be
+unguarded.
+
 ## Out of Scope (per spec)
 - Foreground Service (user rejected).
 - APNs / FCM remote push (requires Gateway protocol changes).
