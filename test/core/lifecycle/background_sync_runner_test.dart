@@ -1202,5 +1202,68 @@ void main() {
       // a1's cursor advances to its own max (350), NOT a2's (500).
       verify(() => lastSyncRepo.upsert('i1', 'a1', 350)).called(1);
     });
+
+    test('executeOnce_budgetExpiry_advancesCompletedAgentOnly', () async {
+      final inst = _inst('i1');
+      final startMs = 1000000;
+      clock.nowMs = startMs;
+
+      budget = const BackgroundSyncBudget(
+        perInstanceBudget: Duration(milliseconds: 30),
+        maxMessagesPerPull: 100,
+        maxPagesPerAgent: 5,
+      );
+      runner = BackgroundSyncRunner(
+        gate: gate,
+        settingsRepo: settingsRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gateway,
+        agentRepo: agentRepo,
+        messageRepo: messageRepo,
+        lastSyncRepo: lastSyncRepo,
+        dispatcher: dispatcher,
+        budget: budget,
+        logger: logger,
+        now: clock.now,
+      );
+
+      when(
+        () => settingsRepo.getPreferences(),
+      ).thenAnswer((_) async => UserPreferences.defaults());
+      when(() => instanceRepo.getAll()).thenAnswer((_) async => [inst]);
+      when(() => agentRepo.getAllByInstanceId('i1')).thenAnswer(
+        (_) async => [
+          _agent('a1', 'i1'),
+          _agent('a2', 'i1'),
+          _agent('a3', 'i1'),
+        ],
+      );
+
+      // a1 has messages to sync.
+      gateway.setHistory('i1', 'a1', [
+        (
+          messages: [_msg(clientId: 'c1', serverId: 's1', timestamp: 100)],
+          nextCursor: null,
+        ),
+      ]);
+
+      // Override batchInsertByIndexedIds to advance clock past deadline
+      // after a1's messages are inserted, so a2/a3 are never reached.
+      when(() => messageRepo.batchInsertByIndexedIds(any())).thenAnswer((
+        inv,
+      ) async {
+        clock.nowMs = startMs + 60;
+        return inv.positionalArguments[0] as List<Message>;
+      });
+
+      await runner.executeOnce();
+
+      // a1 completed before budget expired → cursor advanced.
+      verify(() => lastSyncRepo.upsert('i1', 'a1', any())).called(1);
+      // a2 never started (budget expired before its turn) → cursor NOT advanced.
+      verifyNever(() => lastSyncRepo.upsert('i1', 'a2', any()));
+      // a3 never reached → cursor never read.
+      verifyNever(() => lastSyncRepo.get('i1', 'a3'));
+    });
   });
 }
