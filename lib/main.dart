@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:workmanager/workmanager.dart';
+import 'package:claw_hub/app/bootstrap.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/di/providers.dart';
@@ -9,43 +12,34 @@ import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
 import 'package:claw_hub/app/background_sync/callback_dispatcher.dart';
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
-import 'package:claw_hub/ui_kit/error_boundary.dart';
+import 'package:claw_hub/ui_kit/startup_fatal_screen.dart';
+import 'package:claw_hub/core/debug_print_logger.dart';
+
+/// Module-scoped flag that survives for the lifetime of the isolate.
+/// `WidgetsFlutterBinding.ensureInitialized()` can only be called once per
+/// isolate; the Retry button on the fatal screen calls `main()` and we must
+/// not re-init the binding on retry.
+bool _bindingInitialized = false;
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  // SYSTEMATIC-DEBUGGING: boundary markers to localize the Android splash-hang.
-  // The predraw-listener loop (performTraversals: cancelAndRedraw) means the
-  // first frame never renders. These prints reveal exactly which await blocks
-  // (or whether the Dart isolate never starts at all → no [BOOT] lines).
-  // TEMPORARY — remove once root cause is confirmed.
-  debugPrint('[BOOT] main: binding initialized');
-
-  try {
-    debugPrint('[BOOT] main: workmanager.initialize START');
-    // US-018: register the background-sync entry point. MUST happen before
-    // runApp so workmanager can dispatch to callbackDispatcher from a background
-    // isolate. Same-process (enableSeparateBackgroundProcess is NOT called) so
-    // flutter_secure_storage keychain access works cross-isolate.
-    await Workmanager().initialize(
-      callbackDispatcher,
-      isInDebugMode: kDebugMode,
-    );
-    debugPrint('[BOOT] main: workmanager.initialize DONE');
-
-    // Set global error widget fallback once — avoids the multi-instance
-    // conflict that would occur if set per ErrorBoundary widget.
-    ErrorWidget.builder = (details) => const DefaultErrorFallback();
-
-    // Initialize Drift/SQLite database before the app starts.
-    // This ensures all Riverpod providers that depend on databaseProvider
-    // have a valid database instance from the first frame.
-    debugPrint('[BOOT] main: createAppDatabase START');
-    final database = await createAppDatabase();
-    debugPrint('[BOOT] main: createAppDatabase DONE');
-
-    debugPrint('[BOOT] main: runApp START');
-    runApp(
-      ProviderScope(
+  if (!_bindingInitialized) {
+    WidgetsFlutterBinding.ensureInitialized();
+    _bindingInitialized = true;
+  }
+  runZonedGuarded(
+    () => bootstrapApp(
+      // US-018: register the background-sync entry point. MUST happen before
+      // runApp so workmanager can dispatch to callbackDispatcher from a
+      // background isolate. Same-process (enableSeparateBackgroundProcess is
+      // NOT called) so flutter_secure_storage keychain access works
+      // cross-isolate.
+      initializeWorkmanager: () => Workmanager().initialize(
+        callbackDispatcher,
+        // ignore: deprecated_member_use
+        isInDebugMode: kDebugMode,
+      ),
+      createDatabase: createAppDatabase,
+      buildSuccess: (database) => ProviderScope(
         overrides: [
           // overrideWith (not overrideWithValue) lets us register an
           // onDispose hook that closes the DB when the ProviderScope
@@ -57,14 +51,24 @@ Future<void> main() async {
         ],
         child: const ClawHubApp(),
       ),
-    );
-    debugPrint('[BOOT] main: runApp DONE — first frame pipeline pending');
-  } catch (e, st) {
-    // If an exception is thrown before runApp, the splash is held forever and
-    // the error may not be visible. Surface it explicitly.
-    debugPrint('[BOOT] main: FATAL during startup: $e\n$st');
-    rethrow;
-  }
+      showFatal: (error, stackTrace) => runApp(
+        StartupFatalScreen(error: error, stackTrace: stackTrace, onRetry: main),
+      ),
+    ),
+    _onZoneError,
+  );
+}
+
+/// Last-resort handler for uncaught errors that escape [bootstrapApp]'s
+/// inner try/catch AND the `await` chain (e.g. errors from a microtask
+/// scheduled in a future tick). Mirrors the bootstrap-failure path so the
+/// user always sees a visible error screen instead of a frozen splash.
+void _onZoneError(Object error, StackTrace stackTrace) {
+  const logger = DebugPrintLogger();
+  logger.error('[main] uncaught zone error: $error', stackTrace);
+  runApp(
+    StartupFatalScreen(error: error, stackTrace: stackTrace, onRetry: main),
+  );
 }
 
 /// 应用启动后初始化连接编排器。
