@@ -33,6 +33,24 @@ import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 import 'package:claw_hub/ui_kit/status_banner.dart';
 import 'package:claw_hub/ui_kit/emoji_avatar.dart';
 import 'package:claw_hub/ui_kit/placeholders/agent_removed_placeholder.dart';
+import 'package:claw_hub/ui_kit/toast.dart';
+
+/// 把一条 Gateway 诊断事件格式化为用户可见的 toast 文案。
+///
+/// 顶层纯函数（非 widget 方法）以便单元测试直接断言文案契约——
+/// 锁住视觉契约（含 size/limit 字节数），不依赖 golden 基建。
+///
+/// sealed union 穷尽：未来新增 `RateLimitNotice` / `QuotaExceededNotice`
+/// 等子类型时，编译器强制在此 switch 补分支（缺即编译错），避免漏处理。
+String formatGatewayNotice(GatewayNotice notice) => switch (notice) {
+  LargePayloadNotice(:final size, :final limit) =>
+    '消息过大被网关拒收（$size / $limit 字节），请缩短内容后重试',
+  // F-4: 在途缓冲满是瞬态、不可由用户缓解（等在途请求收完即恢复），
+  // 故文案只定性 + 安抚「自动重试」，不暴露 buffered/attempted/max 字节
+  // 数（用户看不懂也无从操作）。消息本身已被 SendMessageUseCase 标
+  // FAILED，OutboxProcessor 会在缓冲排空后自动重发 —— 不丢数据。
+  BufferOverflowNotice() => '网关繁忙，消息未能发送，将自动重试',
+};
 
 /// 聊天页 (P0 MVP Phase 5)
 /// 消息列表 + 输入栏 + 实时消息接收 + Markdown 渲染 + 状态反馈
@@ -212,6 +230,29 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       if (next.closeRequested && prev?.closeRequested != true) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _handleBack();
+        });
+      }
+    });
+
+    // Gap #6 收尾 (Step 4): ChatViewModel 收到 Gateway 诊断事件时把
+    // gatewayNoticeSeq 自增 + 把结构化 notice 塞进 state。这里比较
+    // prev/next 的 seq 变化触发 toast：seq 变了就弹一次（即使
+    // lastGatewayNotice 内容相同也弹——规避 Riverpod `==` dedup,见
+    // model-equals-identity-blindspot）。
+    //
+    // 文案按 notice 的 runtime type 经 [formatGatewayNotice] 派生
+    // （l10n 友好），ViewModel/State 只持结构化 notice。
+    //
+    // post-frame 回调避免在 build() 阶段调 Overlay.of(context);同一 VM
+    // 状态再次进入 build 时(seq 未变)不会重复触发。
+    ref.listen(chatViewModelProvider(params), (prev, next) {
+      final prevSeq = prev?.gatewayNoticeSeq ?? 0;
+      if (next.gatewayNoticeSeq != prevSeq && next.lastGatewayNotice != null) {
+        final message = formatGatewayNotice(next.lastGatewayNotice!);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            XiaToast.show(context, message);
+          }
         });
       }
     });

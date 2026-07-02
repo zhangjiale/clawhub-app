@@ -371,12 +371,31 @@ class WsGatewayClient implements IGatewayClient {
     // sessionKey format: agent:{agentId}:main (ref doc §7.2)
     final sessionKey = 'agent:$agentId:main';
 
-    final res = await manager.sendRequest(Methods.chatSend, {
-      'sessionKey': sessionKey,
-      'message': message.content ?? '',
-      'idempotencyKey': message.clientId,
-      if (message.metadata != null) 'metadata': message.metadata,
-    });
+    final ResponseFrame res;
+    try {
+      res = await manager.sendRequest(Methods.chatSend, {
+        'sessionKey': sessionKey,
+        'message': message.content ?? '',
+        'idempotencyKey': message.clientId,
+        if (message.metadata != null) 'metadata': message.metadata,
+      });
+    } on BufferOverflowException {
+      // F-4: 在途缓冲满（reject-new，spec §2.2 maxBufferedBytes）。把 ACL
+      // 内部的背压信号翻译成 [BufferOverflowNotice] 推上诊断流，UI 层据此
+      // 弹「网关繁忙，将自动重试」toast —— 避免用户面对无说明的 FAILED。
+      //
+      // 异常仍 rethrow：[SendMessageUseCase.execute] / [.retry] 的 catch 照常
+      // 标 FAILED（可重试），OutboxProcessor 在缓冲排空后自动重发，不丢数据。
+      // reject-new 在 sendRequest 内部发生于 _channel.sink.add 之前、completer
+      // 注册之前，故无 socket 写入 / pending 条目需清理；_sessionToAgentId 与
+      // 反向索引只在下方 res.ok 成功路径写入，此处早退不泄漏映射（由
+      // ws_gateway_client_test "sendMessage failure does not leak" 覆盖）。
+      final conn = _connections[instanceId];
+      if (conn != null && !conn.gatewayNoticeCtrl.isClosed) {
+        conn.gatewayNoticeCtrl.add(const BufferOverflowNotice());
+      }
+      rethrow;
+    }
 
     if (!res.ok) {
       throw Exception(
@@ -602,11 +621,12 @@ class WsGatewayClient implements IGatewayClient {
   }
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) {
-    // Gap #6: diagnostic stream for over-sized payloads (spec §2.7).
-    // Use _getOrCreateControllers so callers can subscribe even before
-    // connect() (e.g. UI eagerly wires a SnackBar listener at app start).
-    return _getOrCreateControllers(instanceId).largePayloadCtrl.stream;
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) {
+    // Gap #6: 统一诊断流（sealed union, spec §2.7）。Use
+    // _getOrCreateControllers so callers can subscribe even before connect()
+    // (e.g. UI eagerly wires a toast listener at app start). Controller 元素
+    // 类型为 GatewayNotice——后续新诊断事件直接 .add() 入此 controller。
+    return _getOrCreateControllers(instanceId).gatewayNoticeCtrl.stream;
   }
 
   @override
@@ -637,8 +657,8 @@ class WsGatewayClient implements IGatewayClient {
       if (!conn.streamingCtrl.isClosed) {
         await conn.streamingCtrl.close();
       }
-      if (!conn.largePayloadCtrl.isClosed) {
-        await conn.largePayloadCtrl.close();
+      if (!conn.gatewayNoticeCtrl.isClosed) {
+        await conn.gatewayNoticeCtrl.close();
       }
     }
     _connections.clear();
@@ -677,8 +697,8 @@ class WsGatewayClient implements IGatewayClient {
         // (which would also affect chat/agent events on the same channel).
         try {
           final notice = parseLargePayloadEvent(payload);
-          if (!conn.largePayloadCtrl.isClosed) {
-            conn.largePayloadCtrl.add(notice);
+          if (!conn.gatewayNoticeCtrl.isClosed) {
+            conn.gatewayNoticeCtrl.add(notice);
           }
         } catch (error, stackTrace) {
           debugPrint(
@@ -1279,12 +1299,13 @@ class _InstanceConnection {
   final StreamController<GatewayPairingInfo?> pairingInfoCtrl;
   final StreamController<StreamingEvent> streamingCtrl;
 
-  /// Gap #6: per-instance diagnostic stream for `payload.large` events
-  /// emitted by the Gateway when the client sends an over-sized payload.
-  /// Surfaced via [IGatewayClient.largePayloadNoticeStream] so the UI
-  /// layer can show a user-visible hint instead of silently failing.
-  final StreamController<LargePayloadNotice> largePayloadCtrl =
-      StreamController<LargePayloadNotice>.broadcast();
+  /// Gap #6: per-instance diagnostic stream for Gateway `payload.large`
+  /// (and future diagnostic) events. Surfaced via
+  /// [IGatewayClient.gatewayNoticeStream] so the UI layer can show a
+  /// user-visible hint instead of silently failing. Element type is the
+  /// sealed [GatewayNotice] union so new subtypes flow without retyping.
+  final StreamController<GatewayNotice> gatewayNoticeCtrl =
+      StreamController<GatewayNotice>.broadcast();
 
   StreamSubscription<EventFrame>? _eventSub;
   StreamSubscription<GatewayConnectionState>? _stateSub;

@@ -2709,12 +2709,10 @@ void _replayableConnectionStateTests() {
   // failing the message.
   // ============================================================================
   group('payload.large diagnostic event (Gap #6)', () {
-    test('emits LargePayloadNotice on largePayloadNoticeStream', () async {
+    test('emits LargePayloadNotice on gatewayNoticeStream', () async {
       final (:client, :ws) = await connectAndHandshake();
 
-      final noticeFuture = client
-          .largePayloadNoticeStream('test-instance')
-          .first;
+      final noticeFuture = client.gatewayNoticeStream('test-instance').first;
 
       ws.simulateServerFrame(
         '{"type":"event","event":"payload.large",'
@@ -2723,7 +2721,9 @@ void _replayableConnectionStateTests() {
       );
       await pumpMicrotasks();
 
-      final notice = await noticeFuture;
+      final base = await noticeFuture;
+      expect(base, isA<LargePayloadNotice>());
+      final notice = base as LargePayloadNotice;
       expect(notice.sessionKey, 'agent:r-1:main');
       expect(notice.size, 31457280);
       expect(notice.limit, 26214400);
@@ -2734,9 +2734,7 @@ void _replayableConnectionStateTests() {
     test('stream tolerates a payload.large with missing fields', () async {
       final (:client, :ws) = await connectAndHandshake();
 
-      final noticeFuture = client
-          .largePayloadNoticeStream('test-instance')
-          .first;
+      final noticeFuture = client.gatewayNoticeStream('test-instance').first;
 
       // Server variant: missing sessionKey/size/limit — parser coerces
       // to defaults instead of crashing the diagnostic path.
@@ -2745,7 +2743,9 @@ void _replayableConnectionStateTests() {
       );
       await pumpMicrotasks();
 
-      final notice = await noticeFuture;
+      final base = await noticeFuture;
+      expect(base, isA<LargePayloadNotice>());
+      final notice = base as LargePayloadNotice;
       expect(notice.sessionKey, '');
       expect(notice.size, 0);
       expect(notice.limit, 0);
@@ -2758,5 +2758,177 @@ void _replayableConnectionStateTests() {
     // Stream.empty()` and is trivially correct.  The two tests above
     // cover the actual production path: WsGatewayClient parses and
     // emits the notice, and tolerates partial server payloads.
+  });
+
+  // ============================================================================
+  // F-4: BufferOverflowException → BufferOverflowNotice translation.
+  //
+  // When the in-flight buffer is full (reject-new backpressure, spec §2.2
+  // maxBufferedBytes), ConnectionManager.sendRequest throws
+  // BufferOverflowException *before* writing to the socket. WsGatewayClient
+  // .sendMessage catches it, emits a BufferOverflowNotice on the diagnostic
+  // stream (so the UI shows a toast via the existing sealed-union path), then
+  // rethrows so SendMessageUseCase marks the message FAILED (retryable by
+  // OutboxProcessor once the buffer drains). No socket write, no session-
+  // mapping leak.
+  // ============================================================================
+  group('BufferOverflowException → BufferOverflowNotice (F-4)', () {
+    /// hello-ok with a tight maxBufferedBytes cap so a second in-flight send
+    /// trips the reject-new guard. Kept local (not added to test_helpers.dart)
+    /// to avoid touching a shared file for a single test.
+    String helloOkTightBuffer(String id, {required int maxBufferedBytes}) =>
+        '{"type":"res","id":"$id","ok":true,'
+        '"payload":{"type":"hello-ok","protocol":4,'
+        '"policy":{"tickIntervalMs":15000,'
+        '"maxBufferedBytes":$maxBufferedBytes,"maxPayload":10000000}}}';
+
+    /// Drive the handshake with a tight-buffer hello-ok (the default
+    /// [connectAndHandshake] uses a 50MB cap, which never trips reject-new).
+    Future<({WsGatewayClient client, ControllableWebSocket ws})>
+    handshakeTightBuffer({required int maxBufferedBytes}) async {
+      final ws = ControllableWebSocket.ready();
+      final client = WsGatewayClient(
+        identityProvider: FakeDeviceIdentityProvider(),
+        webSocketFactory: (_) => ws.channel,
+      );
+      unawaited(client.connect(testInstance()));
+      await pumpMicrotasks();
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(
+        helloOkTightBuffer(reqId, maxBufferedBytes: maxBufferedBytes),
+      );
+      await pumpMicrotasks();
+      return (client: client, ws: ws);
+    }
+
+    Message buildMsg(String content, {required String clientId}) => Message(
+      clientId: clientId,
+      conversationId: 'conv-1',
+      agentId: 'agent-r1',
+      role: MessageRole.user,
+      type: MessageType.text,
+      content: content,
+      logicalClock: 0,
+    );
+
+    test('sendMessage throws BufferOverflowException AND emits '
+        'BufferOverflowNotice when the in-flight buffer is full', () async {
+      // Byte math (robust margins): one chat.send with 'x'*500 content
+      // serializes to ~688 UTF-8 bytes (params wrapper + 500 content).
+      // cap=1000 → one request fits (688 < 1000), two would overflow
+      // (1376 > 1000) → reject-new on the second.
+      final (:client, :ws) = await handshakeTightBuffer(maxBufferedBytes: 1000);
+
+      // 1. Fire first send unawaited — it passes the buffer check,
+      //    writes a frame, registers its completer, then suspends at
+      //    `await completer.future`. Its ~688 bytes stay counted.
+      final f1 = client.sendMessage(
+        instanceId: 'test-instance',
+        agentId: 'agent-r1',
+        message: buildMsg('x' * 500, clientId: 'msg-1'),
+      );
+      await pumpMicrotasks();
+
+      // 2. Subscribe to the diagnostic stream BEFORE firing #2 —
+      //    gatewayNoticeCtrl is a broadcast controller (no replay).
+      final notices = <GatewayNotice>[];
+      final sub = client
+          .gatewayNoticeStream('test-instance')
+          .listen(notices.add);
+
+      // 3. Second same-shape send trips reject-new → throws
+      //    BufferOverflowException. The catch in sendMessage emits the
+      //    notice on the diagnostic stream, then rethrows.
+      await expectLater(
+        client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'agent-r1',
+          message: buildMsg('x' * 500, clientId: 'msg-2'),
+        ),
+        throwsA(isA<BufferOverflowException>()),
+      );
+      await pumpMicrotasks();
+
+      // 4. Exactly one notice was emitted, typed as BufferOverflowNotice
+      //    (and as the sealed base type GatewayNotice).
+      expect(notices.length, 1);
+      expect(notices.single, isA<BufferOverflowNotice>());
+      expect(notices.single, isA<GatewayNotice>());
+
+      // 5. The rejected send never touched the socket — only #1's
+      //    chat.send frame was written (reject-new throws before
+      //    _channel.sink.add). sentFrames = [connect, chat.send#1].
+      final chatSendFrames = ws.sentFrames
+          .where((f) => f.contains('"method":"chat.send"'))
+          .length;
+      expect(
+        chatSendFrames,
+        1,
+        reason:
+            'the rejected send must not have written a frame — '
+            'reject-new throws before _channel.sink.add',
+      );
+
+      await sub.cancel();
+
+      // 6. Clean up #1: inject its chat.send response so it resolves
+      //    normally (otherwise dispose→_failAllPending→ok:false→sendMessage
+      //    throws Exception → unhandled post-dispose error).
+      final f1Frame = ws.sentFrames.lastWhere(
+        (f) => f.contains('"method":"chat.send"'),
+      );
+      final f1ReqId = extractReqId(f1Frame);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$f1ReqId","ok":true,'
+        '"payload":{"runId":"run-1","timestamp":1700000000000}}',
+      );
+      await f1;
+
+      await client.dispose();
+    });
+
+    test(
+      'a non-overflow send (buffer not full) does NOT emit a notice',
+      () async {
+        // Sanity guard: the catch must fire ONLY on BufferOverflowException,
+        // not on every sendMessage. A single send well under the cap must
+        // produce zero diagnostic notices.
+        final (:client, :ws) = await handshakeTightBuffer(
+          maxBufferedBytes: 10_000,
+        );
+
+        final notices = <GatewayNotice>[];
+        final sub = client
+            .gatewayNoticeStream('test-instance')
+            .listen(notices.add);
+
+        final future = client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'agent-r1',
+          message: buildMsg('hello', clientId: 'msg-1'),
+        );
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.last);
+        ws.simulateServerFrame(
+          '{"type":"res","id":"$reqId","ok":true,'
+          '"payload":{"runId":"run-1","timestamp":1700000000000}}',
+        );
+        await future;
+        await pumpMicrotasks();
+
+        expect(
+          notices,
+          isEmpty,
+          reason:
+              'a successful send under the cap must not emit a '
+              'BufferOverflowNotice — the catch fires only on reject-new',
+        );
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
   });
 }

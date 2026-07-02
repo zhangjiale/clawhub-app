@@ -124,4 +124,25 @@ void main() {
       expect(result.timestamp, isNotNull);
     });
   });
+
+  group('gatewayNoticeStream (Gap #6 — sealed union diagnostic stream)', () {
+    test('emits LargePayloadNotice typed as GatewayNotice', () async {
+      final emitted = <GatewayNotice>[];
+      final sub = client.gatewayNoticeStream('inst-notice').listen(emitted.add);
+
+      final notice = LargePayloadNotice(
+        sessionKey: 'agent:r-1:main',
+        size: 30_000_000,
+        limit: 26_214_400,
+      );
+      client.emitGatewayNoticeForTesting('inst-notice', notice);
+      await Future<void>.delayed(Duration.zero);
+      await sub.cancel();
+
+      // Value == (added in Step 1) makes this an equality check, not identity.
+      expect(emitted, [notice]);
+      expect(emitted.single, isA<LargePayloadNotice>());
+      expect(emitted.single, isA<GatewayNotice>());
+    });
+  });
 }

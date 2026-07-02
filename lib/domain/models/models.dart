@@ -16,3 +16,4 @@ export 'clear_all_result.dart';
 export 'notification_event.dart';
 export 'pending_notification.dart';
 export 'daily_activity.dart';
+export 'gateway_notice.dart';

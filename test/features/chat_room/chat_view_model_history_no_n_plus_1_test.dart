@@ -90,8 +90,8 @@ class _FakeGateway implements IGatewayClient {
       const Stream<GatewayPairingInfo?>.empty();
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
 
   @override
   void resetConnectionState(String instanceId) {}

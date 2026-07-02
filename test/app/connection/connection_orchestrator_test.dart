@@ -196,8 +196,8 @@ class _FakeGatewayClient implements IGatewayClient {
       const Stream<StreamingEvent>.empty();
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
 
   @override
   Future<void> dispose() async {
@@ -1711,8 +1711,8 @@ class _BlockingFetchGateway implements IGatewayClient {
       const Stream<StreamingEvent>.empty();
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
 
   /// Helper for tests: emit an extra connected event on the instance's stream.
   void addConnectedEvent(String instanceId) {
@@ -1831,8 +1831,8 @@ class _FailsThenSucceedsGateway implements IGatewayClient {
       const Stream<StreamingEvent>.empty();
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
 
   void addConnectedEvent(String instanceId) {
     final ctrl = _stateCtrls[instanceId];
@@ -1951,8 +1951,8 @@ class _CyclicBlockGateway implements IGatewayClient {
   Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
       const Stream<StreamingEvent>.empty();
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
   @override
   Future<void> dispose() async {
     for (final c in _stateCtrls.values) {

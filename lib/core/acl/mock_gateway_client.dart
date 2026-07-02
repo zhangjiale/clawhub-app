@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:uuid/uuid.dart';
 import 'gateway_protocol.dart';
@@ -25,10 +26,11 @@ class MockGatewayClient implements IGatewayClient {
   final Map<String, StreamController<StreamingEvent>> _streamingControllers =
       {};
 
-  /// Gap #6: per-instance diagnostic stream for `payload.large` notices.
-  /// Cache mirrors [_streamingControllers] — same scope/cleanup pattern.
-  final Map<String, StreamController<LargePayloadNotice>>
-  _largePayloadControllers = {};
+  /// Gap #6: per-instance diagnostic stream (sealed union). Cache mirrors
+  /// [_streamingControllers] — same scope/cleanup pattern. Element type is
+  /// [GatewayNotice] so future subtypes flow without retyping.
+  final Map<String, StreamController<GatewayNotice>> _gatewayNoticeControllers =
+      {};
 
   List<Map<String, dynamic>> _mockAgents = [];
   List<Map<String, dynamic>> _mockInstances = [];
@@ -67,7 +69,7 @@ class MockGatewayClient implements IGatewayClient {
   ///
   /// Mirrors WsGatewayClient's `_cleanup` semantics so callers can drop a
   /// removed instance's streams without disposing the whole client.  Without
-  /// this path, the `_largePayloadControllers` (and the older controllers)
+  /// this path, the `_gatewayNoticeControllers` (and the older controllers)
   /// for removed instances would leak broadcast StreamControllers indefinitely.
   Future<void> removeInstance(String instanceId) async {
     final state = _connectionStates.remove(instanceId);
@@ -78,8 +80,8 @@ class MockGatewayClient implements IGatewayClient {
     if (tcCtrl != null) await tcCtrl.close();
     final streamCtrl = _streamingControllers.remove(instanceId);
     if (streamCtrl != null) await streamCtrl.close();
-    final lpCtrl = _largePayloadControllers.remove(instanceId);
-    if (lpCtrl != null) await lpCtrl.close();
+    final noticeCtrl = _gatewayNoticeControllers.remove(instanceId);
+    if (noticeCtrl != null) await noticeCtrl.close();
   }
 
   @override
@@ -338,13 +340,12 @@ class MockGatewayClient implements IGatewayClient {
   }
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) {
-    // Gap #6: mock never triggers payload-too-large conditions, but we
-    // still need a real broadcast stream so subscribers don't get a
-    // different Stream.empty() instance per call (which would silently
-    // drop events from late subscribers).  Cache one controller per
-    // instance, like the other stream accessors.
-    return _getOrCreateLargePayloadController(instanceId).stream;
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) {
+    // Gap #6: 统一诊断流（sealed union）。Mock 正常路径不触发诊断条件，
+    // 但仍需真实 broadcast stream 以免订阅者拿到每次新建的 Stream.empty()
+    // 实例（会静默丢晚订阅者的事件）。每实例缓存一个 controller，与其余
+    // stream accessor 同款。元素类型为 GatewayNotice。
+    return _getOrCreateGatewayNoticeController(instanceId).stream;
   }
 
   @override
@@ -371,13 +372,24 @@ class MockGatewayClient implements IGatewayClient {
     );
   }
 
-  StreamController<LargePayloadNotice> _getOrCreateLargePayloadController(
+  StreamController<GatewayNotice> _getOrCreateGatewayNoticeController(
     String instanceId,
   ) {
-    return _largePayloadControllers.putIfAbsent(
+    return _gatewayNoticeControllers.putIfAbsent(
       instanceId,
-      () => StreamController<LargePayloadNotice>.broadcast(),
+      () => StreamController<GatewayNotice>.broadcast(),
     );
+  }
+
+  /// Test-only hook: pushes a synthetic diagnostic [GatewayNotice] (e.g.
+  /// [LargePayloadNotice]) onto the per-instance broadcast stream. Mirrors
+  /// what a real Gateway would emit when it rejects an oversized frame.
+  /// Used by `chat_view_model_large_payload_test.dart` to drive the UI
+  /// wiring. Production code must never call this — it bypasses any
+  /// precondition check the real ACL applies before publishing the notice.
+  @visibleForTesting
+  void emitGatewayNoticeForTesting(String instanceId, GatewayNotice notice) {
+    _getOrCreateGatewayNoticeController(instanceId).add(notice);
   }
 
   StreamController<ToolCall> _getOrCreateToolCallController(String instanceId) {
@@ -401,7 +413,7 @@ class MockGatewayClient implements IGatewayClient {
     for (final c in _streamingControllers.values) {
       await c.close();
     }
-    for (final c in _largePayloadControllers.values) {
+    for (final c in _gatewayNoticeControllers.values) {
       await c.close();
     }
     // Clear maps so that subsequent _getOrCreateXxxController calls
@@ -411,6 +423,6 @@ class MockGatewayClient implements IGatewayClient {
     _messageControllers.clear();
     _toolCallControllers.clear();
     _streamingControllers.clear();
-    _largePayloadControllers.clear();
+    _gatewayNoticeControllers.clear();
   }
 }

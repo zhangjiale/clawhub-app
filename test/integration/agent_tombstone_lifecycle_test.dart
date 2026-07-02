@@ -81,7 +81,7 @@ class _MutableFetchGatewayClient implements IGatewayClient {
   Stream<StreamingEvent> streamingDeltaStream(String instanceId) =>
       throw UnimplementedError();
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
       throw UnimplementedError();
 }
 

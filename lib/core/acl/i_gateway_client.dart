@@ -1,7 +1,8 @@
 import '../../domain/models/models.dart';
 import 'gateway_protocol.dart';
 
-export 'gateway_protocol.dart' show LargePayloadNotice;
+export 'gateway_protocol.dart'
+    show LargePayloadNotice, BufferOverflowNotice, GatewayNotice;
 
 /// Gateway 防腐层接口契约
 /// 对齐: 架构 vFinal 5.1 (网关防腐层与连接状态机)
@@ -72,15 +73,18 @@ abstract class IGatewayClient {
   /// 被拒绝时，流中会发出包含 requestId 等信息的 [GatewayPairingInfo]。
   Stream<GatewayPairingInfo?> pairingInfoStream(String instanceId);
 
-  /// Gap #6: 获取 payload.large 诊断流（spec §2.7）。
+  /// Gap #6: 统一诊断事件流（sealed union，spec §2.7 `payload.large`
+  /// 及后续诊断事件）。
   ///
-  /// 当客户端向 Gateway 发送的请求超过 `policy.maxPayload` 限制时，
-  /// Gateway 主动发出 `payload.large` 事件；本流将解析后的 [LargePayloadNotice]
-  /// 转发给上层，UI 可订阅此流展示"消息太大，请缩减内容"等用户提示。
+  /// 当客户端触发 Gateway 诊断条件（如单帧超过 `policy.maxPayload`）时，
+  /// Gateway 主动发出 `payload.large` 等事件；本流将解析后的
+  /// [GatewayNotice]（[LargePayloadNotice] 为首个子类型）转发给上层，
+  /// UI 按 runtime type 派生文案并展示用户提示。新增诊断事件只需加
+  /// sealed 子类型 + parser 分支，调用方与本接口均不变。
   ///
-  /// 默认实现返回空流 — MockGatewayClient 与早期实现不需要处理该事件。
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  /// 默认实现返回空流 — MockGatewayClient 与早期实现不需要处理诊断事件。
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
 
   /// 释放所有资源
   Future<void> dispose();
@@ -148,6 +152,41 @@ class PayloadTooLargeException implements Exception {
   @override
   String toString() =>
       'PayloadTooLargeException: $message (actual=$actualSize, max=$maxSize)';
+}
+
+/// Gap #2 (buffer half): 在途请求总字节数已达 `policy.maxBufferedBytes` 上限，
+/// 下一个 [ConnectionManager.sendRequest] 调用会抛出此异常。
+///
+/// 实现策略为 reject-new（与 [PayloadTooLargeException] 保持一致的 fail-fast）：
+/// 不 drop oldest、不阻塞 await，而是直接抛异常。**该异常是瞬时可重试的** ——
+/// 在途请求收完响应 / 释放缓冲后重试即可成功，不会丢失消息（调用方标 FAILED，
+/// OutboxProcessor 会在缓冲排空后自动重发）。
+///
+/// F-4: WS 客户端在 [sendMessage] 中捕获本异常后向 `gatewayNoticeStream`
+/// 发出 [BufferOverflowNotice]，UI 层据此展示「网关繁忙，将自动重试」toast。
+class BufferOverflowException implements Exception {
+  final String message;
+
+  /// 抛出时已经处于在途状态的字节数（即其他未完成请求的累计负载）。
+  final int bufferedBytes;
+
+  /// 本次尝试发送的负载字节数。
+  final int attemptedSize;
+
+  /// 当时生效的 maxBufferedBytes 上限。
+  final int maxSize;
+
+  const BufferOverflowException({
+    required this.message,
+    required this.bufferedBytes,
+    required this.attemptedSize,
+    required this.maxSize,
+  });
+
+  @override
+  String toString() =>
+      'BufferOverflowException: $message '
+      '(buffered=$bufferedBytes, attempted=$attemptedSize, max=$maxSize)';
 }
 
 /// Gateway 设备配对信息 — 当连接因 PAIRING_REQUIRED 被拒绝时由 Gateway 返回。

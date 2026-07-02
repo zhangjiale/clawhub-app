@@ -52,6 +52,16 @@ class ConnectionManager {
   /// 默认 50MB（spec §2.2 默认值）。
   int _maxBufferedBytes = defaultMaxBufferedBytes;
 
+  /// Gap #2 (buffer half): 当前所有在途请求的累计字节数。
+  ///
+  /// 在 [sendRequest] 注册请求时 +payloadSize，在其 `finally` 块（不管成功 /
+  /// 超时 / 失败 / 被 dispose 触发 CONNECTION_LOST 完成）中 -payloadSize。
+  ///
+  /// 刻意**不**在 [_failAllPending] 里改本字段 — 若在那里再扫一遍，会与各
+  /// 调用方 finally 的递减产生双扣（变负）。让每次 sendRequest 的 finally
+  /// 各自负责扣减自己贡献的字节即可。
+  int _bufferedBytes = 0;
+
   /// Test/diagnostic read of the effective maxPayload cap. The value is
   /// negotiated from hello-ok.policy.maxPayload at connect time, falling
   /// back to [defaultMaxPayloadBytes] (25MB) when the server omits the
@@ -64,6 +74,13 @@ class ConnectionManager {
   /// [maxPayloadBytesForTesting] for the negotiation semantics.
   @visibleForTesting
   int get maxBufferedBytesForTesting => _maxBufferedBytes;
+
+  /// Test/diagnostic read of the current in-flight byte counter (Gap #2
+  /// buffer half enforcement). Equals the sum of UTF-8 byte sizes of
+  /// every request currently awaiting a server response. Drained to
+  /// zero once each sendRequest's finally runs.
+  @visibleForTesting
+  int get bufferedBytesForTesting => _bufferedBytes;
 
   /// Set of event types the Gateway declared it will push, populated
   /// from `hello-ok.features.events` (spec §2.2 / Gap #3).
@@ -346,8 +363,36 @@ class ConnectionManager {
       );
     }
 
+    // Gap #2 (buffer half): reject-new backpressure. Before adding another
+    // in-flight request, make sure the running counter + this payload does
+    // not exceed the server's maxBufferedBytes hint (spec §2.2). Without
+    // this guard, a burst of large sends could queue hundreds of MB on
+    // the socket before the first payload.large response lands — we'd
+    // already OOM'd.
+    //
+    // Strategy is reject-new (throw), not drop-oldest and not await-with-
+    // backpressure, because: (1) drop-oldest cancels legitimate work
+    // some other code path is awaiting, (2) backpressure-await introduces
+    // deadlock risk and changes API semantics from "kick-and-forget" to
+    // "queue and wait", (3) throw matches the existing fail-fast pattern
+    // for PayloadTooLargeException one block above.
+    final maxBuffered = _maxBufferedBytes;
+    if (_bufferedBytes + payloadSize > maxBuffered) {
+      throw BufferOverflowException(
+        message:
+            'In-flight buffer full: $method payload ($payloadSize) would '
+            'push counter past maxBufferedBytes',
+        bufferedBytes: _bufferedBytes,
+        attemptedSize: payloadSize,
+        maxSize: maxBuffered,
+      );
+    }
+
     final completer = Completer<ResponseFrame>();
     _pendingRequests[id] = completer;
+    // Register the byte cost AFTER the guard so a rejected request never
+    // bumps the counter (callers retry cleanly).
+    _bufferedBytes += payloadSize;
 
     try {
       _channel!.sink.add(requestJson);
@@ -358,6 +403,13 @@ class ConnectionManager {
       );
     } finally {
       _pendingRequests.remove(id);
+      // Mirror the increment above — every sendRequest owns its own
+      // subtraction in its finally, including the dispose-path where
+      // _failAllPending completes the completer with CONNECTION_LOST.
+      // _failAllPending itself MUST NOT touch _bufferedBytes (else we'd
+      // double-subtract once for the .complete() and once for each
+      // finaller's decrement).
+      _bufferedBytes -= payloadSize;
     }
   }
 

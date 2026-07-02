@@ -69,8 +69,8 @@ class _TestGatewayClient implements IGatewayClient {
       const Stream<StreamingEvent>.empty();
 
   @override
-  Stream<LargePayloadNotice> largePayloadNoticeStream(String instanceId) =>
-      const Stream<LargePayloadNotice>.empty();
+  Stream<GatewayNotice> gatewayNoticeStream(String instanceId) =>
+      const Stream<GatewayNotice>.empty();
 
   @override
   Future<void> dispose() => throw UnimplementedError();

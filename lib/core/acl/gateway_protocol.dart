@@ -1,6 +1,13 @@
 import 'dart:convert';
 
 import 'package:claw_hub/core/utils/copy_with_nullable.dart';
+import '../../domain/models/gateway_notice.dart';
+
+// Re-export the domain sealed union so existing `LargePayloadNotice`
+// consumers (notably i_gateway_client.dart's `export ... show
+// LargePayloadNotice`) keep resolving without touching call sites.
+// Step 2 type swap: ACL no longer owns the type, only the JSON parser.
+export '../../domain/models/gateway_notice.dart';
 
 /// OpenClaw Gateway WebSocket 协议 v4 — 消息帧定义与解析。
 ///
@@ -532,25 +539,9 @@ class StreamingDone extends StreamingEvent {
 
 /// Gap #6: payload.large 事件的解析结果（spec §2.7）。
 ///
-/// 当客户端发出超过 `policy.maxPayload` 的请求时，Gateway 主动发此事件
-/// 给客户端，告知"这条消息被拒收"。客户端应通过 [IGatewayClient] 上的
-/// 诊断 stream 转发给 UI 层，让用户知道消息没成功（而不是静默失败）。
-///
-/// 字段对齐 spec §2.7 描述：
-/// - [sessionKey]: 关联的会话 key（用于回查是哪条消息被拒）
-/// - [size]: 实际负载字节数
-/// - [limit]: Gateway 的 maxPayload 上限（客户端可用来做文案"超过 X 上限"）
-class LargePayloadNotice {
-  final String sessionKey;
-  final int size;
-  final int limit;
-
-  const LargePayloadNotice({
-    required this.sessionKey,
-    required this.size,
-    required this.limit,
-  });
-}
+/// `LargePayloadNotice` 定义已迁移至 domain 层
+/// (`lib/domain/models/gateway_notice.dart`)，作为 `sealed GatewayNotice`
+/// 的首个子类型。本文件经上方 `export` 重新导出，沿用旧引用路径。
 
 /// 从 `payload.large` 事件的 payload 中解析 [LargePayloadNotice]。
 ///
