@@ -379,7 +379,7 @@ class WsGatewayClient implements IGatewayClient {
         'idempotencyKey': message.clientId,
         if (message.metadata != null) 'metadata': message.metadata,
       });
-    } on BufferOverflowException {
+    } on BufferOverflowException catch (e) {
       // F-4: 在途缓冲满（reject-new，spec §2.2 maxBufferedBytes）。把 ACL
       // 内部的背压信号翻译成 [BufferOverflowNotice] 推上诊断流，UI 层据此
       // 弹「网关繁忙，将自动重试」toast —— 避免用户面对无说明的 FAILED。
@@ -390,6 +390,16 @@ class WsGatewayClient implements IGatewayClient {
       // 注册之前，故无 socket 写入 / pending 条目需清理；_sessionToAgentId 与
       // 反向索引只在下方 res.ok 成功路径写入，此处早退不泄漏映射（由
       // ws_gateway_client_test "sendMessage failure does not leak" 覆盖）。
+      //
+      // 诊断面包屑：异常携带 buffered/attempted/max 字节数，但下游每个 catch
+      // （execute / retry）都丢弃了它们。这里是在作用域内能读到这些字段的
+      // 唯一站点 —— 留一行 debugPrint，让用户上报「网关繁忙」时有可诊断的
+      // 日志轨迹。行为不变（仍 emit notice + rethrow）。
+      debugPrint(
+        '[WsGateway] Buffer overflow on sendMessage for $instanceId: '
+        'buffered=${e.bufferedBytes}, attempted=${e.attemptedSize}, '
+        'max=${e.maxSize}',
+      );
       final conn = _connections[instanceId];
       if (conn != null && !conn.gatewayNoticeCtrl.isClosed) {
         conn.gatewayNoticeCtrl.add(const BufferOverflowNotice());

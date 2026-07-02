@@ -235,27 +235,37 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     });
 
     // Gap #6 收尾 (Step 4): ChatViewModel 收到 Gateway 诊断事件时把
-    // gatewayNoticeSeq 自增 + 把结构化 notice 塞进 state。这里比较
-    // prev/next 的 seq 变化触发 toast：seq 变了就弹一次（即使
-    // lastGatewayNotice 内容相同也弹——规避 Riverpod `==` dedup,见
-    // model-equals-identity-blindspot）。
+    // gatewayNoticeSeq 自增 + 把结构化 notice 塞进 state。这里监听
+    // (seq, notice) 切片：seq 变了就弹一次 toast（即使 lastGatewayNotice
+    // 内容相同也弹——规避 Riverpod `==` dedup,见 model-equals-identity-blindspot）。
     //
     // 文案按 notice 的 runtime type 经 [formatGatewayNotice] 派生
     // （l10n 友好），ViewModel/State 只持结构化 notice。
     //
+    // Finding #9: 用 `.select` 监听 (seq, notice) 切片——这两个字段已从
+    // ChatSessionState.== 移除（见 chat_view_model.dart），所以 notice
+    // 到达**不会**触发 line 151 的 `ref.watch` 重建 build()（toast 走
+    // ref.listen，本就不需要重建）。.select 保证本监听仍在每次 notice
+    // 时触发（selected 元组随 seq 单调变化）。
+    //
     // post-frame 回调避免在 build() 阶段调 Overlay.of(context);同一 VM
     // 状态再次进入 build 时(seq 未变)不会重复触发。
-    ref.listen(chatViewModelProvider(params), (prev, next) {
-      final prevSeq = prev?.gatewayNoticeSeq ?? 0;
-      if (next.gatewayNoticeSeq != prevSeq && next.lastGatewayNotice != null) {
-        final message = formatGatewayNotice(next.lastGatewayNotice!);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            XiaToast.show(context, message);
-          }
-        });
-      }
-    });
+    ref.listen(
+      chatViewModelProvider(
+        params,
+      ).select((s) => (s.gatewayNoticeSeq, s.lastGatewayNotice)),
+      (prev, next) {
+        final prevSeq = prev?.$1 ?? 0;
+        if (next.$1 != prevSeq && next.$2 != null) {
+          final message = formatGatewayNotice(next.$2!);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              XiaToast.show(context, message);
+            }
+          });
+        }
+      },
+    );
 
     // Apply search-result highlight when messages first load, then auto-fade.
     ref.listen(chatViewModelProvider(params), (prev, next) {

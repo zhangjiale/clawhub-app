@@ -88,13 +88,20 @@ class ChatSessionState {
   /// （[LargePayloadNotice] 及后续 `rate.limit` / `quota.exceeded` 等
   /// `GatewayNotice` 子类型）时自增 1。
   ///
-  /// UI 层（chat_room_page）通过比较 prev/next 的 [gatewayNoticeSeq]
-  /// 触发 toast：seq 变了就弹一次（即使 [lastGatewayNotice] 的内容
-  /// 与上次相同也会触发——规避 Riverpod `==` dedup 抑制连续的相同
-  /// notice）。新增诊断事件类型时本字段语义不变。
+  /// UI 层（chat_room_page）用 `ref.listen(chatViewModelProvider.select(
+  /// (s) => (s.gatewayNoticeSeq, s.lastGatewayNotice)))` 监听本字段：seq
+  /// 变了就弹一次 toast（即使 [lastGatewayNotice] 内容与上次相同也弹——
+  /// 规避 Riverpod `==` dedup 抑制连续的相同 notice）。新增诊断事件类型
+  /// 时本字段语义不变。
   ///
   /// 用单调计数而非等值判断：连续两条内容完全相同的事件（同一会话连发
   /// 两次超大帧）用户期望都看到提示，而不是被状态去重吃掉第二次。
+  ///
+  /// Finding #9: 本字段与 [lastGatewayNotice] **刻意不在 [==] / [hashCode]**
+  /// 中——它们只供上述 `.select` ref.listen 消费，不参与 build() 的
+  /// `ref.watch` 重建判定。否则每次 notice 都会触发 ChatRoomPage 整树
+  /// 重建（Scaffold+AppBar+ListView），而 toast 走 ref.listen 根本不需要
+  /// 重建。参见 model-equals-identity-blindspot memory。
   final int gatewayNoticeSeq;
 
   /// Gap #6 收尾 (Step 4): 上一次 Gateway 诊断事件（sealed union）。
@@ -174,9 +181,7 @@ class ChatSessionState {
           highlightedMessageId == other.highlightedMessageId &&
           highlightedQuery == other.highlightedQuery &&
           contentRevision == other.contentRevision &&
-          closeRequested == other.closeRequested &&
-          gatewayNoticeSeq == other.gatewayNoticeSeq &&
-          lastGatewayNotice == other.lastGatewayNotice;
+          closeRequested == other.closeRequested;
 
   @override
   int get hashCode => Object.hash(
@@ -191,8 +196,6 @@ class ChatSessionState {
     highlightedQuery,
     contentRevision,
     closeRequested,
-    gatewayNoticeSeq,
-    lastGatewayNotice,
   );
 }
 
@@ -659,6 +662,38 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       //     so stale events from a previous response never contaminate
       //     the current buffer (no generation-guard needed).
       _startStreaming();
+
+      // 5d. Gap #6 收尾 (Step 4): 订阅 Gateway 诊断事件（sealed union）。
+      // 客户端发的单帧超过 maxPayload 等条件触发 Gateway 主动推诊断事件
+      // (不作为正常响应,无法被 sendRequest 的 completer 接住),所以必须靠
+      // 独立 stream 接。命中时只把 seq 自增 + 把结构化 notice 塞进 state;
+      // 文案由 UI 层按 runtime type 派生(l10n 友好),ViewModel 不再持本地化串。
+      // 对比 prev/next seq 触发 toast,即使两次 notice 内容相同也弹(seq 单调)。
+      //
+      // Finding #1: 必须在 `await fetchMessageHistory` 之前订阅 — 广播
+      // StreamController 无 replay,fetch RTT（100-2000ms）期间到达的
+      // notice（并发 OutboxProcessor 重试触发缓冲满 / 服务端推
+      // payload.large）若无 listener 会被永久丢弃,F-4/Gap#6 toast 永不弹。
+      // 与 5a/5b/5c 同款「先订阅再拉历史」不变量（见 541-545 注释）。
+      _gatewayNoticeSubscription = _gatewayClient
+          .gatewayNoticeStream(instanceId)
+          .listen(
+            (notice) {
+              _updateState(
+                (s) => s.copyWith(
+                  gatewayNoticeSeq: s.gatewayNoticeSeq + 1,
+                  lastGatewayNotice: notice,
+                ),
+              );
+            },
+            onError: (Object error, StackTrace stack) {
+              debugPrint(
+                '[ChatViewModel] gateway notice stream error for $instanceId: '
+                '$error\n$stack',
+              );
+            },
+          );
+
       // 6. Fetch message history from Gateway (best-effort).
       //    Placed AFTER real-time subscriptions so that events arriving
       //    during the fetch RTT are captured, not lost.
@@ -742,31 +777,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             onError: (Object error, StackTrace stack) {
               debugPrint(
                 '[ChatViewModel] outbox count stream error for $instanceId: '
-                '$error\n$stack',
-              );
-            },
-          );
-
-      // 5b. Gap #6 收尾 (Step 4): 订阅 Gateway 诊断事件（sealed union）。
-      // 客户端发的单帧超过 maxPayload 等条件触发 Gateway 主动推诊断事件
-      // (不作为正常响应,无法被 sendRequest 的 completer 接住),所以必须靠
-      // 独立 stream 接。命中时只把 seq 自增 + 把结构化 notice 塞进 state;
-      // 文案由 UI 层按 runtime type 派生(l10n 友好),ViewModel 不再持本地化串。
-      // 对比 prev/next seq 触发 toast,即使两次 notice 内容相同也弹(seq 单调)。
-      _gatewayNoticeSubscription = _gatewayClient
-          .gatewayNoticeStream(instanceId)
-          .listen(
-            (notice) {
-              _updateState(
-                (s) => s.copyWith(
-                  gatewayNoticeSeq: s.gatewayNoticeSeq + 1,
-                  lastGatewayNotice: notice,
-                ),
-              );
-            },
-            onError: (Object error, StackTrace stack) {
-              debugPrint(
-                '[ChatViewModel] gateway notice stream error for $instanceId: '
                 '$error\n$stack',
               );
             },

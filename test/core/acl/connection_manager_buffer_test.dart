@@ -354,6 +354,139 @@ void main() {
               'pre-dispose value',
         );
       });
+
+      // Finding #2: the onError (no follow-up done) and tick-timeout
+      // connection-drop paths did NOT call _failAllPending — only
+      // _onConnectionDone / dispose / disconnect did. So an in-flight
+      // request's completer stayed pending until its ≤30s requestTimeoutMs
+      // fired, leaving _bufferedBytes inflated. A fresh sendRequest after a
+      // ~1s reconnect would then false-trip the reject-new guard
+      // (stale 40MB + new 15MB > 50MB → spurious BufferOverflowException →
+      // FAILED + "网关繁忙" toast) until the old timeout finally drained it.
+      // The dispose test above only covers the dispose path, so this was
+      // uncaught. Fix: _onConnectionError / _onWebSocketClosed call
+      // _failAllPending, mirroring _onConnectionDone.
+      test('connection drop via onError drains _bufferedBytes (no stale '
+          'bytes to false-trip BufferOverflow on reconnect)', () async {
+        final ws = ControllableWebSocket.ready();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(),
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        unawaited(cm.connect());
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+        ws.simulateServerFrame(
+          helloOkWithBufferedLimit(
+            reqId,
+            maxBufferedBytes: 10_000_000,
+            maxPayload: 10_000_000,
+          ),
+        );
+        await pumpMicrotasks();
+        expect(cm.state, GatewayConnectionState.connected);
+
+        // In-flight request whose completer stays pending until
+        // _failAllPending completes it. Fire unawaited so its bytes stay
+        // counted.
+        unawaited(
+          cm.sendRequest('chat.send', <String, dynamic>{'message': 'x' * 500}),
+        );
+        await pumpMicrotasks();
+        expect(
+          cm.bufferedBytesForTesting,
+          greaterThan(0),
+          reason: 'in-flight request must increment the counter',
+        );
+
+        // Transport error with NO follow-up done (some platforms emit onError
+        // without onDone) → _onConnectionError. Before the fix this did NOT
+        // fail pending, leaving _bufferedBytes inflated.
+        ws.simulateError(Exception('transport reset'));
+        await pumpMicrotasks();
+
+        expect(
+          cm.bufferedBytesForTesting,
+          0,
+          reason:
+              '_onConnectionError must _failAllPending so each pending '
+              'sendRequest\'s finally decrements _bufferedBytes. A non-zero '
+              'value means stale bytes persist and a post-reconnect '
+              'sendRequest would false-trip BufferOverflowException.',
+        );
+
+        await cm.dispose();
+      });
+
+      test('tick-timeout connection drop drains _bufferedBytes (same fix for '
+          'the _onWebSocketClosed path)', () async {
+        // The tick-timeout path goes through _closeWebSocket().then(
+        // _onWebSocketClosed) — cancelling the incoming subscription, so
+        // _onConnectionDone does NOT fire (cancelOnError:false + explicit
+        // cancel). Only _onWebSocketClosed runs, so the same _failAllPending
+        // gap applies. Drive it via a fake timer factory so we don't wait
+        // the real 2×tickInterval.
+        final ws = ControllableWebSocket.ready();
+        final timers = FakeTimerFactory();
+        final cm = ConnectionManager(
+          instanceId: 'test-instance',
+          gatewayUrl: 'ws://localhost:9999/ws',
+          token: 'test-token',
+          deviceId: 'test-device',
+          config: testConfig(),
+          webSocketFactory: (_) => ws.channel,
+          timerFactory: timers.call,
+        );
+
+        unawaited(cm.connect());
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+        ws.simulateServerFrame(
+          helloOkWithBufferedLimit(
+            reqId,
+            maxBufferedBytes: 10_000_000,
+            maxPayload: 10_000_000,
+          ),
+        );
+        await pumpMicrotasks();
+        expect(cm.state, GatewayConnectionState.connected);
+
+        unawaited(
+          cm.sendRequest('chat.send', <String, dynamic>{'message': 'x' * 500}),
+        );
+        await pumpMicrotasks();
+        expect(cm.bufferedBytesForTesting, greaterThan(0));
+
+        // The tick-timeout timer is the one created in _resetTickTimeout
+        // (called on hello-ok). Fire it → _closeWebSocket().then(
+        // _onWebSocketClosed). _closeWebSocket is async, so pump microtasks
+        // to let the .then chain run.
+        timers.activeTimers
+            .lastWhere((t) => t.duration.inMilliseconds == 30000)
+            .fire();
+        await pumpMicrotasks();
+        await pumpMicrotasks();
+
+        expect(
+          cm.bufferedBytesForTesting,
+          0,
+          reason:
+              'tick-timeout → _onWebSocketClosed must _failAllPending so '
+              'pending completers resolve and their finallys drain the '
+              'counter. Non-zero = stale bytes persist across reconnect.',
+        );
+
+        await cm.dispose();
+      });
     },
   );
 

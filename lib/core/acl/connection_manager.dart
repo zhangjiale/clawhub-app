@@ -1253,7 +1253,24 @@ class ConnectionManager {
     //   - "_onConnectionError from connected → recovering + reconnect"
     //   - "_onConnectionError alone (no follow-up done) leaves system
     //     recoverable"
+    //
+    // Finding #2: also fail pending requests here — BUT only when the
+    // error lands on an ESTABLISHED connection. _bufferedBytes is only
+    // contributed by user sendRequests, and sendRequest itself rejects
+    // non-connected states, so user requests (the byte contributors) are
+    // pending ONLY while connected. During connecting/authenticating the
+    // sole pending entry is the connect-handshake completer, and failing
+    // it here would route through _handleConnectResponse →
+    // _handleAuthFailure — turning a transient transport blip into a
+    // permanent authFailed (see connection_manager_test "_onConnectionError
+    // from authenticating → recovering"). Gating on `connected` targets
+    // exactly the byte-drain fix without regressing auth-phase recovery.
+    // Mirrors _onConnectionDone (which fails on stream-close); idempotent
+    // if both fire (map cleared).
     if (!_state.isTerminal) {
+      if (_state == GatewayConnectionState.connected) {
+        _failAllPending('WebSocket error: $error');
+      }
       _setState(GatewayConnectionState.recovering);
       _scheduleReconnect();
     }
@@ -1284,9 +1301,25 @@ class ConnectionManager {
   /// Called after [_closeWebSocket] completes or errors — transitions to
   /// recovering and schedules a reconnect attempt unless the disconnect was
   /// intentional or the state machine is already in a terminal state.
+  ///
+  /// Finding #2: also fails pending user sendRequests (mirroring
+  /// [_onConnectionDone]) so each in-flight sendRequest's finally drains
+  /// [_bufferedBytes]. The tick-timeout path cancels the incoming
+  /// subscription before reaching here, so [_onConnectionDone] does NOT fire
+  /// (cancelOnError:false + explicit cancel) — without this, completers
+  /// stayed pending until their ≤30s requestTimeoutMs and stale bytes
+  /// false-tripped [BufferOverflowException] on the ~1s reconnect. Gated on
+  /// `connected`: the tick timer is only armed while connected, so we always
+  /// enter from connected — and that's the only state where user sendRequests
+  /// (the byte contributors) can be pending. Idempotent if a sibling path
+  /// already failed pending (map cleared).
   void _onWebSocketClosed() {
     if (_intentionalDisconnect) return;
     if (_state.isTerminal) return;
+    _cancelTimers();
+    if (_state == GatewayConnectionState.connected) {
+      _failAllPending('Connection lost (tick timeout or transport close)');
+    }
     _setState(GatewayConnectionState.recovering);
     _scheduleReconnect();
   }

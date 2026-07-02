@@ -68,6 +68,25 @@ void main() {
     when(
       () => gatewayClient.pairingInfoStream(any()),
     ).thenAnswer((_) => Stream.empty());
+    // Gap #6 收尾: vm._initStreamsAndHistory now subscribes to
+    // gatewayNoticeStream (chat_view_model.dart:756). mocktail's Mock
+    // bypasses the interface's `=> const Stream.empty()` default (Dart only
+    // inherits default impls via extends/with, not implements), so an
+    // unstubbed call returns null → `.listen` throws → caught at the outer
+    // try → _teardownSubscriptions cancels the other 5 subs. The 5 tests
+    // below still pass (they assert ticker wiring, not streams) but the VM
+    // is left with zero active gateway subs and CI output gains a stack
+    // trace. Stubbing mirrors the other 5 stream stubs above.
+    when(
+      () => gatewayClient.gatewayNoticeStream(any()),
+    ).thenAnswer((_) => Stream<GatewayNotice>.empty());
+    // watchById is invoked by _initStreamsAndHistory (chat_view_model.dart
+    // :478) inside its own try/catch — an unstubbed call throws there too
+    // (logged, non-fatal). Stub it to keep CI output clean, matching
+    // chat_view_model_large_payload_test.dart's setUp rationale.
+    when(
+      () => agentRepo.watchById(any()),
+    ).thenAnswer((_) => Stream<Agent?>.empty());
     when(
       () => gatewayClient.fetchMessageHistory(
         instanceId: any(named: 'instanceId'),
@@ -366,6 +385,53 @@ void main() {
       reason:
           'initFuture == null 时,refreshAgent 不能早退,'
           '必须直接 fetch agent 并同步 tombstone 状态',
+    );
+  });
+
+  // Gap #6 收尾回归守卫: vm._initStreamsAndHistory 现在订阅
+  // gatewayNoticeStream (chat_view_model.dart:756)。若 mock 未 stub 该方法,
+  // mocktail 返回 null → `.listen` 抛 → 外层 try 捕获 → _teardownSubscriptions
+  // 取消全部已建立的订阅,_streamsInitialized 永远停在 false。5 个 ticker
+  // 测试因只断言 getById 次数而仍通过,故此前回归被掩盖。本测试直接断言
+  // init 走到末尾 (_streamsInitialized == true),把"订阅被静默拆掉"钉成红。
+  test('vm.init() subscribes all gateway streams (gatewayNoticeStream stubbed, '
+      'no teardown)', () async {
+    when(() => agentRepo.getById('local-a')).thenAnswer((_) async {
+      return activeAgent;
+    });
+    await instanceRepo.save(
+      Instance(
+        id: 'inst-1',
+        name: 'Test',
+        gatewayUrl: 'wss://test:18789',
+        tokenRef: 'tok',
+        healthStatus: HealthStatus.online,
+        isLocalNetwork: false,
+      ),
+    );
+
+    final container = createContainer();
+    final vm = container.read(
+      chatViewModelProvider((
+        instanceId: 'inst-1',
+        agentId: 'local-a',
+      )).notifier,
+    );
+
+    // Poll up to 1s for _initStreamsAndHistory to reach its tail
+    // (_streamsInitialized = true). Before the gatewayNoticeStream stub,
+    // this never becomes true (init throws at the notice sub).
+    for (var i = 0; i < 100; i++) {
+      if (vm.streamsInitializedForTesting) break;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(
+      vm.streamsInitializedForTesting,
+      isTrue,
+      reason:
+          'init must reach _streamsInitialized=true — all 6 gateway streams '
+          '(incl. gatewayNoticeStream) subscribed. A false value means init '
+          'threw mid-way and _teardownSubscriptions tore the subs down.',
     );
   });
 }

@@ -15,6 +15,7 @@ import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'test_helpers.dart';
@@ -2930,5 +2931,69 @@ void _replayableConnectionStateTests() {
         await client.dispose();
       },
     );
+
+    test('sendMessage logs buffered/attempted/max byte sizes on overflow '
+        '(diagnostic trail)', () async {
+      // BufferOverflowException carries buffered/attempted/max fields, but
+      // every downstream catch (SendMessageUseCase.execute / .retry)
+      // discards them. The sendMessage catch is the only site where they're
+      // in scope — pin that a debugPrint actually fires carrying the fields,
+      // so a user report of "网关繁忙" leaves a diagnosable trail and the log
+      // can't be silently removed.
+      final (:client, :ws) = await handshakeTightBuffer(maxBufferedBytes: 1000);
+
+      // Capture debugPrint output for the duration of this test only.
+      final logs = <String>[];
+      final original = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) logs.add(message);
+      };
+      addTearDown(() => debugPrint = original);
+
+      // Fire #1 unawaited so its ~688 bytes stay counted, then #2 trips
+      // reject-new and hits the sendMessage catch (where the log lives).
+      unawaited(
+        client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'agent-r1',
+          message: buildMsg('x' * 500, clientId: 'msg-1'),
+        ),
+      );
+      await pumpMicrotasks();
+
+      await expectLater(
+        client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'agent-r1',
+          message: buildMsg('x' * 500, clientId: 'msg-2'),
+        ),
+        throwsA(isA<BufferOverflowException>()),
+      );
+      await pumpMicrotasks();
+
+      final overflowLogs = logs
+          .where((l) => l.contains('Buffer overflow on sendMessage'))
+          .toList();
+      expect(overflowLogs.length, 1, reason: 'exactly one overflow log line');
+      final line = overflowLogs.single;
+      expect(line, contains('test-instance'));
+      // The three diagnostic fields are surfaced (max is deterministic = the
+      // negotiated cap; buffered/attempted are approximate, only assert
+      // presence + sign).
+      expect(line, contains('max=1000'));
+      expect(line, contains('buffered='));
+      expect(line, contains('attempted='));
+
+      // Resolve #1 so dispose doesn't throw on a pending completer.
+      final f1Frame = ws.sentFrames.firstWhere(
+        (f) => f.contains('"method":"chat.send"'),
+      );
+      final f1ReqId = extractReqId(f1Frame);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"$f1ReqId","ok":true,'
+        '"payload":{"runId":"run-1","timestamp":1700000000000}}',
+      );
+      await client.dispose();
+    });
   });
 }

@@ -1506,7 +1506,8 @@ void main() {
       },
     );
 
-    test('_onConnectionError does not fail pending requests', () async {
+    test('_onConnectionError fails pending requests when connected '
+        '(drains _bufferedBytes — Finding #2)', () async {
       final result = await connectAndHandshakeWithTimers();
       final ws = result.ws;
       final cm = result.cm;
@@ -1518,9 +1519,13 @@ void main() {
       ws.simulateError('Transport error');
       await pumpMicrotasks();
 
-      // The pending request should NOT be resolved by _onConnectionError.
-      // It will complete when _onConnectionDone fires (stream close),
-      // but the error itself does not fail pending requests.
+      // Finding #2: _onConnectionError now fails pending user sendRequests
+      // (gated on `connected`) so their finallys drain _bufferedBytes.
+      // Previously the request stayed pending until its ≤30s
+      // requestTimeoutMs — leaving stale bytes to false-trip
+      // BufferOverflowException on the ~1s reconnect (spurious FAILED +
+      // "网关繁忙" toast). The request resolves with the CONNECTION_LOST
+      // error frame (ok:false), not an exception.
       final done = Completer<void>();
       requestFuture.then(
         (_) => done.complete(),
@@ -1529,8 +1534,11 @@ void main() {
       await pumpMicrotasks();
       expect(
         done.isCompleted,
-        isFalse,
-        reason: 'pending request should not resolve on connection error alone',
+        isTrue,
+        reason:
+            'pending request MUST resolve on connection error when '
+            'connected — otherwise _bufferedBytes stays inflated and a '
+            'reconnect-time sendRequest false-trips BufferOverflowException',
       );
     });
 

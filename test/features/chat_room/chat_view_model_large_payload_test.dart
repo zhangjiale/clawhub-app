@@ -20,6 +20,7 @@ import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/instance.dart';
+import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
@@ -28,6 +29,31 @@ import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 class _MockAgentRepo extends Mock implements IAgentRepo {}
 
 class _MockAchievementChecker extends Mock implements IAchievementChecker {}
+
+/// MockGatewayClient variant that emits a [GatewayNotice] mid-
+/// [fetchMessageHistory], reproducing the race (Finding #1) where a notice
+/// arrives while the VM is still awaiting the history RPC — before its
+/// gatewayNoticeStream subscription exists in the buggy order.
+class _NoticeDuringHistoryMock extends MockGatewayClient {
+  GatewayNotice? noticeToEmitDuringHistory;
+
+  @override
+  Future<({List<Message> messages, String? nextCursor})> fetchMessageHistory({
+    required String instanceId,
+    required String agentId,
+    String? cursor,
+    int limit = 50,
+  }) async {
+    // Emit synchronously while the VM is still suspended at the
+    // `await fetchMessageHistory` call — i.e. before the notice
+    // subscription is created (buggy order) or after it (fixed order).
+    final notice = noticeToEmitDuringHistory;
+    if (notice != null) {
+      emitGatewayNoticeForTesting(instanceId, notice);
+    }
+    return (messages: <Message>[], nextCursor: null);
+  }
+}
 
 const _agentId = 'local-1';
 const _instanceId = 'inst-1';
@@ -222,6 +248,89 @@ void main() {
         );
       },
     );
+
+    // Finding #1: _gatewayNoticeSubscription was created AFTER
+    // `await fetchMessageHistory` (chat_view_model.dart:756 vs :667),
+    // violating the file's own documented rule (lines 541-545) that
+    // broadcast streams must be subscribed BEFORE the history fetch. A
+    // notice emitted DURING the fetch RTT (e.g. a concurrent OutboxProcessor
+    // retry tripping the buffer guard, or a server-pushed payload.large)
+    // hit a broadcast controller with no listener → dropped → toast never
+    // fired. The existing tests above mask this because they emit AFTER
+    // seedAndInit completes.
+    test('a notice emitted DURING fetchMessageHistory still bumps seq '
+        '(subscription must precede the history fetch)', () async {
+      final gateway = _NoticeDuringHistoryMock();
+      final notice = LargePayloadNotice(
+        sessionKey: 'agent:r-1:main',
+        size: 30_000_000,
+        limit: 26_214_400,
+      );
+      gateway.noticeToEmitDuringHistory = notice;
+
+      final vm = ChatViewModel(
+        agentRepo: agentRepo,
+        conversationRepo: conversationRepo,
+        messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gateway,
+        sendMessageUseCase: SendMessageUseCase(
+          messageRepo: messageRepo,
+          conversationRepo: conversationRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+        ),
+        instanceId: _instanceId,
+        agentId: _agentId,
+        achievementChecker: _MockAchievementChecker(),
+        flushDelay: Duration.zero,
+      );
+
+      await seedAndInit(vm);
+      // Flush the broadcast-stream listener delivery (the notice is
+      // emitted mid-fetch; the listener callback is a microtask).
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        vm.state.gatewayNoticeSeq,
+        1,
+        reason:
+            'the notice emitted during fetchMessageHistory must be captured — '
+            'the gatewayNoticeStream subscription must be created BEFORE the '
+            'history fetch (broadcast controllers have no replay). A 0 here '
+            'means the subscription is ordered after the fetch and the notice '
+            'was dropped on the floor.',
+      );
+      expect(vm.state.lastGatewayNotice, same(notice));
+    });
+
+    // Finding #9 + #11: gatewayNoticeSeq / lastGatewayNotice are excluded
+    // from == / hashCode so a notice arrival does NOT rebuild ChatRoomPage's
+    // build() (the toast is delivered via ref.listen on a .select of these
+    // fields — no rebuild needed). contentRevision stays in == (drives
+    // agent-content rebuilds via vm.agent). Pin both halves so the
+    // exclusion can't silently drift.
+    test('ChatSessionState.== excludes gatewayNoticeSeq / lastGatewayNotice '
+        'but keeps contentRevision (Finding #9 / #11)', () {
+      const base = ChatSessionState();
+      // Bumping the notice fields alone does NOT change == / hashCode.
+      final withNotice = base.copyWith(
+        gatewayNoticeSeq: base.gatewayNoticeSeq + 1,
+        lastGatewayNotice: LargePayloadNotice(
+          sessionKey: 'agent:r-1:main',
+          size: 30_000_000,
+          limit: 26_214_400,
+        ),
+      );
+      expect(withNotice == base, isTrue);
+      expect(withNotice.hashCode, base.hashCode);
+
+      // Bumping contentRevision DOES change == (agent-content rebuild path).
+      final withRevision = base.copyWith(
+        contentRevision: base.contentRevision + 1,
+      );
+      expect(withRevision == base, isFalse);
+    });
   });
 
   // Step 4 视觉契约锁：formatGatewayNotice 是顶层纯函数,锁定 toast 文案
