@@ -321,6 +321,43 @@ page 不再加 `ref.listen`、ACL 接口不变。7-subscription / 5-listen /
 
 ## Follow-up（小问题，非阻塞）
 
+### Gap #8 — `chat.send` 图片/文件 wire format【✅ 已解决 — appendix F attachments 路径,capture 确认】
+
+**严重度**：✅ 已解决(2026-07-03 真机 capture 确认 `mimeType` 字段正确,Agent 端到端看到图)
+
+**解决历程**:
+1. **首次 probe**:发 content-blocks `message` + 顶层 `metadata` → Gateway 返回
+   `INVALID_REQUEST: "at /message: must be string" + "at root: unexpected property 'metadata'"`。
+   误判为"chat.send 纯文本、无法传图"。
+2. **补查 `openclaw-gateway-client-reference.md` 附录 F**:chat.send 有顶层
+   `attachments: TOptional<TArray<TUnknown>>` 字段(§3.2 主表省略,附录 F/TypeBox schema 才有)。
+   首次 probe 失败是因为发了非法字段,**没测 `attachments`**。
+3. **改用 `attachments` 实现 + capture**:真机发图,Agent 回复准确描述了图片内容
+   ("皱眉怒视、白毛红眼+红黑条纹衣服"),证明 `mimeType` 字段正确、Agent 端到端看到图。
+
+**最终实现(appendix F 对齐,capture-confirmed)**：
+- seam:`WsGatewayClient.serializeChatSendPayload(message, {base64Data})` →
+  `({String message, List<Map>? attachments})`(`ws_gateway_client.dart`)。
+- chat.send params:`{ sessionKey, message(字符串), idempotencyKey, attachments? }`。
+  **无 `metadata`**(已移除,修预存在 bug)。
+- attachment 元素:`{ mimeType, content: base64, filename? }` —— **`mimeType` 字段经
+  capture 确认正确**(Agent 真实看到图片内容)。
+- 字节由 `_readFileBase64` 从 `message.content`(本地路径)读取 base64,DB 只存路径。
+  大小守卫(F.6):图片 >10MB / 文件 >5MB → 抛错 → FAILED(提示用 OSS URL)。
+- 响应侧 `extractImageRef` 覆盖三种 image block shape:
+  F.5 实测 `{type:image, url}` + OpenAI `{type:image_url, image_url:{url}}` + 防御 `{type:image, image:{url}}`。
+- 测试:`serializeChatSendPayload (PROTOCOL-VERIFY appendix F)` 组(7 用例)+
+  `extractImageRef` 组(含 F.5 shape)。全量 1639 测试绿,analyze 0 issues。
+
+**已知限制(非阻塞)**：
+- 大文件(>10MB 图片 / >5MB 文件):客户端直接抛错 FAILED。未来若需支持,按 F.6 走
+  OSS/S3 URL 引用(`attachments: [{mime, url, index}]` 形态),另立 story。
+- `filename` 字段是否被 Gateway 使用未单独 capture(不影响功能,Agent 已看到图)。
+
+---
+
+
+
 ### F-1 — `ProtocolError.details` 类型守卫
 
 **严重度**：🟡 P2（崩溃风险，服务端 schema 变更可触发）
