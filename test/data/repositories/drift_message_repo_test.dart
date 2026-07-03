@@ -330,6 +330,123 @@ void main() {
       );
     });
   });
+
+  group('DriftMessageRepo image/file persistence', () {
+    late db.AppDatabase database;
+    late DriftMessageRepo messageRepo;
+
+    setUp(() async {
+      database = await _createTestDb();
+      messageRepo = DriftMessageRepo(database);
+
+      final instanceRepo = DriftInstanceRepo(database);
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'ws://test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+        ),
+      );
+
+      final agentRepo = DriftAgentRepo(database);
+      await agentRepo.syncFromGateway('inst-1', [
+        Agent(
+          localId: 'agent-1',
+          remoteId: 'remote-1',
+          instanceId: 'inst-1',
+          name: '虾',
+        ),
+      ]);
+
+      final conversationRepo = DriftConversationRepo(database);
+      await conversationRepo.getOrCreate('inst-1', 'agent-1');
+    });
+
+    test('image message round-trips content path + metadata', () async {
+      final image = Message(
+        clientId: 'img-1',
+        conversationId: Conversation.generateId('inst-1', 'agent-1'),
+        agentId: 'agent-1',
+        role: MessageRole.user,
+        content: '/tmp/img.jpg',
+        type: MessageType.image,
+        status: MessageStatus.sent,
+        logicalClock: 1,
+        metadata: const {
+          'fileName': 'img.jpg',
+          'mimeType': 'image/jpeg',
+          'size': 12345,
+          'caption': '看这张',
+        },
+      );
+      await messageRepo.insert(image);
+
+      final stored = await messageRepo.getByClientId('img-1');
+      expect(stored, isNotNull);
+      expect(stored!.type, MessageType.image);
+      expect(stored.isImage, isTrue);
+      expect(stored.imagePath, '/tmp/img.jpg');
+      expect(stored.fileName, 'img.jpg');
+      expect(stored.mimeType, 'image/jpeg');
+      expect(stored.fileSize, 12345);
+      expect(stored.caption, '看这张');
+    });
+
+    test('file message round-trips content path + metadata', () async {
+      final file = Message(
+        clientId: 'file-1',
+        conversationId: Conversation.generateId('inst-1', 'agent-1'),
+        agentId: 'agent-1',
+        role: MessageRole.user,
+        content: '/tmp/doc.pdf',
+        type: MessageType.file,
+        status: MessageStatus.sent,
+        logicalClock: 1,
+        metadata: const {
+          'fileName': 'doc.pdf',
+          'mimeType': 'application/pdf',
+          'size': 67890,
+        },
+      );
+      await messageRepo.insert(file);
+
+      final stored = await messageRepo.getByClientId('file-1');
+      expect(stored, isNotNull);
+      expect(stored!.type, MessageType.file);
+      expect(stored.isFile, isTrue);
+      expect(stored.filePath, '/tmp/doc.pdf');
+      expect(stored.fileName, 'doc.pdf');
+      expect(stored.mimeType, 'application/pdf');
+      expect(stored.fileSize, 67890);
+    });
+
+    test('agent image response round-trips imageUrl metadata', () async {
+      final agentImage = Message(
+        clientId: 'agent-img-1',
+        conversationId: Conversation.generateId('inst-1', 'agent-1'),
+        agentId: 'agent-1',
+        role: MessageRole.agent,
+        content: null,
+        type: MessageType.image,
+        status: MessageStatus.delivered,
+        logicalClock: 1,
+        metadata: const {
+          'imageUrl': 'https://example.com/x.png',
+          'mimeType': 'image/png',
+        },
+      );
+      await messageRepo.insert(agentImage);
+
+      final stored = await messageRepo.getByClientId('agent-img-1');
+      expect(stored, isNotNull);
+      expect(stored!.isImage, isTrue);
+      expect(stored.imageUrl, 'https://example.com/x.png');
+      expect(stored.mimeType, 'image/png');
+      expect(stored.imagePath, isNull); // 响应侧无本地路径
+    });
+  });
 }
 
 /// Drift QueryInterceptor 包装:把 runUpdate 语句+参数转给回调。

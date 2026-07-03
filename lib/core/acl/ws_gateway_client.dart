@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:uuid/uuid.dart';
 import 'package:flutter/foundation.dart';
@@ -371,13 +373,25 @@ class WsGatewayClient implements IGatewayClient {
     // sessionKey format: agent:{agentId}:main (ref doc §7.2)
     final sessionKey = 'agent:$agentId:main';
 
+    // PROTOCOL-VERIFY (appendix F, 2026-07-03): chat.send 的 `message` 必须是字符串,
+    // 多模态走顶层 `attachments` 数组(元素弱约束,推荐 {mimeType, content: base64, filename?})。
+    // Gateway 拒绝 `metadata`(实测 "unexpected property")。图片/文件字节由
+    // _readFileBase64 从 message.content(本地路径)读取 base64,DB 只存路径。
+    // 大小限制(F.6):图片 <10MB、文件 <5MB,超限 _readFileBase64 抛错 → FAILED。
+    final base64Data = await _readFileBase64(message);
+    final sendPayload = serializeChatSendPayload(
+      message,
+      base64Data: base64Data,
+    );
+
     final ResponseFrame res;
     try {
       res = await manager.sendRequest(Methods.chatSend, {
         'sessionKey': sessionKey,
-        'message': message.content ?? '',
+        'message': sendPayload.message,
         'idempotencyKey': message.clientId,
-        if (message.metadata != null) 'metadata': message.metadata,
+        if (sendPayload.attachments != null)
+          'attachments': sendPayload.attachments,
       });
     } on BufferOverflowException catch (e) {
       // F-4: 在途缓冲满（reject-new，spec §2.2 maxBufferedBytes）。把 ACL
@@ -1119,6 +1133,37 @@ class WsGatewayClient implements IGatewayClient {
     );
   }
 
+  /// Reads the local attachment file at `message.content` (image/file path)
+  /// and returns its base64-encoded bytes. Throws if the path is missing, the
+  /// file can't be read, or it exceeds the Gateway's inline-attachment size
+  /// limit (appendix F.6: image <10MB, file <5MB) — the caller ([sendMessage])
+  /// lets this propagate so the message is marked FAILED.
+  ///
+  /// Returns null for text/toolCall messages (no file to read).
+  Future<String?> _readFileBase64(Message message) async {
+    if (!message.isImage && !message.isFile) return null;
+    final path = message.content;
+    if (path == null || path.isEmpty) {
+      throw Exception('Attachment path missing for ${message.type} message');
+    }
+    final file = File(path);
+    final size = file.lengthSync();
+    final limit = message.isImage ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (size > limit) {
+      throw Exception(
+        'Attachment too large (${size ~/ 1024 ~/ 1024}MB > ${limit ~/ 1024 ~/ 1024}MB limit '
+        'for ${message.type}; see appendix F.6 — use OSS URL for large files)',
+      );
+    }
+    try {
+      final bytes = await file.readAsBytes();
+      return base64Encode(bytes);
+    } catch (e) {
+      debugPrint('[WsGateway] Failed to read attachment $path: $e');
+      throw Exception('Failed to read attachment $path: $e');
+    }
+  }
+
   Message _parseMessage(Map<String, dynamic> json) {
     final role = _parseMessageRole(json['role'] as String?);
     // Bug #2 (重启错乱): 时间戳归一化为毫秒。Gateway 历史可能用秒级时间戳
@@ -1126,16 +1171,33 @@ class WsGatewayClient implements IGatewayClient {
     // 不同量级会导致软匹配 ±60s 永不命中 + 排序错乱。< 1e12 视为秒级(1e12 ms
     // ≈ 2001 年,任何真实毫秒时间戳都 >= 1e12),×1000 归一化。
     final timestamp = _normalizeEpochMs(json['timestamp'] as int?);
+    // 响应侧图片捕获(PROTOCOL-VERIFY):若 content 是结构化 blocks 且含 image
+    // block,提升 type=image,把 imageUrl 写入 metadata。content 保留文本(作为
+    // 图片说明);imagePath getter 靠 imageUrl==null 区分用户本地图 vs Agent 回图,
+    // 故无需 null content。详见 extractImageRef。
+    final textContent =
+        _extractTextContent(json['content']) ??
+        _extractTextContent(json['text']);
+    final imageRef =
+        extractImageRef(json['content']) ?? extractImageRef(json['text']);
+    final parsedType = _parseMessageType(json['type'] as String?);
+    final type = parsedType == MessageType.toolCall
+        ? parsedType
+        : (imageRef != null ? MessageType.image : parsedType);
+    final incomingMetadata = json['metadata'] is Map<String, dynamic>
+        ? Map<String, dynamic>.from(json['metadata'] as Map<String, dynamic>)
+        : <String, dynamic>{};
+    if (imageRef != null) {
+      incomingMetadata['imageUrl'] = imageRef;
+    }
     return Message(
       clientId: json['clientId'] as String? ?? _uuid.v4(),
       serverId: json['serverId'] as String? ?? json['id'] as String?,
       conversationId: json['conversationId'] as String? ?? '',
       agentId: json['agentId'] as String? ?? '',
       role: role,
-      content:
-          _extractTextContent(json['content']) ??
-          _extractTextContent(json['text']),
-      type: _parseMessageType(json['type'] as String?),
+      content: textContent,
+      type: type,
       // Bug #1 (双对号): 入站消息按角色赋状态，不再一律 delivered。
       // 回传/历史中的 user 消息若被标 delivered，右下角会渲染双对号
       // (Icons.done_all)。user 消息最多到 sent（已送达网关）；delivered
@@ -1151,9 +1213,7 @@ class WsGatewayClient implements IGatewayClient {
           timestamp ??
           DateTime.now().millisecondsSinceEpoch,
       timestamp: timestamp,
-      metadata: json['metadata'] is Map<String, dynamic>
-          ? json['metadata'] as Map<String, dynamic>
-          : null,
+      metadata: incomingMetadata.isEmpty ? null : incomingMetadata,
     );
   }
 
@@ -1240,6 +1300,94 @@ class WsGatewayClient implements IGatewayClient {
 
   /// Convenience wrapper around [extractTextContent] for instance usage.
   String? _extractTextContent(dynamic raw) => extractTextContent(raw);
+
+  /// PROTOCOL-VERIFY (appendix F, 2026-07-03): chat.send 的 `message` 必须是字符串,
+  /// 多模态走顶层 `attachments` 数组。Gateway 拒绝 content-blocks 形态的 `message`
+  /// (实测 "at /message: must be string")与顶层 `metadata`("unexpected property")。
+  ///
+  /// 返回 record:`(message, attachments?)`。
+  /// - text/toolCall → message=content, attachments=null
+  /// - image → message=caption(可空), attachments=[{mimeType, content: base64, filename?}]
+  ///   无 base64(读文件失败)→ 降级 message="[图片]", attachments=null
+  /// - file → message=""(空), attachments=[{mimeType, content: base64, filename?}]
+  ///   无 base64 → 降级 message="[文件] name", attachments=null
+  ///
+  /// ⚠️ attachment 元素字段名 `mimeType` vs `mime` 有歧义(appendix F.2 两处来源不一),
+  /// 当前用 `mimeType`(testing-live.md 示例)。生产前需 capture 确认 —— 只改本方法。
+  @visibleForTesting
+  static ({String message, List<Map<String, dynamic>>? attachments})
+  serializeChatSendPayload(Message message, {String? base64Data}) {
+    switch (message.type) {
+      case MessageType.text:
+      case MessageType.toolCall:
+        return (message: message.content ?? '', attachments: null);
+      case MessageType.image:
+        final caption = message.caption ?? '';
+        if (base64Data == null) {
+          return (
+            message: caption.isNotEmpty ? caption : '[图片]',
+            attachments: null,
+          );
+        }
+        return (
+          message: caption,
+          attachments: [_buildAttachment(message, base64Data)],
+        );
+      case MessageType.file:
+        if (base64Data == null) {
+          return (
+            message: '[文件] ${message.fileName ?? '文件'}',
+            attachments: null,
+          );
+        }
+        return (
+          message: '',
+          attachments: [_buildAttachment(message, base64Data)],
+        );
+    }
+  }
+
+  /// 构造单个 attachment 元素:{mimeType, content: base64, filename?}。
+  static Map<String, dynamic> _buildAttachment(
+    Message message,
+    String base64Data,
+  ) {
+    final att = <String, dynamic>{
+      'mimeType':
+          message.mimeType ??
+          (message.isImage ? 'image/jpeg' : 'application/octet-stream'),
+      'content': base64Data,
+    };
+    if (message.fileName != null) att['filename'] = message.fileName;
+    return att;
+  }
+
+  /// PROTOCOL-VERIFY (appendix F.5, 2026-07-03): chat.history 响应的 image block
+  /// 实测形态是 `{"type":"image","url":"..."}`(url 在 block 根)。同时防御性兼容
+  /// OpenAI `image_url` 嵌套形态。用于 [_parseMessage] 提升入站消息为 image 类型 +
+  /// 写 metadata.imageUrl,让 UI 渲染 Agent 回图。
+  @visibleForTesting
+  static String? extractImageRef(dynamic raw) {
+    if (raw is! List) return null;
+    for (final block in raw) {
+      if (block is! Map<String, dynamic>) continue;
+      if (block['type'] == 'image_url') {
+        final url = (block['image_url'] as Map?)?['url'];
+        if (url is String && url.isNotEmpty) return url;
+      } else if (block['type'] == 'image') {
+        // F.5 实测:url 直接在 block 根。
+        final url = block['url'];
+        if (url is String && url.isNotEmpty) return url;
+        // 防御性兼容:嵌套在 image:{url}(未见实测,但 extractTextContent 旧测试用过)。
+        final img = block['image'];
+        if (img is Map) {
+          final innerUrl = img['url'];
+          if (innerUrl is String && innerUrl.isNotEmpty) return innerUrl;
+        }
+      }
+    }
+    return null;
+  }
 
   // ---------------------------------------------------------------------------
 

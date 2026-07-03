@@ -154,6 +154,133 @@ void main() {
       });
     });
 
+    group('图片/文件消息 getter', () {
+      test('isImage / isFile 按类型判断', () {
+        final image = Message(
+          clientId: 'c-img',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+        );
+        final file = Message(
+          clientId: 'c-file',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: '/tmp/doc.pdf',
+          type: MessageType.file,
+          logicalClock: 2,
+        );
+        final text = Message(
+          clientId: 'c-text',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: 'hi',
+          type: MessageType.text,
+          logicalClock: 3,
+        );
+
+        expect(image.isImage, isTrue);
+        expect(image.isFile, isFalse);
+        expect(file.isFile, isTrue);
+        expect(file.isImage, isFalse);
+        expect(text.isImage, isFalse);
+        expect(text.isFile, isFalse);
+      });
+
+      test('imagePath / filePath 仅在对应类型时返回 content', () {
+        final image = Message(
+          clientId: 'c-img',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+        );
+        final file = Message(
+          clientId: 'c-file',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: '/tmp/doc.pdf',
+          type: MessageType.file,
+          logicalClock: 2,
+        );
+
+        expect(image.imagePath, '/tmp/img.jpg');
+        expect(image.filePath, isNull); // image 消息不暴露 filePath
+        expect(file.filePath, '/tmp/doc.pdf');
+        expect(file.imagePath, isNull); // file 消息不暴露 imagePath
+      });
+
+      test('fileName / mimeType / caption / fileSize 从 metadata 读取', () {
+        final image = Message(
+          clientId: 'c-img',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+          metadata: const {
+            'fileName': 'img.jpg',
+            'mimeType': 'image/jpeg',
+            'size': 12345,
+            'caption': '看这张',
+          },
+        );
+
+        expect(image.fileName, 'img.jpg');
+        expect(image.mimeType, 'image/jpeg');
+        expect(image.caption, '看这张');
+        expect(image.fileSize, 12345);
+      });
+
+      test('imageUrl 用于 Agent 回图(响应侧)', () {
+        final agentImage = Message(
+          clientId: 'c-agent-img',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.agent,
+          content: null,
+          type: MessageType.image,
+          logicalClock: 1,
+          metadata: const {
+            'imageUrl': 'https://example.com/x.png',
+            'mimeType': 'image/png',
+          },
+        );
+
+        expect(agentImage.imageUrl, 'https://example.com/x.png');
+        expect(agentImage.mimeType, 'image/png');
+        expect(agentImage.imagePath, isNull); // 响应侧无本地路径
+      });
+
+      test('metadata 缺失时所有 getter 返回 null', () {
+        final image = Message(
+          clientId: 'c-img',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+          // metadata 故意不传
+        );
+
+        expect(image.fileName, isNull);
+        expect(image.mimeType, isNull);
+        expect(image.caption, isNull);
+        expect(image.fileSize, isNull);
+        expect(image.imageUrl, isNull);
+      });
+    });
+
     group('消息去重', () {
       test('同 clientId 视为相同消息', () {
         final msg1 = Message(

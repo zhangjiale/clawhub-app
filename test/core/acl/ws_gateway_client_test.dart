@@ -235,6 +235,228 @@ void main() {
   });
 
   // ==========================================================================
+  // serializeChatSendPayload (PROTOCOL-VERIFY: appendix F, 2026-07-03)
+  //
+  // chat.send 的 message 必须是字符串,多模态走顶层 attachments 数组
+  // (元素弱约束,推荐 {mimeType, content: base64, filename?})。
+  // ⚠️ attachment 字段名 mimeType vs mime 有歧义(F.2),需 capture 确认 ——
+  // 只改 seam + 本组。详见 docs/technical/acl-protocol-gaps.md Gap #8。
+  // ==========================================================================
+  group('serializeChatSendPayload (PROTOCOL-VERIFY appendix F)', () {
+    test('text message → message=content, attachments=null', () {
+      final msg = Message(
+        clientId: 'c1',
+        conversationId: 'conv',
+        agentId: 'a',
+        role: MessageRole.user,
+        content: '你好',
+        type: MessageType.text,
+        logicalClock: 1,
+      );
+      final r = WsGatewayClient.serializeChatSendPayload(msg);
+      expect(r.message, '你好');
+      expect(r.attachments, isNull);
+    });
+
+    test('text message with null content → message="", attachments=null', () {
+      final msg = Message(
+        clientId: 'c1',
+        conversationId: 'conv',
+        agentId: 'a',
+        role: MessageRole.user,
+        content: null,
+        type: MessageType.text,
+        logicalClock: 1,
+      );
+      final r = WsGatewayClient.serializeChatSendPayload(msg);
+      expect(r.message, '');
+      expect(r.attachments, isNull);
+    });
+
+    test(
+      'image with base64 → message=caption, attachments=[{mimeType,content,filename}]',
+      () {
+        final msg = Message(
+          clientId: 'c1',
+          conversationId: 'conv',
+          agentId: 'a',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+          metadata: const {
+            'fileName': 'img.jpg',
+            'mimeType': 'image/jpeg',
+            'caption': '看这张',
+          },
+        );
+        final r = WsGatewayClient.serializeChatSendPayload(
+          msg,
+          base64Data: 'B64',
+        );
+        expect(r.message, '看这张');
+        expect(r.attachments, hasLength(1));
+        expect(r.attachments!.first['mimeType'], 'image/jpeg');
+        expect(r.attachments!.first['content'], 'B64');
+        expect(r.attachments!.first['filename'], 'img.jpg');
+      },
+    );
+
+    test(
+      'image without caption + base64 → message="", attachments present',
+      () {
+        final msg = Message(
+          clientId: 'c1',
+          conversationId: 'conv',
+          agentId: 'a',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+          metadata: const {'fileName': 'img.jpg', 'mimeType': 'image/png'},
+        );
+        final r = WsGatewayClient.serializeChatSendPayload(
+          msg,
+          base64Data: 'B64',
+        );
+        expect(r.message, '');
+        expect(r.attachments, hasLength(1));
+        expect(r.attachments!.first['mimeType'], 'image/png');
+      },
+    );
+
+    test(
+      'image without base64 (read failed) → degraded message=[图片], attachments=null',
+      () {
+        final msg = Message(
+          clientId: 'c1',
+          conversationId: 'conv',
+          agentId: 'a',
+          role: MessageRole.user,
+          content: '/tmp/img.jpg',
+          type: MessageType.image,
+          logicalClock: 1,
+        );
+        final r = WsGatewayClient.serializeChatSendPayload(msg);
+        expect(r.message, '[图片]');
+        expect(r.attachments, isNull);
+      },
+    );
+
+    test(
+      'file with base64 → message="", attachments=[{mimeType,content,filename}]',
+      () {
+        final msg = Message(
+          clientId: 'c1',
+          conversationId: 'conv',
+          agentId: 'a',
+          role: MessageRole.user,
+          content: '/tmp/doc.pdf',
+          type: MessageType.file,
+          logicalClock: 1,
+          metadata: const {
+            'fileName': 'doc.pdf',
+            'mimeType': 'application/pdf',
+          },
+        );
+        final r = WsGatewayClient.serializeChatSendPayload(
+          msg,
+          base64Data: 'FB64',
+        );
+        expect(r.message, '');
+        expect(r.attachments, hasLength(1));
+        expect(r.attachments!.first['mimeType'], 'application/pdf');
+        expect(r.attachments!.first['content'], 'FB64');
+        expect(r.attachments!.first['filename'], 'doc.pdf');
+      },
+    );
+
+    test(
+      'file without base64 → degraded message=[文件] name, attachments=null',
+      () {
+        final msg = Message(
+          clientId: 'c1',
+          conversationId: 'conv',
+          agentId: 'a',
+          role: MessageRole.user,
+          content: '/tmp/doc.pdf',
+          type: MessageType.file,
+          logicalClock: 1,
+        );
+        final r = WsGatewayClient.serializeChatSendPayload(msg);
+        expect(r.message, '[文件] 文件');
+        expect(r.attachments, isNull);
+      },
+    );
+  });
+
+  // ==========================================================================
+  // extractImageRef (PROTOCOL-VERIFY: response-side image block detection)
+  // ==========================================================================
+  group('extractImageRef (PROTOCOL-VERIFY assumption)', () {
+    test('returns null for null / string / empty input', () {
+      expect(WsGatewayClient.extractImageRef(null), isNull);
+      expect(WsGatewayClient.extractImageRef('hello'), isNull);
+      expect(WsGatewayClient.extractImageRef(<Map>[]), isNull);
+    });
+
+    test('returns url for OpenAI image_url block shape', () {
+      final blocks = [
+        {
+          'type': 'image_url',
+          'image_url': {'url': 'https://x.com/a.png'},
+        },
+      ];
+      expect(WsGatewayClient.extractImageRef(blocks), 'https://x.com/a.png');
+    });
+
+    test('returns url for alt image block shape', () {
+      final blocks = [
+        {
+          'type': 'image',
+          'image': {'url': 'data:image/png;base64,AAA'},
+        },
+      ];
+      expect(
+        WsGatewayClient.extractImageRef(blocks),
+        'data:image/png;base64,AAA',
+      );
+    });
+
+    test(
+      'returns url for F.5 chat.history shape {type:image, url} (url at root)',
+      () {
+        // appendix F.5 实测形态:url 直接在 block 根,不嵌套在 image:{}。
+        final blocks = [
+          {'type': 'text', 'text': '这是图表：'},
+          {'type': 'image', 'url': 'https://cdn.example.com/chart.png'},
+        ];
+        expect(
+          WsGatewayClient.extractImageRef(blocks),
+          'https://cdn.example.com/chart.png',
+        );
+      },
+    );
+
+    test('returns null when only text blocks present', () {
+      final blocks = [
+        {'type': 'text', 'text': '纯文本回复'},
+      ];
+      expect(WsGatewayClient.extractImageRef(blocks), isNull);
+    });
+
+    test('skips image block with empty url', () {
+      final blocks = [
+        {
+          'type': 'image_url',
+          'image_url': {'url': ''},
+        },
+      ];
+      expect(WsGatewayClient.extractImageRef(blocks), isNull);
+    });
+  });
+
+  // ==========================================================================
   // connect()
   // ==========================================================================
   group('connect()', () {
@@ -2359,6 +2581,100 @@ void main() {
         await client.dispose();
       },
     );
+  });
+
+  // ==========================================================================
+  // _parseMessage response-side image promotion (PROTOCOL-VERIFY assumption)
+  // ==========================================================================
+  group('_parseMessage image content blocks (PROTOCOL-VERIFY)', () {
+    test(
+      'content blocks with image_url → type=image, content=null, metadata.imageUrl',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+
+        final messages = <Message>[];
+        final sub = client.messageStream('test-instance').listen(messages.add);
+
+        // 外层 type=text,但 content 是结构化 blocks 且含 image_url block。
+        // _parseMessage 应提升 type=image,content 置 null,caption+imageUrl 入 metadata。
+        ws.simulateServerFrame(
+          chatFinalJson(
+            sessionKey: 'agent:r-1:main',
+            messageContent:
+                '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+                '"content":[{"type":"text","text":"看这个"},'
+                '{"type":"image_url","image_url":{"url":"https://x.com/a.png"}}],'
+                '"role":"agent","type":"text"}',
+          ),
+        );
+        await pumpMicrotasks();
+
+        expect(messages, hasLength(1));
+        final msg = messages.first;
+        expect(msg.type, MessageType.image);
+        // content 保留为图片说明文本;imagePath 靠 imageUrl==null 区分,故为 null
+        expect(msg.content, '看这个');
+        expect(msg.imageUrl, 'https://x.com/a.png');
+        expect(msg.isImage, isTrue);
+        expect(msg.imagePath, isNull, reason: 'Agent 回图无本地路径');
+
+        await sub.cancel();
+        await client.dispose();
+      },
+    );
+
+    test('plain text content (no image block) stays type=text', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":[{"type":"text","text":"纯文本"}],'
+              '"role":"agent","type":"text"}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages, hasLength(1));
+      expect(messages.first.type, MessageType.text);
+      expect(messages.first.content, '纯文本');
+      expect(messages.first.imageUrl, isNull);
+
+      await sub.cancel();
+      await client.dispose();
+    });
+
+    test('explicit type=image with string content preserved', () async {
+      final (:client, :ws) = await connectAndHandshake();
+
+      final messages = <Message>[];
+      final sub = client.messageStream('test-instance').listen(messages.add);
+
+      // Gateway 显式标 type=image 但用字符串 content(无 blocks)。
+      // 无 imageRef → 不强制 null content,保留原 content。
+      ws.simulateServerFrame(
+        chatFinalJson(
+          sessionKey: 'agent:r-1:main',
+          messageContent:
+              '{"agentId":"r-1","sessionKey":"agent:r-1:main",'
+              '"content":"caption-only","role":"agent","type":"image"}',
+        ),
+      );
+      await pumpMicrotasks();
+
+      expect(messages, hasLength(1));
+      expect(messages.first.type, MessageType.image);
+      // 无 imageRef → content 不被置 null
+      expect(messages.first.content, 'caption-only');
+
+      await sub.cancel();
+      await client.dispose();
+    });
   });
 
   // ==========================================================================

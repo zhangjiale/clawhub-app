@@ -38,9 +38,7 @@ class Message {
   /// 绑定 Gateway 返回的 serverId，同时状态从 SENDING -> SENT
   Message bindServerId(String id) {
     if (status != MessageStatus.sending) {
-      throw StateError(
-        '只能在 SENDING 状态下绑定 serverId，当前状态: $status',
-      );
+      throw StateError('只能在 SENDING 状态下绑定 serverId，当前状态: $status');
     }
     return copyWith(serverId: id, status: MessageStatus.sent);
   }
@@ -48,9 +46,7 @@ class Message {
   /// 状态流转（遵循状态机规则）
   Message transitionTo(MessageStatus target) {
     if (!status.canTransitionTo(target)) {
-      throw StateError(
-        '无效的状态转换: $status -> $target',
-      );
+      throw StateError('无效的状态转换: $status -> $target');
     }
     return copyWith(status: target);
   }
@@ -58,7 +54,9 @@ class Message {
   /// 身份判断：同 clientId 或同 serverId（且非 null）均视为相同消息
   bool hasSameIdentity(Message other) {
     if (clientId == other.clientId) return true;
-    if (serverId != null && other.serverId != null && serverId == other.serverId) {
+    if (serverId != null &&
+        other.serverId != null &&
+        serverId == other.serverId) {
       return true;
     }
     return false;
@@ -66,6 +64,40 @@ class Message {
 
   /// 是否为发送失败可重试状态
   bool get isRetryable => status.isRetryable;
+
+  // --- 图片/文件消息便捷 getter（US-007 扩展：图片/文件消息）---
+  //
+  // 存储约定（无 schema 迁移，复用 content + metadata）：
+  // - 用户发图: type=image, content=本地文件路径,
+  //   metadata={fileName, mimeType, size, caption?}
+  // - 用户发文件: type=file, content=本地文件路径,
+  //   metadata={fileName, mimeType, size}
+  // - Agent 回图(响应侧): type=image, content=null/caption,
+  //   metadata={imageUrl, mimeType}
+  //
+  // 这些 getter 仅做类型判断 + metadata 读取，不含业务逻辑。
+
+  bool get isImage => type == MessageType.image;
+  bool get isFile => type == MessageType.file;
+
+  /// 用户发送图片/文件的本地路径。
+  /// 仅 image/file 类型、**无** imageUrl(即用户本地附件,非 Agent 回图)、
+  /// 且 content 非空时返回。Agent 回图(imageUrl 非空)或空 content 返回 null。
+  String? get imagePath =>
+      isImage && imageUrl == null && content != null && content!.isNotEmpty
+      ? content
+      : null;
+  String? get filePath =>
+      isFile && content != null && content!.isNotEmpty ? content : null;
+
+  /// 附件文件名 / MIME 类型 / 字节数 / 图片说明（均从 metadata 读取）。
+  String? get fileName => metadata?['fileName'] as String?;
+  String? get mimeType => metadata?['mimeType'] as String?;
+  int? get fileSize => metadata?['size'] as int?;
+  String? get caption => metadata?['caption'] as String?;
+
+  /// Agent 回图的图片 URL（data: URL 或 https URL，响应侧）。
+  String? get imageUrl => metadata?['imageUrl'] as String?;
 
   Message copyWith({
     String? clientId,

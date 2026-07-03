@@ -115,7 +115,7 @@ class MockGatewayClient implements IGatewayClient {
     Future.delayed(Duration(milliseconds: delayMs), () async {
       if (controller.isClosed) return;
 
-      final fullText = _generateMockReply(userMessage.content ?? '');
+      final fullText = _generateMockReplyFor(userMessage);
 
       // 模拟流式 delta 推送（每次 2-8 个字符, 30-80ms 间隔）
       final chars = fullText.runes.toList();
@@ -166,6 +166,23 @@ class MockGatewayClient implements IGatewayClient {
         _simulateToolCall(instanceId, agentMsg.clientId);
       }
     });
+  }
+
+  /// 按消息类型生成 Mock 回复。image/file 消息的 content 是本地路径,
+  /// 不能直接喂给 [_generateMockReply](会得到针对路径文本的无关回复),
+  /// 故按类型给出确认性回复。Agent 回图(mock)也在此分支返回 image 消息。
+  String _generateMockReplyFor(Message userMessage) {
+    switch (userMessage.type) {
+      case MessageType.image:
+        final name = userMessage.fileName ?? '图片';
+        return '收到图片「$name」,我看了一下。这是一张图片,需要我帮你分析或处理吗?';
+      case MessageType.file:
+        final name = userMessage.fileName ?? '文件';
+        return '收到文件「$name」。我已经读取了内容,需要我帮你做什么?';
+      case MessageType.text:
+      case MessageType.toolCall:
+        return _generateMockReply(userMessage.content ?? '');
+    }
   }
 
   String _generateMockReply(String userContent) {
