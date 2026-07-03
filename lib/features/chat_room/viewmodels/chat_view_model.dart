@@ -388,6 +388,29 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _updateState((s) => s.copyWith(contentRevision: s.contentRevision + 1));
   }
 
+  /// Finding #3: gate `ref.watch` rebuilds on value equality, not identity.
+  ///
+  /// Riverpod's [StateNotifierProvider] consults
+  /// [StateNotifier.updateShouldNotify] (default `!identical(old, current)`)
+  /// — NOT `==` — to decide whether consumers' `build()` rebuilds. Because
+  /// [copyWith] always returns a new object, `identical()` is always false,
+  /// so the default would rebuild on every state set, including notice-only
+  /// changes ([gatewayNoticeSeq]/[lastGatewayNotice]) that the toast path
+  /// consumes via `ref.listen(.select)` and that need no rebuild.
+  ///
+  /// Delegating to `!=` is what makes the `==` exclusion of the notice
+  /// fields (see [ChatSessionState.==]) actually effective: a notice-only
+  /// change compares equal → no rebuild, while any content field change
+  /// (messages / thinkingState / contentRevision / …) still rebuilds.
+  ///
+  /// This does NOT reintroduce the model-equals-identity-blindspot problem
+  /// (that was about `Agent.==` being identity-only and suppressing content
+  /// rebuilds); `ChatSessionState.==` is a full content comparison intended
+  /// as the rebuild gate.
+  @override
+  bool updateShouldNotify(ChatSessionState old, ChatSessionState current) =>
+      old != current;
+
   late final String _conversationId = Conversation.generateId(
     instanceId,
     agentId,

@@ -1271,6 +1271,15 @@ class ConnectionManager {
       if (_state == GatewayConnectionState.connected) {
         _failAllPending('WebSocket error: $error');
       }
+      // Finding #2: cancel stale tick/connect/pairing timers. The tick
+      // watchdog (armed while connected) is now meaningless — the transport
+      // already errored — and leaving it armed lets it fire
+      // [_onWebSocketClosed] during recovery, clobbering the reconnect timer
+      // scheduled below (delaying reconnect by up to 2×tickInterval, and in
+      // a narrow window aborting an in-flight reconnect). Mirrors
+      // [_onConnectionDone]. [_scheduleReconnect] re-arms the reconnect
+      // timer; [_doConnect] re-arms tick/connect timers on the next attempt.
+      _cancelTimers();
       _setState(GatewayConnectionState.recovering);
       _scheduleReconnect();
     }
@@ -1296,11 +1305,19 @@ class ConnectionManager {
   // 内部：辅助方法
   // ---------------------------------------------------------------------------
 
-  /// Shared recovery hook for tick timeout and WebSocket close paths.
+  /// Recovery hook for the **tick-timeout** path only.
   ///
-  /// Called after [_closeWebSocket] completes or errors — transitions to
+  /// Called after [_closeWebSocket] completes or errors — invoked solely
+  /// from the tick-watchdog callback in [_resetTickTimeout]. Transitions to
   /// recovering and schedules a reconnect attempt unless the disconnect was
   /// intentional or the state machine is already in a terminal state.
+  ///
+  /// The WebSocket `onDone` close path is handled separately by
+  /// [_onConnectionDone], which mirrors this logic. Do NOT chain new close
+  /// paths through here without reconciling timer-cancellation semantics
+  /// with [_onConnectionError] — [_onWebSocketClosed] unconditionally runs
+  /// [_cancelTimers] + [_scheduleReconnect], which would clobber a reconnect
+  /// timer that [_onConnectionError] just created.
   ///
   /// Finding #2: also fails pending user sendRequests (mirroring
   /// [_onConnectionDone]) so each in-flight sendRequest's finally drains

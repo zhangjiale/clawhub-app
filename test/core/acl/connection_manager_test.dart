@@ -1425,8 +1425,6 @@ void main() {
       final states = <GatewayConnectionState>[];
       cm.connectionState.listen(states.add);
 
-      final activeBeforeError = timers.activeTimers.length;
-
       ws.simulateError('Transport error');
       await pumpMicrotasks();
 
@@ -1434,23 +1432,70 @@ void main() {
       expect(states, contains(GatewayConnectionState.recovering));
 
       // Reconnect timer must be scheduled — the bug was that
-      // _onConnectionError set state to `recovering` but didn't
-      // schedule a reconnect, leaving the system stuck until _onConnectionDone
-      // (which may never fire) cancelled the state.  Active timer count
-      // should rise by exactly 1 (one new reconnect timer).
+      // _onConnectionError set state to `recovering` but didn't schedule a
+      // reconnect, leaving the system stuck until _onConnectionDone (which
+      // may never fire) cancelled the state. Verify via the
+      // RetryStrategy-shaped 1s delay rather than the raw active-timer
+      // count: Finding #2 also cancels the stale tick timer here, so the
+      // count is net-zero (-1 tick, +1 reconnect) — asserting the count
+      // would couple this test to the tick-cancellation side effect.
+      final reconnectTimers = timers.activeTimers.where(
+        (t) => t.duration == const Duration(seconds: 1),
+      );
       expect(
-        timers.activeTimers.length,
-        activeBeforeError + 1,
+        reconnectTimers.length,
+        1,
         reason:
             '_onConnectionError must schedule a reconnect — otherwise a '
             'transport error without a follow-up done leaves the '
             'connection stuck in `recovering` indefinitely',
       );
 
-      // Existing reconnect timers should NOT be cancelled (the new
-      // _scheduleDoConnect cancels _reconnectTimer before scheduling,
-      // but there was no existing reconnect timer to cancel — only
-      // the tick timeout was active here).
+      // Finding #2: the stale tick timeout timer is cancelled (covered
+      // explicitly by the dedicated test below).
+    });
+
+    test('_onConnectionError cancels the stale tick timeout timer '
+        '(Finding #2)', () async {
+      // When a transport error arrives on an ESTABLISHED connection, the
+      // tick watchdog timer (2 × tickIntervalMs) is still armed.
+      // _onConnectionError must cancel it — otherwise the stale tick can
+      // fire _onWebSocketClosed during recovery, which runs _cancelTimers +
+      // _scheduleReconnect and clobbers the reconnect timer that
+      // _onConnectionError just scheduled (delaying reconnect by up to
+      // 2 × tickInterval, and in a narrow window aborting an in-flight
+      // reconnect). Mirrors _onConnectionDone, which already calls
+      // _cancelTimers.
+      final result = await connectAndHandshakeWithTimers();
+      final ws = result.ws;
+      final cm = result.cm;
+      final timers = result.timers;
+
+      // Tick timeout (2 × 15000ms) is active while connected.
+      final tickBefore = timers.activeTimers.where(
+        (t) => t.duration == const Duration(milliseconds: 30000),
+      );
+      expect(tickBefore.length, 1);
+
+      ws.simulateError('Transport error');
+      await pumpMicrotasks();
+
+      expect(cm.state, GatewayConnectionState.recovering);
+
+      // The stale tick timeout timer MUST be cancelled.
+      final tickAfter = timers.activeTimers.where(
+        (t) => t.duration == const Duration(milliseconds: 30000),
+      );
+      expect(
+        tickAfter.length,
+        0,
+        reason:
+            '_onConnectionError must cancel the stale tick timeout timer '
+            'so it cannot fire _onWebSocketClosed during recovery and '
+            'reset the reconnect schedule',
+      );
+
+      await cm.dispose();
     });
 
     test(

@@ -301,15 +301,20 @@ void main() {
             'means the subscription is ordered after the fetch and the notice '
             'was dropped on the floor.',
       );
-      expect(vm.state.lastGatewayNotice, same(notice));
+      // value-equality, not identity: a future refactor that constructs a
+      // fresh LargePayloadNotice inside the stream listener would break a
+      // `same()` check while remaining behaviorally correct. Use equals().
+      expect(vm.state.lastGatewayNotice, equals(notice));
     });
 
     // Finding #9 + #11: gatewayNoticeSeq / lastGatewayNotice are excluded
-    // from == / hashCode so a notice arrival does NOT rebuild ChatRoomPage's
-    // build() (the toast is delivered via ref.listen on a .select of these
-    // fields — no rebuild needed). contentRevision stays in == (drives
-    // agent-content rebuilds via vm.agent). Pin both halves so the
-    // exclusion can't silently drift.
+    // from == / hashCode. Combined with the updateShouldNotify override
+    // (which gates ref.watch rebuilds on `!=`), this is what prevents a
+    // notice arrival from rebuilding ChatRoomPage's build() — the toast is
+    // delivered via ref.listen on a .select of these fields, no rebuild
+    // needed. contentRevision stays in == (drives agent-content rebuilds
+    // via vm.agent). Pin both halves so the exclusion can't silently drift.
+    // See also the updateShouldNotify test below (Finding #3).
     test('ChatSessionState.== excludes gatewayNoticeSeq / lastGatewayNotice '
         'but keeps contentRevision (Finding #9 / #11)', () {
       const base = ChatSessionState();
@@ -330,6 +335,51 @@ void main() {
         contentRevision: base.contentRevision + 1,
       );
       expect(withRevision == base, isFalse);
+    });
+
+    // Finding #3: Riverpod's StateNotifierProvider gates ref.watch rebuilds
+    // on StateNotifier.updateShouldNotify, whose DEFAULT is
+    // `!identical(old, current)` — NOT `==`. Since copyWith always returns a
+    // new object, identical() is always false, so every state set would
+    // rebuild build() regardless of what == excludes. The == exclusion above
+    // is only effective because ChatViewModel OVERRIDES updateShouldNotify
+    // to use `!=`. Pin the override so a future revert to the identical-
+    // based default can't silently re-introduce a full ChatRoomPage rebuild
+    // on every diagnostic notice.
+    test('updateShouldNotify: notice-only change does NOT rebuild, '
+        'content change DOES (Finding #3)', () {
+      final vm = createViewModel();
+      addTearDown(vm.dispose);
+
+      const base = ChatSessionState();
+      final noticeOnly = base.copyWith(
+        gatewayNoticeSeq: base.gatewayNoticeSeq + 1,
+        lastGatewayNotice: LargePayloadNotice(
+          sessionKey: 'agent:r-1:main',
+          size: 1,
+          limit: 2,
+        ),
+      );
+      final contentChanged = base.copyWith(
+        contentRevision: base.contentRevision + 1,
+      );
+
+      // ignore: invalid_use_of_protected_member
+      expect(
+        vm.updateShouldNotify(base, noticeOnly),
+        isFalse,
+        reason:
+            'notice-only change must NOT trigger build() rebuild — '
+            'toast goes through ref.listen(.select), no rebuild needed',
+      );
+      // ignore: invalid_use_of_protected_member
+      expect(
+        vm.updateShouldNotify(base, contentChanged),
+        isTrue,
+        reason:
+            'content change (contentRevision / messages / etc.) must '
+            'still trigger build() rebuild',
+      );
     });
   });
 
