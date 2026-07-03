@@ -847,7 +847,30 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// If [init] hasn't completed yet, awaits it first so the user's message
   /// is never silently dropped.  If the agent doesn't exist (or init failed),
   /// surfaces a [LoadError] so the UI can show a meaningful message.
-  Future<void> send(String text) async {
+  Future<void> send(String text) =>
+      _sendCore(content: text, type: MessageType.text);
+
+  /// 发送图片消息。[path] 为本地文件路径,[metadata] 至少含 fileName/mimeType/size,
+  /// 可选 caption。实际字节读取与 base64 编码由 ACL 层 sendMessage 在发送时完成,
+  /// DB 只存路径(避免大 blob 污染 SQLite)。
+  Future<void> sendImage(
+    String path, {
+    required Map<String, dynamic> metadata,
+  }) => _sendCore(content: path, type: MessageType.image, metadata: metadata);
+
+  /// 发送文件消息。[path] 为本地文件路径。
+  Future<void> sendFile(
+    String path, {
+    required Map<String, dynamic> metadata,
+  }) => _sendCore(content: path, type: MessageType.file, metadata: metadata);
+
+  /// send / sendImage / sendFile 的共用发送体。
+  /// [content] 文本消息为正文,图片/文件消息为本地文件路径。
+  Future<void> _sendCore({
+    required String content,
+    required MessageType type,
+    Map<String, dynamic>? metadata,
+  }) async {
     // Tear down the old streaming subscription so stale deltas/done
     // events from a previous response never contaminate the new buffer.
     // A fresh subscription is created below after init() succeeds.
@@ -921,8 +944,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     final sentMessage = await _sendMessageUseCase.execute(
       instanceId: instanceId,
       agent: agent!,
-      content: text,
-      type: MessageType.text,
+      content: content,
+      type: type,
+      metadata: metadata,
     );
 
     await _loadMessages();

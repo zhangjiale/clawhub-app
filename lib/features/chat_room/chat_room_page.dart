@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/agent_theme.dart';
@@ -18,6 +20,7 @@ import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/chat_input_bar.dart';
+import 'package:claw_hub/features/chat_room/widgets/attachment_sheet.dart';
 import 'package:claw_hub/features/chat_room/widgets/outbox_warning_banner.dart';
 import 'package:claw_hub/features/chat_room/widgets/streaming_bubble.dart';
 import 'package:claw_hub/features/chat_room/widgets/thinking_indicator.dart';
@@ -133,6 +136,78 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         .getById(widget.instanceId);
     if (instance != null && mounted) {
       await ref.read(connectionOrchestratorProvider).reconnect(instance);
+    }
+  }
+
+  /// "+" 附件入口:相册/拍照用 image_picker,文件用 file_picker。
+  /// 选到文件后调 [ChatViewModel.sendImage]/[ChatViewModel.sendFile],
+  /// metadata 含 fileName/mimeType/size。字节读取与 base64 由 ACL 在发送时完成。
+  ///
+  /// 平台调用放在 page 层而非 widget(Law 2:widget 只渲染 UI)。
+  /// 异步 gap 后校验 mounted;用户取消(pick 返回 null)静默忽略。
+  Future<void> _handlePickAttachment(
+    AttachmentKind kind,
+    ChatViewModel vm,
+  ) async {
+    if (kind == AttachmentKind.file) {
+      final result = await FilePicker.platform.pickFiles(type: FileType.any);
+      final path = result?.files.single.path;
+      if (path == null) return; // 用户取消
+      final file = File(path);
+      final name = result!.files.single.name;
+      if (!mounted) return;
+      await vm.sendFile(
+        path,
+        metadata: {
+          'fileName': name,
+          'mimeType': _mimeForExt(result.files.single.extension),
+          'size': file.lengthSync(),
+        },
+      );
+      return;
+    }
+    final source = kind == AttachmentKind.camera
+        ? ImageSource.camera
+        : ImageSource.gallery;
+    final picked = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 85,
+    );
+    if (picked == null) return; // 用户取消
+    final file = File(picked.path);
+    if (!mounted) return;
+    await vm.sendImage(
+      picked.path,
+      metadata: {
+        'fileName': picked.name,
+        'mimeType': picked.mimeType ?? 'image/jpeg',
+        'size': file.lengthSync(),
+      },
+    );
+  }
+
+  /// 由扩展名粗推 MIME;file_picker 不返回 mimeType,给一个合理兜底。
+  String _mimeForExt(String? ext) {
+    switch (ext?.toLowerCase()) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'txt':
+        return 'text/plain';
+      case 'json':
+        return 'application/json';
+      case 'zip':
+        return 'application/zip';
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'mp4':
+        return 'video/mp4';
+      default:
+        return 'application/octet-stream';
     }
   }
 
@@ -513,7 +588,10 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                     onCommandTap: (payload) => vm.send(payload),
                   ),
 
-                ChatInputBar(onSend: (text) => vm.send(text)),
+                ChatInputBar(
+                  onSend: (text) => vm.send(text),
+                  onPickAttachment: (kind) => _handlePickAttachment(kind, vm),
+                ),
               ],
             ),
           ), // GestureDetector (C4 swipe)

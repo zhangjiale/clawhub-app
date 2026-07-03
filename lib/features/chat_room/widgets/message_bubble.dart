@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:claw_hub/app/theme/agent_theme.dart';
@@ -118,16 +120,7 @@ class MessageBubble extends StatelessWidget {
                           ? null
                           : Border.all(color: XiaColors.border),
                     ),
-                    child: _isUser
-                        ? Text(
-                            _displayContent(message),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
-                              height: 1.5,
-                            ),
-                          )
-                        : _buildMarkdownContent(_displayContent(message)),
+                    child: _buildContent(message),
                   ),
                   // Message time
                   Padding(
@@ -167,6 +160,148 @@ class MessageBubble extends StatelessWidget {
     };
   }
 
+  /// 按消息类型分派渲染:image/file 走专用 widget,text/toolCall 走原有文本/Markdown。
+  Widget _buildContent(Message message) {
+    switch (message.type) {
+      case MessageType.image:
+        return _buildImageContent(message);
+      case MessageType.file:
+        return _buildFileContent(message);
+      case MessageType.text:
+      case MessageType.toolCall:
+        final text = _displayContent(message);
+        if (_isUser) {
+          return Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              height: 1.5,
+            ),
+          );
+        }
+        return _buildMarkdownContent(text);
+    }
+  }
+
+  /// 图片消息:Agent 回图(imageUrl)走网络图,用户发送(imagePath)走本地文件,
+  /// 均可带 caption(Agent 回图的 content 即 caption;用户图从 metadata.caption 取)。
+  Widget _buildImageContent(Message message) {
+    final imageUrl = message.imageUrl;
+    final imagePath = message.imagePath;
+    final Image? image = imageUrl != null
+        ? Image.network(
+            imageUrl,
+            width: 220,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => const _BrokenImage(),
+          )
+        : imagePath != null
+        ? Image.file(
+            File(imagePath),
+            width: 220,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => const _BrokenImage(),
+          )
+        : null;
+    if (image == null) {
+      return Text(
+        '[图片]',
+        style: TextStyle(
+          color: _isUser ? Colors.white : XiaColors.text2,
+          fontSize: 14,
+        ),
+      );
+    }
+    // caption:用户图从 metadata.caption;Agent 回图从 content(图片说明文本)。
+    final caption =
+        message.caption ??
+        (imageUrl != null &&
+                message.content != null &&
+                message.content!.isNotEmpty
+            ? message.content
+            : null);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(XiaRadius.lg),
+          child: image,
+        ),
+        if (caption != null && caption.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              caption,
+              style: TextStyle(
+                color: _isUser ? Colors.white : XiaColors.text1,
+                fontSize: 13,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 文件消息:文件名 + 大小的卡片样式。无任何文件数据(无路径无文件名)时
+  /// 回退 `[文件]` 占位文本(兼容旧占位契约)。
+  Widget _buildFileContent(Message message) {
+    final filePath = message.filePath;
+    final name = message.fileName;
+    if (filePath == null && name == null) {
+      return Text(
+        '[文件]',
+        style: TextStyle(
+          color: _isUser ? Colors.white : XiaColors.text2,
+          fontSize: 14,
+        ),
+      );
+    }
+    final size = message.fileSize;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.insert_drive_file_outlined,
+          color: _isUser ? Colors.white : XiaColors.accent,
+          size: 28,
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                name ?? '文件',
+                style: TextStyle(
+                  color: _isUser ? Colors.white : XiaColors.text1,
+                  fontSize: 14,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (size != null)
+                Text(
+                  _formatSize(size),
+                  style: TextStyle(
+                    color: _isUser ? Colors.white70 : XiaColors.text3,
+                    fontSize: 11,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+
   static String _formatTime(int timestampMs) {
     final date = DateTime.fromMillisecondsSinceEpoch(timestampMs);
     final hour = date.hour.toString().padLeft(2, '0');
@@ -179,6 +314,29 @@ class MessageBubble extends StatelessWidget {
       data: data,
       selectable: true,
       styleSheet: XiaMarkdownStyles.message,
+    );
+  }
+}
+
+/// 图片加载失败占位(本地文件被清理或网络图 404)。
+class _BrokenImage extends StatelessWidget {
+  const _BrokenImage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 220,
+      height: 120,
+      color: XiaColors.surface3,
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.broken_image_outlined, color: XiaColors.text4, size: 32),
+          const SizedBox(height: 4),
+          Text('图片不可用', style: TextStyle(color: XiaColors.text4, fontSize: 12)),
+        ],
+      ),
     );
   }
 }

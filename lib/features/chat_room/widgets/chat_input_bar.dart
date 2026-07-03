@@ -1,20 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
+import 'attachment_sheet.dart';
 
 /// Chat input bar — V2 ComponentSpec §4.5.
 ///
-/// V2: removed plus button (spec §4.5.1). Layout:
-/// `[Textarea r-xl 14px] [Send btn 36×36 circle, glow]`
+/// 布局:`[+ 附件按钮] [Textarea r-xl 14px] [Send btn 36×36 circle, glow]`
 /// Padding: 6/16 + safe-bottom.
+///
+/// "+" 按钮:反转 V2 §4.5.1"移除 Plus Button"决策 —— PRD 3.3 规则 2/8 要求
+/// 图片/文件消息能力,附件入口是必要的。点击弹出 [AttachmentSheet],选择后
+/// 回调 [onPickAttachment];实际 image_picker/file_picker 调用在 page 层(Law 2)。
 ///
 /// **Performance**: the send-button subtree rebuilds via
 /// [ValueListenableBuilder] listening to [_controller], so IME composition
 /// does not trigger a full TextField re-layout on every keystroke.
 class ChatInputBar extends StatefulWidget {
   final ValueChanged<String> onSend;
+  final ValueChanged<AttachmentKind>? onPickAttachment;
 
-  const ChatInputBar({super.key, required this.onSend});
+  const ChatInputBar({super.key, required this.onSend, this.onPickAttachment});
 
   @override
   State<ChatInputBar> createState() => _ChatInputBarState();
@@ -56,6 +61,13 @@ class _ChatInputBarState extends State<ChatInputBar> {
         // component-spec-v2 §4.5.1.
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
+          if (widget.onPickAttachment != null)
+            _AttachButton(
+              onTap: () => AttachmentSheet.show(
+                context,
+                onPick: widget.onPickAttachment!,
+              ),
+            ),
           Expanded(
             child: TextField(
               controller: _controller,
@@ -137,6 +149,35 @@ class _SendButton extends StatelessWidget {
         ),
         child: const Icon(Icons.send, color: Colors.white, size: 18),
       ),
+    );
+  }
+}
+
+/// "+" 附件按钮 —— 36×36 圆形,点击弹出 [AttachmentSheet]。
+/// 仅当 [ChatInputBar.onPickAttachment] 非空时渲染。
+class _AttachButton extends StatelessWidget {
+  final Future<void> Function() onTap;
+
+  const _AttachButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return PressFeedback(
+      scale: 0.88,
+      onTap: onTap,
+      builder: (child, isPressed) => Container(
+        width: 36,
+        height: 36,
+        margin: const EdgeInsets.only(right: XiaSpacing.s2),
+        decoration: BoxDecoration(
+          color: XiaColors.surface2,
+          shape: BoxShape.circle,
+          border: Border.all(color: XiaColors.border),
+        ),
+        alignment: Alignment.center,
+        child: child,
+      ),
+      child: const Icon(Icons.add, color: XiaColors.text2, size: 20),
     );
   }
 }

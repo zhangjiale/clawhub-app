@@ -258,5 +258,110 @@ void main() {
         }
       });
     });
+
+    group('image/file rendering', () {
+      Widget wrap(Widget child) => MaterialApp(
+        home: Scaffold(body: SizedBox(width: 400, child: child)),
+      );
+
+      testWidgets('file message renders fileName + size', (tester) async {
+        final msg = Message(
+          clientId: 'f1',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.user,
+          content: '/tmp/doc.pdf',
+          type: MessageType.file,
+          status: MessageStatus.sent,
+          timestamp: 0,
+          logicalClock: 0,
+          metadata: const {
+            'fileName': 'doc.pdf',
+            'mimeType': 'application/pdf',
+            'size': 12288,
+          },
+        );
+        await tester.pumpWidget(
+          wrap(MessageBubble(message: msg, agentName: '虾')),
+        );
+
+        expect(find.text('doc.pdf'), findsOneWidget);
+        expect(find.text('12.0 KB'), findsOneWidget);
+      });
+
+      testWidgets('image message with no path/url renders [图片] placeholder', (
+        tester,
+      ) async {
+        final msg = Message(
+          clientId: 'i1',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.user,
+          content: null,
+          type: MessageType.image,
+          status: MessageStatus.sent,
+          timestamp: 0,
+          logicalClock: 0,
+        );
+        await tester.pumpWidget(
+          wrap(MessageBubble(message: msg, agentName: '虾')),
+        );
+
+        expect(find.text('[图片]'), findsOneWidget);
+        expect(find.byType(Image), findsNothing);
+      });
+
+      testWidgets('agent image response renders Image widget + caption', (
+        tester,
+      ) async {
+        final msg = Message(
+          clientId: 'i2',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '看这个图',
+          type: MessageType.image,
+          status: MessageStatus.delivered,
+          timestamp: 0,
+          logicalClock: 0,
+          metadata: const {
+            'imageUrl': 'https://example.com/x.png',
+            'mimeType': 'image/png',
+          },
+        );
+        await tester.pumpWidget(
+          wrap(MessageBubble(message: msg, agentName: '虾')),
+        );
+
+        // Image widget present (network image, loads async — widget exists pre-load)
+        expect(find.byType(Image), findsOneWidget);
+        // caption text from content
+        expect(find.text('看这个图'), findsOneWidget);
+      });
+
+      testWidgets('user image message with local path renders Image widget', (
+        tester,
+      ) async {
+        final msg = Message(
+          clientId: 'i3',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.user,
+          content: '/tmp/nonexistent.jpg',
+          type: MessageType.image,
+          status: MessageStatus.sent,
+          timestamp: 0,
+          logicalClock: 0,
+          metadata: const {'fileName': 'img.jpg', 'mimeType': 'image/jpeg'},
+        );
+        await tester.pumpWidget(
+          wrap(MessageBubble(message: msg, agentName: '虾')),
+        );
+
+        expect(find.byType(Image), findsOneWidget);
+        // 用户图无 caption(content 是路径,不应作为 caption 文本显示)
+        expect(find.text('/tmp/nonexistent.jpg'), findsNothing);
+      });
+    });
   });
 }
