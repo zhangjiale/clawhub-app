@@ -50,6 +50,9 @@ The project follows **Clean Architecture** with strict layer separation:
 ```
 lib/
 ├── app/                  # Application entry & configuration
+│   ├── bootstrap.dart    # Pre-runApp startup chain + fatal-screen guardrail (see below)
+│   ├── background_sync/  # Workmanager callback dispatcher (background message sync)
+│   ├── notifications/    # Local notification service wiring
 │   ├── config/           # AppConfig + PlatformInfo (OS/version detection)
 │   ├── connection/       # ConnectionOrchestrator (auto-connect on startup)
 │   ├── di/               # Riverpod provider definitions (DI container)
@@ -63,9 +66,13 @@ lib/
 │   │   ├── mock_gateway_client.dart   # In-memory mock (offline dev / unit tests)
 │   │   ├── ws_gateway_client.dart     # Real WebSocket client (current default)
 │   │   └── device_identity*.dart      # Ed25519 device identity + interface
-│   ├── database/, network/, security/, utils/   # Cross-cutting infra
-│   ├── analytics/, monitor/                       # Telemetry (WIP)
-│   └── localization/                              # i18n (zh-CN / en-US, WIP)
+│   ├── (top-level i_*.dart)   # Cross-cutting service interfaces — i_logger, iconnectivity,
+│   │                          # i_avatar_storage_service, i_local_notification_service, etc.
+│   │                          # Domain/data depend on these abstractions (Law 3), never the
+│   │                          # concrete Flutter/platform impl (Law 1). debug_print_logger.dart
+│   │                          # is the production ILogger; domain uses `print` or injected ILogger.
+│   ├── lifecycle/             # App lifecycle observers
+│   └── utils/                 # Pure utilities (CopyWithSentinel, etc.)
 ├── domain/               # Pure Dart, zero Flutter/database imports (Law 1)
 │   ├── models/           # Entities (freezed): Instance, Agent, Message, Conversation, etc.
 │   ├── repositories/     # Abstract repository interfaces
@@ -136,6 +143,12 @@ The app uses **Drift/SQLite** for persistence (all 4 repositories: Instance, Age
 
 Core feature pages implemented: InstanceManager, AgentList, ChatRoom, MessageHub, AgentProfile, Search. `settings/` is in active development with SettingsPage, 6 sub-pages (Notification, DND, Biometric, Network, Storage Management, About), a ViewModel, `ISettingsRepo`/`DriftSettingsRepo`, and tests.
 
+### Pre-runApp Startup Guardrail
+
+The pre-`runApp` startup chain lives in **`lib/app/bootstrap.dart`** (`bootstrapApp()`), wrapped in `runZonedGuarded` inside `main()`. It runs `Workmanager().initialize(...)` → `createAppDatabase()` → `runApp(ProviderScope(...))`. Any throw is caught and surfaced as a **visible fatal screen** (`DefaultErrorFallback` mounted in a dark `MaterialApp`: icon + error + collapsible stack trace + Retry) instead of a frozen splash. This guardrail was added after a 2026-07-01 incident where a `Workmanager` `PlatformException` stranded the app on a blank Android splash with no first frame (infinite `W/VRI cancelAndRedraw` log spam). Full post-mortem: `docs/technical/background-sync-limitations.md`.
+
+**Convention**: when adding a new pre-`runApp` step (plugin init, secure-storage pre-warm, locale load, asset precache), add it as a new typed parameter inside `bootstrapApp()` and wire it at the call site in `lib/main.dart` — do **not** add `await` directly in `main()`. The zone guardrail only covers what `bootstrapApp` calls; `bootstrapApp` exposes a fixed typed parameter set (no generic `yourStep:` slot), so model a new `Future<void> Function()` typedef alongside `WorkmanagerInitializer`. The bootstrap is unit-tested in `test/app/bootstrap_test.dart` — a guardrail with no test is a hope.
+
 ### Commit Convention
 
 Use Conventional Commits: `feat(scope):`, `fix(scope):`, `perf(scope):`, `docs:`, `test:`.
@@ -155,6 +168,7 @@ Key docs for AI-assisted development. Paths relative to repo root unless noted.
 | API Protocol | `docs/technical/api-protocol.md` | Gateway WebSocket work — handshake, RPC, events, auth |
 | ACL Protocol Gaps | `docs/technical/acl-protocol-gaps.md` | 剩余 ACL 协议实现差距（deviceToken 已修，maxPayload / shutdown / payload.large 等待续） |
 | Architecture | `docs/technical/architecture.md` | Understanding project structure, data models, provider inventory |
+| ADRs | `docs/adr/` | Consulting past architectural decisions (e.g. broadcast-stream late-subscriber contract) |
 | Database Schema | `docs/technical/database-schema.sql` | Schema changes, migration, FTS5 query design |
 | Design Assets | `docs/design/assets/` | App icon, splash screen, shrimp state images |
 | AgentTheme (per-agent branding) | `lib/app/theme/agent_theme.dart` | Wiring per-agent theme color into widget tree via `ThemeExtension<AgentTheme>` + `AgentTheme.of(context).primary`. Sibling consumers: `QuickCommandBar` (pill text), `MessageBubble` (user bubble bg), `ThinkingIndicator` (dot color). Falls back to `XiaColors.accent` (V2 sapphire `#4F83FF`) when no agent is in scope. |
