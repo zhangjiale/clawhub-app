@@ -68,15 +68,13 @@ void main() {
     when(
       () => gatewayClient.pairingInfoStream(any()),
     ).thenAnswer((_) => Stream.empty());
-    // Gap #6 收尾: vm._initStreamsAndHistory now subscribes to
-    // gatewayNoticeStream (chat_view_model.dart:756). mocktail's Mock
-    // bypasses the interface's `=> const Stream.empty()` default (Dart only
-    // inherits default impls via extends/with, not implements), so an
-    // unstubbed call returns null → `.listen` throws → caught at the outer
-    // try → _teardownSubscriptions cancels the other 5 subs. The 5 tests
-    // below still pass (they assert ticker wiring, not streams) but the VM
-    // is left with zero active gateway subs and CI output gains a stack
-    // trace. Stubbing mirrors the other 5 stream stubs above.
+    // Finding #9 fix: VM 不再订阅 gatewayNoticeStream —— gatewayNoticeProvider
+    // (StreamProvider) 订阅它（由 chatViewModelProvider create body 的
+    // ref.listen(gatewayNoticeProvider) 触发）。mocktail's Mock bypasses the
+    // interface's `=> const Stream.empty()` default (Dart only inherits
+    // default impls via extends/with, not implements), so an unstubbed call
+    // returns null → StreamProvider 的 .listen 抛 → AsyncError 噪声。
+    // Stubbing mirrors the other 5 stream stubs above.
     when(
       () => gatewayClient.gatewayNoticeStream(any()),
     ).thenAnswer((_) => Stream<GatewayNotice>.empty());
@@ -388,14 +386,13 @@ void main() {
     );
   });
 
-  // Gap #6 收尾回归守卫: vm._initStreamsAndHistory 现在订阅
-  // gatewayNoticeStream (chat_view_model.dart:756)。若 mock 未 stub 该方法,
-  // mocktail 返回 null → `.listen` 抛 → 外层 try 捕获 → _teardownSubscriptions
-  // 取消全部已建立的订阅,_streamsInitialized 永远停在 false。5 个 ticker
-  // 测试因只断言 getById 次数而仍通过,故此前回归被掩盖。本测试直接断言
-  // init 走到末尾 (_streamsInitialized == true),把"订阅被静默拆掉"钉成红。
-  test('vm.init() subscribes all gateway streams (gatewayNoticeStream stubbed, '
-      'no teardown)', () async {
+  // 回归守卫: vm._initStreamsAndHistory 订阅 5 个 gateway stream
+  // (message / connection / toolCall / streaming / outboxCount)。
+  // gatewayNoticeStream 不再由 VM 订阅 —— 改由 gatewayNoticeProvider
+  // (StreamProvider) 订阅，由 chatViewModelProvider create body 的
+  // ref.listen(gatewayNoticeProvider) 触发。本测试断言 init 走到末尾
+  // (_streamsInitialized == true)，把"订阅被静默拆掉"钉成红。
+  test('vm.init() subscribes all gateway streams (no teardown)', () async {
     when(() => agentRepo.getById('local-a')).thenAnswer((_) async {
       return activeAgent;
     });
@@ -419,8 +416,7 @@ void main() {
     );
 
     // Poll up to 1s for _initStreamsAndHistory to reach its tail
-    // (_streamsInitialized = true). Before the gatewayNoticeStream stub,
-    // this never becomes true (init throws at the notice sub).
+    // (_streamsInitialized = true).
     for (var i = 0; i < 100; i++) {
       if (vm.streamsInitializedForTesting) break;
       await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -429,9 +425,9 @@ void main() {
       vm.streamsInitializedForTesting,
       isTrue,
       reason:
-          'init must reach _streamsInitialized=true — all 6 gateway streams '
-          '(incl. gatewayNoticeStream) subscribed. A false value means init '
-          'threw mid-way and _teardownSubscriptions tore the subs down.',
+          'init must reach _streamsInitialized=true — all 5 gateway streams '
+          'subscribed. A false value means init threw mid-way and '
+          '_teardownSubscriptions tore the subs down.',
     );
   });
 }

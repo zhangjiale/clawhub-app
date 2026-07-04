@@ -39,6 +39,19 @@ final chatViewModelProvider =
       // Invalidate stats provider whenever a message is sent or received,
       // so the stats bar in the agent list tab reflects updated message counts.
       vm.onStatsChanged = () => ref.invalidate(statsProvider);
+
+      // Finding #9 修复: 早订阅 gatewayNoticeProvider 保持“先订阅再
+      // fetchHistory”不变量（broadcast 无 replay，fetch RTT 期间 notice
+      // 会被丢）。toast 由 chat_room_page 的 ref.listen(gatewayNoticeProvider)
+      // 处理；此处仅强制早订阅，避免 vm.init() → fetchMessageHistory 期间
+      // 到达的 notice 丢失。
+      //
+      // 关键: 用 ref.listen（not ref.watch）——ref.watch 会让 vm provider
+      // 依赖 gatewayNoticeProvider，notice emit 时 vm provider 重建（销毁
+      // 重建 vm，违背“不销毁重建 vm”原则，见下方 outboxFlushTicker 注释）。
+      // ref.listen 只注册 callback，不触发本 provider 重建。
+      ref.listen(gatewayNoticeProvider(params.instanceId), (_, _) {});
+
       vm.init();
       ref.onDispose(() => vm.dispose());
 

@@ -2,8 +2,9 @@
 ///
 /// 把 Gateway 主动推送的「诊断类」事件（[LargePayloadNotice] 及后续
 /// `rate.limit` / `quota.exceeded` 等）收敛成一个 sealed union，
-/// 让 UI 层按 runtime type 分发文案，state 只持单 `seq` + 单
-/// `lastGatewayNotice` —— 新增事件不再碰 state 类与 page 订阅。
+/// 让 UI 层按 runtime type 分发文案。Finding #9 修复后 notice 不再
+/// 进 ChatSessionState——改由 `gatewayNoticeProvider` (StreamProvider)
+/// 直接暴露给 UI，新增事件不再碰 state 类与 page 订阅。
 ///
 /// 纯 domain 模型 (Law 1)：零 Flutter / Riverpod / drift 依赖，也不依赖
 /// `core/acl`。ACL 层的 JSON parser（`parseLargePayloadEvent`）保留在

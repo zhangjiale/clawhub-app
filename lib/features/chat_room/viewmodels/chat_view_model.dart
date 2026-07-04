@@ -84,31 +84,6 @@ class ChatSessionState {
   /// 之外的对比语义。
   final bool closeRequested;
 
-  /// Gap #6 收尾 (Step 4): 单调计数器，每次 Gateway 推诊断事件
-  /// （[LargePayloadNotice] 及后续 `rate.limit` / `quota.exceeded` 等
-  /// `GatewayNotice` 子类型）时自增 1。
-  ///
-  /// UI 层（chat_room_page）用 `ref.listen(chatViewModelProvider.select(
-  /// (s) => (s.gatewayNoticeSeq, s.lastGatewayNotice)))` 监听本字段：seq
-  /// 变了就弹一次 toast（即使 [lastGatewayNotice] 内容与上次相同也弹——
-  /// 规避 Riverpod `==` dedup 抑制连续的相同 notice）。新增诊断事件类型
-  /// 时本字段语义不变。
-  ///
-  /// 用单调计数而非等值判断：连续两条内容完全相同的事件（同一会话连发
-  /// 两次超大帧）用户期望都看到提示，而不是被状态去重吃掉第二次。
-  ///
-  /// Finding #9: 本字段与 [lastGatewayNotice] **刻意不在 [==] / [hashCode]**
-  /// 中——它们只供上述 `.select` ref.listen 消费，不参与 build() 的
-  /// `ref.watch` 重建判定。否则每次 notice 都会触发 ChatRoomPage 整树
-  /// 重建（Scaffold+AppBar+ListView），而 toast 走 ref.listen 根本不需要
-  /// 重建。参见 model-equals-identity-blindspot memory。
-  final int gatewayNoticeSeq;
-
-  /// Gap #6 收尾 (Step 4): 上一次 Gateway 诊断事件（sealed union）。
-  /// UI 层按 runtime type `switch` 派生文案（l10n 友好），state 只持
-  /// 结构化数据，不持本地化字符串。null 表示从未收到过。
-  final GatewayNotice? lastGatewayNotice;
-
   const ChatSessionState({
     this.messages = const LoadInProgress(),
     this.thinkingState = ThinkingState.idle,
@@ -121,8 +96,6 @@ class ChatSessionState {
     this.highlightedQuery,
     this.contentRevision = 0,
     this.closeRequested = false,
-    this.gatewayNoticeSeq = 0,
-    this.lastGatewayNotice,
   });
 
   ChatSessionState copyWith({
@@ -139,10 +112,6 @@ class ChatSessionState {
     Object? highlightedQuery = CopyWithSentinel.instance,
     int? contentRevision,
     bool? closeRequested,
-    int? gatewayNoticeSeq,
-    // lastGatewayNotice 可空（用法上每次都重新覆盖，不会显式传 null 清空），
-    // 走普通 GatewayNotice? 即可——不用 CopyWithSentinel。
-    GatewayNotice? lastGatewayNotice,
   }) {
     return ChatSessionState(
       messages: messages ?? this.messages,
@@ -162,8 +131,6 @@ class ChatSessionState {
       ),
       contentRevision: contentRevision ?? this.contentRevision,
       closeRequested: closeRequested ?? this.closeRequested,
-      gatewayNoticeSeq: gatewayNoticeSeq ?? this.gatewayNoticeSeq,
-      lastGatewayNotice: lastGatewayNotice ?? this.lastGatewayNotice,
     );
   }
 
@@ -239,12 +206,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   StreamSubscription<ToolCall>? _toolCallSubscription;
   StreamSubscription<StreamingEvent>? _streamingSubscription;
   StreamSubscription<int>? _outboxCountSubscription;
-
-  /// Gap #6 收尾 (Step 4): 订阅 `_gatewayClient.gatewayNoticeStream(instanceId)`
-  /// （sealed union），任意诊断事件命中时把 seq 自增 + 把 notice 塞进
-  /// state，让 chat_room_page 的 `ref.listen` 按 runtime type 派生文案触发
-  /// toast。新增诊断事件类型时本订阅不动。
-  StreamSubscription<GatewayNotice>? _gatewayNoticeSubscription;
   Timer? _timeoutTimer;
   Timer? _stallTimer;
 
@@ -394,19 +355,20 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// [StateNotifier.updateShouldNotify] (default `!identical(old, current)`)
   /// — NOT `==` — to decide whether consumers' `build()` rebuilds. Because
   /// [copyWith] always returns a new object, `identical()` is always false,
-  /// so the default would rebuild on every state set, including notice-only
-  /// changes ([gatewayNoticeSeq]/[lastGatewayNotice]) that the toast path
-  /// consumes via `ref.listen(.select)` and that need no rebuild.
+  /// so the default would rebuild on every state set.
   ///
-  /// Delegating to `!=` is what makes the `==` exclusion of the notice
-  /// fields (see [ChatSessionState.==]) actually effective: a notice-only
-  /// change compares equal → no rebuild, while any content field change
-  /// (messages / thinkingState / contentRevision / …) still rebuilds.
+  /// Delegating to `!=` skips rebuilds when [_updateState] produces a
+  /// value-equal state (e.g. a no-op transform), while any real content
+  /// change (messages / thinkingState / contentRevision / …) still rebuilds.
   ///
   /// This does NOT reintroduce the model-equals-identity-blindspot problem
   /// (that was about `Agent.==` being identity-only and suppressing content
   /// rebuilds); `ChatSessionState.==` is a full content comparison intended
   /// as the rebuild gate.
+  ///
+  /// Finding #9: Gateway notice 不再走 ChatSessionState（已移除
+  /// `gatewayNoticeSeq` / `lastGatewayNotice` 字段）——toast 改由
+  /// `gatewayNoticeProvider` (StreamProvider) 直接驱动，不经过本 state。
   @override
   bool updateShouldNotify(ChatSessionState old, ChatSessionState current) =>
       old != current;
@@ -686,36 +648,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       //     the current buffer (no generation-guard needed).
       _startStreaming();
 
-      // 5d. Gap #6 收尾 (Step 4): 订阅 Gateway 诊断事件（sealed union）。
-      // 客户端发的单帧超过 maxPayload 等条件触发 Gateway 主动推诊断事件
-      // (不作为正常响应,无法被 sendRequest 的 completer 接住),所以必须靠
-      // 独立 stream 接。命中时只把 seq 自增 + 把结构化 notice 塞进 state;
-      // 文案由 UI 层按 runtime type 派生(l10n 友好),ViewModel 不再持本地化串。
-      // 对比 prev/next seq 触发 toast,即使两次 notice 内容相同也弹(seq 单调)。
+      // 5d. (Finding #9 修复) Gateway 诊断事件 notice 不再由 VM 订阅 ——
+      // 改由 gatewayNoticeProvider (StreamProvider) 订阅,UI 经
+      // ref.listen(gatewayNoticeProvider) 直接消费。VM 不参与 notice 流。
       //
-      // Finding #1: 必须在 `await fetchMessageHistory` 之前订阅 — 广播
-      // StreamController 无 replay,fetch RTT（100-2000ms）期间到达的
-      // notice（并发 OutboxProcessor 重试触发缓冲满 / 服务端推
-      // payload.large）若无 listener 会被永久丢弃,F-4/Gap#6 toast 永不弹。
-      // 与 5a/5b/5c 同款「先订阅再拉历史」不变量（见 541-545 注释）。
-      _gatewayNoticeSubscription = _gatewayClient
-          .gatewayNoticeStream(instanceId)
-          .listen(
-            (notice) {
-              _updateState(
-                (s) => s.copyWith(
-                  gatewayNoticeSeq: s.gatewayNoticeSeq + 1,
-                  lastGatewayNotice: notice,
-                ),
-              );
-            },
-            onError: (Object error, StackTrace stack) {
-              debugPrint(
-                '[ChatViewModel] gateway notice stream error for $instanceId: '
-                '$error\n$stack',
-              );
-            },
-          );
+      // “先订阅再 fetchHistory”不变量由 chatViewModelProvider create body
+      // 的 ref.listen(gatewayNoticeProvider(params.instanceId), (_, _) {})
+      // 早订阅保证（在 vm.init() 之前执行）——broadcast stream 无 replay,
+      // fetch RTT 期间 notice 不会丢。见 chat_providers.dart create body。
 
       // 6. Fetch message history from Gateway (best-effort).
       //    Placed AFTER real-time subscriptions so that events arriving
@@ -1392,8 +1332,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _isStreaming = false;
     _outboxCountSubscription?.cancel();
     _outboxCountSubscription = null;
-    _gatewayNoticeSubscription?.cancel(); // Gap #6 收尾 (Step 4)
-    _gatewayNoticeSubscription = null; // Gap #6 收尾 (Step 4)
     _agentSubscription?.cancel(); // ★ 新增
     _agentSubscription = null; // ★ 新增
     _timeoutTimer?.cancel();

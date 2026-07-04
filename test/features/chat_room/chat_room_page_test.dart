@@ -383,20 +383,15 @@ void main() {
       },
     );
 
-    // Finding #9: gatewayNoticeSeq / lastGatewayNotice were removed from
-    // ChatSessionState.== so a notice arrival no longer rebuilds build().
-    // The toast is delivered via ref.listen on a `.select((s) => (seq,
-    // notice))` of those fields. This test pins that the .select listener
-    // STILL fires on a notice (toast appears) — guarding against a future
-    // edit that breaks the listener while keeping == exclusion.
+    // Finding #9 fix: Gateway 诊断事件改走单独的 gatewayNoticeProvider
+    // (StreamProvider),不再塞进 ChatSessionState——== 排除字段会导致
+    // StateNotifier.state setter 去重,ref.listen 永不触发,toast 不弹。
     //
-    // Drives the listener by setting state directly (mirrors the
-    // retryFeedback test pattern — no vm.init(), so no stream subscriptions
-    // to hang the widget test). This isolates the PAGE's listener wiring
-    // from the VM's stream-subscription plumbing (covered separately by
-    // chat_view_model_large_payload_test).
+    // 本测试驱动 gatewayNoticeProvider:override gatewayClientProvider 为
+    // MockGatewayClient,page 的 ref.listen(gatewayNoticeProvider) 订阅
+    // mock 的 gatewayNoticeStream,emit notice -> toast 出现。
     testWidgets('shows a toast when a Gateway notice arrives '
-        '(.select ref.listen still fires — Finding #9)', (tester) async {
+        '(via gatewayNoticeProvider — Finding #9 fix)', (tester) async {
       final agentRepo = InMemoryAgentRepo();
       await agentRepo.syncFromGateway('inst-1', [
         Agent(
@@ -429,13 +424,20 @@ void main() {
         agentId: 'local-1',
         achievementChecker: _MockAchievementChecker(),
       );
-      // Start from a clean, no-notice state — the page's .select ref.listen
-      // captures (0, null) as its initial selected value on first build.
+      // Start from a clean, no-notice state — the page's
+      // ref.listen(gatewayNoticeProvider) captures AsyncLoading as its
+      // initial value on first build.
       vm.state = const ChatSessionState(messages: LoadData(<Message>[]));
 
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [chatViewModelProvider(_key).overrideWith((ref) => vm)],
+          overrides: [
+            chatViewModelProvider(_key).overrideWith((ref) => vm),
+            // gatewayNoticeProvider reads gatewayClientProvider internally;
+            // override it with the same MockGatewayClient so emit*ForTesting
+            // reaches the stream the page listens to.
+            gatewayClientProvider.overrideWithValue(gateway),
+          ],
           child: const MaterialApp(
             home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
           ),
@@ -443,26 +445,30 @@ void main() {
       );
       await tester.pump();
 
-      // Mimic the VM's gatewayNoticeStream listener: bump seq + store the
-      // notice. The page's .select ref.listen fires on the (seq, notice)
-      // change and schedules a post-frame XiaToast.show.
-      vm.state = vm.state.copyWith(
-        gatewayNoticeSeq: vm.state.gatewayNoticeSeq + 1,
-        lastGatewayNotice: LargePayloadNotice(
+      // Emit a notice via the mock's broadcast stream ->
+      // gatewayNoticeProvider receives it -> page's ref.listen fires ->
+      // post-frame XiaToast.show inserts the overlay entry.
+      gateway.emitGatewayNoticeForTesting(
+        'inst-1',
+        LargePayloadNotice(
           sessionKey: 'agent:r-1:main',
           size: 30_000_000,
           limit: 26_214_400,
         ),
       );
-      // pump: flush the listener + post-frame callback (XiaToast.show), then
-      // build the inserted overlay entry.
+      // 4 pumps: (1) flush microtask → listener → schedule post-frame;
+      // (2) run post-frame → XiaToast.show → overlay.insert; (3-4) overlay
+      // rebuilds the inserted OverlayEntry → _ToastOverlay.build. Fewer
+      // pumps race the build (entry inserted but not yet built → find misses).
+      await tester.pump();
+      await tester.pump();
       await tester.pump();
       await tester.pump();
 
       // The toast (formatGatewayNotice output for LargePayloadNotice)
-      // contains the size byte count — proving the .select listener fired
-      // and the toast was inserted without build() needing to rebuild for
-      // the notice (== no longer includes these fields).
+      // contains the size byte count — proving gatewayNoticeProvider ->
+      // ref.listen -> toast wired correctly without going through
+      // ChatSessionState.
       expect(find.textContaining('30000000'), findsOneWidget);
     });
   });

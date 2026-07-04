@@ -61,9 +61,10 @@ void main() {
     });
 
     test('all instances are equal (value-less marker)', () {
-      // 无字段 → 所有实例值相等。toast 触发靠 gatewayNoticeSeq 单调递增
-      // （见 ChatSessionState.gatewayNoticeSeq 注释），不靠 == 区分，故
-      // 标量相等不会抑制连续 toast。
+      // 无字段 -> 所有实例值相等。toast 触发靠 gatewayNoticeProvider
+      // (StreamProvider) 每次流 emit 调一次 ref.listen callback
+      // （见 lib/app/di/providers.dart gatewayNoticeProvider），
+      // 不靠 == 区分，故标量相等不会抑制连续 toast。
       const a = BufferOverflowNotice();
       const b = BufferOverflowNotice();
       expect(a, equals(b));

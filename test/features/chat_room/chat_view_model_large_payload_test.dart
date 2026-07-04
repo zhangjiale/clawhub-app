@@ -1,30 +1,33 @@
-// Gap #6 收尾 (Step 4): ChatViewModel 订阅 `gatewayClient.gatewayNoticeStream`
-// (sealed union),把诊断事件映射为 ChatSessionState 上的单 seq +
-// 单结构化 notice (gatewayNoticeSeq + lastGatewayNotice)。chat_room_page
-// 通过 ref.listen 比较 seq 变化,按 notice 的 runtime type 经
-// formatGatewayNotice 派生文案触发 toast。
+// Finding #9 fix: Gateway 诊断事件不再走 ChatSessionState (== 排除字段
+// 导致 StateNotifier.state setter 去重,ref.listen 永不触发——toast 不弹)。
+// 改为 gatewayNoticeProvider (StreamProvider.family<GatewayNotice, String>)
+// 直接把 gatewayClient.gatewayNoticeStream 暴露给 UI,page 用 ref.listen
+// 弹 toast。VM 不再订阅 notice stream。
 //
-// 4 cases:
-// 1. 默认 ChatSessionState.gatewayNoticeSeq == 0 且 lastGatewayNotice == null
-// 2. push 一条 notice → seq=1, lastGatewayNotice 持结构化 size/limit
-//    (文案契约由下方 formatGatewayNotice 测试锁住)
-// 3. push 第二条相同 notice → seq=2 (规避 Model==identity dedup, 见 model-equals-identity-blindspot memory)
-// 4. dispose 后再 push → seq 不再增加 (订阅已取消)
+// 本文件验证:
+// 1. gatewayNoticeProvider 把 mock 的 gatewayNoticeStream 事件转发为 AsyncValue
+// 2. chatViewModelProvider create body 在 vm.init() 之前订阅 gatewayNoticeProvider
+//    (broadcast stream 无 replay,fetch RTT 期间 notice 不会丢)
+// 3. formatGatewayNotice 文案契约 (Step 4 视觉锁)
 
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/models/agent.dart';
-import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/enums.dart' show HealthStatus;
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/repositories/i_agent_repo.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
-import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
+import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 
 class _MockAgentRepo extends Mock implements IAgentRepo {}
 
@@ -69,197 +72,42 @@ Agent _activeAgent() => Agent(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  late _MockAgentRepo agentRepo;
-  late InMemoryMessageRepo messageRepo;
-  late InMemoryConversationRepo conversationRepo;
-  late InMemoryInstanceRepo instanceRepo;
-  late MockGatewayClient gateway;
-  late SendMessageUseCase sendUseCase;
 
-  setUp(() {
-    agentRepo = _MockAgentRepo();
-    messageRepo = InMemoryMessageRepo();
-    conversationRepo = InMemoryConversationRepo();
-    instanceRepo = InMemoryInstanceRepo();
-    gateway = MockGatewayClient();
-    sendUseCase = SendMessageUseCase(
-      messageRepo: messageRepo,
-      conversationRepo: conversationRepo,
-      instanceRepo: instanceRepo,
-      gatewayClient: gateway,
-    );
-  });
-
-  ChatViewModel createViewModel() {
-    return ChatViewModel(
-      agentRepo: agentRepo,
-      conversationRepo: conversationRepo,
-      messageRepo: messageRepo,
-      instanceRepo: instanceRepo,
-      gatewayClient: gateway,
-      sendMessageUseCase: sendUseCase,
-      instanceId: _instanceId,
-      agentId: _agentId,
-      achievementChecker: _MockAchievementChecker(),
-      flushDelay: Duration.zero,
-    );
-  }
-
-  Future<void> seedAndInit(ChatViewModel vm) async {
-    await instanceRepo.save(
-      Instance(
-        id: _instanceId,
-        name: 'Test',
-        gatewayUrl: 'wss://t.example.com:443',
-        tokenRef: 'tok',
-        healthStatus: HealthStatus.online,
-        isLocalNetwork: false,
-      ),
-    );
-    when(
-      () => agentRepo.getById(_agentId),
-    ).thenAnswer((_) async => _activeAgent());
-    // VM.init() → _initStreamsAndHistory subscribes to watchById(agentId).
-    // Without this stub mocktail throws MissingStubError (caught + logged
-    // by the VM's try/catch) — tests pass but spam the output with a scary
-    // stack trace. Return an empty stream: these tests don't assert on
-    // agent-reactive updates.
-    when(
-      () => agentRepo.watchById(_agentId),
-    ).thenAnswer((_) => Stream<Agent?>.empty());
-    await vm.init();
-  }
-
-  group('ChatSessionState gateway notice fields (Gap #6 / Step 4)', () {
-    test('default gatewayNoticeSeq is 0, lastGatewayNotice is null', () {
-      final vm = createViewModel();
-      expect(
-        vm.state.gatewayNoticeSeq,
-        0,
-        reason: 'fresh VM must have seq=0 — no diagnostic event seen yet',
-      );
-      expect(
-        vm.state.lastGatewayNotice,
-        isNull,
-        reason: 'fresh VM must have null notice',
-      );
-    });
-
-    test('push payload.large notice → seq bumps to 1 and notice holds '
-        'structured size/limit (文案由 UI 层 formatGatewayNotice 派生)', () async {
-      final vm = createViewModel();
-      await seedAndInit(vm);
-
-      gateway.emitGatewayNoticeForTesting(
-        _instanceId,
-        LargePayloadNotice(
-          sessionKey: 'agent:r-1:main',
-          size: 30_000_000,
-          limit: 26_214_400,
-        ),
-      );
-      // Stream emission is broadcast — pump a frame to flush.
-      await Future<void>.delayed(Duration.zero);
-
-      expect(vm.state.gatewayNoticeSeq, 1);
-      // State 持结构化 notice（不持本地化串）：UI 层按 runtime type 派生文案。
-      final notice = vm.state.lastGatewayNotice;
-      expect(notice, isNotNull);
-      expect(notice, isA<LargePayloadNotice>());
-      expect((notice as LargePayloadNotice).size, 30_000_000);
-      expect(notice.limit, 26_214_400);
-    });
-
-    test('two identical notices bump seq to 2 (counter, not value)', () async {
-      // Per memory model-equals-identity-blindspot: when the new value
-      // would equal the old one, Riverpod suppresses the rebuild via
-      // state ==.  But here the user-facing impact is "another oversized
-      // frame was rejected" — they want a toast every time, even if the
-      // payload looks the same.  Hence seq is a monotonic counter that
-      // changes per push, and lastGatewayNotice 覆盖每次推送。
-      final vm = createViewModel();
-      await seedAndInit(vm);
-
-      final notice = LargePayloadNotice(
-        sessionKey: 'agent:r-1:main',
-        size: 30_000_000,
-        limit: 26_214_400,
-      );
-
-      gateway.emitGatewayNoticeForTesting(_instanceId, notice);
-      await Future<void>.delayed(Duration.zero);
-      expect(vm.state.gatewayNoticeSeq, 1);
-
-      gateway.emitGatewayNoticeForTesting(_instanceId, notice);
-      await Future<void>.delayed(Duration.zero);
-      expect(
-        vm.state.gatewayNoticeSeq,
-        2,
-        reason:
-            'seq must increment per push even with identical notice data,'
-            ' otherwise the second toast would be suppressed',
-      );
-    });
-
+  group('gatewayNoticeProvider (Finding #9 fix)', () {
     test(
-      'after dispose, further payload.large pushes do not bump seq',
+      'emits notices from gatewayClient.gatewayNoticeStream as AsyncData',
       () async {
-        final vm = createViewModel();
-        await seedAndInit(vm);
-
-        // Sanity: subscription is live and bumps seq on emission.
-        gateway.emitGatewayNoticeForTesting(
-          _instanceId,
-          LargePayloadNotice(sessionKey: 'k', size: 100, limit: 50),
+        final gateway = MockGatewayClient();
+        final container = ProviderContainer(
+          overrides: [gatewayClientProvider.overrideWithValue(gateway)],
         );
-        await Future<void>.delayed(Duration.zero);
-        final seqAfterFirstPush = vm.state.gatewayNoticeSeq;
-        expect(seqAfterFirstPush, 1);
+        addTearDown(container.dispose);
 
-        // StateNotifier forbids .state after dispose — observe externally
-        // via addListener BEFORE dispose so we can capture the seq sequence.
-        final observedSeqs = <int>[];
-        void observer(ChatSessionState s) =>
-            observedSeqs.add(s.gatewayNoticeSeq);
-        vm.addListener(observer);
-
-        vm.dispose();
-        // After dispose(), .state would throw. We rely solely on the
-        // captured observer list going forward.
-
-        gateway.emitGatewayNoticeForTesting(
-          _instanceId,
-          LargePayloadNotice(sessionKey: 'k', size: 200, limit: 50),
-        );
-        await Future<void>.delayed(Duration.zero);
-
-        // After dispose, the listener captured NO new seqs — the snapshot
-        // was 1 (from before dispose), nothing fires afterwards because the
-        // subscription was cancelled in _teardownSubscriptions.
+        // Initial read: stream subscribed, no emission yet -> AsyncLoading.
         expect(
-          observedSeqs,
-          [1],
-          reason:
-              'after dispose() the subscription must be cancelled — further '
-              'pushes must not bump the seq, otherwise navigating back and '
-              'reopening the chat would resurrect a stale listener reference. '
-              'The captured pre-dispose seq is [1]; an additional seq 2 would '
-              'indicate a leak.',
+          container.read(gatewayNoticeProvider(_instanceId)).isLoading,
+          isTrue,
         );
+
+        gateway.emitGatewayNoticeForTesting(
+          _instanceId,
+          LargePayloadNotice(
+            sessionKey: 'agent:r-1:main',
+            size: 30_000_000,
+            limit: 26_214_400,
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        final next = container.read(gatewayNoticeProvider(_instanceId));
+        expect(next.value, isA<LargePayloadNotice>());
+        expect((next.value as LargePayloadNotice).size, 30_000_000);
+        expect((next.value as LargePayloadNotice).limit, 26_214_400);
       },
     );
 
-    // Finding #1: _gatewayNoticeSubscription was created AFTER
-    // `await fetchMessageHistory` (chat_view_model.dart:756 vs :667),
-    // violating the file's own documented rule (lines 541-545) that
-    // broadcast streams must be subscribed BEFORE the history fetch. A
-    // notice emitted DURING the fetch RTT (e.g. a concurrent OutboxProcessor
-    // retry tripping the buffer guard, or a server-pushed payload.large)
-    // hit a broadcast controller with no listener → dropped → toast never
-    // fired. The existing tests above mask this because they emit AFTER
-    // seedAndInit completes.
-    test('a notice emitted DURING fetchMessageHistory still bumps seq '
-        '(subscription must precede the history fetch)', () async {
+    test('chatViewModelProvider subscribes gatewayNoticeProvider BEFORE '
+        'vm.init() fetches history (broadcast no-replay invariant)', () async {
       final gateway = _NoticeDuringHistoryMock();
       final notice = LargePayloadNotice(
         sessionKey: 'agent:r-1:main',
@@ -268,117 +116,85 @@ void main() {
       );
       gateway.noticeToEmitDuringHistory = notice;
 
-      final vm = ChatViewModel(
-        agentRepo: agentRepo,
-        conversationRepo: conversationRepo,
+      final agentRepo = _MockAgentRepo();
+      final messageRepo = InMemoryMessageRepo();
+      final conversationRepo = InMemoryConversationRepo();
+      final instanceRepo = InMemoryInstanceRepo();
+      await instanceRepo.save(
+        Instance(
+          id: _instanceId,
+          name: 'Test',
+          gatewayUrl: 'wss://t.example.com:443',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+          isLocalNetwork: false,
+        ),
+      );
+      when(
+        () => agentRepo.getById(_agentId),
+      ).thenAnswer((_) async => _activeAgent());
+      when(
+        () => agentRepo.watchById(_agentId),
+      ).thenAnswer((_) => Stream<Agent?>.empty());
+
+      final sendUseCase = SendMessageUseCase(
         messageRepo: messageRepo,
+        conversationRepo: conversationRepo,
         instanceRepo: instanceRepo,
         gatewayClient: gateway,
-        sendMessageUseCase: SendMessageUseCase(
-          messageRepo: messageRepo,
-          conversationRepo: conversationRepo,
-          instanceRepo: instanceRepo,
-          gatewayClient: gateway,
-        ),
-        instanceId: _instanceId,
-        agentId: _agentId,
-        achievementChecker: _MockAchievementChecker(),
-        flushDelay: Duration.zero,
       );
 
-      await seedAndInit(vm);
-      // Flush the broadcast-stream listener delivery (the notice is
-      // emitted mid-fetch; the listener callback is a microtask).
-      await Future<void>.delayed(Duration.zero);
+      final container = ProviderContainer(
+        overrides: [
+          agentRepoProvider.overrideWithValue(agentRepo),
+          instanceRepoProvider.overrideWithValue(instanceRepo),
+          conversationRepoProvider.overrideWithValue(conversationRepo),
+          messageRepoProvider.overrideWithValue(messageRepo),
+          gatewayClientProvider.overrideWithValue(gateway),
+          sendMessageUseCaseProvider.overrideWithValue(sendUseCase),
+          achievementCheckerProvider.overrideWithValue(
+            _MockAchievementChecker(),
+          ),
+        ],
+      );
+      addTearDown(() {
+        runZonedGuarded(() => container.dispose(), (_, _) {});
+      });
 
+      // Read chatViewModelProvider -> triggers create body ->
+      // ref.listen(gatewayNoticeProvider) [forces StreamProvider to
+      // subscribe to gatewayNoticeStream] -> vm.init() ->
+      // _initStreamsAndHistory -> fetchMessageHistory [_NoticeDuringHistoryMock
+      // emits notice]. The notice must be captured because the StreamProvider
+      // was subscribed BEFORE fetchMessageHistory ran.
+      final vm = container.read(
+        chatViewModelProvider((
+          instanceId: _instanceId,
+          agentId: _agentId,
+        )).notifier,
+      );
+      for (var i = 0; i < 100; i++) {
+        if (vm.streamsInitializedForTesting) break;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
       expect(
-        vm.state.gatewayNoticeSeq,
-        1,
-        reason:
-            'the notice emitted during fetchMessageHistory must be captured — '
-            'the gatewayNoticeStream subscription must be created BEFORE the '
-            'history fetch (broadcast controllers have no replay). A 0 here '
-            'means the subscription is ordered after the fetch and the notice '
-            'was dropped on the floor.',
-      );
-      // value-equality, not identity: a future refactor that constructs a
-      // fresh LargePayloadNotice inside the stream listener would break a
-      // `same()` check while remaining behaviorally correct. Use equals().
-      expect(vm.state.lastGatewayNotice, equals(notice));
-    });
-
-    // Finding #9 + #11: gatewayNoticeSeq / lastGatewayNotice are excluded
-    // from == / hashCode. Combined with the updateShouldNotify override
-    // (which gates ref.watch rebuilds on `!=`), this is what prevents a
-    // notice arrival from rebuilding ChatRoomPage's build() — the toast is
-    // delivered via ref.listen on a .select of these fields, no rebuild
-    // needed. contentRevision stays in == (drives agent-content rebuilds
-    // via vm.agent). Pin both halves so the exclusion can't silently drift.
-    // See also the updateShouldNotify test below (Finding #3).
-    test('ChatSessionState.== excludes gatewayNoticeSeq / lastGatewayNotice '
-        'but keeps contentRevision (Finding #9 / #11)', () {
-      const base = ChatSessionState();
-      // Bumping the notice fields alone does NOT change == / hashCode.
-      final withNotice = base.copyWith(
-        gatewayNoticeSeq: base.gatewayNoticeSeq + 1,
-        lastGatewayNotice: LargePayloadNotice(
-          sessionKey: 'agent:r-1:main',
-          size: 30_000_000,
-          limit: 26_214_400,
-        ),
-      );
-      expect(withNotice == base, isTrue);
-      expect(withNotice.hashCode, base.hashCode);
-
-      // Bumping contentRevision DOES change == (agent-content rebuild path).
-      final withRevision = base.copyWith(
-        contentRevision: base.contentRevision + 1,
-      );
-      expect(withRevision == base, isFalse);
-    });
-
-    // Finding #3: Riverpod's StateNotifierProvider gates ref.watch rebuilds
-    // on StateNotifier.updateShouldNotify, whose DEFAULT is
-    // `!identical(old, current)` — NOT `==`. Since copyWith always returns a
-    // new object, identical() is always false, so every state set would
-    // rebuild build() regardless of what == excludes. The == exclusion above
-    // is only effective because ChatViewModel OVERRIDES updateShouldNotify
-    // to use `!=`. Pin the override so a future revert to the identical-
-    // based default can't silently re-introduce a full ChatRoomPage rebuild
-    // on every diagnostic notice.
-    test('updateShouldNotify: notice-only change does NOT rebuild, '
-        'content change DOES (Finding #3)', () {
-      final vm = createViewModel();
-      addTearDown(vm.dispose);
-
-      const base = ChatSessionState();
-      final noticeOnly = base.copyWith(
-        gatewayNoticeSeq: base.gatewayNoticeSeq + 1,
-        lastGatewayNotice: LargePayloadNotice(
-          sessionKey: 'agent:r-1:main',
-          size: 1,
-          limit: 2,
-        ),
-      );
-      final contentChanged = base.copyWith(
-        contentRevision: base.contentRevision + 1,
-      );
-
-      // ignore: invalid_use_of_protected_member
-      expect(
-        vm.updateShouldNotify(base, noticeOnly),
-        isFalse,
-        reason:
-            'notice-only change must NOT trigger build() rebuild — '
-            'toast goes through ref.listen(.select), no rebuild needed',
-      );
-      // ignore: invalid_use_of_protected_member
-      expect(
-        vm.updateShouldNotify(base, contentChanged),
+        vm.streamsInitializedForTesting,
         isTrue,
         reason:
-            'content change (contentRevision / messages / etc.) must '
-            'still trigger build() rebuild',
+            'init must complete — if it threw mid-way the notice '
+            'subscription test below is meaningless',
+      );
+
+      // The notice emitted during fetchMessageHistory must have been
+      // captured by gatewayNoticeProvider (subscribed before fetch).
+      final noticeAsync = container.read(gatewayNoticeProvider(_instanceId));
+      expect(
+        noticeAsync.value,
+        equals(notice),
+        reason:
+            'broadcast stream has no replay — if gatewayNoticeProvider '
+            'were subscribed AFTER fetchMessageHistory, the notice emitted '
+            'during fetch RTT would be permanently lost',
       );
     });
   });

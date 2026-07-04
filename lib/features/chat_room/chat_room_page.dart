@@ -315,30 +315,27 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       }
     });
 
-    // Gap #6 收尾 (Step 4): ChatViewModel 收到 Gateway 诊断事件时把
-    // gatewayNoticeSeq 自增 + 把结构化 notice 塞进 state。这里监听
-    // (seq, notice) 切片：seq 变了就弹一次 toast（即使 lastGatewayNotice
-    // 内容相同也弹——规避 Riverpod `==` dedup,见 model-equals-identity-blindspot）。
+    // Finding #9 修复: Gateway 诊断事件改走单独的 gatewayNoticeProvider
+    // (StreamProvider.family<GatewayNotice, String>),不经 ChatSessionState
+    // ——之前 gatewayNoticeSeq / lastGatewayNotice 字段被刻意排除在
+    // ChatSessionState.== 之外,导致 StateNotifier.state setter 去重
+    // (copyWith 后新 state == 旧 state) -> 不 emit stateChanges ->
+    // Riverpod 不感知 -> ref.listen(.select((s)=>(seq,notice))) callback
+    // 永不触发 -> toast 永不显示(生产 bug:用户发超大消息/网关缓冲满时无提示)。
     //
-    // 文案按 notice 的 runtime type 经 [formatGatewayNotice] 派生
-    // （l10n 友好），ViewModel/State 只持结构化 notice。
+    // gatewayNoticeProvider 直接订阅 gatewayClient.gatewayNoticeStream,
+    // emit notice -> AsyncData(notice) -> 本 ref.listen callback 触发 ->
+    // formatGatewayNotice 派生文案 -> XiaToast.show。
     //
-    // Finding #9: 用 `.select` 监听 (seq, notice) 切片——这两个字段已从
-    // ChatSessionState.== 移除（见 chat_view_model.dart），所以 notice
-    // 到达**不会**触发 line 151 的 `ref.watch` 重建 build()（toast 走
-    // ref.listen，本就不需要重建）。.select 保证本监听仍在每次 notice
-    // 时触发（selected 元组随 seq 单调变化）。
-    //
-    // post-frame 回调避免在 build() 阶段调 Overlay.of(context);同一 VM
-    // 状态再次进入 build 时(seq 未变)不会重复触发。
-    ref.listen(
-      chatViewModelProvider(
-        params,
-      ).select((s) => (s.gatewayNoticeSeq, s.lastGatewayNotice)),
+    // post-frame 回调避免在 build() 阶段调 Overlay.of(context);同一 notice
+    // 再次进入 build 时(StreamProvider 状态未变)不会重复触发。
+    ref.listen<AsyncValue<GatewayNotice>>(
+      gatewayNoticeProvider(widget.instanceId),
       (prev, next) {
-        final prevSeq = prev?.$1 ?? 0;
-        if (next.$1 != prevSeq && next.$2 != null) {
-          final message = formatGatewayNotice(next.$2!);
+        final notice = next.value;
+        final prevNotice = prev?.value;
+        if (notice != null && notice != prevNotice) {
+          final message = formatGatewayNotice(notice);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
               XiaToast.show(context, message);

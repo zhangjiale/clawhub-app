@@ -149,6 +149,36 @@ final catchUpCompletedTickerProvider = StateProvider.family<int, String>(
   (ref, instanceId) => 0,
 );
 
+/// Gateway 诊断事件流（per-instance，key=instanceId）。
+///
+/// **Finding #9 修复**：notice 是瞬态事件，**不塞进 [ChatSessionState]**——
+/// 之前 `gatewayNoticeSeq` / `lastGatewayNotice` 字段被刻意排除在
+/// `ChatSessionState.==` 之外，导致 [StateNotifier.state] setter 内部去重
+/// （copyWith 后新 state == 旧 state）→ 不 emit stateChanges → Riverpod
+/// 不感知 → `ref.listen(.select((s)=>(seq,notice)))` callback 永不触发 →
+/// toast 永不显示（生产 bug：用户发超大消息/网关缓冲满时无提示）。
+///
+/// 改为独立 [StreamProvider]：notice 直接从 [IGatewayClient.gatewayNoticeStream]
+/// 经 AsyncValue 暴露给 UI。chat_room_page 用 `ref.listen(gatewayNoticeProvider,
+/// ...)` 弹 toast。VM 不再订阅 notice stream。
+///
+/// “先订阅再 fetchHistory”不变量由 [chatViewModelProvider] create body 的
+/// `ref.listen(gatewayNoticeProvider(...))` 早订阅保证（broadcast stream 无
+/// replay，fetch RTT 期间 notice 不会丢）。
+///
+/// **dedup 行为**：Riverpod StreamProvider 对值相等的连续 emit 做去重
+/// （AsyncData.== 比较 inner value）。两条内容完全相同的 notice（如连续两次
+/// 同 size/limit 的 LargePayloadNotice）只会触发一次 ref.listen callback。
+/// 这是与旧 seq-counter 行为的差异——旧实现用单调计数器强制每次都弹。
+/// 当前用户场景（超大消息被拒）极少连续相同，接受此去重换取结构简化。
+/// 若未来需要“每次都弹”，可包装为带 seq 的 carrier 类型。
+final gatewayNoticeProvider = StreamProvider.family<GatewayNotice, String>((
+  ref,
+  instanceId,
+) {
+  return ref.watch(gatewayClientProvider).gatewayNoticeStream(instanceId);
+});
+
 // --- Shared Stats (used by agent_list and chat_room features) ---
 
 /// 全局统计 Provider — 从实例、Agent、消息仓库聚合统计快照。
