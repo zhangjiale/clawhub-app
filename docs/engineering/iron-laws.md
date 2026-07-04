@@ -400,6 +400,85 @@ expect(agents, isNotEmpty,
 
 ---
 
+### Law 18: 按键查找的 null 必须显式处理，禁止静默 swallow
+
+**规则**: 任何按 ID / 复合键查找实体（`getById`、`findByCompositeKey`、`findBy*` 等）的调用，拿到 `null` 后的行为必须显式：抛 `StateError`、`logger.error`/`info`，或返回带合法占位的值。禁止在「数据应当存在」的语境里写 `if (x == null) return;` / `if (x == null) continue;` / `?? 0` / `?? '默认'` / `?? 'Agent'`。
+
+**为什么**: 实务中两类失败会被这种反模式掩盖——
+1. **数据完整性 bug**（FK 损坏 / sync 漏流 / 错误的 null 传播）让用户体验成「消息/Agent 消失了」却零告警
+2. **`?? 0` / `?? '默认'` fallback** 让未来的 SQL / 数据模型变更悄悄穿透，bug 漂在生产数周后才被人发现
+
+**检查方式**：
+
+```dart
+// ❌ 反模式 A — 数据应当存在却静默 skip
+if (agent == null) continue;                                       // ① background_notifier_shared
+final stats = msgStats?.dialogs ?? 0;                              // ② drift_achievement_repo
+
+// ❌ 反模式 B — dead defensive（上游已保证非空）
+agent?.displayName ?? 'Agent'                                      // ③ chat_room_page
+
+// ❌ 反模式 C — silent unknown-id swallow
+if (completer != null && !completer.isCompleted) {
+  completer.complete(frame);                                       // 未完成帧 + 错误体一并丢弃
+}
+
+// ✅ 修法 1 — Service 层 / UseCase / Repository：命中 null → 抛 StateError
+final instance = await instanceRepo.getById(instanceId);
+if (instance == null) {
+  throw StateError('实例不存在: $instanceId');                       // 与现有 drift_*_repo 措辞一致
+}
+
+// ✅ 修法 2 — App 层通知/UI feedback 路径：info-level 日志 + UX 兜底
+if (agent == null) {
+  logger.info(
+    '[NotificationCoordinator] reply for unresolved agent '
+    'instanceId=$instanceId remoteId=${msg.agentId} — emitting with '
+    'placeholder',
+  );
+}
+// 保留 placeholder emit（用户仍看得见通知；优于 silent drop）
+
+// ✅ 修法 3 — Type-level 收紧：未来 SQL 变更破坏单行 aggregate 的非空性时
+//            让 SQLite 抛错而非静默返回 0/0
+Future<({int dialogs, int messages, int? firstMsg, int? lastMsg})>
+  getMessageStatsForAgent(String agentId) async {
+  final row = await customSelect('SELECT ... FROM messages WHERE agent_id = ?', ...)
+      .getSingle();        // 不是 .getSingleOrNull() + null check
+  ...
+}
+
+// ✅ 修法 4 — Dead-defensive cleanup
+final agent = vm.agent;
+if (agent.isTombstoned) {
+  return AgentRemovedPlaceholder(agentName: agent.displayName, ...);
+}
+// 此后 agent! 由 Dart null-promotion（或上游 invariant）保证非空，
+// 直接 .displayName，不要 `?.` 也不要 `?? 'Agent'`
+return _buildMessageList(..., agent.displayName, ...);
+```
+
+**分级标准**：
+
+| 层 | null 应如何处理 |
+|---|---|
+| Service / UseCase / Repository | 抛 `StateError('中文实体: $id')` |
+| App 层（通知 / 后台 sync） | `logger.info`/`error` + 批摘要日志（每批 1 条，非每条 1 条）|
+| Widget | dead defensive 一律清除；UI 兜底文案保持 |
+| 公开 API 签名 | 能收紧为 non-nullable 就收紧（依赖类型系统）|
+
+**例外**：
+- **真正的 optional-FK**（如 `msg.parentReplyId`）允许返回 null + UI 兜底——但 `null` 的实际出现率应被测试断言非典型
+- **Tombstone / hidden entity**（US-021 契约）故意不在 repo 层过滤，但 notification 层必须配 `info-level` 批摘要日志，避免每条 tombstone 一个 log
+- **Cold-start race**（订阅建立后第一次回复到达早于 agent sync 完成）允许 placeholder + `info-level` 日志——UX 优先于 strict bug-finding
+- **并发设计**（如 US-Outbox 持有 offline message、SendMessage CAS-loser 返回 winner 写后的实体）：不是 swallow，是设计意图。要在 Code Review 注释里说明
+
+**审计历程**：2026-07-04 null-skip-audit 全面扫描发现 10 处反模式 → 修复 9 处（见 commit history）+ 1 处（`send_message.dart` 的 US-Outbox 持有 + CAS-loser 默认）经 `architecture-reviewer` 验证为有意的并发设计而非反模式 → 落地 11 处 edits + 3 个回归测试。
+
+**自动化**: 暂未加入 pre-commit grep（Law 18 的判定需要类型流分析 + 调用方上下文，grep 误报率高）。每 ~20 commits 手动全库审计时一并扫 `?? 0` / `?? '默认'` / `if (x == null) continue` / `if (x == null) return` / dead `x?.y ?? fallback` 模式。
+
+---
+
 ## 🔍 Code Review 门禁清单
 
 合并前逐条检查：
@@ -413,6 +492,7 @@ expect(agents, isNotEmpty,
 - [ ] **Law 12**: 新增 Provider 注册在 di/providers.dart 或 feature/providers/
 - [ ] **Law 16**: 新增参数化路径方法有返回值断言；新增状态机有 Fake 注入测试
 - [ ] **Law 17**: Domain/ACL 层新增 public 方法必须有先行测试；ViewModel 状态转换有测试契约；Repository/Widget 测试在同一 commit 内
+- [ ] **Law 18**: 按键查找 null 必须显式处理（throw / log / 占位）；无 silent skip / dead defensive / `?? 0` 兜底
 - [ ] **测试**: 新增 Widget 至少有 2 个测试用例
 - [ ] `flutter analyze` 零 error/warning
 - [ ] `flutter test` 全通过
@@ -440,10 +520,10 @@ import 'package:flutter/widgets.dart'; // iron-law-allow: Law1 -- needed for XYZ
 
 **逃生舱**：`git commit --no-verify` 跳过所有 hook。适用场景：原型分支、紧急 hotfix。滥用会导致 PR 被拒绝。
 
-**剩余 13 条铁律**（Law 2/3/4/5/7/9/10/12/13/14/15/16/17）依赖：
+**剩余 14 条铁律**（Law 2/3/4/5/7/9/10/12/13/14/15/16/17/18）依赖：
 1. **Claude Code 自动执行**：CLAUDE.md 在每次对话中注入铁律引用，Claude 编写代码时自动遵守
 2. **人工 Code Review**：合并前逐条检查门禁清单
-3. **定期全库审计**：每 ~20 commits 手动跑一次完整铁律审查，防止架构退化
+3. **定期全库审计**：每 ~20 commits 手动跑一次完整铁律审查（Law 18 的 grep 模式：`?? 0` / `?? '默认'` / `if (x == null) continue` / `if (x == null) return` / dead `x?.y ?? fallback`），防止架构退化
 
 ---
 
