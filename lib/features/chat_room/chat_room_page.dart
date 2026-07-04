@@ -155,13 +155,16 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       if (path == null) return; // 用户取消
       final file = File(path);
       final name = result!.files.single.name;
+      // P3: async length (was lengthSync — blocked UI thread). mounted check
+      // moved AFTER the async gap so we don't send on an unmounted widget.
+      final size = await file.length();
       if (!mounted) return;
       await vm.sendFile(
         path,
         metadata: {
           'fileName': name,
           'mimeType': _mimeForExt(result.files.single.extension),
-          'size': file.lengthSync(),
+          'size': size,
         },
       );
       return;
@@ -175,13 +178,16 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     );
     if (picked == null) return; // 用户取消
     final file = File(picked.path);
+    // P3: async length (was lengthSync — blocked UI thread). mounted check
+    // moved AFTER the async gap so we don't send on an unmounted widget.
+    final size = await file.length();
     if (!mounted) return;
     await vm.sendImage(
       picked.path,
       metadata: {
         'fileName': picked.name,
         'mimeType': picked.mimeType ?? 'image/jpeg',
-        'size': file.lengthSync(),
+        'size': size,
       },
     );
   }

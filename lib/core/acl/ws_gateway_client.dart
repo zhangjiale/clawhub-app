@@ -1144,23 +1144,32 @@ class WsGatewayClient implements IGatewayClient {
     if (!message.isImage && !message.isFile) return null;
     final path = message.content;
     if (path == null || path.isEmpty) {
-      throw Exception('Attachment path missing for ${message.type} message');
+      throw AttachmentReadException('path missing for ${message.type} message');
     }
     final file = File(path);
-    final size = file.lengthSync();
     final limit = message.isImage ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
-    if (size > limit) {
-      throw Exception(
-        'Attachment too large (${size ~/ 1024 ~/ 1024}MB > ${limit ~/ 1024 ~/ 1024}MB limit '
-        'for ${message.type}; see appendix F.6 — use OSS URL for large files)',
-      );
-    }
     try {
+      // P3 fix: async length (was lengthSync — blocked the isolate), and
+      // moved INSIDE the try so a missing file's FileSystemException is
+      // caught and rethrown as a typed AttachmentReadException. Previously
+      // lengthSync sat OUTSIDE the try → raw FileSystemException bypassed
+      // the catch below, and `throw Exception('...$e')` lost the original
+      // exception type by wrapping it in a string.
+      final size = await file.length();
+      if (size > limit) {
+        throw AttachmentReadException.tooLarge(
+          size: size,
+          limit: limit,
+          type: message.type,
+        );
+      }
       final bytes = await file.readAsBytes();
       return base64Encode(bytes);
+    } on AttachmentReadException {
+      rethrow; // already typed — preserve cause, let it propagate
     } catch (e) {
       debugPrint('[WsGateway] Failed to read attachment $path: $e');
-      throw Exception('Failed to read attachment $path: $e');
+      throw AttachmentReadException.readFailed(path, e);
     }
   }
 
@@ -1435,6 +1444,60 @@ class WsGatewayClient implements IGatewayClient {
         streamingCtrl: StreamController<StreamingEvent>.broadcast(),
       ),
     );
+  }
+}
+
+// ============================================================================
+// AttachmentReadException — typed exception for attachment (image/file) read
+// failures in the ACL. Replaces the previous `throw Exception('...$e')`
+// pattern that lost the original exception type by wrapping it in a string.
+// Thrown by [WsGatewayClient._readFileBase64] when:
+//   - the attachment path is missing/empty
+//   - the file doesn't exist or can't be read (original cause preserved)
+//   - the file exceeds the inline-attachment size limit (appendix F.6:
+//     image <10MB, file <5MB)
+//
+// Propagates out of [WsGatewayClient.sendMessage] (the call site sits before
+// sendMessage's try block) and is caught by the UseCase layer, which marks
+// the message FAILED. Implementing [Exception] preserves backward-compat
+// with broad `catch (e)` / `on Exception` handlers in the UseCase.
+// ============================================================================
+
+/// Typed exception for attachment read failures. See file-level comment.
+class AttachmentReadException implements Exception {
+  final String reason;
+  final String? path;
+  final Object? cause;
+
+  AttachmentReadException(this.reason, {this.path, this.cause});
+
+  /// File size exceeds the inline-attachment limit.
+  factory AttachmentReadException.tooLarge({
+    required int size,
+    required int limit,
+    required MessageType type,
+  }) {
+    return AttachmentReadException(
+      'Attachment too large (${size ~/ 1024 ~/ 1024}MB > '
+      '${limit ~/ 1024 ~/ 1024}MB limit for $type; see appendix F.6 — '
+      'use OSS URL for large files)',
+    );
+  }
+
+  /// File read failed (missing, permission, I/O). Preserves [cause].
+  factory AttachmentReadException.readFailed(String path, Object cause) {
+    return AttachmentReadException(
+      'Failed to read attachment $path',
+      path: path,
+      cause: cause,
+    );
+  }
+
+  @override
+  String toString() {
+    final p = path != null ? ', path: $path' : '';
+    final c = cause != null ? ', cause: $cause' : '';
+    return 'AttachmentReadException($reason$p$c)';
   }
 }
 

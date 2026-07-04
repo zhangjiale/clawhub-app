@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:claw_hub/core/acl/device_identity.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
@@ -3311,5 +3312,127 @@ void _replayableConnectionStateTests() {
       );
       await client.dispose();
     });
+  });
+
+  // ==========================================================================
+  // Step 5 (P3): sendMessage attachment error handling — _readFileBase64
+  //
+  // Law 17 test-first (ACL). The fix changes:
+  //   - lengthSync() → await file.length() (non-blocking, moved inside try)
+  //   - bare Exception('...$e') → typed AttachmentReadException
+  //
+  // Actual catch shape observed (READ before writing these tests):
+  // `_readFileBase64(message)` is called at the TOP of `sendMessage` (line
+  // 381), BEFORE the `try` block (line 388). So any exception it throws
+  // propagates straight out of `sendMessage` — sendMessage does NOT catch it
+  // and does NOT mark the message FAILED. FAILED marking is done by the
+  // UseCase layer (per comment at lines 401-402). Therefore these tests
+  // assert the exception TYPE thrown by sendMessage, not a FAILED status.
+  // ==========================================================================
+  group('sendMessage attachment error handling (P3 — _readFileBase64)', () {
+    Message attachmentMsg({
+      required String path,
+      required MessageType type,
+      String clientId = 'att-1',
+    }) => Message(
+      clientId: clientId,
+      conversationId: 'conv-1',
+      agentId: 'r-1',
+      role: MessageRole.user,
+      type: type,
+      content: path,
+      logicalClock: 0,
+      metadata: const {'fileName': 'f', 'mimeType': 'image/jpeg'},
+    );
+
+    test('missing attachment file throws AttachmentReadException '
+        '(not raw FileSystemException)', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final msg = attachmentMsg(
+        path: '/nonexistent/path/img.jpg',
+        type: MessageType.image,
+      );
+      // Before fix: lengthSync() threw FileSystemException (untyped, outside
+      // the try). After fix: caught inside try, rethrown as typed
+      // AttachmentReadException via readFailed factory.
+      await expectLater(
+        client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'r-1',
+          message: msg,
+        ),
+        throwsA(isA<AttachmentReadException>()),
+      );
+      await client.dispose();
+    });
+
+    test('oversized attachment throws AttachmentReadException (typed, not '
+        'bare Exception)', () async {
+      final tempDir = await Directory.systemTemp.createTemp('att_oversize_');
+      final tempFile = File('${tempDir.path}/big.bin');
+      // file-type limit = 5MB (5*1024*1024); write 6MB to exceed it.
+      await tempFile.writeAsBytes(Uint8List(6 * 1024 * 1024));
+      addTearDown(() async => tempDir.delete(recursive: true));
+
+      final (:client, :ws) = await connectAndHandshake();
+      final msg = attachmentMsg(path: tempFile.path, type: MessageType.file);
+      await expectLater(
+        client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'r-1',
+          message: msg,
+        ),
+        throwsA(isA<AttachmentReadException>()),
+      );
+      await client.dispose();
+    });
+
+    test(
+      'readable attachment file encodes to base64 in chat.send frame',
+      () async {
+        final tempDir = await Directory.systemTemp.createTemp('att_ok_');
+        final tempFile = File('${tempDir.path}/img.jpg');
+        final bytes = Uint8List.fromList([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG SOI
+        await tempFile.writeAsBytes(bytes);
+        addTearDown(() async => tempDir.delete(recursive: true));
+
+        final (:client, :ws) = await connectAndHandshake();
+        final future = client.sendMessage(
+          instanceId: 'test-instance',
+          agentId: 'r-1',
+          message: attachmentMsg(path: tempFile.path, type: MessageType.image),
+        );
+        // _readFileBase64 does real dart:io reads (await file.length()/
+        // readAsBytes) which complete on the IO port, not the microtask
+        // queue. pumpMicrotasks alone races the assertion below (chat.send
+        // not yet emitted → reads the connect handshake frame instead).
+        // Drain the event loop so the reads finish and the chat.send frame
+        // is sent before we inspect ws.sentFrames.
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await pumpMicrotasks();
+
+        // The chat.send frame must carry attachments with base64 content.
+        // Frame shape: {type, id, method, params:{...attachments?}} -
+        // attachments live under `params`, not at the frame root.
+        final sent = ws.sentFrames.last;
+        final decoded = jsonDecode(sent) as Map<String, dynamic>;
+        expect(decoded['method'], Methods.chatSend);
+        final params = decoded['params'] as Map<String, dynamic>;
+        final attachments = params['attachments'] as List<dynamic>?;
+        expect(attachments, isNotNull);
+        expect(attachments, hasLength(1));
+        final att = attachments!.first as Map<String, dynamic>;
+        expect(att['content'], base64Encode(bytes));
+
+        // Reply to complete the RPC cleanly.
+        final reqId = decoded['id'] as String;
+        ws.simulateServerFrame(
+          '{"type":"res","id":"$reqId","ok":true,'
+          '"payload":{"runId":"run-1","timestamp":1700000000000}}',
+        );
+        await future;
+        await client.dispose();
+      },
+    );
   });
 }
