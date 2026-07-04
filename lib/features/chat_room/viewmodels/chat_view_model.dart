@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
 import 'package:claw_hub/core/i_logger.dart';
@@ -18,6 +17,8 @@ import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/domain/usecases/merge_inbound_message.dart';
 import 'package:claw_hub/features/_shared/agent_reactive_state.dart';
+import 'package:claw_hub/features/chat_room/viewmodels/preview_updater.dart';
+import 'package:claw_hub/features/chat_room/viewmodels/streaming_lifecycle.dart';
 
 /// The agent's thinking/waiting state — mutually exclusive states that
 /// replace the previous (isThinking, timeout) boolean pair.
@@ -207,10 +208,8 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   StreamSubscription<Message>? _messageSubscription;
   StreamSubscription<GatewayConnectionState>? _connectionSubscription;
   StreamSubscription<ToolCall>? _toolCallSubscription;
-  StreamSubscription<StreamingEvent>? _streamingSubscription;
   StreamSubscription<int>? _outboxCountSubscription;
   Timer? _timeoutTimer;
-  Timer? _stallTimer;
 
   /// Bug 2 修复: 标记 [_initStreamsAndHistory] 是否已完成。
   /// - tombstone init 后为 false（早退未订阅）
@@ -229,20 +228,19 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// separate timer, the user could wait forever).
   Timer? _overallTimeoutTimer;
 
-  /// Streaming text accumulator — buffers delta text and publishes
-  /// incrementally through [ChatSessionState.streamingText].
-  ///
-  /// [StringBuffer.write] is amortized O(1) per append, replacing the
-  /// O(n²) `state.streamingText + event.text` pattern (see #12).
-  final StringBuffer _streamBuffer = StringBuffer();
-
-  /// How many code-units of [_streamBuffer] have been published to state.
-  /// Reset to 0 on each new send generation.  Used for incremental
-  /// publishing — only the diff since last flush is new allocation.
-  int _lastPublishedLength = 0;
-
-  /// Debounce timer for throttled state writes.
-  Timer? _flushTimer;
+  /// 流式文本累积器 + 节流器(PR-B,spec 2026-07-04)。抽自原 _streamingSubscription
+  /// / _streamBuffer / _lastPublishedLength / _flushTimer / _stallTimer / _isStreaming
+  /// + _startStreaming / _scheduleFlush / _flushToState / _flushImmediately。VM 经
+  /// 回调注入 state 写入与 thinking 超时联动([_onDeltaActivity] 重 arm 60s
+  /// _timeoutTimer,[_onStreamError] 取消之)。构造纯存参无副作用。
+  late final StreamingLifecycle _streaming = StreamingLifecycle(
+    flushDelay: flushDelay,
+    onStreamingTextChanged: (t) =>
+        _updateState((s) => s.copyWith(streamingText: t)),
+    onDeltaActivity: _onDeltaActivity,
+    onStreamError: _onStreamError,
+    logger: _logger,
+  );
 
   /// 响应式 agent 订阅 —— _init() 中订阅 watchById(agentId) stream，
   /// 任何 DB 写入（本地保存 / Gateway sync）触发 emit 后自动同步 _agent，
@@ -286,16 +284,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// 缓存的 tombstone 状态与 DB 一致,可安全复用,无需冗余 getById。
   bool _tombstoneSuspect = false;
 
-  /// 是否正在接收流式回复增量（首个 [StreamingDelta] 到达后置 true，
-  /// [StreamingDone]/回复到达/流错误后置 false）。
-  ///
-  /// 用途：clear-cache tick 触发的 [reloadMessages] 在此期间跳过——
-  /// 清缓存后 DB 已空，若流式中重载会让 `state.messages` 闪空；
-  /// 流式文本累积在独立的 `_streamBuffer`/`streamingText`，不受影响。
-  /// 流式结束（最终回复落库）后，messageStream 监听器会调
-  /// [_loadMessages] 自然刷新到含新回复的列表。
-  bool _isStreaming = false;
-
   /// 标记连接状态订阅收到的「首个事件」。
   ///
   /// `_init()` 在订阅前已执行 `_loadMessages()`。对已处于 connected 的实例，
@@ -308,15 +296,21 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   bool _isInitialConnectionEvent = true;
 
   /// 是否正在流式接收回复。供 [chatViewModelProvider] 的 tick 监听器
-  /// 决定是否触发温和刷新（流式中跳过）。
-  bool get isStreaming => _isStreaming;
+  /// 决定是否触发温和刷新（流式中跳过）。委托 [_streaming]。
+  bool get isStreaming => _streaming.isStreaming;
 
   /// 激活时，实时消息监听器跳过 `_loadMessages()` 以避免覆盖高亮锚定窗口。
   /// 由 [loadHighlightWindow] 设置，在 [clearHighlight] 或 2 秒后清除。
   bool _highlightActive = false;
 
-  Message? _pendingPreviewMessage;
-  Timer? _previewCoalesceTimer;
+  /// 消息中心预览合并器(PR-A,spec 2026-07-04)。抽自原 _pendingPreviewMessage
+  /// + _previewCoalesceTimer + _scheduleConversationPreviewUpdate。onFlush 绑定
+  /// [_updateConversationPreview](时间戳 guard + generatePreview + updateLastMessage)。
+  late final PreviewUpdater _preview = PreviewUpdater(
+    onFlush: (m) => _updateConversationPreview(m),
+    isMounted: () => mounted,
+  );
+
   Timer? _messageReloadCoalesceTimer;
 
   /// Called when stats should be refreshed (message sent or received).
@@ -498,9 +492,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             final wasInitial = _isInitialConnectionEvent;
             _isInitialConnectionEvent = false;
             _updateState((s) => s.copyWith(connectionState: state));
-            // 连接断开/恢复路径必须重置 _isStreaming —— 否则一次中途
+            // 连接断开/恢复路径必须重置 _streaming.isStreaming —— 否则一次中途
             // 网关掉线（无 StreamingDone）会让 reloadMessages 在
-            // `if (_isStreaming) return;` 处永远早退，导致
+            // `if (_streaming.isStreaming) return;` 处永远早退，导致
             // cacheClearedTickProvider++ 后聊天列表保留旧的（清理前）快照。
             // Streaming 终态（StreamingDone / agent Message / send / onError
             // / dispose）已经在各自路径处理；这里只覆盖「连接层异常」
@@ -508,15 +502,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             if (state != GatewayConnectionState.connected &&
                 state != GatewayConnectionState.connecting &&
                 state != GatewayConnectionState.authenticating &&
-                _isStreaming) {
-              _isStreaming = false;
-              _streamBuffer.clear();
-              _lastPublishedLength = 0;
-              _stallTimer?.cancel();
-              _stallTimer = null;
+                _streaming.isStreaming) {
+              _streaming.onConnectionLost();
               _timeoutTimer?.cancel();
               _timeoutTimer = null;
-              _updateState((s) => s.copyWith(streamingText: ''));
             }
             // 连接状态变化时刷新消息列表 —
             // OutboxProcessor 可能在后台冲刷，将 PENDING 推进到 SENT；
@@ -609,7 +598,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               // 此前 updateLastMessage 仅在用户发送时被调用，导致预览永远
               // 停留在「我」的最后一条消息，掩盖了 Agent 的最新回复。
               // 这里用与 SendMessageUseCase 相同的预览规则，保证两侧一致。
-              _scheduleConversationPreviewUpdate(fixedMsg);
+              _preview.schedule(fixedMsg);
               // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
               if (!_highlightActive) {
                 _scheduleMessagesReload();
@@ -619,8 +608,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
                 // eliminates the race window between StreamingDone and
                 // Message arrival on independent broadcast controllers.
                 _awaitingReply = false;
-                _isStreaming = false;
-                _updateState((s) => s.copyWith(streamingText: ''));
+                _streaming.onReplyArrived();
                 _stopThinking();
                 onStatsChanged?.call();
                 // Fire-and-forget achievement evaluation — deferred to
@@ -657,7 +645,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       // 5c. Streaming deltas — subscription is recreated on each send()
       //     so stale events from a previous response never contaminate
       //     the current buffer (no generation-guard needed).
-      _startStreaming();
+      _streaming.start(
+        _gatewayClient.streamingDeltaStream(instanceId),
+        activeAgent.remoteId,
+      );
 
       // 5d. (Finding #9 修复) Gateway 诊断事件 notice 不再由 VM 订阅 ——
       // 改由 gatewayNoticeProvider (StreamProvider) 订阅,UI 经
@@ -830,17 +821,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // Tear down the old streaming subscription so stale deltas/done
     // events from a previous response never contaminate the new buffer.
     // A fresh subscription is created below after init() succeeds.
-    _streamingSubscription?.cancel();
-    _streamingSubscription = null;
-    _isStreaming = false;
-    _flushTimer?.cancel();
-    _streamBuffer.clear();
-    _lastPublishedLength = 0;
-    _stallTimer?.cancel();
-    _stallTimer = null;
+    _streaming.resetForSend();
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
-    _updateState((s) => s.copyWith(streamingText: ''));
 
     await init();
 
@@ -893,7 +876,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
 
     // Start a fresh streaming subscription for this send — any stale
     // events from the previous subscription were already cancelled above.
-    _startStreaming();
+    _streaming.start(
+      _gatewayClient.streamingDeltaStream(instanceId),
+      agent!.remoteId,
+    );
 
     _awaitingReply = true;
 
@@ -944,83 +930,25 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _startThinking();
   }
 
-  /// Create a fresh streaming subscription for the current [send].
-  ///
-  /// Must be called AFTER [_agent] is guaranteed non-null.  Each call
-  /// cancels any previous [_streamingSubscription] so that stale
-  /// [StreamingDelta]/[StreamingDone] events from a prior response
-  /// never contaminate the current buffer.
-  void _startStreaming() {
-    _streamingSubscription?.cancel();
-
-    final agentRemoteId = agent!.remoteId;
-    _streamingSubscription = _gatewayClient
-        .streamingDeltaStream(instanceId)
-        .listen(
-          (event) {
-            if (event is StreamingDelta && event.agentId == agentRemoteId) {
-              _isStreaming = true;
-              if (_streamBuffer.length < 50 * 1024) {
-                _streamBuffer.write(event.text);
-                _scheduleFlush();
-              }
-              _timeoutTimer?.cancel();
-              _timeoutTimer = Timer(const Duration(seconds: 60), () {
-                _updateState(
-                  (s) => s.copyWith(thinkingState: ThinkingState.timeout),
-                );
-              });
-              _stallTimer?.cancel();
-              _stallTimer = Timer(const Duration(seconds: 30), () {
-                _updateState((s) => s.copyWith(streamingText: ''));
-              });
-            } else if (event is StreamingDone &&
-                event.agentId == agentRemoteId) {
-              _isStreaming = false;
-              _flushImmediately();
-              _stallTimer?.cancel();
-              _updateState((s) => s.copyWith(streamingText: ''));
-            }
-          },
-          onError: (error, stackTrace) {
-            _isStreaming = false;
-            _flushImmediately();
-            _stallTimer?.cancel();
-            _timeoutTimer?.cancel();
-            _updateState((s) => s.copyWith(streamingText: ''));
-            _logger.error(
-              'Streaming stream error for $instanceId: $error',
-              stackTrace,
-            );
-          },
-        );
-  }
-
-  /// Schedule a throttled flush — cancels pending timer, sets new one.
-  void _scheduleFlush() {
-    _flushTimer?.cancel();
-    _flushTimer = Timer(flushDelay, _flushToState);
-  }
-
-  /// Publish accumulated buffer text to [ChatSessionState.streamingText].
-  void _flushToState() {
-    final full = _streamBuffer.toString();
-    if (full.length == _lastPublishedLength) return; // no new content
-    _updateState((s) => s.copyWith(streamingText: full));
-    _lastPublishedLength = full.length;
-  }
-
-  /// Flush immediately — used at stream termination.
-  void _flushImmediately() {
-    _flushTimer?.cancel();
-    _flushToState();
-  }
-
-  void _startThinking() {
+  /// delta 到达时由 [_streaming] 回调 —— 重新 arm 60s 活动 _timeoutTimer
+  /// (覆盖 [_startThinking] 的 arm 与每 delta 的重 arm,统一入口防值漂移)。
+  /// _timeoutTimer 留在 VM(thinking 状态机内聚,Option A)。
+  void _onDeltaActivity() {
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 60), () {
       _updateState((s) => s.copyWith(thinkingState: ThinkingState.timeout));
     });
+  }
+
+  /// 流错误时由 [_streaming] 回调 —— 取消 60s _timeoutTimer,避免错误后误触
+  /// timeout banner(对齐原 _startStreaming onError 的 _timeoutTimer?.cancel())。
+  void _onStreamError() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+  }
+
+  void _startThinking() {
+    _onDeltaActivity();
     _updateState((s) => s.copyWith(thinkingState: ThinkingState.thinking));
   }
 
@@ -1099,21 +1027,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     }
   }
 
-  void _scheduleConversationPreviewUpdate(Message message) {
-    if (message.type == MessageType.toolCall) return;
-    if (_pendingPreviewMessage == null ||
-        message.timestamp >= _pendingPreviewMessage!.timestamp) {
-      _pendingPreviewMessage = message;
-    }
-    _previewCoalesceTimer?.cancel();
-    _previewCoalesceTimer = Timer(Duration.zero, () {
-      final pending = _pendingPreviewMessage;
-      _pendingPreviewMessage = null;
-      if (pending == null || !mounted) return;
-      unawaited(_updateConversationPreview(pending));
-    });
-  }
-
   void _scheduleMessagesReload() {
     _messageReloadCoalesceTimer?.cancel();
     _messageReloadCoalesceTimer = Timer(Duration.zero, () {
@@ -1134,10 +1047,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// **流式期间跳过**：clear-cache tick 在流式进行中触发时，若重载会读到
   /// 已清空的 DB 让 `state.messages` 闪空。流式文本在独立缓冲区不受影响；
   /// 流式结束（最终回复落库）后 messageStream 监听器会调 [_loadMessages]
-  /// 自然刷新。[_isStreaming] 由首个 delta 置 true、StreamingDone/回复到达
+  /// 自然刷新。[_streaming].isStreaming 由首个 delta 置 true、StreamingDone/回复到达
   /// 置 false。
   Future<void> reloadMessages() async {
-    if (_isStreaming) return;
+    if (_streaming.isStreaming) return;
     await _loadMessages();
   }
 
@@ -1317,9 +1230,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// subscriptions from scratch.  Safe to call even if init succeeded.
   Future<void> retry() async {
     _teardownSubscriptions();
-    _flushTimer?.cancel();
-    _streamBuffer.clear();
-    _lastPublishedLength = 0;
     _initFuture = null;
     setAgent(null);
     _updateState(
@@ -1348,24 +1258,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _connectionSubscription = null;
     _toolCallSubscription?.cancel();
     _toolCallSubscription = null;
-    _streamingSubscription?.cancel();
-    _streamingSubscription = null;
-    _isStreaming = false;
+    _streaming.cancel();
     _outboxCountSubscription?.cancel();
     _outboxCountSubscription = null;
     _agentSubscription?.cancel(); // ★ 新增
     _agentSubscription = null; // ★ 新增
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
-    _stallTimer?.cancel();
-    _stallTimer = null;
     _overallTimeoutTimer?.cancel();
     _overallTimeoutTimer = null;
-    _flushTimer?.cancel();
-    _flushTimer = null;
-    _pendingPreviewMessage = null;
-    _previewCoalesceTimer?.cancel();
-    _previewCoalesceTimer = null;
+    _preview.dispose();
     _messageReloadCoalesceTimer?.cancel();
     _messageReloadCoalesceTimer = null;
     // Bug 2 修复: 同步 [_streamsInitialized] 让 refreshAgent 知道

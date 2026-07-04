@@ -487,4 +487,86 @@ void main() {
       },
     );
   });
+
+  group('ChatViewModel.retry (re-init from LoadError)', () {
+    late InMemoryAgentRepo agentRepo;
+    late InMemoryMessageRepo messageRepo;
+    late InMemoryConversationRepo conversationRepo;
+    late InMemoryInstanceRepo instanceRepo;
+    late MockGatewayClient gateway;
+    late IAchievementChecker achievementChecker;
+
+    setUp(() {
+      agentRepo = InMemoryAgentRepo();
+      messageRepo = InMemoryMessageRepo();
+      conversationRepo = InMemoryConversationRepo();
+      instanceRepo = InMemoryInstanceRepo();
+      gateway = MockGatewayClient();
+      achievementChecker = _MockAchievementChecker();
+    });
+
+    Future<ChatViewModel> setupVm() async {
+      final agent = Agent(
+        localId: 'local-1',
+        remoteId: 'r-1',
+        instanceId: 'inst-1',
+        name: '产品虾',
+      );
+      await agentRepo.syncFromGateway('inst-1', [agent]);
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test Instance',
+          gatewayUrl: 'wss://test.example.com:443',
+          tokenRef: 'test-token-ref',
+          healthStatus: HealthStatus.online,
+        ),
+      );
+      final vm = ChatViewModel(
+        agentRepo: agentRepo,
+        conversationRepo: conversationRepo,
+        messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gateway,
+        sendMessageUseCase: SendMessageUseCase(
+          messageRepo: messageRepo,
+          conversationRepo: conversationRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+        ),
+        instanceId: 'inst-1',
+        agentId: 'local-1',
+        achievementChecker: achievementChecker,
+        flushDelay: Duration.zero,
+      );
+      await vm.init();
+      return vm;
+    }
+
+    test(
+      'retry() re-runs init and leaves streaming idle (PR-B regression guard)',
+      () async {
+        // 审查发现:retry() 之前无直接测试覆盖。PR-B 把 retry() 里的
+        // _flushTimer?.cancel() / _streamBuffer.clear() / _lastPublishedLength = 0
+        // 三行删除,改由 _teardownSubscriptions() → _streaming.cancel() 承担
+        // (cancel() 内部清 buffer+归零 lastPublished)。本测试守住:
+        // retry() 后 isStreaming==false 且 state 正常重载。
+        final vm = await setupVm();
+        expect(vm.isStreaming, isFalse);
+
+        await vm.retry();
+
+        // retry() 先推 LoadInProgress,await init() 后重载 → LoadData。
+        expect(vm.state.messages, isA<LoadData<List<Message>>>());
+        expect(
+          vm.isStreaming,
+          isFalse,
+          reason:
+              'retry() 经 _teardownSubscriptions → _streaming.cancel() 必须清掉 streaming',
+        );
+        expect(vm.state.streamingText, '');
+        vm.dispose();
+      },
+    );
+  });
 }
