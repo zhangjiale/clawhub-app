@@ -568,11 +568,18 @@ class StreamingBuffer {
   final String sessionKey;
   final StringBuffer _buffer = StringBuffer();
 
-  StreamingBuffer({required this.sessionKey});
+  /// Last time a delta was appended (msSinceEpoch). Used by
+  /// [GatewayEventProcessor._gcStaleSessions] to age out abandoned
+  /// mid-stream turns (no chat.final / lifecycle.end ever arrived).
+  int lastUpdatedAt;
+
+  StreamingBuffer({required this.sessionKey})
+    : lastUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
   /// Append a delta fragment.
   void append(String delta) {
     _buffer.write(delta);
+    lastUpdatedAt = DateTime.now().millisecondsSinceEpoch;
   }
 
   /// The full accumulated text so far.

@@ -22,7 +22,20 @@ class GatewayEventProcessor {
     required this._uuid,
     required this._mapper,
     required this._logger,
+    this._gcMaxAge = const Duration(minutes: 30),
+    this._gcInterval = 100,
   });
+
+  /// Max age before an abandoned streaming buffer is GC'd. Default 30min;
+  /// tests inject a small value to exercise [_gcStaleSessions] without
+  /// waiting.
+  final Duration _gcMaxAge;
+
+  /// Run [_gcStaleSessions] every Nth [registerSend]. Default 100; tests
+  /// inject 1 to trigger on every call.
+  final int _gcInterval;
+
+  int _registerSendCount = 0;
 
   /// Delta 聚合缓冲区: sessionKey → StreamingBuffer。
   /// agent assistant 事件追加 delta，chat final 事件消费后移除。
@@ -97,6 +110,10 @@ class GatewayEventProcessor {
   int get sessionKeysByInstanceSizeForTesting =>
       _sessionKeysByInstance.values.fold<int>(0, (n, s) => n + s.length);
 
+  /// 测试缝隙 — 返回 [_streamingBuffers] 当前条目数。用于验证 [_gcStaleSessions]
+  /// 老化掉 abandoned buffer。只在测试中调用。
+  int get streamingBuffersSizeForTesting => _streamingBuffers.length;
+
   /// Registers a successful [sendMessage] outcome with this processor.
   ///
   /// - Maps [sessionKey] → [agentId] for event dispatch.
@@ -111,15 +128,40 @@ class GatewayEventProcessor {
     _sessionToAgentId[sessionKey] = agentId;
     (_sessionKeysByInstance[instanceId] ??= {}).add(sessionKey);
 
-    // runId turn-token (primary turn boundary): the server assigns runId
-    // here, before any chat.delta / lifecycle.start. When present this is
-    // the earliest, most reliable turn boundary — drop any lingering
-    // buffer / finalized / delta-source state for this session so an
-    // aborted prior turn (no lifecycle.end ever arrived — e.g. a mid-turn
-    // graceful-shutdown reconnect) cannot corrupt this turn's reply.
+    final bufferKey = '$instanceId:$sessionKey';
+
+    // Unconditional turn-boundary clear of the finalized flag: registerSend
+    // fires on every user send, marking a new turn for this session. Without
+    // this, old Gateways (no runId → _resetTurnForSession skipped below, no
+    // lifecycle.start) would see _finalizedSessions persist from the prior
+    // turn and drop THIS turn's chat.final as a duplicate. When runId IS
+    // present, _resetTurnForSession below already clears it (plus buffer /
+    // delta-source / active runId); this line covers the no-runId path.
+    _finalizedSessions.remove(bufferKey);
+
     if (runId != null) {
-      _resetTurnForSession('$instanceId:$sessionKey', runId);
+      _resetTurnForSession(bufferKey, runId);
     }
+
+    // Periodic GC: age out abandoned streaming buffers (mid-stream turns
+    // that never received chat.final / lifecycle.end). Bounded O(agents)
+    // so this is hygiene, not a correctness fix — but abandoned buffers
+    // hold accumulated delta text (KB-scale), the only non-trivial leak.
+    if (++_registerSendCount % _gcInterval == 0) {
+      _gcStaleSessions();
+    }
+  }
+
+  /// Remove streaming buffers untouched for longer than [_gcMaxAge].
+  ///
+  /// Only [_streamingBuffers] is aged — it holds accumulated delta text
+  /// (KB-scale per abandoned mid-stream turn). [_finalizedSessions] /
+  /// [_deltaSource] / [_activeRunIdBySession] are tiny (keys / short
+  /// strings), cleared on turn boundaries + [cleanupInstance]; not worth
+  /// timestamping.
+  void _gcStaleSessions() {
+    final cutoff = DateTime.now().subtract(_gcMaxAge).millisecondsSinceEpoch;
+    _streamingBuffers.removeWhere((_, b) => b.lastUpdatedAt < cutoff);
   }
 
   /// Clears all processor state. Called when the owning client is disposed.

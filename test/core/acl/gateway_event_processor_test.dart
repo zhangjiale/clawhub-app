@@ -425,4 +425,172 @@ void main() {
       },
     );
   });
+
+  group('finalized-sessions cross-turn clearing', () {
+    // 回归:_finalizedSessions(同 turn 内 chat.final/lifecycle.end 去重 guard)
+    // 必须在 registerSend 时清,否则旧网关(无 runId → _resetTurnForSession 跳过、
+    // 无 lifecycle.start)下该 key 跨 turn 持续存在,下一 turn 的 chat.final 被
+    // 当作重复丢弃 → 回复丢失。
+    test(
+      'registerSend clears _finalizedSessions so next turn chat.final is not dropped (no runId)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+          // 不传 runId —— 模拟旧网关,_resetTurnForSession 不触发。
+        );
+        final messages = <Message>[];
+        conn.messageCtrl.stream.listen(messages.add);
+
+        // Turn 1: chat.final 带 message。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'final',
+              'message': {
+                'clientId': 'c1',
+                'role': 'agent',
+                'content': 'turn1',
+                'type': 'text',
+              },
+            },
+          ),
+        );
+        await pumpEventQueue();
+        expect(messages, hasLength(1));
+
+        // Turn 2:用户再发 → registerSend(无 runId)。
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        // Turn 2: chat.final 带 message。pre-fix:_finalizedSessions 仍有该 key
+        // → add 返回 false → 早退 → turn 2 消息被丢。
+        // post-fix:registerSend 已清 → 接受。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'final',
+              'message': {
+                'clientId': 'c2',
+                'role': 'agent',
+                'content': 'turn2',
+                'type': 'text',
+              },
+            },
+          ),
+        );
+        await pumpEventQueue();
+        expect(
+          messages,
+          hasLength(2),
+          reason:
+              'registerSend 必须清 _finalizedSessions,否则 turn 2 的 '
+              'chat.final 被当作重复丢弃',
+        );
+        expect(messages.last.content, 'turn2');
+      },
+    );
+  });
+
+  group('streaming buffer GC (aging)', () {
+    test('_gcStaleSessions ages out abandoned streaming buffers', () async {
+      // 注入小 gcMaxAge + gcInterval=1(GC 每次 registerSend 触发)。
+      processor = GatewayEventProcessor(
+        uuid: const Uuid(),
+        mapper: GatewayDomainMapper(),
+        logger: const DebugPrintLogger(),
+        gcMaxAge: const Duration(milliseconds: 10),
+        gcInterval: 1,
+      );
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+      // 发 delta → buffer 创建,lastUpdatedAt = now。
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'state': 'delta',
+            'deltaText': 'abandoned-mid-stream',
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(processor.streamingBuffersSizeForTesting, 1);
+
+      // 等过 gcMaxAge,使 buffer 变 stale。
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // 为另一 session registerSend 触发 GC(interval=1);a1 buffer 30ms 未动
+      // > 10ms → 老化掉。
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a2:main',
+        agentId: 'a2',
+      );
+      expect(
+        processor.streamingBuffersSizeForTesting,
+        0,
+        reason: '超过 gcMaxAge 的 abandoned buffer 应被 GC 清理',
+      );
+    });
+
+    test('GC keeps fresh buffers (within gcMaxAge)', () async {
+      processor = GatewayEventProcessor(
+        uuid: const Uuid(),
+        mapper: GatewayDomainMapper(),
+        logger: const DebugPrintLogger(),
+        gcMaxAge: const Duration(minutes: 30),
+        gcInterval: 1,
+      );
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'state': 'delta',
+            'deltaText': 'fresh',
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(processor.streamingBuffersSizeForTesting, 1);
+
+      // registerSend 立即触发 GC(interval=1);buffer 刚创建(在 30min 内)→ 保留。
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a2:main',
+        agentId: 'a2',
+      );
+      expect(
+        processor.streamingBuffersSizeForTesting,
+        1,
+        reason: 'fresh buffer(在 gcMaxAge 内)不应被 GC 清掉',
+      );
+    });
+  });
 }
