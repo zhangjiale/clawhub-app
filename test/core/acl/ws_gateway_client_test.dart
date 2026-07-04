@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:claw_hub/core/acl/device_identity.dart';
+import 'package:claw_hub/core/acl/gateway_domain_mapper.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_device_identity_provider.dart';
 import 'package:claw_hub/core/acl/i_device_token_store.dart';
+import 'package:claw_hub/core/acl/attachment_encoder.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/replayable_connection_state.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
@@ -216,11 +218,11 @@ void main() {
   // ==========================================================================
   group('extractTextContent', () {
     test('returns null for null input', () {
-      expect(WsGatewayClient.extractTextContent(null), isNull);
+      expect(GatewayDomainMapper.extractTextContent(null), isNull);
     });
 
     test('returns string unchanged for String input', () {
-      expect(WsGatewayClient.extractTextContent('hello'), 'hello');
+      expect(GatewayDomainMapper.extractTextContent('hello'), 'hello');
     });
 
     test('joins structured content blocks (real Gateway format)', () {
@@ -228,7 +230,7 @@ void main() {
         {'type': 'text', 'text': '第一部分'},
         {'type': 'text', 'text': '第二部分'},
       ];
-      expect(WsGatewayClient.extractTextContent(blocks), '第一部分第二部分');
+      expect(GatewayDomainMapper.extractTextContent(blocks), '第一部分第二部分');
     });
 
     test('skips non-text blocks in structured content', () {
@@ -236,172 +238,16 @@ void main() {
         {'type': 'image_url', 'url': 'https://example.com/img.png'},
         {'type': 'text', 'text': '图片描述'},
       ];
-      expect(WsGatewayClient.extractTextContent(blocks), '图片描述');
+      expect(GatewayDomainMapper.extractTextContent(blocks), '图片描述');
     });
 
     test('joins list of plain strings', () {
-      expect(WsGatewayClient.extractTextContent(['a', 'b', 'c']), 'abc');
+      expect(GatewayDomainMapper.extractTextContent(['a', 'b', 'c']), 'abc');
     });
 
     test('falls back to toString for unrecognized non-list types', () {
-      expect(WsGatewayClient.extractTextContent(42), '42');
+      expect(GatewayDomainMapper.extractTextContent(42), '42');
     });
-  });
-
-  // ==========================================================================
-  // serializeChatSendPayload (PROTOCOL-VERIFY: appendix F, 2026-07-03)
-  //
-  // chat.send 的 message 必须是字符串,多模态走顶层 attachments 数组
-  // (元素弱约束,推荐 {mimeType, content: base64, filename?})。
-  // ⚠️ attachment 字段名 mimeType vs mime 有歧义(F.2),需 capture 确认 ——
-  // 只改 seam + 本组。详见 docs/technical/acl-protocol-gaps.md Gap #8。
-  // ==========================================================================
-  group('serializeChatSendPayload (PROTOCOL-VERIFY appendix F)', () {
-    test('text message → message=content, attachments=null', () {
-      final msg = Message(
-        clientId: 'c1',
-        conversationId: 'conv',
-        agentId: 'a',
-        role: MessageRole.user,
-        content: '你好',
-        type: MessageType.text,
-        logicalClock: 1,
-      );
-      final r = WsGatewayClient.serializeChatSendPayload(msg);
-      expect(r.message, '你好');
-      expect(r.attachments, isNull);
-    });
-
-    test('text message with null content → message="", attachments=null', () {
-      final msg = Message(
-        clientId: 'c1',
-        conversationId: 'conv',
-        agentId: 'a',
-        role: MessageRole.user,
-        content: null,
-        type: MessageType.text,
-        logicalClock: 1,
-      );
-      final r = WsGatewayClient.serializeChatSendPayload(msg);
-      expect(r.message, '');
-      expect(r.attachments, isNull);
-    });
-
-    test(
-      'image with base64 → message=caption, attachments=[{mimeType,content,filename}]',
-      () {
-        final msg = Message(
-          clientId: 'c1',
-          conversationId: 'conv',
-          agentId: 'a',
-          role: MessageRole.user,
-          content: '/tmp/img.jpg',
-          type: MessageType.image,
-          logicalClock: 1,
-          metadata: const {
-            'fileName': 'img.jpg',
-            'mimeType': 'image/jpeg',
-            'caption': '看这张',
-          },
-        );
-        final r = WsGatewayClient.serializeChatSendPayload(
-          msg,
-          base64Data: 'B64',
-        );
-        expect(r.message, '看这张');
-        expect(r.attachments, hasLength(1));
-        expect(r.attachments!.first['mimeType'], 'image/jpeg');
-        expect(r.attachments!.first['content'], 'B64');
-        expect(r.attachments!.first['filename'], 'img.jpg');
-      },
-    );
-
-    test(
-      'image without caption + base64 → message="", attachments present',
-      () {
-        final msg = Message(
-          clientId: 'c1',
-          conversationId: 'conv',
-          agentId: 'a',
-          role: MessageRole.user,
-          content: '/tmp/img.jpg',
-          type: MessageType.image,
-          logicalClock: 1,
-          metadata: const {'fileName': 'img.jpg', 'mimeType': 'image/png'},
-        );
-        final r = WsGatewayClient.serializeChatSendPayload(
-          msg,
-          base64Data: 'B64',
-        );
-        expect(r.message, '');
-        expect(r.attachments, hasLength(1));
-        expect(r.attachments!.first['mimeType'], 'image/png');
-      },
-    );
-
-    test(
-      'image without base64 (read failed) → degraded message=[图片], attachments=null',
-      () {
-        final msg = Message(
-          clientId: 'c1',
-          conversationId: 'conv',
-          agentId: 'a',
-          role: MessageRole.user,
-          content: '/tmp/img.jpg',
-          type: MessageType.image,
-          logicalClock: 1,
-        );
-        final r = WsGatewayClient.serializeChatSendPayload(msg);
-        expect(r.message, '[图片]');
-        expect(r.attachments, isNull);
-      },
-    );
-
-    test(
-      'file with base64 → message="", attachments=[{mimeType,content,filename}]',
-      () {
-        final msg = Message(
-          clientId: 'c1',
-          conversationId: 'conv',
-          agentId: 'a',
-          role: MessageRole.user,
-          content: '/tmp/doc.pdf',
-          type: MessageType.file,
-          logicalClock: 1,
-          metadata: const {
-            'fileName': 'doc.pdf',
-            'mimeType': 'application/pdf',
-          },
-        );
-        final r = WsGatewayClient.serializeChatSendPayload(
-          msg,
-          base64Data: 'FB64',
-        );
-        expect(r.message, '');
-        expect(r.attachments, hasLength(1));
-        expect(r.attachments!.first['mimeType'], 'application/pdf');
-        expect(r.attachments!.first['content'], 'FB64');
-        expect(r.attachments!.first['filename'], 'doc.pdf');
-      },
-    );
-
-    test(
-      'file without base64 → degraded message=[文件] name, attachments=null',
-      () {
-        final msg = Message(
-          clientId: 'c1',
-          conversationId: 'conv',
-          agentId: 'a',
-          role: MessageRole.user,
-          content: '/tmp/doc.pdf',
-          type: MessageType.file,
-          logicalClock: 1,
-        );
-        final r = WsGatewayClient.serializeChatSendPayload(msg);
-        expect(r.message, '[文件] 文件');
-        expect(r.attachments, isNull);
-      },
-    );
   });
 
   // ==========================================================================
@@ -409,9 +255,9 @@ void main() {
   // ==========================================================================
   group('extractImageRef (PROTOCOL-VERIFY assumption)', () {
     test('returns null for null / string / empty input', () {
-      expect(WsGatewayClient.extractImageRef(null), isNull);
-      expect(WsGatewayClient.extractImageRef('hello'), isNull);
-      expect(WsGatewayClient.extractImageRef(<Map>[]), isNull);
+      expect(GatewayDomainMapper.extractImageRef(null), isNull);
+      expect(GatewayDomainMapper.extractImageRef('hello'), isNull);
+      expect(GatewayDomainMapper.extractImageRef(<Map>[]), isNull);
     });
 
     test('returns url for OpenAI image_url block shape', () {
@@ -421,7 +267,10 @@ void main() {
           'image_url': {'url': 'https://x.com/a.png'},
         },
       ];
-      expect(WsGatewayClient.extractImageRef(blocks), 'https://x.com/a.png');
+      expect(
+        GatewayDomainMapper.extractImageRef(blocks),
+        'https://x.com/a.png',
+      );
     });
 
     test('returns url for alt image block shape', () {
@@ -432,7 +281,7 @@ void main() {
         },
       ];
       expect(
-        WsGatewayClient.extractImageRef(blocks),
+        GatewayDomainMapper.extractImageRef(blocks),
         'data:image/png;base64,AAA',
       );
     });
@@ -446,7 +295,7 @@ void main() {
           {'type': 'image', 'url': 'https://cdn.example.com/chart.png'},
         ];
         expect(
-          WsGatewayClient.extractImageRef(blocks),
+          GatewayDomainMapper.extractImageRef(blocks),
           'https://cdn.example.com/chart.png',
         );
       },
@@ -456,7 +305,7 @@ void main() {
       final blocks = [
         {'type': 'text', 'text': '纯文本回复'},
       ];
-      expect(WsGatewayClient.extractImageRef(blocks), isNull);
+      expect(GatewayDomainMapper.extractImageRef(blocks), isNull);
     });
 
     test('skips image block with empty url', () {
@@ -466,7 +315,7 @@ void main() {
           'image_url': {'url': ''},
         },
       ];
-      expect(WsGatewayClient.extractImageRef(blocks), isNull);
+      expect(GatewayDomainMapper.extractImageRef(blocks), isNull);
     });
   });
 
