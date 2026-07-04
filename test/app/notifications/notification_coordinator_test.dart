@@ -25,6 +25,16 @@ class _FakeLogger implements ILogger {
   void error(String message, [StackTrace? stackTrace]) {}
 }
 
+class _RecordingLogger implements ILogger {
+  final List<String> infos = [];
+  final List<String> errors = [];
+
+  @override
+  void info(String message) => infos.add(message);
+  @override
+  void error(String message, [StackTrace? stackTrace]) => errors.add(message);
+}
+
 class _FakeNotificationService implements ILocalNotificationService {
   final List<
     ({
@@ -506,6 +516,64 @@ void main() {
         expect(service.shown.first.routePath, contains('chat/unknown-remote'));
       },
     );
+
+    // Regression guard for null-skip audit finding ③:
+    //   notification_coordinator.dart:217 — when agentRepo returns null
+    //   (cold-start race OR remoteId mismatch), the placeholder fallback
+    //   is preserved (UX > strict bug-finding per review), BUT we now
+    //   log the case for diagnostics. Pin both contracts: emit happens
+    //   AND log fires.
+    test('audit_③_unresolvedAgent_logsButStillEmitsPlaceholder', () async {
+      // Deliberately construct a coordinator that uses this group's
+      // controllable repos (gateway / agentRepo / instanceRepo) so the
+      // `gateway.messageController.add(...)` below actually reaches
+      // `_onMessage`. [buildWithLogger] defined at file scope uses
+      // non-controllable fakes whose streams are empty — wire the
+      // recording logger through a per-test build that mirrors [build].
+      final recLogger = _RecordingLogger();
+      final c = NotificationCoordinator(
+        orchestratorEvents: orchestratorEvents.stream,
+        gatewayClient: gateway,
+        instanceRepo: instanceRepo,
+        agentRepo: agentRepo,
+        notificationRepo: repo,
+        notificationService: service,
+        evaluator: const EvaluateNotificationUseCase(),
+        prefsProvider: () => prefs,
+        clock: () => now,
+        logger: recLogger,
+      );
+      await c.start();
+      gateway.messageController.add(
+        Message(
+          clientId: 'c1',
+          serverId: 'srv1',
+          conversationId: 'conv',
+          agentId: 'unknown-remote',
+          role: MessageRole.agent,
+          content: '回复',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+          timestamp: 1000,
+        ),
+      );
+      await _pump();
+      await c.dispose();
+
+      // Contract 1: placeholder emission preserved (UX).
+      expect(service.shown.length, 1);
+      expect(service.shown.first.title, '虾');
+      expect(service.shown.first.routePath, contains('chat/unknown-remote'));
+
+      // Contract 2: diagnostic info-level log fires once.
+      expect(
+        recLogger.infos.where((m) => m.contains('unresolved agent')),
+        hasLength(1),
+        reason: 'placeholder path must log diagnostics once',
+      );
+      expect(recLogger.errors, isEmpty);
+    });
 
     test('user role message -> not notified', () async {
       final c = build();

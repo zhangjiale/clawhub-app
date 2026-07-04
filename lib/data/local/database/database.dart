@@ -537,9 +537,14 @@ class AppDatabase extends _$AppDatabase {
   /// Combined messages-stats query — one scan replaces [countDialogsForAgent],
   /// [getMessageCountByAgent], and [getMessageTimestampRange].
   ///
-  /// COUNT(*) always returns 0 when no rows match, so null means the
-  /// messages table has zero rows for this agent.
-  Future<({int dialogs, int messages, int? firstMsg, int? lastMsg})?>
+  /// Aggregate over `FROM messages` with no GROUP BY / UNION / EXCEPT
+  /// guarantees exactly one row (empty set → COUNT=0, MIN/MAX=null).
+  /// The MIN/MAX nullability reflects "no activity" data, not "no row",
+  /// so this method never returns null. Tightening to a non-nullable
+  /// record forces any future SQL change that could make the row disappear
+  /// (GROUP BY added, query parameter unbound, etc.) to fail at the
+  /// SQLite layer instead of silently streaming zeros through every caller.
+  Future<({int dialogs, int messages, int? firstMsg, int? lastMsg})>
   getMessageStatsForAgent(String agentId) async {
     final row = await customSelect(
       'SELECT '
@@ -549,8 +554,7 @@ class AppDatabase extends _$AppDatabase {
       'MAX(timestamp) AS last_msg '
       'FROM messages WHERE agent_id = ?',
       variables: [Variable.withString(agentId)],
-    ).getSingleOrNull();
-    if (row == null) return null;
+    ).getSingle();
     return (
       dialogs: row.read<int>('dialogs'),
       messages: row.read<int>('messages'),

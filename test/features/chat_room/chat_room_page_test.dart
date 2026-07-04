@@ -279,6 +279,93 @@ void main() {
       verify(() => orchestrator.reconnect(any())).called(1);
     });
 
+    // Audit ④ regression guard: when the user taps the retry banner on a
+    // reconnectExhausted session but the instance has been deleted mid-flight
+    // (e.g. user removed the instance from the list in another tab right
+    // before tapping retry), the orchestrator MUST NOT be asked to reconnect
+    // a non-existent entity. The fix surfaces the failure with a toast
+    // instead of silently dropping the input — previously a tap would be a
+    // no-op and the banner would stay up forever, looking like a stuck bug.
+    testWidgets(
+      'audit_④_retry_tap_withMissingInstance_toastsAndDoesNotReconnect',
+      (tester) async {
+        final agentRepo = InMemoryAgentRepo();
+        await agentRepo.syncFromGateway('inst-1', [
+          Agent(
+            localId: 'local-1',
+            remoteId: 'r-1',
+            instanceId: 'inst-1',
+            name: '产品虾',
+          ),
+        ]);
+        final messageRepo = InMemoryMessageRepo();
+        final conversationRepo = InMemoryConversationRepo();
+        // Deliberately do NOT save the instance — getById returns null,
+        // simulating the race window where the user deleted the instance
+        // from the list while a stale reconnect-exhausted banner is on
+        // screen.
+        final instanceRepo = InMemoryInstanceRepo();
+        final gateway = MockGatewayClient();
+        final orchestrator = _MockOrchestrator();
+        when(() => orchestrator.reconnect(any())).thenAnswer((_) async {});
+
+        final vm = ChatViewModel(
+          agentRepo: agentRepo,
+          conversationRepo: conversationRepo,
+          messageRepo: messageRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+          sendMessageUseCase: SendMessageUseCase(
+            messageRepo: messageRepo,
+            conversationRepo: conversationRepo,
+            instanceRepo: instanceRepo,
+            gatewayClient: gateway,
+          ),
+          instanceId: 'inst-1',
+          agentId: 'local-1',
+          achievementChecker: _MockAchievementChecker(),
+        );
+        vm.state = const ChatSessionState(
+          messages: LoadData(<Message>[]),
+          connectionState: GatewayConnectionState.reconnectExhausted,
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              chatViewModelProvider(_key).overrideWith((ref) => vm),
+              instanceRepoProvider.overrideWithValue(instanceRepo),
+              connectionOrchestratorProvider.overrideWithValue(orchestrator),
+            ],
+            child: const MaterialApp(
+              home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.tap(find.byIcon(Icons.warning_amber_rounded));
+        // Microtask + post-frame callback for the toast.
+        await tester.pump();
+        await tester.pump();
+
+        // Contract 1: the orchestrator must NOT be asked to reconnect
+        // a non-existent instance.
+        verifyNever(() => orchestrator.reconnect(any()));
+
+        // Contract 2: the user gets visible feedback (the toast) so the
+        // button doesn't feel dead. Toast overlay entry inserts via the
+        // post-frame callback in XiaToast.show.
+        expect(
+          find.text('实例不存在或已被删除'),
+          findsOneWidget,
+          reason:
+              'missing-instance retry path must toast instead of silently '
+              'failing — original audit found this anti-pattern.',
+        );
+      },
+    );
+
     testWidgets('shows history-truncated banner when instance is in '
         'catchUpTruncatedProvider', (tester) async {
       final agentRepo = InMemoryAgentRepo();

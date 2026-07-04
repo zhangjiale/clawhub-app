@@ -20,6 +20,16 @@ class _FakeLogger implements ILogger {
   void error(String message, [StackTrace? stackTrace]) {}
 }
 
+class _RecordingLogger implements ILogger {
+  final List<String> infos = [];
+  final List<String> errors = [];
+
+  @override
+  void info(String message) => infos.add(message);
+  @override
+  void error(String message, [StackTrace? stackTrace]) => errors.add(message);
+}
+
 Message _msg({
   required String serverId,
   String clientId = 'c',
@@ -185,5 +195,74 @@ void main() {
     );
     expect(e.agentId, 'a');
     expect(e.messageServerId, 's');
+  });
+
+  // -----------------------------------------------------------------------
+  // Regression guard for null-skip audit finding ②:
+  //   background_notifier_shared.dart:91 — `if (agent == null) continue;`
+  //   silently dropped messages for unresolved agents (tombstoned/hidden
+  //   per US-021, or remoteId mismatch). Before the fix there was zero
+  //   observability. Pin the new contract:
+  //   - When resolveAgent returns null, the message is NOT enqueued.
+  //   - Per-batch summary log fires ONLY when drops occurred (gated
+  //     `droppedUnresolved > 0`); healthy ticks stay silent.
+  // -----------------------------------------------------------------------
+  test(
+    'regression_guard_resolveAgentNull_dropsMessage_andLogsBatchSummary',
+    () async {
+      // Given: 3 messages for an agentId that the resolver returns null
+      // for (simulates tombstoned agent or remoteId mismatch). They
+      // would otherwise pass the notification decision.
+      final messages = List.generate(
+        3,
+        (i) => _msg(serverId: 'unresolved$i', clientId: 'uc$i'),
+      );
+      final recLogger = _RecordingLogger();
+
+      await BackgroundNotifierShared.enqueuePulled(
+        messages: messages,
+        resolveAgent: (_) => null, // ← the resolver returns null
+        prefs: _prefs(),
+        evaluator: const EvaluateNotificationUseCase(),
+        repo: repo,
+        logger: recLogger,
+      );
+
+      // Contract 1: nothing was enqueued (no enqueueBatch call).
+      verifyNever(() => repo.enqueueBatch(any()));
+      verifyNever(() => repo.enqueue(any()));
+
+      // Contract 2: one summary log line was emitted (gated, fires once
+      // per batch, not per dropped message).
+      expect(recLogger.infos.length, 1);
+      expect(recLogger.infos.single, contains('[BackgroundNotifier] dropped'));
+      expect(recLogger.infos.single, contains('dropped 3 message(s)'));
+      expect(recLogger.infos.single, contains('agentId='));
+    },
+  );
+
+  test('regression_guard_healthyBatch_noDroppedLog_emitsNothing', () async {
+    // Sanity counterpart: when every message resolves to an agent and
+    // passes the decision, the new gate must NOT spam a "dropped 0"
+    // log line — that's the design constraint (ticks fire every ~10min).
+    final messages = List.generate(
+      2,
+      (i) => _msg(serverId: 'ok$i', clientId: 'oc$i'),
+    );
+    final agent = _agent();
+    final recLogger = _RecordingLogger();
+    when(() => repo.enqueueBatch(any())).thenAnswer((_) async => []);
+
+    await BackgroundNotifierShared.enqueuePulled(
+      messages: messages,
+      resolveAgent: (_) => agent,
+      prefs: _prefs(),
+      evaluator: const EvaluateNotificationUseCase(),
+      repo: repo,
+      logger: recLogger,
+    );
+
+    // Contract: no "dropped" log on healthy batch.
+    expect(recLogger.infos, isEmpty);
   });
 }

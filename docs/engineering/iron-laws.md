@@ -400,6 +400,71 @@ expect(agents, isNotEmpty,
 
 ---
 
+### Law 18: 按键查找的 null 必须显式处理，禁止静默 swallow
+
+**规则**: 任何按 ID / 复合键查找实体（`getById`、`findByCompositeKey`、`findBy*` 等）的调用，拿到 `null` 后的行为必须显式：抛 `StateError`、`logger.error`/`info`，或返回带合法占位的值。禁止在「数据应当存在」的语境里写 `if (x == null) return;` / `if (x == null) continue;` / `?? 0` / `?? '默认'` / `?? 'Agent'`。
+
+**为什么**: 实务中两类失败会被这种反模式掩盖——
+1. **数据完整性 bug**（FK 损坏 / sync 漏流 / 错误的 null 传播）让用户体验成「消息/Agent 消失了」却零告警
+2. **`?? 0` / `?? '默认'` fallback** 让未来的 SQL / 数据模型变更悄悄穿透，bug 漂在生产数周后才被人发现
+
+**检查方式**：
+
+```dart
+// ❌ 反模式 A — 数据应当存在却静默 skip
+if (agent == null) continue;                                       // ① background_notifier_shared
+final stats = msgStats?.dialogs ?? 0;                              // ② drift_achievement_repo
+
+// ❌ 反模式 B — dead defensive（上游已保证非空）
+agent?.displayName ?? 'Agent'                                      // ③ chat_room_page
+
+**判定要点（`?? <default>` 何时不算反模式）**：`?? <default>` 仅当字段**契约声明为 non-nullable**时才是反模式（dead defensive，应删 + 收紧返回类型）；若字段契约本身声明可空（如 `firstMsg: int?` 表"零活动"语义、`parentReplyId: String?` 表 optional-FK），其 `?? default` 是合法的语义兜底，**不在此列**——但必须在类型签名上保留 `?` 以表达语义，不得用 `?? 0` 在调用侧把可空性悄悄抹掉。判据是"契约说非空却 fallback = 反模式；契约说可空且 fallback = 语义"。
+
+// ✅ 修法 1 — Service 层 / UseCase / Repository：命中 null → 抛 StateError
+final instance = await instanceRepo.getById(instanceId);
+if (instance == null) {
+  throw StateError('实例不存在: $instanceId');                       // 与现有 drift_*_repo 措辞一致
+}
+
+// ✅ 修法 2 — App 层通知/UI feedback 路径：info-level 日志 + UX 兜底
+if (agent == null) {
+  logger.info(
+    '[NotificationCoordinator] reply for unresolved agent '
+    'instanceId=$instanceId remoteId=${msg.agentId} — emitting with '
+    'placeholder',
+  );
+}
+// 保留 placeholder emit（用户仍看得见通知；优于 silent drop）
+
+// ✅ 修法 3 — Type-level 收紧：单行 aggregate 查询用 `.getSingle()`（非 `.getSingleOrNull() + ?? 0`），
+//            让 SQL 变更破坏非空性时 SQLite 直接抛错。实例：database.dart getMessageStatsForAgent
+// ✅ 修法 4 — Dead-defensive cleanup：tombstone guard 之后靠 Dart null-promotion 保证非空，
+//            直接 `.displayName`，删掉 `?.` 和 `?? 'Agent'`。⚠️ promotion invariant 须由测试锁定（Law 16B）
+```
+
+**分级标准**：
+
+| 层 | null 应如何处理 |
+|---|---|
+| Service / UseCase / Repository | 抛 `StateError('中文实体: $id')` |
+| App 层（通知 / 后台 sync） | `logger.info`/`error` + 批摘要日志（每批 1 条，非每条 1 条）|
+| Widget | dead defensive 一律清除；UI 兜底文案保持 |
+| 公开 API 签名 | 能收紧为 non-nullable 就收紧（依赖类型系统）|
+
+**throw vs log 的判据不只是"层"，更是"爆炸半径"**：当调用方处于 critical path（状态机事件处理、批同步、Outbox 重发），`throw` 会污染调用方更大范围的状态/批次时——即使你在 Repository/UseCase 层——也应降级为 `logger` + skip，并在代码注释里写明 design intent。`connection_orchestrator` 的 health persist（fix 5）即此判据实例：App 层 orchestrator 写 repo，但 throw 会打断后续 agent 同步分支，故 log + skip 优先。判据问题永远是「throw 的爆炸半径是否 > 缺实体的代价？」。
+
+**例外**：
+- **真正的 optional-FK**（如 `msg.parentReplyId`）允许返回 null + UI 兜底——但 `null` 的实际出现率应被测试断言非典型
+- **Tombstone / hidden entity**（US-021 契约）故意不在 repo 层过滤，但 notification 层必须配 `info-level` 批摘要日志，避免每条 tombstone 一个 log
+- **Cold-start race**（订阅建立后第一次回复到达早于 agent sync 完成）允许 placeholder + `info-level` 日志——UX 优先于 strict bug-finding
+- **并发设计**（如 US-Outbox 持有 offline message、SendMessage CAS-loser 返回 winner 写后的实体）：不是 swallow，是设计意图。**必须在代码注释里写明 design intent**（如 `// design intent: best-effort persist, user action takes priority`）。Code Review 里的临时说明会随 PR 合并而消失，不作数——唯有代码注释能在未来 reviewer 看到这段"违反 Law 18 字面规则"的代码时为它辩护。无注释的例外 = 反模式。
+
+**审计历程**：2026-07-04 null-skip-audit 全面扫描 → 修复 9 处反模式（见 commit `b49617e` / `974fa84` / `b516287`，编号 #1–2 / #4–6 / #9–10）+ 1 处（`send_message.dart` 的 US-Outbox 持有 + CAS-loser 默认）经 `architecture-reviewer` 验证为有意的并发设计而非反模式 + 3 个回归测试。
+
+**自动化**: 暂未加入 pre-commit grep（Law 18 的判定需要类型流分析 + 调用方上下文，grep 误报率高）。每 ~20 commits 手动全库审计时一并扫 `?? 0` / `?? '默认'` / `if (x == null) continue` / `if (x == null) return` / dead `x?.y ?? fallback` 模式。
+
+---
+
 ## 🔍 Code Review 门禁清单
 
 合并前逐条检查：
@@ -413,6 +478,7 @@ expect(agents, isNotEmpty,
 - [ ] **Law 12**: 新增 Provider 注册在 di/providers.dart 或 feature/providers/
 - [ ] **Law 16**: 新增参数化路径方法有返回值断言；新增状态机有 Fake 注入测试
 - [ ] **Law 17**: Domain/ACL 层新增 public 方法必须有先行测试；ViewModel 状态转换有测试契约；Repository/Widget 测试在同一 commit 内
+- [ ] **Law 18**: 按键查找 null 必须显式处理（throw / log / 占位）；无 silent skip / dead defensive / `?? 0` 兜底
 - [ ] **测试**: 新增 Widget 至少有 2 个测试用例
 - [ ] `flutter analyze` 零 error/warning
 - [ ] `flutter test` 全通过
@@ -440,10 +506,10 @@ import 'package:flutter/widgets.dart'; // iron-law-allow: Law1 -- needed for XYZ
 
 **逃生舱**：`git commit --no-verify` 跳过所有 hook。适用场景：原型分支、紧急 hotfix。滥用会导致 PR 被拒绝。
 
-**剩余 13 条铁律**（Law 2/3/4/5/7/9/10/12/13/14/15/16/17）依赖：
+**剩余 14 条铁律**（Law 2/3/4/5/7/9/10/12/13/14/15/16/17/18）依赖：
 1. **Claude Code 自动执行**：CLAUDE.md 在每次对话中注入铁律引用，Claude 编写代码时自动遵守
 2. **人工 Code Review**：合并前逐条检查门禁清单
-3. **定期全库审计**：每 ~20 commits 手动跑一次完整铁律审查，防止架构退化
+3. **定期全库审计**：每 ~20 commits 手动跑一次完整铁律审查（Law 18 的 grep 模式：`?? 0` / `?? '默认'` / `if (x == null) continue` / `if (x == null) return` / dead `x?.y ?? fallback`），防止架构退化
 
 ---
 

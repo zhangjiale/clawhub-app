@@ -133,9 +133,22 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final instance = await ref
         .read(instanceRepoProvider)
         .getById(widget.instanceId);
-    if (instance != null && mounted) {
-      await ref.read(connectionOrchestratorProvider).reconnect(instance);
+    if (instance == null) {
+      // 实例在用户进入 chat 后被删除（race：删除按钮和重试按钮几乎同时按下）。
+      // 之前静默无反应，让用户以为按钮死了 / 应用卡了。
+      // 现在打日志 + 弹 toast，让用户知道实例已不存在并返回。
+      debugPrint(
+        '[ChatRoom] retry tap no-op: instance ${widget.instanceId} not found',
+      );
+      if (mounted) {
+        // Toast 跨 frame 安全：在 build 期间不能 push 新路由/SnackBar，
+        // 但 XiaToast 自身有 addPostFrameCallback 包裹，这里直接调用即可。
+        XiaToast.show(context, '实例不存在或已被删除');
+      }
+      return;
     }
+    if (!mounted) return;
+    await ref.read(connectionOrchestratorProvider).reconnect(instance);
   }
 
   /// "+" 附件入口：相册/拍照用 [IAttachmentPickerService.pickImage]，
@@ -511,7 +524,14 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                     LoadData(:final value) => _buildMessageList(
                       value,
                       session.toolCalls,
-                      agent?.displayName ?? 'Agent',
+                      // The tombstone guard at the top of build() (returns
+                      // AgentRemovedPlaceholder) proves `agent != null`, but
+                      // Dart's flow analysis doesn't carry that promotion
+                      // across the intervening ref.watch / ref.listen block,
+                      // so we re-assert here. The `?? 'Agent'` fallback the
+                      // original used was unreachable defensive code —
+                      // tombstoned agents short-circuit at the top.
+                      agent!.displayName,
                       theme,
                       session.highlightedMessageId,
                     ),
@@ -522,7 +542,10 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                 if (session.streamingText.isNotEmpty)
                   StreamingBubble(
                     text: session.streamingText,
-                    agentName: agent?.displayName ?? 'Agent',
+                    // See comment at line ~528 — `agent!` is asserted
+                    // non-null; the tombstone guard makes the
+                    // `?? 'Agent'` fallback unreachable.
+                    agentName: agent!.displayName,
                   )
                 // Thinking indicator — show dots while waiting for first text
                 else if (session.thinkingState == ThinkingState.thinking)

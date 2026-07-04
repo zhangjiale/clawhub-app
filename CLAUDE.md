@@ -175,7 +175,7 @@ Key docs for AI-assisted development. Paths relative to repo root unless noted.
 
 ### Iron Laws
 
-Before any code change, verify compliance with `docs/engineering/iron-laws.md` (17 unbreakable coding rules). Key constraints:
+Before any code change, verify compliance with `docs/engineering/iron-laws.md` (18 unbreakable coding rules). Key constraints:
 - **Law 1**: `lib/domain/` must have zero Flutter/Riverpod/drift imports
 - **Law 2**: Widgets render UI only — no business logic or direct API calls
 - **Law 4**: Never bridge ValueNotifier + addListener + setState; use StateNotifier/Notifier + ref.watch
@@ -183,6 +183,7 @@ Before any code change, verify compliance with `docs/engineering/iron-laws.md` (
 - **Law 11**: Any list >20 items must use `ListView.builder`
 - **Law 14**: Every new widget needs ≥2 tests
 - **Law 17**: Layered TDD — Domain/ACL must write tests first; ViewModel should; Repository/Widget no later than same commit
+- **Law 18**: Keyed-lookup nulls (`getById`/`findBy*`) must be explicit — throw `StateError` / log / placeholder; no silent skip or dead-defensive `?? default` on non-nullable-contract fields (concurrency-design exceptions need an in-code comment)
 
 ### TDD Enforcement Rule
 

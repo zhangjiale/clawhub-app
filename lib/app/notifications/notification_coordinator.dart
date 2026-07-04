@@ -221,6 +221,20 @@ class NotificationCoordinator {
         );
         return;
       }
+      if (agent == null) {
+        // Real-time message for an agent we don't have locally. Most common
+        // cause: cold-start race — first reply arrives before agent sync
+        // completes. We keep the placeholder ('虾') + remoteId fallback so
+        // the user still sees the notification (better UX than silent drop),
+        // but log for diagnostics — a sustained stream of these on an
+        // instance with agents synced locally would indicate a remoteId
+        // mismatch bug worth investigating.
+        logger.info(
+          '[NotificationCoordinator] reply for unresolved agent '
+          'instanceId=$instanceId remoteId=${msg.agentId} — emitting '
+          'with placeholder',
+        );
+      }
       final agentName = agent?.displayName ?? '虾';
       final localId = agent?.localId ?? msg.agentId;
 
@@ -271,8 +285,25 @@ class NotificationCoordinator {
   Future<String> _resolveInstanceName(String instanceId) async {
     try {
       final inst = await instanceRepo.getById(instanceId);
-      return inst?.name ?? '实例';
-    } catch (_) {
+      if (inst == null) {
+        // 实例在订阅建立后被删除 — race window。info-level 因为这是预期
+        // 状态（用户在订阅期间删了实例），不是 bug，但之前 silent 让开发
+        // 无法观察 race 频率。
+        logger.info(
+          '[NotificationCoordinator] instance name unavailable: '
+          '$instanceId not found',
+        );
+        return '实例';
+      }
+      return inst.name;
+    } catch (e, st) {
+      // DB 失败 — error-level，因为这是真异常。保留 '实例' fallback
+      // 不破坏 ConnectionChangeEvent 的 String 契约（_onConnectionState
+      // 调用方直接传入 instanceName 字段，nullable 会破类型）。
+      logger.error(
+        '[NotificationCoordinator] instance name lookup failed: $e',
+        st,
+      );
       return '实例';
     }
   }

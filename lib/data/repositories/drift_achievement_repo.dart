@@ -92,14 +92,19 @@ class DriftAchievementRepo implements IAchievementRepo {
 
     final msgStats =
         results[0]
-            as ({int dialogs, int messages, int? firstMsg, int? lastMsg})?;
+            as ({int dialogs, int messages, int? firstMsg, int? lastMsg});
     final totalToolCalls = results[1] as int;
     final dayBuckets = results[2] as List<int>;
 
     return AgentStats(
       agentId: agentId,
-      totalDialogs: msgStats?.dialogs ?? 0,
-      totalMessages: msgStats?.messages ?? 0,
+      // 数据库层的 getMessageStatsForAgent 已经收紧为非空 aggregate
+      // (database.dart 注释解释了 SQL 永远返回一行)。之前 `?? 0` 是
+      // 防御型可达性为零的死代码——一个未来 SQL 改动让它真正可触达时,
+      // 会直接 0/0 静默穿透。现类型层面保证调用方要么拿到真值,要么让
+      // SQLite 抛错。
+      totalDialogs: msgStats.dialogs,
+      totalMessages: msgStats.messages,
       totalToolCalls: totalToolCalls,
       activeDays: dayBuckets.length,
       // 上下游都用 millisecond day-indexes (86400000 ms)。原 spec 用了
@@ -109,8 +114,10 @@ class DriftAchievementRepo implements IAchievementRepo {
         dayBuckets,
         todayBucket: DateTime.now().millisecondsSinceEpoch ~/ 86400000,
       ),
-      firstDialogDate: msgStats?.firstMsg,
-      lastDialogDate: msgStats?.lastMsg,
+      // firstMsg / lastMsg 合法可以为 null (零活动) —— 与 dialogs /
+      // messages 区别在于语义,不是反 defensive-skip。
+      firstDialogDate: msgStats.firstMsg,
+      lastDialogDate: msgStats.lastMsg,
     );
   }
 }

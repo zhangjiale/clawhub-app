@@ -281,7 +281,13 @@ class _AgentListContent extends StatelessWidget {
     return switch (item) {
       _StatsItem(:final statsAsync) => statsAsync.when(
         loading: () => const SizedBox.shrink(),
-        error: (_, _) => const SizedBox.shrink(),
+        error: (e, st) {
+          // 之前 stats 失败渲染空盒子 — 用户/开发者都看不到。补日志让
+          // achievement 服务的抖动能在 dev log 浮现 (例如 SQL 列变更、
+          // drift 迁移遗漏)。生产保留 shrink UI 不打扰用户。
+          debugPrint('[AgentList] stats load failed: $e\n$st');
+          return const SizedBox.shrink();
+        },
         data: (stats) => InlineStats(
           items: [
             InlineStatItem(

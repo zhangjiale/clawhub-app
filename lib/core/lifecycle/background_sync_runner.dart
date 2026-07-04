@@ -323,7 +323,16 @@ class BackgroundSyncRunner {
 
     // Notify dispatcher with inserted messages only.
     // Only dispatch if the agent is not tombstoned (resolver returns non-null).
-    if (resolveAgent(agent.remoteId) != null) {
+    if (resolveAgent(agent.remoteId) == null) {
+      // 与 background_notifier_shared.dart 中的 per-message 静默 continue
+      // 对齐：tombstone/hidden agent 的整批通知被有意丢弃，但留日志用于
+      // 观察 "X 个 instance 的 Y 个 tombstone agent 全部没出通知" 这种模式
+      // ——之前 silent 让发现这个规律只能事后 user report + DB 排查。
+      logger.info(
+        '[BackgroundSync] skip dispatcher.handlePulledMessages for '
+        'tombstoned/hidden agent ${agent.remoteId} on ${instance.id}',
+      );
+    } else {
       await dispatcher.handlePulledMessages(
         messages: inserted,
         resolveAgent: resolveAgent,
