@@ -566,9 +566,20 @@ class ConnectionManager {
             debugPrint('[CM] Incoming ERROR response — id=$id, raw=$raw');
           }
           final completer = _pendingRequests.remove(id);
-          if (completer != null && !completer.isCompleted) {
-            completer.complete(frame);
+          if (completer == null || completer.isCompleted) {
+            // Protocol contract: every res must reference a registered req.
+            // null → unknown id (server bug, or response arrived after
+            //   client-side timeout cleared the pending entry).
+            // isCompleted → duplicate response.
+            // Previously the frame body (incl. any server-side error
+            // payload) was discarded silently — now logged for diagnostics.
+            debugPrint(
+              '[CM] Ignoring response for unknown/duplicate id=$id '
+              'ok=$ok raw=$raw',
+            );
+            return;
           }
+          completer.complete(frame);
 
         case EventFrame(:final event, :final payload):
           _handleEvent(event, payload);

@@ -76,6 +76,15 @@ class BackgroundNotifierShared {
     // regardless. With batching, the catch footprint shrinks from
     // "N blocks of try/catch logging" to one.
     final queued = <(PendingNotification, String)>[]; // (row, dedupKey)
+    // Per-batch counter for messages dropped because the resolver returned
+    // null. resolveAgent returns null when (a) the agent is tombstoned /
+    // hidden (US-021 design), or (b) msg.agentId doesn't match any agent in
+    // the freshly-loaded in-memory map (data-integrity bug). Before this
+    // counter, both cases disappeared silently. We log only when drops
+    // occurred (healthy ticks stay silent — see gate below).
+    var droppedUnresolved = 0;
+    String? droppedSampleAgentId;
+
     for (final msg in messages) {
       // Only agent messages trigger notifications.
       if (msg.role != MessageRole.agent) continue;
@@ -88,7 +97,11 @@ class BackgroundNotifierShared {
       // knows the instance and closes over it when building resolveAgent, so
       // the lookup only needs the agentId (remote ID) carried on the message.
       final agent = resolveAgent(msg.agentId);
-      if (agent == null) continue;
+      if (agent == null) {
+        droppedUnresolved++;
+        droppedSampleAgentId ??= msg.agentId;
+        continue;
+      }
 
       // event.agentId MUST be the agent's LOCAL id (not remoteId) to match
       // the live DND path (notification_coordinator._onMessage builds
@@ -119,6 +132,17 @@ class BackgroundNotifierShared {
         ),
         msg.serverId ?? msg.clientId,
       ));
+    }
+
+    // Gated: only log when drops actually happened. Background ticks fire
+    // every ~10 min (WorkManager), so emitting "0 dropped" 6×/day/agent is
+    // unacceptable noise on healthy systems.
+    if (droppedUnresolved > 0) {
+      logger.info(
+        '[BackgroundNotifier] dropped $droppedUnresolved message(s) for '
+        'unresolved agents (first sample agentId=$droppedSampleAgentId) — '
+        'tombstoned/hidden or remoteId mismatch',
+      );
     }
 
     if (queued.isEmpty) return;
