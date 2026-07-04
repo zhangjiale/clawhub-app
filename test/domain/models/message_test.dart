@@ -280,6 +280,87 @@ void main() {
         expect(image.fileSize, isNull);
         expect(image.imageUrl, isNull);
       });
+
+      group('displayCaption', () {
+        // displayCaption 把「用户图取 metadata.caption；Agent 回图取 content
+        // (图片描述)」这一存储约定集中在 domain，widget 只读取单一 getter。
+        test('用户图: 取 metadata.caption', () {
+          final image = Message(
+            clientId: 'c-img',
+            conversationId: 'conv-001',
+            agentId: 'agent-local-1',
+            role: MessageRole.user,
+            content: '/tmp/img.jpg',
+            type: MessageType.image,
+            logicalClock: 1,
+            metadata: const {'caption': '看这张'},
+          );
+
+          expect(image.displayCaption, '看这张');
+        });
+
+        test('Agent 回图: 无 caption 时回退到 content(图片描述)', () {
+          final agentImage = Message(
+            clientId: 'c-agent-img',
+            conversationId: 'conv-001',
+            agentId: 'agent-local-1',
+            role: MessageRole.agent,
+            content: '这是一只虾的插图',
+            type: MessageType.image,
+            logicalClock: 1,
+            metadata: const {'imageUrl': 'https://example.com/x.png'},
+          );
+
+          expect(agentImage.displayCaption, '这是一只虾的插图');
+        });
+
+        test('Agent 回图: caption 优先于 content', () {
+          final agentImage = Message(
+            clientId: 'c-agent-img',
+            conversationId: 'conv-001',
+            agentId: 'agent-local-1',
+            role: MessageRole.agent,
+            content: 'fallback desc',
+            type: MessageType.image,
+            logicalClock: 1,
+            metadata: const {
+              'imageUrl': 'https://example.com/x.png',
+              'caption': '显式 caption',
+            },
+          );
+
+          expect(agentImage.displayCaption, '显式 caption');
+        });
+
+        test('Agent 回图: content 为空时返回 null', () {
+          final agentImage = Message(
+            clientId: 'c-agent-img',
+            conversationId: 'conv-001',
+            agentId: 'agent-local-1',
+            role: MessageRole.agent,
+            content: '',
+            type: MessageType.image,
+            logicalClock: 1,
+            metadata: const {'imageUrl': 'https://example.com/x.png'},
+          );
+
+          expect(agentImage.displayCaption, isNull);
+        });
+
+        test('无 imageUrl 且无 caption 时返回 null', () {
+          final text = Message(
+            clientId: 'c-text',
+            conversationId: 'conv-001',
+            agentId: 'agent-local-1',
+            role: MessageRole.user,
+            content: 'hi',
+            type: MessageType.text,
+            logicalClock: 1,
+          );
+
+          expect(text.displayCaption, isNull);
+        });
+      });
     });
 
     group('消息去重', () {

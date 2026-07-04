@@ -130,17 +130,17 @@ class GatewayEventProcessor {
 
     final bufferKey = '$instanceId:$sessionKey';
 
-    // Unconditional turn-boundary clear of the finalized flag: registerSend
-    // fires on every user send, marking a new turn for this session. Without
-    // this, old Gateways (no runId → _resetTurnForSession skipped below, no
-    // lifecycle.start) would see _finalizedSessions persist from the prior
-    // turn and drop THIS turn's chat.final as a duplicate. When runId IS
-    // present, _resetTurnForSession below already clears it (plus buffer /
-    // delta-source / active runId); this line covers the no-runId path.
-    _finalizedSessions.remove(bufferKey);
-
+    // Turn-boundary clear of the finalized flag: registerSend fires on every
+    // user send, marking a new turn for this session. Without this, old
+    // Gateways (no runId → _resetTurnForSession skipped, no lifecycle.start)
+    // would see _finalizedSessions persist from the prior turn and drop THIS
+    // turn's chat.final as a duplicate. When runId IS present,
+    // _resetTurnForSession clears it (plus buffer / delta-source / active
+    // runId); the else branch covers the no-runId path.
     if (runId != null) {
       _resetTurnForSession(bufferKey, runId);
+    } else {
+      _finalizedSessions.remove(bufferKey);
     }
 
     // Periodic GC: age out abandoned streaming buffers (mid-stream turns
@@ -296,7 +296,7 @@ class GatewayEventProcessor {
           if (source != 'chat') break;
 
           // Resolve agentId from sessionKey (explicit mapping → string parse)
-          final agentId = _resolveAgentId(event.sessionKey, _sessionToAgentId);
+          final agentId = _resolveAgentId(event.sessionKey);
           if (agentId == null) return; // unresolvable, drop event
 
           // Push typed streaming event to UI
@@ -333,7 +333,7 @@ class GatewayEventProcessor {
           final msgJson = event.message;
           agentId =
               msgJson?['agentId'] as String? ??
-              _resolveAgentId(event.sessionKey, _sessionToAgentId);
+              _resolveAgentId(event.sessionKey);
 
           if (msgJson != null) {
             // chat final event 自带完整 message，直接解析
@@ -450,10 +450,7 @@ class GatewayEventProcessor {
             final source = _deltaSource.putIfAbsent(bufferKey, () => 'agent');
             if (source != 'agent') break;
 
-            final agentId = _resolveAgentId(
-              event.sessionKey,
-              _sessionToAgentId,
-            );
+            final agentId = _resolveAgentId(event.sessionKey);
             if (agentId == null) break;
             if (!conn.streamingCtrl.isClosed) {
               conn.streamingCtrl.add(
@@ -518,10 +515,7 @@ class GatewayEventProcessor {
             // session as finalized here would cause chat.final — which
             // carries the complete msgJson — to see the key already
             // present and silently discard the full agent reply.
-            final agentId = _resolveAgentId(
-              event.sessionKey,
-              _sessionToAgentId,
-            );
+            final agentId = _resolveAgentId(event.sessionKey);
             // Build final message from accumulated buffer.
             // Guard against empty buffer — matches _onChatEvent fallback
             // to prevent empty agent bubbles when no deltas were
@@ -566,12 +560,12 @@ class GatewayEventProcessor {
   /// Delegates to the pure protocol-level [resolveAgentId] function, then
   /// logs via [_logger] when resolution fails — keeping the protocol
   /// function free of Flutter/side-effect dependencies.
-  String? _resolveAgentId(String sessionKey, Map<String, String> mapping) {
-    final result = resolveAgentId(sessionKey, mapping);
+  String? _resolveAgentId(String sessionKey) {
+    final result = resolveAgentId(sessionKey, _sessionToAgentId);
     if (result == null) {
       _logger.error(
         '[WsGateway] Cannot resolve agentId from sessionKey: '
-        '"$sessionKey" — mapping contains ${mapping.length} entries',
+        '"$sessionKey" — mapping contains ${_sessionToAgentId.length} entries',
       );
     }
     return result;

@@ -1,12 +1,12 @@
 import 'dart:io';
 
-import 'package:claw_hub/core/utils/attachment_image_resolver.dart';
+import 'package:claw_hub/ui_kit/attachment_image_resolver.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Unit tests for [resolveAttachmentImage].
 ///
-/// Law 17 (test-first for core/utils — recommended, not strictly mandated).
+/// Law 17 (test-first for ui_kit helpers — recommended, not strictly mandated).
 /// This file was created BEFORE its source counterpart (`attachment_image_resolver.dart`)
 /// to satisfy the RED→GREEN flow.
 void main() {
@@ -107,6 +107,33 @@ void main() {
           expect(provider, isNotNull);
         },
       );
+    });
+
+    // -------------------------------------------------------------------------
+    // data: URL decode cache: the same data: URL must return the SAME
+    // ImageProvider instance across calls. This is what lets Flutter's
+    // ImageCache dedup (MemoryImage == is identity-based) and avoids
+    // re-running base64Decode + image decode on every chat-list rebuild
+    // (which fires ~6×/sec during streaming).
+    // -------------------------------------------------------------------------
+    group('data: URL decode cache', () {
+      test('same data: URL returns identical ImageProvider across calls', () {
+        // Distinct URL so prior tests' cache entries don't influence this.
+        const dataUrl =
+            'data:image/png;base64,'
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+P///38GAwACvAEB1YwAAAAASUVORK5CYII=';
+        final p1 = resolveAttachmentImage(imageUrl: dataUrl);
+        final p2 = resolveAttachmentImage(imageUrl: dataUrl);
+
+        expect(p1, isA<MemoryImage>());
+        expect(
+          identical(p1, p2),
+          isTrue,
+          reason:
+              'same data: URL must return the same MemoryImage instance so '
+              'ImageCache hits and base64Decode runs once, not per rebuild',
+        );
+      });
     });
   });
 }

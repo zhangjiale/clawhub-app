@@ -22,8 +22,19 @@ import 'package:flutter/painting.dart';
 ///   fires and renders the broken-image placeholder, rather than crashing
 ///   the widget tree with a [FormatException].
 ///
-/// This is a pure function (no side effects, no I/O beyond lazy File handle
-/// construction in [FileImage] — actual read happens in the image pipeline).
+/// Lives in `ui_kit/` (not `core/utils/`) because it returns a Flutter
+/// [ImageProvider] and holds a small decode cache — it is not a pure-Dart
+/// utility and must not be imported from `domain/` or `data/`.
+///
+/// **`data:` URL caching**: [MessageImageContent] rebuilds on every
+/// [ChatSessionState] change (including rapid streaming-text updates). Without
+/// caching, each rebuild re-runs [base64Decode] (synchronous, MB-scale) on the
+/// UI isolate AND returns a fresh [MemoryImage] whose identity-based `==`
+/// defeats Flutter's [ImageCache] — so the image is re-decoded too. Returning
+/// the same [MemoryImage] instance for a given `data:` URL makes [ImageCache]
+/// hit, skipping both costs after the first decode. Network/file paths are NOT
+/// cached here: [NetworkImage] and [FileImage] already override `==`/hashCode
+/// by URL/path, so [ImageCache] dedups them without help.
 ImageProvider? resolveAttachmentImage({String? imageUrl, String? imagePath}) {
   if (imageUrl != null && imageUrl.isNotEmpty) {
     if (imageUrl.startsWith('data:')) {
@@ -37,13 +48,39 @@ ImageProvider? resolveAttachmentImage({String? imageUrl, String? imagePath}) {
   return null;
 }
 
-/// Decodes a `data:` URL to an [ImageProvider].
+/// Bounded LRU cache of decoded `data:` URL image providers (see doc above).
+///
+/// Insertion-ordered [Map] used as an LRU: a cache hit is moved to the end
+/// (most-recently-used) via remove + re-insert; eviction drops `keys.first`
+/// (least-recently-used). 16 entries bounds raw-bytes retention (data URLs can
+/// be MB-scale) while covering a conversation's visible inline-image bubbles.
+const int _dataUrlImageCacheLimit = 16;
+final Map<String, ImageProvider> _dataUrlImageCache = {};
+
+/// Decodes a `data:` URL to an [ImageProvider], memoized per URL.
 ///
 /// Format: `data:<mime>;base64,<payload>` or `data:<mime>,<url-encoded>`.
 /// - base64 path: [base64Decode] the payload → [MemoryImage].
 /// - non-base64 path: parse via [Uri.dataFromString] → [MemoryImage].
 /// - corrupt input: return [MemoryImage] with empty bytes (errorBuilder path).
 ImageProvider _dataUrlToImageProvider(String dataUrl) {
+  final cached = _dataUrlImageCache[dataUrl];
+  if (cached != null) {
+    // LRU refresh: move to most-recently-used so the entry survives eviction.
+    _dataUrlImageCache.remove(dataUrl);
+    _dataUrlImageCache[dataUrl] = cached;
+    return cached;
+  }
+
+  final provider = _decodeDataUrl(dataUrl);
+  if (_dataUrlImageCache.length >= _dataUrlImageCacheLimit) {
+    _dataUrlImageCache.remove(_dataUrlImageCache.keys.first);
+  }
+  _dataUrlImageCache[dataUrl] = provider;
+  return provider;
+}
+
+ImageProvider _decodeDataUrl(String dataUrl) {
   final comma = dataUrl.indexOf(',');
   if (comma < 0) {
     // Malformed (no comma) — let errorBuilder render _BrokenImage.

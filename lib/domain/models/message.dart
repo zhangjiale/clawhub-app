@@ -100,6 +100,18 @@ class Message {
   /// Agent 回图的图片 URL（data: URL 或 https URL，响应侧）。
   String? get imageUrl => metadata?['imageUrl'] as String?;
 
+  /// 图片气泡的显示说明（SSOT：集中「存储约定」于 domain，widget 只读取）。
+  ///
+  /// - 用户发图: 取 `metadata.caption`（用户在附件 sheet 填的说明）。
+  /// - Agent 回图: 无 caption 时回退到 [content]（Gateway 把图片描述文本放
+  ///   在 content，见存储约定注释）。
+  /// - 其余情况（无 imageUrl 且无 caption）返回 null，widget 不渲染说明行。
+  String? get displayCaption =>
+      caption ??
+      (imageUrl != null && content != null && content!.isNotEmpty
+          ? content
+          : null);
+
   Message copyWith({
     String? clientId,
     Object? serverId = CopyWithSentinel.instance,

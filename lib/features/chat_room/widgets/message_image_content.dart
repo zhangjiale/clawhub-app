@@ -1,5 +1,5 @@
 import 'package:claw_hub/app/theme/tokens.dart';
-import 'package:claw_hub/core/utils/attachment_image_resolver.dart';
+import 'package:claw_hub/ui_kit/attachment_image_resolver.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:flutter/material.dart';
 
@@ -43,15 +43,9 @@ class MessageImageContent extends StatelessWidget {
         ),
       );
     }
-    // caption: user image from metadata.caption; Agent 回图 from content
-    // (the image description text).
-    final caption =
-        message.caption ??
-        (message.imageUrl != null &&
-                message.content != null &&
-                message.content!.isNotEmpty
-            ? message.content
-            : null);
+    // caption 由 domain getter 统一解析（用户图取 metadata.caption；
+    // Agent 回图取 content 作图片描述）。
+    final caption = message.displayCaption;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,

@@ -10,7 +10,6 @@ import '../i_logger.dart';
 import 'attachment_encoder.dart';
 import 'connection_manager.dart';
 import 'device_identity.dart';
-import 'gateway_connection_factory.dart';
 import 'gateway_domain_mapper.dart';
 import 'gateway_event_processor.dart';
 import 'gateway_instance_connection.dart';
@@ -62,10 +61,12 @@ class WsGatewayClient implements IGatewayClient {
   /// re-pair each time.  Production should always inject.
   final IDeviceTokenStore? _deviceTokenStore;
 
-  /// Factory for creating per-instance [ConnectionManager]s.
-  /// Encapsulates the optional WebSocket/timer/token-store injection
-  /// details so the client core only calls [GatewayConnectionFactory.create].
-  final GatewayConnectionFactory _connectionFactory;
+  /// Optional WebSocket / timer factories — test injection only. Production
+  /// leaves them null (ConnectionManager defaults). Passed straight through to
+  /// each per-instance [ConnectionManager] constructed in [connect] /
+  /// [testConnection].
+  final WebSocketChannel Function(Uri)? _webSocketFactory;
+  final TimerFactory? _timerFactory;
 
   /// 创建 WebSocket Gateway 客户端。
   ///
@@ -84,8 +85,8 @@ class WsGatewayClient implements IGatewayClient {
   WsGatewayClient({
     required this._identityProvider,
     ConnectionConfig? config,
-    WebSocketChannel Function(Uri)? webSocketFactory,
-    TimerFactory? timerFactory,
+    this._webSocketFactory,
+    this._timerFactory,
     this._modelIdentifierLoader,
     this._deviceTokenStore,
     ILogger? logger,
@@ -95,11 +96,6 @@ class WsGatewayClient implements IGatewayClient {
          uuid: const Uuid(),
          mapper: GatewayDomainMapper(),
          logger: logger ?? const DebugPrintLogger(),
-       ),
-       _connectionFactory = GatewayConnectionFactory(
-         webSocketFactory: webSocketFactory,
-         timerFactory: timerFactory,
-         deviceTokenStore: _deviceTokenStore,
        );
 
   /// instanceId → 实例连接
@@ -128,8 +124,7 @@ class WsGatewayClient implements IGatewayClient {
   /// **Major #3 修复**：原为 `@visibleForTesting` 实例方法,会扩大
   /// WsGatewayClient 的公共 API 表面（外部可合法访问）。改为私有方法
   /// + static seam `resolveConfigForTesting` 暴露给测试,与项目其他
-  /// `@visibleForTesting` static seam 模式对齐（`extractTextContent`
-  /// / `isTestTerminalState` / `setTestState` / `setTestChannel`）。
+  /// `@visibleForTesting` static seam 模式对齐（`isTestTerminalState`）。
   ///
   /// Loader 抛异常或返回 null 都被吞掉:connect 路径始终拿到有效
   /// config,协议层在 `modelIdentifier` 为 null 时自动跳过该字段。
@@ -199,12 +194,15 @@ class WsGatewayClient implements IGatewayClient {
       // 会导致 manager 被创建但永远不会加入 _connections，泄漏。
       if (_isDisposed) return;
 
-      final manager = _connectionFactory.create(
+      final manager = ConnectionManager(
         instanceId: instance.id,
         gatewayUrl: instance.gatewayUrl,
         token: instance.tokenRef,
         deviceId: identity.deviceId,
         config: config,
+        webSocketFactory: _webSocketFactory,
+        timerFactory: _timerFactory,
+        deviceTokenStore: _deviceTokenStore,
       );
 
       // 复用已有的流控制器（若有），否则创建新的
@@ -450,12 +448,15 @@ class WsGatewayClient implements IGatewayClient {
     final config = await _resolveEffectiveConfig(identity);
     // **Minor #3 修复（Step 6 扩展）**：同上，await 期间可能 dispose。
     if (_isDisposed) return false;
-    final testManager = _connectionFactory.create(
+    final testManager = ConnectionManager(
       instanceId: testId,
       gatewayUrl: instance.gatewayUrl,
       token: instance.tokenRef,
       deviceId: identity.deviceId,
       config: config,
+      webSocketFactory: _webSocketFactory,
+      timerFactory: _timerFactory,
+      deviceTokenStore: _deviceTokenStore,
     );
 
     try {

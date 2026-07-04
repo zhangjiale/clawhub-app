@@ -1,5 +1,6 @@
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/utils/format_bytes.dart';
 import 'package:flutter/material.dart';
 
 /// Renders the file-attachment portion of a chat message bubble.
@@ -58,7 +59,7 @@ class MessageFileContent extends StatelessWidget {
                 ),
                 if (size != null)
                   Text(
-                    _formatSize(size),
+                    formatBytes(size),
                     style: TextStyle(
                       color: isUser ? Colors.white70 : XiaColors.text3,
                       fontSize: 11,
@@ -70,11 +71,5 @@ class MessageFileContent extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  static String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
   }
 }

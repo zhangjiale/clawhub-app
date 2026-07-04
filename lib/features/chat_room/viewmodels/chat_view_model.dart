@@ -983,20 +983,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// 预览文本与用户侧共用 [_sendMessageUseCase.generatePreview]，确保
   /// 「你:」前缀、Markdown 去除、截断等规则两侧完全一致。
   ///
-  /// 两道护栏（避免把预览写坏）：
-  /// - 仅对人类可读的消息类型生效。[MessageType.toolCall] 走专用 UI，
-  ///   其预览是字面量 `[工具调用]`，若覆盖会话预览会让消息中心列表显示
-  ///   无意义的「[工具调用]」而非真正的最后一句对话。
+  /// 一道护栏（避免把预览写坏）：
   /// - 仅当新消息不早于当前会话尾端时才覆盖 [Conversation.lastMessageTime]。
   ///   messageStream 是广播流，乱序/重发的旧事件会触发本方法；若无此护栏，
   ///   一条迟到的旧消息会把会话在列表里「拉回过去」（lastMessageTime 驱动
   ///   消息中心的 DESC 排序）。
+  ///
+  /// toolCall 过滤由上游 [PreviewUpdater.schedule] 统一承担（它是本方法唯一
+  /// 调用方，经 `onFlush` 回调进入），故此处不再重复 guard。
   Future<void> _updateConversationPreview(Message message) async {
-    // 护栏 1：toolCall 等非对话消息不更新预览。
-    if (message.type == MessageType.toolCall) return;
-
     try {
-      // 护栏 2：乱序/重发旧消息不得回卷 lastMessageTime。
+      // 护栏：乱序/重发旧消息不得回卷 lastMessageTime。
       final current = await _conversationRepo.getById(_conversationId);
       if (current != null &&
           message.timestamp < current.lastMessageTime &&
