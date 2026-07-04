@@ -418,10 +418,7 @@ final stats = msgStats?.dialogs ?? 0;                              // ② drift_
 // ❌ 反模式 B — dead defensive（上游已保证非空）
 agent?.displayName ?? 'Agent'                                      // ③ chat_room_page
 
-// ❌ 反模式 C — silent unknown-id swallow
-if (completer != null && !completer.isCompleted) {
-  completer.complete(frame);                                       // 未完成帧 + 错误体一并丢弃
-}
+**判定要点（`?? <default>` 何时不算反模式）**：`?? <default>` 仅当字段**契约声明为 non-nullable**时才是反模式（dead defensive，应删 + 收紧返回类型）；若字段契约本身声明可空（如 `firstMsg: int?` 表"零活动"语义、`parentReplyId: String?` 表 optional-FK），其 `?? default` 是合法的语义兜底，**不在此列**——但必须在类型签名上保留 `?` 以表达语义，不得用 `?? 0` 在调用侧把可空性悄悄抹掉。判据是"契约说非空却 fallback = 反模式；契约说可空且 fallback = 语义"。
 
 // ✅ 修法 1 — Service 层 / UseCase / Repository：命中 null → 抛 StateError
 final instance = await instanceRepo.getById(instanceId);
@@ -439,23 +436,10 @@ if (agent == null) {
 }
 // 保留 placeholder emit（用户仍看得见通知；优于 silent drop）
 
-// ✅ 修法 3 — Type-level 收紧：未来 SQL 变更破坏单行 aggregate 的非空性时
-//            让 SQLite 抛错而非静默返回 0/0
-Future<({int dialogs, int messages, int? firstMsg, int? lastMsg})>
-  getMessageStatsForAgent(String agentId) async {
-  final row = await customSelect('SELECT ... FROM messages WHERE agent_id = ?', ...)
-      .getSingle();        // 不是 .getSingleOrNull() + null check
-  ...
-}
-
-// ✅ 修法 4 — Dead-defensive cleanup
-final agent = vm.agent;
-if (agent.isTombstoned) {
-  return AgentRemovedPlaceholder(agentName: agent.displayName, ...);
-}
-// 此后 agent! 由 Dart null-promotion（或上游 invariant）保证非空，
-// 直接 .displayName，不要 `?.` 也不要 `?? 'Agent'`
-return _buildMessageList(..., agent.displayName, ...);
+// ✅ 修法 3 — Type-level 收紧：单行 aggregate 查询用 `.getSingle()`（非 `.getSingleOrNull() + ?? 0`），
+//            让 SQL 变更破坏非空性时 SQLite 直接抛错。实例：database.dart getMessageStatsForAgent
+// ✅ 修法 4 — Dead-defensive cleanup：tombstone guard 之后靠 Dart null-promotion 保证非空，
+//            直接 `.displayName`，删掉 `?.` 和 `?? 'Agent'`。⚠️ promotion invariant 须由测试锁定（Law 16B）
 ```
 
 **分级标准**：
@@ -467,13 +451,15 @@ return _buildMessageList(..., agent.displayName, ...);
 | Widget | dead defensive 一律清除；UI 兜底文案保持 |
 | 公开 API 签名 | 能收紧为 non-nullable 就收紧（依赖类型系统）|
 
+**throw vs log 的判据不只是"层"，更是"爆炸半径"**：当调用方处于 critical path（状态机事件处理、批同步、Outbox 重发），`throw` 会污染调用方更大范围的状态/批次时——即使你在 Repository/UseCase 层——也应降级为 `logger` + skip，并在代码注释里写明 design intent。`connection_orchestrator` 的 health persist（fix 5）即此判据实例：App 层 orchestrator 写 repo，但 throw 会打断后续 agent 同步分支，故 log + skip 优先。判据问题永远是「throw 的爆炸半径是否 > 缺实体的代价？」。
+
 **例外**：
 - **真正的 optional-FK**（如 `msg.parentReplyId`）允许返回 null + UI 兜底——但 `null` 的实际出现率应被测试断言非典型
 - **Tombstone / hidden entity**（US-021 契约）故意不在 repo 层过滤，但 notification 层必须配 `info-level` 批摘要日志，避免每条 tombstone 一个 log
 - **Cold-start race**（订阅建立后第一次回复到达早于 agent sync 完成）允许 placeholder + `info-level` 日志——UX 优先于 strict bug-finding
-- **并发设计**（如 US-Outbox 持有 offline message、SendMessage CAS-loser 返回 winner 写后的实体）：不是 swallow，是设计意图。要在 Code Review 注释里说明
+- **并发设计**（如 US-Outbox 持有 offline message、SendMessage CAS-loser 返回 winner 写后的实体）：不是 swallow，是设计意图。**必须在代码注释里写明 design intent**（如 `// design intent: best-effort persist, user action takes priority`）。Code Review 里的临时说明会随 PR 合并而消失，不作数——唯有代码注释能在未来 reviewer 看到这段"违反 Law 18 字面规则"的代码时为它辩护。无注释的例外 = 反模式。
 
-**审计历程**：2026-07-04 null-skip-audit 全面扫描发现 10 处反模式 → 修复 9 处（见 commit history）+ 1 处（`send_message.dart` 的 US-Outbox 持有 + CAS-loser 默认）经 `architecture-reviewer` 验证为有意的并发设计而非反模式 → 落地 11 处 edits + 3 个回归测试。
+**审计历程**：2026-07-04 null-skip-audit 全面扫描 → 修复 9 处反模式（见 commit `b49617e` / `974fa84` / `b516287`，编号 #1–2 / #4–6 / #9–10）+ 1 处（`send_message.dart` 的 US-Outbox 持有 + CAS-loser 默认）经 `architecture-reviewer` 验证为有意的并发设计而非反模式 + 3 个回归测试。
 
 **自动化**: 暂未加入 pre-commit grep（Law 18 的判定需要类型流分析 + 调用方上下文，grep 误报率高）。每 ~20 commits 手动全库审计时一并扫 `?? 0` / `?? '默认'` / `if (x == null) continue` / `if (x == null) return` / dead `x?.y ?? fallback` 模式。
 
