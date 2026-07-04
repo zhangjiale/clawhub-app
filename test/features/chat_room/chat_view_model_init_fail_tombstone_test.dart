@@ -26,8 +26,21 @@ import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
+import 'package:claw_hub/core/i_logger.dart';
 
 class _MockAchievementChecker extends Mock implements IAchievementChecker {}
+
+class _FakeLogger implements ILogger {
+  final List<String> infos = [];
+  final List<(String, StackTrace?)> errors = [];
+
+  @override
+  void info(String message) => infos.add(message);
+
+  @override
+  void error(String message, [StackTrace? stackTrace]) =>
+      errors.add((message, stackTrace));
+}
 
 class _MockAgentRepo extends Mock implements IAgentRepo {}
 
@@ -49,6 +62,7 @@ void main() {
   late InMemoryConversationRepo conversationRepo;
   late InMemoryInstanceRepo instanceRepo;
   late MockGatewayClient gateway;
+  late _FakeLogger logger;
 
   setUp(() {
     agentRepo = _MockAgentRepo();
@@ -56,6 +70,7 @@ void main() {
     conversationRepo = InMemoryConversationRepo();
     instanceRepo = InMemoryInstanceRepo();
     gateway = MockGatewayClient();
+    logger = _FakeLogger();
   });
 
   ChatViewModel createViewModel() {
@@ -75,6 +90,7 @@ void main() {
       agentId: _agentId,
       achievementChecker: _MockAchievementChecker(),
       flushDelay: Duration.zero,
+      logger: logger,
     );
   }
 
@@ -116,6 +132,9 @@ void main() {
           'init 失败时 catch 块必须 _setAgent(null) 清掉 vm.agent 缓存，'
           '避免上轮 tombstone 状态残留导致 AC8 占位页错乱',
     );
+    expect(logger.errors.length, 1);
+    expect(logger.errors.first.$1, contains('DB transient error'));
+    expect(logger.errors.first.$2, isNotNull);
   });
 
   // US-021 init 短路（chat_view_model.dart:_init 修复）:

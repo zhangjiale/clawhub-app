@@ -9,6 +9,7 @@ import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/replayable_connection_state.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/domain/models/enums.dart'
     show HealthStatus, MessageRole, MessageType, ToolCallStatus;
 import 'package:claw_hub/domain/models/message_status.dart';
@@ -76,6 +77,18 @@ class FakeDeviceTokenStore implements IDeviceTokenStore {
   Future<void> delete(String instanceId) async {
     values.remove(instanceId);
   }
+}
+
+class FakeLogger implements ILogger {
+  final List<String> infos = [];
+  final List<(String, StackTrace?)> errors = [];
+
+  @override
+  void info(String message) => infos.add(message);
+
+  @override
+  void error(String message, [StackTrace? stackTrace]) =>
+      errors.add((message, stackTrace));
 }
 
 /// A minimal [Instance] for testing.
@@ -591,6 +604,50 @@ void main() {
       );
 
       await client.dispose();
+    });
+
+    test(
+      'injected logger receives error on unknown agent stream type',
+      () async {
+        final logger = FakeLogger();
+        final ws = ControllableWebSocket.ready();
+        final client = WsGatewayClient(
+          identityProvider: FakeDeviceIdentityProvider(),
+          logger: logger,
+          webSocketFactory: (_) => ws.channel,
+        );
+
+        unawaited(client.connect(testInstance()));
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+        ws.simulateServerFrame(helloOkJson(reqId));
+        await pumpMicrotasks();
+
+        // Emit an agent event with an unknown stream type — this triggers the
+        // unknown branch in _onAgentEvent which logs via the injected logger.
+        ws.simulateServerFrame(
+          '{"type":"event","event":"agent","payload":'
+          '{"sessionKey":"agent:r-1:main","stream":"weird","data":{}}}',
+        );
+        await pumpMicrotasks();
+
+        expect(logger.errors.length, 1);
+        expect(logger.errors.first.$1, contains('Unknown agent stream type'));
+
+        await client.dispose();
+      },
+    );
+
+    test('can be constructed with an injected logger', () {
+      final logger = FakeLogger();
+      final client = WsGatewayClient(
+        identityProvider: FakeDeviceIdentityProvider(),
+        logger: logger,
+      );
+      expect(client, isA<WsGatewayClient>());
+      client.dispose();
     });
   });
 

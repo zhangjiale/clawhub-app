@@ -35,6 +35,7 @@ final chatViewModelProvider =
         achievementChecker: ref.watch(achievementCheckerProvider),
         instanceId: params.instanceId,
         agentId: params.agentId,
+        logger: ref.watch(loggerProvider),
       );
       // Invalidate stats provider whenever a message is sent or received,
       // so the stats bar in the agent list tab reflects updated message counts.

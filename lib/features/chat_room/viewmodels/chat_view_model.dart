@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 import 'package:claw_hub/domain/models/agent.dart';
@@ -189,6 +191,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   final IInstanceRepo _instanceRepo;
   final IGatewayClient _gatewayClient;
   final SendMessageUseCase _sendMessageUseCase;
+  final ILogger _logger;
 
   /// 入站消息合并用例（Bug #2：历史/实时回传的 user 消息去重）。
   /// 仅依赖 [_messageRepo]，故在内部构造，无需外部注入（避免改动所有
@@ -334,7 +337,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     required this.instanceId,
     required this.agentId,
     this.flushDelay = const Duration(milliseconds: 150),
-  }) : super(const ChatSessionState());
+    ILogger? logger,
+  }) : _logger = logger ?? const DebugPrintLogger(),
+       super(const ChatSessionState());
 
   /// The loaded agent — 由 [AgentReactiveState] mixin 提供 (Finding #8 重构)。
   /// 写入走后调 `setAgent(...)`；null 转换与内容变更触发 [onAgentUpdated]。
@@ -390,7 +395,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       final agent = await _agentRepo.getById(agentId);
       setAgent(agent);
       if (agent == null) {
-        debugPrint(
+        _logger.error(
           '[ChatViewModel] Agent not found: agentId=$agentId, '
           'instanceId=$instanceId — chat unavailable.',
         );
@@ -406,7 +411,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       // Bug 2 修复: revive 路径由 [refreshAgent] 检测 tombstone→alive 转换
       // 后调一次 [_initStreamsAndHistory]，避开 _initFuture 缓存。
       if (agent.isRemoved) {
-        debugPrint(
+        _logger.info(
           '[ChatViewModel] Agent tombstoned: agentId=$agentId, '
           'instanceId=$instanceId — short-circuit init.',
         );
@@ -415,8 +420,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
 
       await _initStreamsAndHistory(agent);
     } catch (error, stackTrace) {
-      debugPrint(
-        '[ChatViewModel] init failed for $instanceId/$agentId: $error\n$stackTrace',
+      _logger.error(
+        '[ChatViewModel] init failed for $instanceId/$agentId: $error',
+        stackTrace,
       );
       // Tear down any subscriptions that were set up before the failure
       // so a subsequent retry() or send() starts from a clean slate.
@@ -468,18 +474,20 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             .listen(
               setAgent,
               onError: (error, stackTrace) {
-                // Law 8: catch 必有 debugPrint
-                debugPrint(
+                // Law 8: catch 必有日志
+                _logger.error(
                   '[ChatViewModel] watchById error for $agentId: '
-                  '$error\n$stackTrace',
+                  '$error',
+                  stackTrace,
                 );
               },
             );
       } catch (error, stackTrace) {
-        // Law 8: catch 必有 debugPrint
-        debugPrint(
+        // Law 8: catch 必有日志
+        _logger.error(
           '[ChatViewModel] watchById subscribe failed for $agentId: '
-          '$error\n$stackTrace',
+          '$error',
+          stackTrace,
         );
       }
 
@@ -590,9 +598,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
                 // FK/约束冲突也不应静默吞掉后续逻辑。旧实现异常会中断
                 // _updateConversationPreview 与 _loadMessages,使消息列表
                 // 卡在空状态。记日志后 return,等下一条消息正常处理。
-                debugPrint(
+                _logger.error(
                   '[ChatViewModel] message merge failed for '
-                  '${fixedMsg.clientId}: $error\n$stackTrace',
+                  '${fixedMsg.clientId}: $error',
+                  stackTrace,
                 );
                 return;
               }
@@ -621,8 +630,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               }
             },
             onError: (error, stackTrace) {
-              debugPrint(
-                'Message stream error for $instanceId: $error\n$stackTrace',
+              _logger.error(
+                'Message stream error for $instanceId: $error',
+                stackTrace,
               );
             },
           );
@@ -637,8 +647,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               _updateState((s) => s.copyWith(toolCalls: current));
             },
             onError: (error, stackTrace) {
-              debugPrint(
-                'Tool call stream error for $instanceId: $error\n$stackTrace',
+              _logger.error(
+                'Tool call stream error for $instanceId: $error',
+                stackTrace,
               );
             },
           );
@@ -696,9 +707,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           } catch (error, stackTrace) {
             // iron-law-allow: Law8 — 历史拉取的逐条兜底,与 messageStream
             // 路径一致,单条 FK 冲突不应中断整批导入。
-            debugPrint(
+            _logger.error(
               '[ChatViewModel] history merge failed for '
-              '${fixedMsg.clientId}: $error\n$stackTrace',
+              '${fixedMsg.clientId}: $error',
+              stackTrace,
             );
           }
         }
@@ -710,21 +722,23 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             _conversationId,
           );
           if (deleted > 0) {
-            debugPrint(
+            _logger.info(
               '[ChatViewModel] dedupeConversation removed $deleted duplicate '
               'rows for $_conversationId',
             );
           }
         } catch (error, stackTrace) {
-          debugPrint(
+          _logger.error(
             '[ChatViewModel] dedupeConversation failed for '
-            '$_conversationId: $error\n$stackTrace',
+            '$_conversationId: $error',
+            stackTrace,
           );
         }
         await _loadMessages();
       } catch (error, stackTrace) {
-        debugPrint(
-          'History fetch failed for $instanceId/$remoteId: $error\n$stackTrace',
+        _logger.error(
+          'History fetch failed for $instanceId/$remoteId: $error',
+          stackTrace,
         );
       }
 
@@ -738,18 +752,20 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           .listen(
             (count) => _updateState((s) => s.copyWith(outboxCount: count)),
             onError: (Object error, StackTrace stack) {
-              debugPrint(
+              _logger.error(
                 '[ChatViewModel] outbox count stream error for $instanceId: '
-                '$error\n$stack',
+                '$error',
+                stack,
               );
             },
           );
 
       _streamsInitialized = true;
     } catch (error, stackTrace) {
-      debugPrint(
+      _logger.error(
         '[ChatViewModel] _initStreamsAndHistory failed for '
-        '$instanceId/$agentId: $error\n$stackTrace',
+        '$instanceId/$agentId: $error',
+        stackTrace,
       );
       // 防止半订阅状态:失败时清空所有已建立的 subscription，
       // 下次 _init / refreshAgent 再重试。
@@ -776,7 +792,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
         closeRequested: true,
       ),
     );
-    debugPrint(
+    _logger.error(
       '[ChatViewModel] send() blocked: agent $agentId $reason '
       'in instance $instanceId.',
     );
@@ -843,7 +859,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           closeRequested: true,
         ),
       );
-      debugPrint(
+      _logger.error(
         '[ChatViewModel] send() blocked: agent $agentId not found '
         'in instance $instanceId.',
       );
@@ -972,8 +988,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             _stallTimer?.cancel();
             _timeoutTimer?.cancel();
             _updateState((s) => s.copyWith(streamingText: ''));
-            debugPrint(
-              'Streaming stream error for $instanceId: $error\n$stackTrace',
+            _logger.error(
+              'Streaming stream error for $instanceId: $error',
+              stackTrace,
             );
           },
         );
@@ -1019,9 +1036,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       final messages = await _messageRepo.getByConversation(_conversationId);
       _updateState((s) => s.copyWith(messages: LoadData(messages)));
     } catch (error, stackTrace) {
-      debugPrint(
+      _logger.error(
         '[ChatViewModel] _loadMessages failed for $_conversationId: '
-        '$error\n$stackTrace',
+        '$error',
+        stackTrace,
       );
       _updateState((s) => s.copyWith(messages: LoadError(error, stackTrace)));
     }
@@ -1073,9 +1091,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     } catch (error, stackTrace) {
       // 预览更新失败不应影响消息渲染本身 —— 仅记日志，列表会在下次
       // 用户发送或重载时自然刷新。
-      debugPrint(
+      _logger.error(
         '[ChatViewModel] updateLastMessage failed for $_conversationId: '
-        '$error\n$stackTrace',
+        '$error',
+        stackTrace,
       );
     }
   }
@@ -1142,7 +1161,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     try {
       setAgent(await _agentRepo.getById(agentId));
     } catch (e, st) {
-      debugPrint('[ChatViewModel] refreshAgent getById failed: $e\n$st');
+      _logger.error('[ChatViewModel] refreshAgent getById failed: $e', st);
       return;
     }
     // Bug 2 修复: tombstone→alive 复活路径。如果 [_streamsInitialized] 仍
@@ -1219,8 +1238,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       }
     } catch (error, stackTrace) {
       // retry 内部已尝试标记 FAILED；这里只防止异常冒泡。
-      debugPrint(
-        '[ChatViewModel] retryMessage failed for $clientId: $error\n$stackTrace',
+      _logger.error(
+        '[ChatViewModel] retryMessage failed for $clientId: $error',
+        stackTrace,
       );
       _updateState((s) => s.copyWith(retryFeedback: '重试异常，请稍后再试'));
     }
@@ -1267,9 +1287,10 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
         ),
       );
     } catch (error, stackTrace) {
-      debugPrint(
+      _logger.error(
         '[ChatViewModel] loadHighlightWindow failed '
-        'for target=$targetClientId: $error\n$stackTrace',
+        'for target=$targetClientId: $error',
+        stackTrace,
       );
       // Fallback: just highlight without scrolling — regular load still
       // shows the message if it's in the page.

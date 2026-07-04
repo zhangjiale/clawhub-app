@@ -2,6 +2,7 @@ import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../repositories/repositories.dart';
 import '../../core/acl/i_gateway_client.dart';
+import '../../core/i_logger.dart';
 import 'generate_preview.dart';
 
 /// 发送消息用例
@@ -20,6 +21,7 @@ class SendMessageUseCase {
   final IGatewayClient _gatewayClient;
   final GeneratePreview _generatePreview;
   final Uuid _uuid;
+  final ILogger? _logger;
 
   /// Monotonically increasing logical clock counter.
   /// Initialized from the current timestamp and incremented per message
@@ -33,6 +35,7 @@ class SendMessageUseCase {
     required this._gatewayClient,
     GeneratePreview? generatePreview,
     Uuid? uuid,
+    this._logger,
   }) : _generatePreview = generatePreview ?? GeneratePreview(),
        _uuid = uuid ?? const Uuid();
 
@@ -141,8 +144,12 @@ class SendMessageUseCase {
       );
 
       return message;
-    } catch (e) {
-      // 7. 发送失败，标记 FAILED
+    } catch (e, st) {
+      // 7. 发送失败，先记录错误再标记 FAILED
+      _logger?.error(
+        '[SendMessageUseCase.execute] send failed for clientId=$clientId: $e',
+        st,
+      );
       message = await _messageRepo.updateStatus(clientId, MessageStatus.failed);
       return message;
     }
@@ -224,9 +231,13 @@ class SendMessageUseCase {
           ? await deliverFuture
           : await deliverFuture.timeout(timeout);
       return (message: updated, sentNow: true);
-    } catch (_) {
+    } catch (e, st) {
       // iron-law-allow: Law8 -- 发送失败与超时统一在此标记 FAILED；
       // 调用方只看 sentNow，不重复写状态。
+      _logger?.error(
+        '[SendMessageUseCase.retry] send failed for clientId=$clientId: $e',
+        st,
+      );
       final failed = await _messageRepo.updateStatus(
         clientId,
         MessageStatus.failed,

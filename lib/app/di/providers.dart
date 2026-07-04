@@ -581,6 +581,7 @@ final sendMessageUseCaseProvider = Provider<SendMessageUseCase>((ref) {
     conversationRepo: ref.watch(conversationRepoProvider),
     instanceRepo: ref.watch(instanceRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
+    logger: ref.watch(loggerProvider),
   );
 });
 

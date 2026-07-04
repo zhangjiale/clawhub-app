@@ -106,6 +106,7 @@ WsGatewayClient buildGatewayClient({
         SecureStorageDeviceTokenStore(
           secureStorage: const FlutterSecureStorage(),
         ),
+    logger: logger,
   );
 }
 

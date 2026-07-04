@@ -7,6 +7,8 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../domain/models/models.dart';
+import '../debug_print_logger.dart';
+import '../i_logger.dart';
 import 'connection_manager.dart';
 import 'device_identity.dart';
 import 'gateway_protocol.dart';
@@ -31,6 +33,7 @@ class WsGatewayClient implements IGatewayClient {
   final Uuid _uuid = const Uuid();
   final IDeviceIdentityProvider _identityProvider;
   final ConnectionConfig _config;
+  final ILogger _logger;
 
   /// Optional: inject a custom WebSocket factory for testing.
   /// When null (production default), [ConnectionManager] creates real
@@ -82,7 +85,9 @@ class WsGatewayClient implements IGatewayClient {
     this._timerFactory,
     this._modelIdentifierLoader,
     this._deviceTokenStore,
-  }) : _config = config ?? ConnectionConfig();
+    ILogger? logger,
+  }) : _config = config ?? ConnectionConfig(),
+       _logger = logger ?? const DebugPrintLogger();
 
   /// instanceId → 实例连接
   final Map<String, _InstanceConnection> _connections = {};
@@ -409,7 +414,7 @@ class WsGatewayClient implements IGatewayClient {
       // （execute / retry）都丢弃了它们。这里是在作用域内能读到这些字段的
       // 唯一站点 —— 留一行 debugPrint，让用户上报「网关繁忙」时有可诊断的
       // 日志轨迹。行为不变（仍 emit notice + rethrow）。
-      debugPrint(
+      _logger.error(
         '[WsGateway] Buffer overflow on sendMessage for $instanceId: '
         'buffered=${e.bufferedBytes}, attempted=${e.attemptedSize}, '
         'max=${e.maxSize}',
@@ -599,7 +604,7 @@ class WsGatewayClient implements IGatewayClient {
 
       return finalState == GatewayConnectionState.connected;
     } catch (error, stackTrace) {
-      debugPrint('[WsGateway] Connection test failed: $error\n$stackTrace');
+      _logger.error('[WsGateway] Connection test failed: $error', stackTrace);
       return false;
     } finally {
       // testManager 是函数本地变量，无论 _isDisposed 都必须 dispose —
@@ -725,9 +730,10 @@ class WsGatewayClient implements IGatewayClient {
             conn.gatewayNoticeCtrl.add(notice);
           }
         } catch (error, stackTrace) {
-          debugPrint(
+          _logger.error(
             '[WsGateway] Failed to handle payload.large for $instanceId: '
-            '$error\n$stackTrace',
+            '$error',
+            stackTrace,
           );
         }
 
@@ -853,8 +859,9 @@ class WsGatewayClient implements IGatewayClient {
             }
           }
         } catch (error, stackTrace) {
-          debugPrint(
-            '[WsGateway] Failed to handle chat final: $error\n$stackTrace',
+          _logger.error(
+            '[WsGateway] Failed to handle chat final: $error',
+            stackTrace,
           );
         }
         _streamingBuffers.remove(bufferKey);
@@ -905,8 +912,9 @@ class WsGatewayClient implements IGatewayClient {
               );
               conn.toolCallCtrl.add(tc);
             } catch (error, stackTrace) {
-              debugPrint(
-                '[WsGateway] Failed to parse tool result: $error\n$stackTrace',
+              _logger.error(
+                '[WsGateway] Failed to parse tool result: $error',
+                stackTrace,
               );
             }
           }
@@ -923,8 +931,9 @@ class WsGatewayClient implements IGatewayClient {
               );
               conn.toolCallCtrl.add(tc);
             } catch (error, stackTrace) {
-              debugPrint(
-                '[WsGateway] Failed to parse tool call: $error\n$stackTrace',
+              _logger.error(
+                '[WsGateway] Failed to parse tool call: $error',
+                stackTrace,
               );
             }
           }
@@ -1052,7 +1061,7 @@ class WsGatewayClient implements IGatewayClient {
       case AgentStreamType.item:
         break;
       case AgentStreamType.unknown:
-        debugPrint(
+        _logger.error(
           '[WsGateway] Unknown agent stream type for $instanceId: '
           '${event.data['stream']}',
         );
@@ -1168,7 +1177,7 @@ class WsGatewayClient implements IGatewayClient {
     } on AttachmentReadException {
       rethrow; // already typed — preserve cause, let it propagate
     } catch (e) {
-      debugPrint('[WsGateway] Failed to read attachment $path: $e');
+      _logger.error('[WsGateway] Failed to read attachment $path: $e');
       throw AttachmentReadException.readFailed(path, e);
     }
   }
@@ -1411,12 +1420,12 @@ class WsGatewayClient implements IGatewayClient {
   /// Resolve a [sessionKey] to its remote agent ID, logging on failure.
   ///
   /// Delegates to the pure protocol-level [resolveAgentId] function, then
-  /// logs via [debugPrint] when resolution fails — keeping the protocol
+  /// logs via [_logger] when resolution fails — keeping the protocol
   /// function free of Flutter/side-effect dependencies.
   String? _resolveAgentId(String sessionKey, Map<String, String> mapping) {
     final result = resolveAgentId(sessionKey, mapping);
     if (result == null) {
-      debugPrint(
+      _logger.error(
         '[WsGateway] Cannot resolve agentId from sessionKey: '
         '"$sessionKey" — mapping contains ${mapping.length} entries',
       );

@@ -6,8 +6,21 @@ import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:claw_hub/domain/models/models.dart';
 import 'package:claw_hub/domain/repositories/repositories.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/i_logger.dart';
 
 class MockMessageRepo extends Mock implements IMessageRepo {}
+
+class FakeLogger implements ILogger {
+  final List<String> infos = [];
+  final List<(String, StackTrace?)> errors = [];
+
+  @override
+  void info(String message) => infos.add(message);
+
+  @override
+  void error(String message, [StackTrace? stackTrace]) =>
+      errors.add((message, stackTrace));
+}
 
 class MockConversationRepo extends Mock implements IConversationRepo {}
 
@@ -21,6 +34,7 @@ void main() {
   late MockConversationRepo conversationRepo;
   late MockInstanceRepo instanceRepo;
   late MockGatewayClient gatewayClient;
+  late FakeLogger logger;
 
   setUpAll(() {
     registerFallbackValue(
@@ -74,11 +88,13 @@ void main() {
     conversationRepo = MockConversationRepo();
     instanceRepo = MockInstanceRepo();
     gatewayClient = MockGatewayClient();
+    logger = FakeLogger();
     useCase = SendMessageUseCase(
       messageRepo: messageRepo,
       conversationRepo: conversationRepo,
       instanceRepo: instanceRepo,
       gatewayClient: gatewayClient,
+      logger: logger,
     );
 
     // Default stubs for all tests
@@ -239,7 +255,7 @@ void main() {
       );
     });
 
-    test('Gateway 发送失败时应标记为 FAILED', () async {
+    test('Gateway 发送失败时应记录错误日志并标记为 FAILED', () async {
       when(
         () => instanceRepo.getById('inst-test'),
       ).thenAnswer((_) async => testInstance);
@@ -262,6 +278,10 @@ void main() {
       verify(
         () => messageRepo.updateStatus(any(), MessageStatus.failed),
       ).called(1);
+      expect(logger.errors.length, 1);
+      expect(logger.errors.first.$1, contains('Connection failed'));
+      expect(logger.errors.first.$1, contains('execute'));
+      expect(logger.errors.first.$2, isNotNull);
     });
 
     test('CAS 失败（消息已被并发路径接管）时不重复发送', () async {
@@ -312,7 +332,7 @@ void main() {
   });
 
   group('retry', () {
-    test('发送失败时由 retry 统一标记 FAILED，sentNow=false', () async {
+    test('发送失败时由 retry 统一标记 FAILED 并记录错误，sentNow=false', () async {
       when(
         () => instanceRepo.getById('inst-test'),
       ).thenAnswer((_) async => testInstance);
@@ -366,9 +386,13 @@ void main() {
       verify(
         () => messageRepo.updateStatus('m1', MessageStatus.failed),
       ).called(1);
+      expect(logger.errors.length, 1);
+      expect(logger.errors.first.$1, contains('network down'));
+      expect(logger.errors.first.$1, contains('retry'));
+      expect(logger.errors.first.$2, isNotNull);
     });
 
-    test('超时后由 retry 统一标记 FAILED（不依赖调用方兜底）', () async {
+    test('超时后由 retry 统一标记 FAILED 并记录错误（不依赖调用方兜底）', () async {
       // gateway 永不完成 → retry 内部 .timeout 触发 → catch 标记 FAILED。
       // 关键断言：FAILED 由 retry 自己写入，调用方无需二次兜底。
       final completer = Completer<({String serverId, int timestamp})>();
@@ -434,6 +458,9 @@ void main() {
           message: any(named: 'message'),
         ),
       ).called(1);
+      expect(logger.errors.length, 1);
+      expect(logger.errors.first.$1, contains('retry'));
+      expect(logger.errors.first.$2, isNotNull);
     });
 
     test('CAS 失败时返回当前状态且不发送', () async {
