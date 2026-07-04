@@ -1,5 +1,6 @@
 import 'message_status.dart';
 import 'enums.dart';
+import '../utils/copy_with_sentinel.dart';
 
 /// 消息实体
 /// 对齐: 架构 vFinal 5.3 (7状态消息生命周期), 5.12 (大文件分片)
@@ -101,29 +102,29 @@ class Message {
 
   Message copyWith({
     String? clientId,
-    String? serverId,
+    Object? serverId = CopyWithSentinel.instance,
     String? conversationId,
     String? agentId,
     MessageRole? role,
-    String? content,
+    Object? content = CopyWithSentinel.instance,
     MessageType? type,
     MessageStatus? status,
     int? logicalClock,
     int? timestamp,
-    Map<String, dynamic>? metadata,
+    Object? metadata = CopyWithSentinel.instance,
   }) {
     return Message(
       clientId: clientId ?? this.clientId,
-      serverId: serverId ?? this.serverId,
+      serverId: copyWithNullable(serverId, this.serverId),
       conversationId: conversationId ?? this.conversationId,
       agentId: agentId ?? this.agentId,
       role: role ?? this.role,
-      content: content ?? this.content,
+      content: copyWithNullable(content, this.content),
       type: type ?? this.type,
       status: status ?? this.status,
       logicalClock: logicalClock ?? this.logicalClock,
       timestamp: timestamp ?? this.timestamp,
-      metadata: metadata ?? this.metadata,
+      metadata: copyWithNullable(metadata, this.metadata),
     );
   }
 

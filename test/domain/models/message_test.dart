@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/utils/copy_with_sentinel.dart';
 
 void main() {
   group('Message', () {
@@ -332,6 +333,83 @@ void main() {
         );
 
         expect(msg1.hasSameIdentity(msg2), isTrue);
+      });
+    });
+
+    group('copyWith sentinel semantics', () {
+      test('omitted nullable fields keep current value', () {
+        final msg = Message(
+          clientId: 'client-009',
+          serverId: 'server-009',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: 'hello',
+          type: MessageType.text,
+          status: MessageStatus.sending,
+          logicalClock: 1,
+          timestamp: 123456789,
+          metadata: const {'key': 'value'},
+        );
+
+        final copied = msg.copyWith(status: MessageStatus.sent);
+
+        expect(copied.serverId, 'server-009');
+        expect(copied.content, 'hello');
+        expect(copied.metadata, {'key': 'value'});
+        expect(copied.timestamp, 123456789);
+      });
+
+      test('explicit null clears nullable fields', () {
+        final msg = Message(
+          clientId: 'client-010',
+          serverId: 'server-010',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: 'hello',
+          type: MessageType.text,
+          status: MessageStatus.sent,
+          logicalClock: 1,
+          timestamp: 123456789,
+          metadata: const {'key': 'value'},
+        );
+
+        final copied = msg.copyWith(
+          serverId: null,
+          content: null,
+          metadata: null,
+        );
+
+        expect(copied.serverId, isNull);
+        expect(copied.content, isNull);
+        expect(copied.metadata, isNull);
+      });
+
+      test('sentinel value leaves field unchanged', () {
+        final msg = Message(
+          clientId: 'client-011',
+          serverId: 'server-011',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.user,
+          content: 'hello',
+          type: MessageType.text,
+          status: MessageStatus.sent,
+          logicalClock: 1,
+          timestamp: 123456789,
+          metadata: const {'key': 'value'},
+        );
+
+        final copied = msg.copyWith(
+          serverId: CopyWithSentinel.instance,
+          content: CopyWithSentinel.instance,
+          metadata: CopyWithSentinel.instance,
+        );
+
+        expect(copied.serverId, 'server-011');
+        expect(copied.content, 'hello');
+        expect(copied.metadata, {'key': 'value'});
       });
     });
   });
