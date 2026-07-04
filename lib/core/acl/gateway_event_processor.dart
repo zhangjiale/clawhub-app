@@ -337,14 +337,29 @@ class GatewayEventProcessor {
 
           if (msgJson != null) {
             // chat final event 自带完整 message，直接解析
-            final message = _mapper.parseMessage(msgJson);
-            conn.messageCtrl.add(message);
+            final parsed = _mapper.parseMessage(msgJson);
+            // Tag with sessionKey so ChatViewModel can re-key the turn's
+            // ToolCalls from sessionKey → clientId (review #1, Option C).
+            conn.messageCtrl.add(
+              parsed.copyWith(
+                metadata: <String, dynamic>{
+                  ...?parsed.metadata,
+                  'sessionKey': event.sessionKey,
+                },
+              ),
+            );
           } else {
             // 没有 message 对象时，用聚合文本构建
             final buffer = _streamingBuffers.remove(bufferKey);
             if (buffer != null && buffer.text.isNotEmpty) {
               conn.messageCtrl.add(
-                _mapper.buildAgentFallbackMessage(agentId ?? '', buffer.text),
+                _mapper
+                    .buildAgentFallbackMessage(agentId ?? '', buffer.text)
+                    .copyWith(
+                      metadata: <String, dynamic>{
+                        'sessionKey': event.sessionKey,
+                      },
+                    ),
               );
             }
           }
@@ -531,7 +546,13 @@ class GatewayEventProcessor {
 
             if (!conn.messageCtrl.isClosed) {
               conn.messageCtrl.add(
-                _mapper.buildAgentFallbackMessage(agentId ?? '', buffer.text),
+                _mapper
+                    .buildAgentFallbackMessage(agentId ?? '', buffer.text)
+                    .copyWith(
+                      metadata: <String, dynamic>{
+                        'sessionKey': event.sessionKey,
+                      },
+                    ),
               );
             }
             // Notify UI that streaming is complete — only when we have

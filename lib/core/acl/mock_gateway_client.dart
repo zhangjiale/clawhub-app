@@ -409,6 +409,22 @@ class MockGatewayClient implements IGatewayClient {
     _getOrCreateGatewayNoticeController(instanceId).add(notice);
   }
 
+  /// Test-only hook: pushes a synthetic [Message] onto the per-instance
+  /// broadcast stream. Used to drive ChatViewModel's messageStream listener
+  /// (e.g. tool-call re-key tests). Production code must never call this.
+  @visibleForTesting
+  void emitMessageForTesting(String instanceId, Message message) {
+    _getOrCreateMessageController(instanceId).add(message);
+  }
+
+  /// Test-only hook: pushes a synthetic [ToolCall] onto the per-instance
+  /// broadcast stream. Used to drive ChatViewModel's toolCallStream listener.
+  /// Production code must never call this.
+  @visibleForTesting
+  void emitToolCallForTesting(String instanceId, ToolCall toolCall) {
+    _getOrCreateToolCallController(instanceId).add(toolCall);
+  }
+
   StreamController<ToolCall> _getOrCreateToolCallController(String instanceId) {
     return _toolCallControllers.putIfAbsent(
       instanceId,

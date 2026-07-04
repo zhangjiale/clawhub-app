@@ -106,6 +106,86 @@ void main() {
       expect(messages.first.role, MessageRole.agent);
     });
 
+    // Review #1 (Option C): chat.final must tag the message with sessionKey
+    // metadata so ChatViewModel can re-key the turn's ToolCalls from
+    // sessionKey → clientId. Without this tag the keys live in different
+    // namespaces and ToolCallCard never renders.
+    test(
+      'chat.final with message tags message with sessionKey (review #1)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final messages = <Message>[];
+        conn.messageCtrl.stream.listen(messages.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'final',
+              'message': {
+                'clientId': 'c1',
+                'role': 'agent',
+                'content': 'hello',
+                'type': 'text',
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(messages, hasLength(1));
+        expect(messages.first.metadata?['sessionKey'], 'agent:a1:main');
+      },
+    );
+
+    test('chat.final fallback (no message) tags message with sessionKey '
+        '(review #1)', () async {
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+
+      final messages = <Message>[];
+      conn.messageCtrl.stream.listen(messages.add);
+
+      // Accumulate a buffer via chat.delta so the fallback path has text.
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'state': 'delta',
+            'deltaText': 'fallback text',
+          },
+        ),
+      );
+      // chat.final with no `message` → buildAgentFallbackMessage from buffer.
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {'sessionKey': 'agent:a1:main', 'state': 'final'},
+        ),
+      );
+
+      await pumpEventQueue();
+      expect(messages, hasLength(1));
+      expect(messages.first.content, 'fallback text');
+      expect(messages.first.metadata?['sessionKey'], 'agent:a1:main');
+    });
+
     test('chat.delta emits StreamingDelta', () async {
       processor.registerSend(
         instanceId: 'inst-1',
@@ -195,6 +275,53 @@ void main() {
       expect(tools.first.toolName, 'search');
       expect(tools.first.status, ToolCallStatus.success);
     });
+
+    // Review #1 (Option C): lifecycle.end fallback message must also carry the
+    // sessionKey tag (v3 Gateway path that never sends chat.final).
+    test(
+      'lifecycle.end fallback tags message with sessionKey (review #1)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final messages = <Message>[];
+        conn.messageCtrl.stream.listen(messages.add);
+
+        // Accumulate a buffer via agent.assistant so lifecycle.end has text.
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'assistant',
+              'data': {'delta': 'le text'},
+            },
+          ),
+        );
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'lifecycle',
+              'data': {'phase': 'end'},
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(messages, hasLength(1));
+        expect(messages.first.content, 'le text');
+        expect(messages.first.metadata?['sessionKey'], 'agent:a1:main');
+      },
+    );
   });
 
   group('payload.large diagnostic', () {
