@@ -281,6 +281,7 @@ class GatewayEventProcessor {
         // duplicate messages when a v3 Gateway sends both event types.
         if (!_finalizedSessions.add(bufferKey)) {
           _streamingBuffers.remove(bufferKey);
+          _deltaSource.remove(bufferKey);
           return;
         }
 
@@ -312,8 +313,12 @@ class GatewayEventProcessor {
           );
         }
         _streamingBuffers.remove(bufferKey);
-        // Turn complete — clear the active runId so the next turn starts
-        // clean (also reset by _resetTurnForSession on the next boundary).
+        // Turn complete — clear the delta-source lock + active runId so the
+        // next turn starts clean (also reset by _resetTurnForSession on the
+        // next boundary). Without this, _deltaSource persists across turns
+        // on old Gateways (no runId / no lifecycle.start) and would drop the
+        // next turn's cross-source deltas.
+        _deltaSource.remove(bufferKey);
         _activeRunIdBySession.remove(bufferKey);
 
         // Notify UI that streaming is complete — only when we have
@@ -483,7 +488,9 @@ class GatewayEventProcessor {
             if (buffer == null || buffer.text.isEmpty) break;
             if (!_finalizedSessions.add(bufferKey)) break;
 
-            // Turn complete — clear the active runId (mirrors chat.final).
+            // Turn complete — clear the delta-source lock + active runId
+            // (mirrors chat.final).
+            _deltaSource.remove(bufferKey);
             _activeRunIdBySession.remove(bufferKey);
 
             if (!conn.messageCtrl.isClosed) {

@@ -282,4 +282,147 @@ void main() {
       },
     );
   });
+
+  group('delta-source lock (cross-turn clearing)', () {
+    // 回归:chat.final / lifecycle.end 必须清 _deltaSource,否则旧网关
+    // (无 runId、无 lifecycle.start)下 _deltaSource 跨 turn 持续锁定首个源,
+    // 下一 turn 的异源 delta 被 putIfAbsent 返回的旧源挡掉 → 回复丢失。
+    test(
+      'chat.final clears delta-source lock for next turn (no runId)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+          // 不传 runId —— 模拟旧网关,_resetTurnForSession 不触发。
+        );
+
+        final deltas = <StreamingEvent>[];
+        conn.streamingCtrl.stream.listen(deltas.add);
+
+        // Turn 1: chat.delta 锁 _deltaSource = 'chat'。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'delta',
+              'deltaText': 'turn1',
+            },
+          ),
+        );
+        // Turn 1 经 chat.final 完成(带 message)。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'final',
+              'message': {
+                'clientId': 'c1',
+                'role': 'agent',
+                'content': 'final1',
+                'type': 'text',
+              },
+            },
+          ),
+        );
+        await pumpEventQueue();
+        // turn1 StreamingDelta + StreamingDone;清空,只看 turn2。
+        deltas.clear();
+
+        // Turn 2:异源(agent.assistant)delta 先到。pre-fix:_deltaSource 仍 'chat'
+        // → putIfAbsent 返回 'chat' → break,agent delta 被丢。post-fix:已清 → 接受。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'assistant',
+              'data': {'delta': 'turn2'},
+            },
+          ),
+        );
+        await pumpEventQueue();
+        expect(
+          deltas.whereType<StreamingDelta>(),
+          hasLength(1),
+          reason:
+              'chat.final 必须清 _deltaSource,否则下一 turn 的 agent delta '
+              '被旧源 "chat" 挡掉(回复丢失)。',
+        );
+        expect(deltas.whereType<StreamingDelta>().first.text, 'turn2');
+      },
+    );
+
+    test(
+      'lifecycle.end clears delta-source lock for next turn (no runId)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final deltas = <StreamingEvent>[];
+        conn.streamingCtrl.stream.listen(deltas.add);
+
+        // Turn 1: chat.delta 锁 _deltaSource = 'chat'。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'delta',
+              'deltaText': 'turn1',
+            },
+          ),
+        );
+        // Turn 1 经 lifecycle.end 完成(v3 路径,消费缓冲文本)。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'lifecycle',
+              'data': {'phase': 'end'},
+            },
+          ),
+        );
+        await pumpEventQueue();
+        deltas.clear();
+
+        // Turn 2:异源(agent.assistant)delta。
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'assistant',
+              'data': {'delta': 'turn2'},
+            },
+          ),
+        );
+        await pumpEventQueue();
+        expect(
+          deltas.whereType<StreamingDelta>(),
+          hasLength(1),
+          reason: 'lifecycle.end 必须清 _deltaSource,否则下一 turn 异源 delta 被挡。',
+        );
+        expect(deltas.whereType<StreamingDelta>().first.text, 'turn2');
+      },
+    );
+  });
 }
