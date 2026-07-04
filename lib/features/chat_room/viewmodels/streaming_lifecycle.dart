@@ -134,8 +134,15 @@ class StreamingLifecycle {
   /// agent 最终 Message 到达(原 617-624):isStreaming=false,推 ''。
   /// **不**清 buffer、**不**归零 _lastPublishedLength(对齐原状——stall-后-delta
   /// 回填是既有契约,见 spec 风险点 3)。禁止顺手优化成清 buffer。
+  ///
+  /// 但必须取消已挂起的 _flushTimer(review #9):否则一条 delta 落定后挂起的
+  /// 150ms 节流 flush 会在最终 Message 落地后触发,把陈旧 buffer 文本作为
+  /// 幽灵流式文本重新发布一帧。取消 timer 不影响 stall-后-delta 回填——下一条
+  /// delta 会自行 _scheduleFlush 新 timer。
   void onReplyArrived() {
     _isStreaming = false;
+    _flushTimer?.cancel();
+    _flushTimer = null;
     onStreamingTextChanged('');
   }
 

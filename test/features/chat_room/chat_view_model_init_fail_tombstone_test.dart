@@ -27,6 +27,7 @@ import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/core/i_logger.dart';
+import 'package:claw_hub/ui_kit/async_state.dart';
 
 class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
@@ -43,6 +44,25 @@ class _FakeLogger implements ILogger {
 }
 
 class _MockAgentRepo extends Mock implements IAgentRepo {}
+
+/// Review #5 regression helper: throws on the first `getOrCreate` call, then
+/// delegates to the real in-memory impl. Lets a test drive the
+/// `_initStreamsAndHistory` failure path (which `getById`-throwing tests
+/// cannot reach, since `getById` fails before `_initStreamsAndHistory` runs).
+class _FlakyConversationRepo extends InMemoryConversationRepo {
+  int getOrCreateCalls = 0;
+  bool throwNextGetOrCreate = true;
+
+  @override
+  Future<Conversation> getOrCreate(String instanceId, String agentId) async {
+    getOrCreateCalls++;
+    if (throwNextGetOrCreate) {
+      throwNextGetOrCreate = false;
+      throw Exception('DB lock timeout');
+    }
+    return super.getOrCreate(instanceId, agentId);
+  }
+}
 
 const _agentId = 'local-1';
 const _instanceId = 'inst-1';
@@ -169,5 +189,87 @@ void main() {
           'tombstoned agent 的 init 应早退，不应调用 '
           '_conversationRepo.getOrCreate 创建 dangling conversation',
     );
+  });
+
+  // Review #5: _initStreamsAndHistory failures must propagate to _init's
+  // outer catch so _initFuture is cleared (retry works) and LoadError is
+  // surfaced. Before the fix, an inner try/catch swallowed the error →
+  // _init() completed "successfully" → _initFuture cached a success → the
+  // next init() returned the cached future without re-running → cold-start
+  // stuck on LoadingSkeleton with no retry button.
+  test('init failure in _initStreamsAndHistory clears _initFuture so a second '
+      'init() retries (review #5)', () async {
+    await instanceRepo.save(
+      Instance(
+        id: _instanceId,
+        name: 'Test',
+        gatewayUrl: 'wss://t.example.com:443',
+        tokenRef: 'tok',
+        healthStatus: HealthStatus.online,
+        isLocalNetwork: false,
+      ),
+    );
+    final validAgent = Agent(
+      localId: _agentId,
+      remoteId: 'r-1',
+      instanceId: _instanceId,
+      name: '存活虾',
+    );
+    when(() => agentRepo.getById(_agentId)).thenAnswer((_) async => validAgent);
+
+    final flakyConvRepo = _FlakyConversationRepo();
+    final localMessageRepo = InMemoryMessageRepo(
+      conversationRepo: flakyConvRepo,
+    );
+    final vm = ChatViewModel(
+      agentRepo: agentRepo,
+      conversationRepo: flakyConvRepo,
+      messageRepo: localMessageRepo,
+      instanceRepo: instanceRepo,
+      gatewayClient: gateway,
+      sendMessageUseCase: SendMessageUseCase(
+        messageRepo: localMessageRepo,
+        conversationRepo: flakyConvRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gateway,
+      ),
+      instanceId: _instanceId,
+      agentId: _agentId,
+      achievementChecker: _MockAchievementChecker(),
+      flushDelay: Duration.zero,
+      logger: logger,
+    );
+
+    // First init: getOrCreate throws → must propagate to _init's catch →
+    // _initFuture cleared + setAgent(null) + LoadError surfaced.
+    await vm.init();
+    expect(
+      vm.agent,
+      isNull,
+      reason:
+          'init 失败必须 setAgent(null)；旧 bug 内层 catch 吞掉异常，'
+          'agent 仍是 valid 且 _initFuture 缓存为 success',
+    );
+    expect(
+      vm.state.messages,
+      isA<LoadError>(),
+      reason: 'init 失败必须推 LoadError 让 LoadErrorView 的 retry 按钮出现',
+    );
+    expect(flakyConvRepo.getOrCreateCalls, 1);
+    expect(logger.errors.any((e) => e.$1.contains('DB lock timeout')), isTrue);
+
+    // Second init: _initFuture was cleared → re-runs → getOrCreate succeeds.
+    await vm.init();
+    expect(
+      vm.agent,
+      isNotNull,
+      reason: '二次 init 应重跑成功——_initFuture 已清，不再返回 cached success',
+    );
+    expect(
+      flakyConvRepo.getOrCreateCalls,
+      2,
+      reason: '二次 init 必须重新调 getOrCreate（证明 _initFuture 未缓存）',
+    );
+    vm.dispose();
   });
 }

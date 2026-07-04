@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
@@ -12,6 +13,7 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/i_attachment_picker_service.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/attachment_pick_result.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
@@ -91,6 +93,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   Timer? _retryFeedbackTimer;
   Timer? _highlightFadeTimer;
 
+  // Review #14: 搜索高亮只在消息首载时应用一次。clearHighlight() 把
+  // highlightedMessageId 置 null 后 ref.listen 会再次触发（null != highlightId），
+  // 旧逻辑会无限重新应用高亮 → 渐隐计时器永远重置，高亮永不消失。该标志在
+  // 首次应用后置 true，阻止 clearHighlight 的状态变化重新触发 loadHighlightWindow。
+  bool _didApplyHighlight = false;
+
   @override
   void initState() {
     super.initState();
@@ -159,39 +167,43 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ///
   /// 平台调用下沉到 [IAttachmentPickerService]（Law 2：widget 只渲染 UI）。
   /// 异步 gap 后校验 mounted；用户取消（pick 返回 null）静默忽略。
+  /// 平台错误（相机权限拒绝 / file_picker 错误 / missing-plugin）经
+  /// [PlatformException] 捕获并 toast 提示——之前未捕获会变成手势处理器中的
+  /// 未处理异步异常，'+' 按钮无反馈（review #10）。
   Future<void> _handlePickAttachment(
     AttachmentKind kind,
     ChatViewModel vm,
     IAttachmentPickerService pickerService,
   ) async {
-    if (kind == AttachmentKind.file) {
-      final result = await pickerService.pickFile();
-      if (result == null) return; // 用户取消
-      if (!mounted) return;
-      await vm.sendFile(
-        result.path,
-        metadata: {
-          'fileName': result.fileName,
-          'mimeType': result.mimeType,
-          'size': result.size,
-        },
-      );
+    AttachmentPickResult? result;
+    try {
+      if (kind == AttachmentKind.file) {
+        result = await pickerService.pickFile();
+      } else {
+        final source = kind == AttachmentKind.camera
+            ? ImageSource.camera
+            : ImageSource.gallery;
+        result = await pickerService.pickImage(source: source);
+      }
+    } on PlatformException catch (e) {
+      debugPrint('[ChatRoom] attachment pick platform error: $e');
+      if (mounted) {
+        XiaToast.show(context, '无法选择附件，请检查权限或重试');
+      }
       return;
     }
-    final source = kind == AttachmentKind.camera
-        ? ImageSource.camera
-        : ImageSource.gallery;
-    final result = await pickerService.pickImage(source: source);
     if (result == null) return; // 用户取消
     if (!mounted) return;
-    await vm.sendImage(
-      result.path,
-      metadata: {
-        'fileName': result.fileName,
-        'mimeType': result.mimeType,
-        'size': result.size,
-      },
-    );
+    final Map<String, dynamic> metadata = {
+      'fileName': result.fileName,
+      'mimeType': result.mimeType,
+      'size': result.size,
+    };
+    if (kind == AttachmentKind.file) {
+      await vm.sendFile(result.path, metadata: metadata);
+    } else {
+      await vm.sendImage(result.path, metadata: metadata);
+    }
   }
 
   @override
@@ -283,8 +295,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       final highlightQ = widget.highlightQuery;
       if (highlightId != null &&
           highlightQ != null &&
+          !_didApplyHighlight &&
           next.messages is LoadData &&
           next.highlightedMessageId != highlightId) {
+        // 标记已应用：clearHighlight() 之后 highlightedMessageId 变 null，
+        // 本条件会再次成立（null != highlightId），若无此标志会无限重新应用。
+        _didApplyHighlight = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           notifier.loadHighlightWindow(highlightId, highlightQ);

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -6,10 +7,15 @@ import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/mock_gateway_client.dart';
+import 'package:claw_hub/core/i_attachment_picker_service.dart';
 import 'package:claw_hub/data/repositories/in_memory_repos.dart';
 import 'package:claw_hub/domain/models/agent.dart';
+import 'package:claw_hub/domain/models/attachment_pick_result.dart';
+import 'package:claw_hub/domain/models/conversation.dart';
+import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/instance.dart';
 import 'package:claw_hub/domain/models/message.dart';
+import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/core/i_achievement_checker.dart';
 import 'package:claw_hub/domain/usecases/send_message.dart';
 import 'package:go_router/go_router.dart';
@@ -17,12 +23,37 @@ import 'package:go_router/go_router.dart';
 import 'package:claw_hub/features/chat_room/chat_room_page.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
+import 'package:claw_hub/features/chat_room/widgets/tool_call_card.dart';
 import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
 
 class _MockOrchestrator extends Mock implements ConnectionOrchestrator {}
 
 class _MockAchievementChecker extends Mock implements IAchievementChecker {}
+
+/// Review #10: 模拟相机权限拒绝 / file_picker 平台错误。
+/// 之前 [ChatRoomPage._handlePickAttachment] 未捕获 PlatformException →
+/// 手势处理器中未处理异步异常，'+' 按钮无反馈。
+class _ThrowingAttachmentPicker implements IAttachmentPickerService {
+  @override
+  Future<AttachmentPickResult?> pickImage({
+    required ImageSource source,
+    int imageQuality = 85,
+  }) async {
+    throw PlatformException(
+      code: 'MISSING_PERMISSION',
+      message: 'camera permission denied',
+    );
+  }
+
+  @override
+  Future<AttachmentPickResult?> pickFile() async {
+    throw PlatformException(
+      code: 'unknown_error',
+      message: 'file_picker error',
+    );
+  }
+}
 
 const _key = (instanceId: 'inst-1', agentId: 'local-1');
 
@@ -627,5 +658,276 @@ void main() {
       // ChatSessionState.
       expect(find.textContaining('30000000'), findsOneWidget);
     });
+
+    // Review #14: 搜索高亮只在消息首载时应用一次。clearHighlight() 把
+    // highlightedMessageId 置 null 后 ref.listen 会再次触发（null != highlightId），
+    // 旧逻辑无限重新应用高亮 → 渐隐计时器永远重置，高亮永不消失。
+    // _didApplyHighlight 标志阻止 clearHighlight 后的重新应用。
+    testWidgets('search highlight applies once and does not re-apply after '
+        'clearHighlight (review #14)', (tester) async {
+      final agentRepo = InMemoryAgentRepo();
+      await agentRepo.syncFromGateway('inst-1', [
+        Agent(
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
+        ),
+      ]);
+      final messageRepo = InMemoryMessageRepo();
+      final conversationRepo = InMemoryConversationRepo();
+      final instanceRepo = InMemoryInstanceRepo();
+      final gateway = MockGatewayClient();
+
+      // Insert the highlight target so loadHighlightWindow's
+      // getAnchorWindow resolves it.
+      final convId = Conversation.generateId('inst-1', 'local-1');
+      await messageRepo.insert(
+        Message(
+          clientId: 'msg-X',
+          conversationId: convId,
+          agentId: 'local-1',
+          role: MessageRole.agent,
+          content: 'target message',
+          type: MessageType.text,
+          logicalClock: 1,
+          timestamp: 1000,
+        ),
+      );
+
+      final vm = ChatViewModel(
+        agentRepo: agentRepo,
+        conversationRepo: conversationRepo,
+        messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gateway,
+        sendMessageUseCase: SendMessageUseCase(
+          messageRepo: messageRepo,
+          conversationRepo: conversationRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+        ),
+        instanceId: 'inst-1',
+        agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
+        flushDelay: Duration.zero,
+      );
+      // Initial state: messages = LoadInProgress (default). Don't call
+      // init() — drive state directly to control ref.listen timing.
+      // Set a valid agent so build() can render _buildMessageList when
+      // loadHighlightWindow swaps in a non-empty anchor window.
+      vm.debugSetAgent(
+        Agent(
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [chatViewModelProvider(_key).overrideWith((ref) => vm)],
+          child: const MaterialApp(
+            home: ChatRoomPage(
+              agentId: 'local-1',
+              instanceId: 'inst-1',
+              highlightMessageId: 'msg-X',
+              highlightQuery: 'target',
+            ),
+          ),
+        ),
+      );
+      await tester.pump(); // register ref.listen (state = LoadInProgress)
+
+      // Simulate messages loading → ref.listen fires → applies highlight once.
+      vm.state = vm.state.copyWith(messages: LoadData(<Message>[]));
+      await tester.pump(); // listen fires → schedules post-frame
+      await tester.pump(); // run post-frame → loadHighlightWindow (async)
+      await tester.pump(); // flush loadHighlightWindow microtasks
+      await tester.pump();
+      expect(vm.state.highlightedMessageId, 'msg-X', reason: '消息首载后高亮应被应用一次');
+
+      // Simulate the 2s fade timer firing clearHighlight (call directly).
+      vm.clearHighlight();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      // With the bug: clearHighlight sets highlightedMessageId=null →
+      // ref.listen re-fires → loadHighlightWindow again → 'msg-X'.
+      // With the fix: _didApplyHighlight=true → no re-apply → stays null.
+      expect(
+        vm.state.highlightedMessageId,
+        isNull,
+        reason: 'clearHighlight 后高亮不得被 ref.listen 重新应用 (review #14)',
+      );
+    });
+
+    // Review #10: attachment picker PlatformException (相机权限拒绝 /
+    // file_picker 平台错误) 必须被 _handlePickAttachment 捕获并 toast，
+    // 而非变成手势处理器中的未处理异步异常（'+' 按钮无反馈）。
+    testWidgets(
+      'attachment pick PlatformException -> toast feedback (review #10)',
+      (tester) async {
+        final agentRepo = InMemoryAgentRepo();
+        await agentRepo.syncFromGateway('inst-1', [
+          Agent(
+            localId: 'local-1',
+            remoteId: 'r-1',
+            instanceId: 'inst-1',
+            name: '产品虾',
+          ),
+        ]);
+        final messageRepo = InMemoryMessageRepo();
+        final conversationRepo = InMemoryConversationRepo();
+        final instanceRepo = InMemoryInstanceRepo();
+        final gateway = MockGatewayClient();
+
+        final vm = ChatViewModel(
+          agentRepo: agentRepo,
+          conversationRepo: conversationRepo,
+          messageRepo: messageRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+          sendMessageUseCase: SendMessageUseCase(
+            messageRepo: messageRepo,
+            conversationRepo: conversationRepo,
+            instanceRepo: instanceRepo,
+            gatewayClient: gateway,
+          ),
+          instanceId: 'inst-1',
+          agentId: 'local-1',
+          achievementChecker: _MockAchievementChecker(),
+          flushDelay: Duration.zero,
+        );
+        vm.state = const ChatSessionState(messages: LoadData(<Message>[]));
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              chatViewModelProvider(_key).overrideWith((ref) => vm),
+              attachmentPickerServiceProvider.overrideWithValue(
+                _ThrowingAttachmentPicker(),
+              ),
+            ],
+            child: const MaterialApp(
+              home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        // Open the attachment bottom sheet.
+        await tester.tap(find.byIcon(Icons.add));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        // Tap '拍照' (camera) → _handlePickAttachment(camera) → pickImage
+        // throws PlatformException → caught → XiaToast.show.
+        await tester.tap(find.text('拍照'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.text('无法选择附件，请检查权限或重试'),
+          findsOneWidget,
+          reason: 'PlatformException 必须被捕获并以 toast 反馈，不能静默抛出',
+        );
+      },
+    );
+
+    // Review #1: ToolCallCard renders under the matching message when the
+    // toolCalls map key aligns with message.clientId. The VM re-keys tool
+    // calls from sessionKey → clientId on agent message arrival; this test
+    // pins the page's end of the contract (query by message.clientId) so a
+    // future regression in either the re-key or the lookup is caught.
+    testWidgets(
+      'ToolCallCard renders under the matching message when keys align '
+      '(review #1)',
+      (tester) async {
+        final agentRepo = InMemoryAgentRepo();
+        await agentRepo.syncFromGateway('inst-1', [
+          Agent(
+            localId: 'local-1',
+            remoteId: 'r-1',
+            instanceId: 'inst-1',
+            name: '产品虾',
+          ),
+        ]);
+        final messageRepo = InMemoryMessageRepo();
+        final conversationRepo = InMemoryConversationRepo();
+        final instanceRepo = InMemoryInstanceRepo();
+        final gateway = MockGatewayClient();
+
+        final vm = ChatViewModel(
+          agentRepo: agentRepo,
+          conversationRepo: conversationRepo,
+          messageRepo: messageRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+          sendMessageUseCase: SendMessageUseCase(
+            messageRepo: messageRepo,
+            conversationRepo: conversationRepo,
+            instanceRepo: instanceRepo,
+            gatewayClient: gateway,
+          ),
+          instanceId: 'inst-1',
+          agentId: 'local-1',
+          achievementChecker: _MockAchievementChecker(),
+          flushDelay: Duration.zero,
+        );
+        vm.debugSetAgent(
+          Agent(
+            localId: 'local-1',
+            remoteId: 'r-1',
+            instanceId: 'inst-1',
+            name: '产品虾',
+          ),
+        );
+        final msg = Message(
+          clientId: 'msg-1',
+          conversationId: 'conv',
+          agentId: 'local-1',
+          role: MessageRole.agent,
+          content: 'reply',
+          type: MessageType.text,
+          logicalClock: 1,
+          timestamp: 1000,
+        );
+        // ToolCall already re-keyed to the message's clientId (what the VM
+        // produces after _rekeyToolCallForMessage).
+        final tc = ToolCall(
+          id: 'tc-1',
+          messageId: 'msg-1',
+          toolName: 'search',
+          status: ToolCallStatus.success,
+          outputResult: '{}',
+        );
+        vm.state = ChatSessionState(
+          messages: LoadData(<Message>[msg]),
+          toolCalls: {'msg-1': tc},
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [chatViewModelProvider(_key).overrideWith((ref) => vm)],
+            child: const MaterialApp(
+              home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          find.byType(ToolCallCard),
+          findsOneWidget,
+          reason: 'ToolCallCard 必须在 toolCalls key 与 message.clientId 对齐时渲染',
+        );
+      },
+    );
   });
 }

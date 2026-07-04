@@ -214,6 +214,35 @@ void main() {
       },
     );
 
+    test(
+      'onReplyArrived cancels pending flush — no ghost republish (review #9)',
+      () async {
+        // 非零 flushDelay 让 flush 挂起而非立即触发,复现竞态窗口:
+        // delta 落定 → flush 调度在 +100ms;在 flush 触发前 final Message 到达
+        // → onReplyArrived 推 ''。若无取消,挂起的 flush 随后触发会把陈旧
+        // buffer 文本作为幽灵流式文本重新发布一帧。
+        final sl = makeSL(flushDelay: const Duration(milliseconds: 100));
+        sl.start(controller.stream, 'r-1');
+        controller.add(StreamingDelta(agentId: 'r-1', text: 'hi'));
+        await pump(); // _onEvent 落定 → buffer='hi', flush pending at +100ms
+
+        sl.onReplyArrived(); // final Message 落地 → 推 ''
+        expect(sl.isStreaming, isFalse);
+        expect(changes.last, '');
+
+        // 推过 100ms flush 窗口。无修复时挂起的 flush 触发 → 重新发布 'hi'。
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(changes, [
+          '',
+        ], reason: 'onReplyArrived 必须取消挂起的 flush,陈旧 buffer 文本不得作为幽灵重新发布');
+        expect(
+          changes,
+          isNot(contains('hi')),
+          reason: 'stale buffer 文本不应被重新发布',
+        );
+      },
+    );
+
     test('cancel cancels sub+timers, clears buffer, pushes no state', () async {
       final sl = makeSL();
       sl.start(controller.stream, 'r-1');

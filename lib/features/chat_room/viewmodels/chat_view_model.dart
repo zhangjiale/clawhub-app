@@ -424,7 +424,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       // Clear the cached future so the next init() / send() call will
       // retry instead of instantly returning the failed future.
       _initFuture = null;
-      // Signal to send() that the agent is unavailable (shows LoadError).
+      // Surface LoadError so the UI shows a retry button (LoadErrorView.onRetry
+      // → vm.retry()). Without this, a cold-start init failure leaves the page
+      // on LoadInProgress forever with no recovery affordance — retry() resets
+      // _initFuture but there's no button to tap.
+      _updateState(
+        (s) => s.copyWith(messages: LoadError('聊天初始化失败：$error', stackTrace)),
+      );
+      // Signal to send() that the agent is unavailable.
       // setAgent(null) 同步清掉 _agent 缓存 + bump contentRevision，UI
       // 重建后 vm.agent.isTombstoned = false，回退到 LoadError 而
       // 不是上一轮的 tombstone 占位页。
@@ -442,53 +449,54 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// 第二次调 init() 不会重跑；而 refreshAgent 不经 _initFuture 缓存，必须
   /// 显式触发订阅。两条路径的代码完全一致 —— 抽出避免漂移。
   ///
-  /// 内部 try/catch：失败时 _teardownSubscriptions 防止半订阅状态。
+  /// 失败时异常上抛至 [_init] 的外层 catch（清 _initFuture + setAgent(null)
+  /// + 推 LoadError 供 retry），由其统一 _teardownSubscriptions 防半订阅状态。
   /// 成功末尾 [_streamsInitialized] = true，让 refreshAgent 后续不再
   /// 重复触发（alive→alive 是 no-op）。
   Future<void> _initStreamsAndHistory(Agent activeAgent) async {
+    // 2. Get or create conversation (idempotent)
+    await _conversationRepo.getOrCreate(instanceId, agentId);
+
+    // 3. Load local messages immediately (fast path)
+    await _loadMessages();
+
+    // ★ 3.5 订阅 agent 响应式 stream
+    // [setAgent] 内部 [Agent.contentEquals] 守卫过滤掉 Drift
+    // `.watchSingleOrNull()` 的 seed event（与已有 [_agent] 内容完全相同），
+    // 避免 contentRevision 在 init 同步阶段被误增（旧逻辑 revision 从 1
+    // 跳到 2，对应一次无意义的 UI rebuild）。null 转换（tombstone / 复活）
+    // 和真实内容变更（nickname / themeColor / quickCommands）正确放行。
+    // 包装在 try 中：mocktail 未 stub 的 watchById 可能返回 null，
+    // 真实实现 (InMemory / Drift) 不会。失败只丢响应式刷新，
+    // 不影响其余 6 个 stream 订阅。
     try {
-      // 2. Get or create conversation (idempotent)
-      await _conversationRepo.getOrCreate(instanceId, agentId);
+      _agentSubscription = _agentRepo
+          .watchById(agentId)
+          .listen(
+            setAgent,
+            onError: (error, stackTrace) {
+              // Law 8: catch 必有日志
+              _logger.error(
+                '[ChatViewModel] watchById error for $agentId: '
+                '$error',
+                stackTrace,
+              );
+            },
+          );
+    } catch (error, stackTrace) {
+      // Law 8: catch 必有日志
+      _logger.error(
+        '[ChatViewModel] watchById subscribe failed for $agentId: '
+        '$error',
+        stackTrace,
+      );
+    }
 
-      // 3. Load local messages immediately (fast path)
-      await _loadMessages();
-
-      // ★ 3.5 订阅 agent 响应式 stream
-      // [setAgent] 内部 [Agent.contentEquals] 守卫过滤掉 Drift
-      // `.watchSingleOrNull()` 的 seed event（与已有 [_agent] 内容完全相同），
-      // 避免 contentRevision 在 init 同步阶段被误增（旧逻辑 revision 从 1
-      // 跳到 2，对应一次无意义的 UI rebuild）。null 转换（tombstone / 复活）
-      // 和真实内容变更（nickname / themeColor / quickCommands）正确放行。
-      // 包装在 try 中：mocktail 未 stub 的 watchById 可能返回 null，
-      // 真实实现 (InMemory / Drift) 不会。失败只丢响应式刷新，
-      // 不影响其余 6 个 stream 订阅。
-      try {
-        _agentSubscription = _agentRepo
-            .watchById(agentId)
-            .listen(
-              setAgent,
-              onError: (error, stackTrace) {
-                // Law 8: catch 必有日志
-                _logger.error(
-                  '[ChatViewModel] watchById error for $agentId: '
-                  '$error',
-                  stackTrace,
-                );
-              },
-            );
-      } catch (error, stackTrace) {
-        // Law 8: catch 必有日志
-        _logger.error(
-          '[ChatViewModel] watchById subscribe failed for $agentId: '
-          '$error',
-          stackTrace,
-        );
-      }
-
-      // 4. Subscribe to connection state
-      _connectionSubscription = _gatewayClient
-          .connectionStateStream(instanceId)
-          .listen((state) {
+    // 4. Subscribe to connection state
+    _connectionSubscription = _gatewayClient
+        .connectionStateStream(instanceId)
+        .listen(
+          (state) {
             final wasInitial = _isInitialConnectionEvent;
             _isInitialConnectionEvent = false;
             _updateState((s) => s.copyWith(connectionState: state));
@@ -521,247 +529,250 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
                 unawaited(reloadMessages());
               }
             }
-          });
-
-      // 5. Subscribe to real-time streams BEFORE history fetch — broadcast
-      //    StreamControllers have no replay, so events arriving during the
-      //    history-fetch RTT (100-2000ms) are permanently lost if we
-      //    subscribe after.  (Same pattern documented in ConnectionOrchestrator
-      //    lines 224-227.)
-
-      // 5a. Real-time messages
-      _messageSubscription = _gatewayClient
-          .messageStream(instanceId)
-          .listen(
-            (msg) async {
-              // Guard: messageStream is per-instance and carries messages
-              // for ALL agents in that instance.  Only process messages
-              // that belong to this ViewModel's agent — otherwise the
-              // unconditional conversationId overwrite below would misroute
-              // another agent's reply into this conversation (causing the
-              // message to "appear in the wrong chat" and "disappear" from
-              // its rightful owner).
-              //
-              // msg.agentId is empty only when the Gateway omits it (legacy
-              // v3 fallback); in that case we process the message rather
-              // than silently dropping it.
-              final agentRemoteId = activeAgent.remoteId;
-              if (msg.agentId.isNotEmpty && msg.agentId != agentRemoteId) {
-                return;
-              }
-
-              // Normalise conversationId to the canonical SHA-256 hash.
-              //
-              // The ACL may construct messages with a raw conversationId
-              // (e.g. 'agent:remoteId') when the Gateway uses v3 protocol
-              // (agent.lifecycle fallback) or when chat.final arrives
-              // without a message object.  Those raw IDs violate the
-              // FOREIGN KEY constraint on messages.conversation_id
-              // (references conversations.id) and cause a silent insert
-              // failure.  See schema.drift:79.
-              //
-              // Overriding with _conversationId guarantees the FK
-              // constraint is satisfied and the message routes to the
-              // correct conversation for _loadMessages() below.
-              //
-              // Also override logicalClock when the Gateway's value is
-              // incompatible with the client's timestamp-based counter.
-              // SendMessageUseCase starts at DateTime.now().millisecondsSinceEpoch;
-              // a Gateway clock < year-2020 epoch would sort all agent messages
-              // after all user messages in the DESC-ordered list, breaking
-              // chronological display.
-              //
-              // Uses the shared counter from SendMessageUseCase to guarantee
-              // strict monotonic ordering across both user-sent and agent-received
-              // messages, even when they arrive within the same millisecond.
-              final fixedMsg = msg.copyWith(
-                conversationId: _conversationId,
-                logicalClock: msg.logicalClock < 1577836800000
-                    ? _sendMessageUseCase.nextLogicalClock()
-                    : msg.logicalClock,
-              );
-              try {
-                await _mergeUseCase.merge(fixedMsg, softMatch: false);
-              } catch (error, stackTrace) {
-                // iron-law-allow: Law8 — 兜底:即使 clearAll 保留骨架,任何
-                // FK/约束冲突也不应静默吞掉后续逻辑。旧实现异常会中断
-                // _updateConversationPreview 与 _loadMessages,使消息列表
-                // 卡在空状态。记日志后 return,等下一条消息正常处理。
-                _logger.error(
-                  '[ChatViewModel] message merge failed for '
-                  '${fixedMsg.clientId}: $error',
-                  stackTrace,
-                );
-                return;
-              }
-              // 同步会话预览 —— 让消息中心展示「真正的最后一条消息」。
-              // 此前 updateLastMessage 仅在用户发送时被调用，导致预览永远
-              // 停留在「我」的最后一条消息，掩盖了 Agent 的最新回复。
-              // 这里用与 SendMessageUseCase 相同的预览规则，保证两侧一致。
-              _preview.schedule(fixedMsg);
-              // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
-              if (!_highlightActive) {
-                _scheduleMessagesReload();
-              }
-              if (fixedMsg.role == MessageRole.agent) {
-                // Clear streaming text when the final message lands —
-                // eliminates the race window between StreamingDone and
-                // Message arrival on independent broadcast controllers.
-                _awaitingReply = false;
-                _streaming.onReplyArrived();
-                _stopThinking();
-                onStatsChanged?.call();
-                // Fire-and-forget achievement evaluation — deferred to
-                // agent reply arrival so stats include the latest message
-                // and don't contend with concurrent streaming inserts.
-                _achievementChecker.check(agentId);
-              }
-            },
-            onError: (error, stackTrace) {
-              _logger.error(
-                'Message stream error for $instanceId: $error',
-                stackTrace,
-              );
-            },
-          );
-
-      // 5b. Tool call events
-      _toolCallSubscription = _gatewayClient
-          .toolCallStream(instanceId)
-          .listen(
-            (tc) {
-              final current = Map<String, ToolCall>.from(state.toolCalls);
-              current[tc.messageId] = tc;
-              _updateState((s) => s.copyWith(toolCalls: current));
-            },
-            onError: (error, stackTrace) {
-              _logger.error(
-                'Tool call stream error for $instanceId: $error',
-                stackTrace,
-              );
-            },
-          );
-
-      // 5c. Streaming deltas — subscription is recreated on each send()
-      //     so stale events from a previous response never contaminate
-      //     the current buffer (no generation-guard needed).
-      _streaming.start(
-        _gatewayClient.streamingDeltaStream(instanceId),
-        activeAgent.remoteId,
-      );
-
-      // 5d. (Finding #9 修复) Gateway 诊断事件 notice 不再由 VM 订阅 ——
-      // 改由 gatewayNoticeProvider (StreamProvider) 订阅,UI 经
-      // ref.listen(gatewayNoticeProvider) 直接消费。VM 不参与 notice 流。
-      //
-      // “先订阅再 fetchHistory”不变量由 chatViewModelProvider create body
-      // 的 ref.listen(gatewayNoticeProvider(params.instanceId), (_, _) {})
-      // 早订阅保证（在 vm.init() 之前执行）——broadcast stream 无 replay,
-      // fetch RTT 期间 notice 不会丢。见 chat_providers.dart create body。
-
-      // 6. Fetch message history from Gateway (best-effort).
-      //    Placed AFTER real-time subscriptions so that events arriving
-      //    during the fetch RTT are captured, not lost.
-      final remoteId = activeAgent.remoteId;
-      try {
-        final history = await _gatewayClient.fetchMessageHistory(
-          instanceId: instanceId,
-          agentId: remoteId,
-        );
-        // 循环外预取一次近期消息列表,传给每条 merge() 用作软匹配 candidate。
-        // —— Bug #4 (Law 6) 修复:之前每条 merge() 内部都触发一次
-        // getByConversation(limit:50),N 条历史 = N 次相同查询(标准 N+1)。
-        // 与 MessageCatchUpService.catchUp(line 184)同款优化。
-        final recent = await _messageRepo.getByConversation(
-          _conversationId,
-          limit: 50,
-        );
-
-        // per-insert try/catch: 与 messageStream 路径(line 368-379)对称,
-        // 防止 clearAll 保留骨架后,任何一条历史消息的 FK/约束冲突中断整
-        // 个循环,导致 _loadMessages 永不调用,后续消息(N+1..end)静默跳过。
-        for (final msg in history.messages) {
-          // Normalise to canonical SHA-256 conversationId, matching
-          // the live stream listener at line ~247.  _parseMessage
-          // defaults to '' when the Gateway omits the field, which
-          // violates the FK constraint on messages.conversation_id.
-          final fixedMsg = msg.copyWith(conversationId: _conversationId);
-          try {
-            // 用 mergeWithStatus 以传入 recent(merge() 不暴露该参数)。
-            // 这里丢弃 wasNew —— history 路径不需要区分是否新增,
-            // dedupeConversation 已覆盖清理历史重复的职责。
-            await _mergeUseCase.mergeWithStatus(
-              fixedMsg,
-              softMatch: true,
-              recent: recent,
-            );
-          } catch (error, stackTrace) {
-            // iron-law-allow: Law8 — 历史拉取的逐条兜底,与 messageStream
-            // 路径一致,单条 FK 冲突不应中断整批导入。
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            // Symmetry with the message/tool/outbox/agent listeners (review #4):
+            // without this, a connectionStateStream error vanishes to the zone
+            // and the subscription may auto-cancel, freezing the connection
+            // banner on the last known state with no diagnostic trail.
             _logger.error(
-              '[ChatViewModel] history merge failed for '
-              '${fixedMsg.clientId}: $error',
+              '[ChatViewModel] connection state stream error for $instanceId: '
+              '$error',
               stackTrace,
             );
-          }
-        }
-        // Bug #2 补强: 清理历史遗留的重复行。旧 CatchUp(身份去重)在过往重启中
-        // 累积了重复消息;merge 已停止新增,这里删除已存在的重复。幂等 —— 无
-        // 重复时为 no-op。放在历史合并之后、_loadMessages 之前,使首屏即干净。
-        try {
-          final deleted = await _messageRepo.dedupeConversation(
-            _conversationId,
-          );
-          if (deleted > 0) {
-            _logger.info(
-              '[ChatViewModel] dedupeConversation removed $deleted duplicate '
-              'rows for $_conversationId',
+          },
+        );
+
+    // 5. Subscribe to real-time streams BEFORE history fetch — broadcast
+    //    StreamControllers have no replay, so events arriving during the
+    //    history-fetch RTT (100-2000ms) are permanently lost if we
+    //    subscribe after.  (Same pattern documented in ConnectionOrchestrator
+    //    lines 224-227.)
+
+    // 5a. Real-time messages
+    _messageSubscription = _gatewayClient
+        .messageStream(instanceId)
+        .listen(
+          (msg) async {
+            // Guard: messageStream is per-instance and carries messages
+            // for ALL agents in that instance.  Only process messages
+            // that belong to this ViewModel's agent — otherwise the
+            // unconditional conversationId overwrite below would misroute
+            // another agent's reply into this conversation (causing the
+            // message to "appear in the wrong chat" and "disappear" from
+            // its rightful owner).
+            //
+            // msg.agentId is empty only when the Gateway omits it (legacy
+            // v3 fallback); in that case we process the message rather
+            // than silently dropping it.
+            final agentRemoteId = activeAgent.remoteId;
+            if (msg.agentId.isNotEmpty && msg.agentId != agentRemoteId) {
+              return;
+            }
+
+            // Normalise conversationId to the canonical SHA-256 hash.
+            //
+            // The ACL may construct messages with a raw conversationId
+            // (e.g. 'agent:remoteId') when the Gateway uses v3 protocol
+            // (agent.lifecycle fallback) or when chat.final arrives
+            // without a message object.  Those raw IDs violate the
+            // FOREIGN KEY constraint on messages.conversation_id
+            // (references conversations.id) and cause a silent insert
+            // failure.  See schema.drift:79.
+            //
+            // Overriding with _conversationId guarantees the FK
+            // constraint is satisfied and the message routes to the
+            // correct conversation for _loadMessages() below.
+            //
+            // Also override logicalClock when the Gateway's value is
+            // incompatible with the client's timestamp-based counter.
+            // SendMessageUseCase starts at DateTime.now().millisecondsSinceEpoch;
+            // a Gateway clock < year-2020 epoch would sort all agent messages
+            // after all user messages in the DESC-ordered list, breaking
+            // chronological display.
+            //
+            // Uses the shared counter from SendMessageUseCase to guarantee
+            // strict monotonic ordering across both user-sent and agent-received
+            // messages, even when they arrive within the same millisecond.
+            final fixedMsg = msg.copyWith(
+              conversationId: _conversationId,
+              logicalClock: msg.logicalClock < 1577836800000
+                  ? _sendMessageUseCase.nextLogicalClock()
+                  : msg.logicalClock,
             );
-          }
+            try {
+              await _mergeUseCase.merge(fixedMsg, softMatch: false);
+            } catch (error, stackTrace) {
+              // iron-law-allow: Law8 — 兜底:即使 clearAll 保留骨架,任何
+              // FK/约束冲突也不应静默吞掉后续逻辑。旧实现异常会中断
+              // _updateConversationPreview 与 _loadMessages,使消息列表
+              // 卡在空状态。记日志后 return,等下一条消息正常处理。
+              _logger.error(
+                '[ChatViewModel] message merge failed for '
+                '${fixedMsg.clientId}: $error',
+                stackTrace,
+              );
+              return;
+            }
+            // 同步会话预览 —— 让消息中心展示「真正的最后一条消息」。
+            // 此前 updateLastMessage 仅在用户发送时被调用，导致预览永远
+            // 停留在「我」的最后一条消息，掩盖了 Agent 的最新回复。
+            // 这里用与 SendMessageUseCase 相同的预览规则，保证两侧一致。
+            _preview.schedule(fixedMsg);
+            // 高亮激活期间跳过全量重载 — loadHighlightWindow 设置的有界窗口优先。
+            if (!_highlightActive) {
+              _scheduleMessagesReload();
+            }
+            if (fixedMsg.role == MessageRole.agent) {
+              // Clear streaming text when the final message lands —
+              // eliminates the race window between StreamingDone and
+              // Message arrival on independent broadcast controllers.
+              _awaitingReply = false;
+              _streaming.onReplyArrived();
+              _stopThinking();
+              // Re-key the turn's ToolCall from sessionKey → clientId so
+              // the page's `toolCalls[message.clientId]` lookup finds it.
+              _rekeyToolCallForMessage(fixedMsg);
+              onStatsChanged?.call();
+              // Fire-and-forget achievement evaluation — deferred to
+              // agent reply arrival so stats include the latest message
+              // and don't contend with concurrent streaming inserts.
+              _achievementChecker.check(agentId);
+            }
+          },
+          onError: (error, stackTrace) {
+            _logger.error(
+              'Message stream error for $instanceId: $error',
+              stackTrace,
+            );
+          },
+        );
+
+    // 5b. Tool call events
+    _toolCallSubscription = _gatewayClient
+        .toolCallStream(instanceId)
+        .listen(
+          (tc) {
+            final current = Map<String, ToolCall>.from(state.toolCalls);
+            current[tc.messageId] = tc;
+            _updateState((s) => s.copyWith(toolCalls: current));
+          },
+          onError: (error, stackTrace) {
+            _logger.error(
+              'Tool call stream error for $instanceId: $error',
+              stackTrace,
+            );
+          },
+        );
+
+    // 5c. Streaming deltas — subscription is recreated on each send()
+    //     so stale events from a previous response never contaminate
+    //     the current buffer (no generation-guard needed).
+    _streaming.start(
+      _gatewayClient.streamingDeltaStream(instanceId),
+      activeAgent.remoteId,
+    );
+
+    // 5d. (Finding #9 修复) Gateway 诊断事件 notice 不再由 VM 订阅 ——
+    // 改由 gatewayNoticeProvider (StreamProvider) 订阅,UI 经
+    // ref.listen(gatewayNoticeProvider) 直接消费。VM 不参与 notice 流。
+    //
+    // “先订阅再 fetchHistory”不变量由 chatViewModelProvider create body
+    // 的 ref.listen(gatewayNoticeProvider(params.instanceId), (_, _) {})
+    // 早订阅保证（在 vm.init() 之前执行）——broadcast stream 无 replay,
+    // fetch RTT 期间 notice 不会丢。见 chat_providers.dart create body。
+
+    // 6. Fetch message history from Gateway (best-effort).
+    //    Placed AFTER real-time subscriptions so that events arriving
+    //    during the fetch RTT are captured, not lost.
+    final remoteId = activeAgent.remoteId;
+    try {
+      final history = await _gatewayClient.fetchMessageHistory(
+        instanceId: instanceId,
+        agentId: remoteId,
+      );
+      // 循环外预取一次近期消息列表,传给每条 merge() 用作软匹配 candidate。
+      // —— Bug #4 (Law 6) 修复:之前每条 merge() 内部都触发一次
+      // getByConversation(limit:50),N 条历史 = N 次相同查询(标准 N+1)。
+      // 与 MessageCatchUpService.catchUp(line 184)同款优化。
+      final recent = await _messageRepo.getByConversation(
+        _conversationId,
+        limit: 50,
+      );
+
+      // per-insert try/catch: 与 messageStream 路径(line 368-379)对称,
+      // 防止 clearAll 保留骨架后,任何一条历史消息的 FK/约束冲突中断整
+      // 个循环,导致 _loadMessages 永不调用,后续消息(N+1..end)静默跳过。
+      for (final msg in history.messages) {
+        // Normalise to canonical SHA-256 conversationId, matching
+        // the live stream listener at line ~247.  _parseMessage
+        // defaults to '' when the Gateway omits the field, which
+        // violates the FK constraint on messages.conversation_id.
+        final fixedMsg = msg.copyWith(conversationId: _conversationId);
+        try {
+          // 用 mergeWithStatus 以传入 recent(merge() 不暴露该参数)。
+          // 这里丢弃 wasNew —— history 路径不需要区分是否新增,
+          // dedupeConversation 已覆盖清理历史重复的职责。
+          await _mergeUseCase.mergeWithStatus(
+            fixedMsg,
+            softMatch: true,
+            recent: recent,
+          );
         } catch (error, stackTrace) {
+          // iron-law-allow: Law8 — 历史拉取的逐条兜底,与 messageStream
+          // 路径一致,单条 FK 冲突不应中断整批导入。
           _logger.error(
-            '[ChatViewModel] dedupeConversation failed for '
-            '$_conversationId: $error',
+            '[ChatViewModel] history merge failed for '
+            '${fixedMsg.clientId}: $error',
             stackTrace,
           );
         }
-        await _loadMessages();
+      }
+      // Bug #2 补强: 清理历史遗留的重复行。旧 CatchUp(身份去重)在过往重启中
+      // 累积了重复消息;merge 已停止新增,这里删除已存在的重复。幂等 —— 无
+      // 重复时为 no-op。放在历史合并之后、_loadMessages 之前,使首屏即干净。
+      try {
+        final deleted = await _messageRepo.dedupeConversation(_conversationId);
+        if (deleted > 0) {
+          _logger.info(
+            '[ChatViewModel] dedupeConversation removed $deleted duplicate '
+            'rows for $_conversationId',
+          );
+        }
       } catch (error, stackTrace) {
         _logger.error(
-          'History fetch failed for $instanceId/$remoteId: $error',
+          '[ChatViewModel] dedupeConversation failed for '
+          '$_conversationId: $error',
           stackTrace,
         );
       }
-
-      // 7. outbox 计数 —— SSOT stream 驱动（取代散落的 _loadOutboxCount 轮询）。
-      //    bootstrap 一次拿初始值（await 保证 init 返回时 state 已就绪），
-      //    之后任何影响 outbox 的 DB 写入由 watchOutboxCount 自动推送。
-      final initCount = await _messageRepo.getOutboxCountByInstance(instanceId);
-      _updateState((s) => s.copyWith(outboxCount: initCount));
-      _outboxCountSubscription = _messageRepo
-          .watchOutboxCount(instanceId)
-          .listen(
-            (count) => _updateState((s) => s.copyWith(outboxCount: count)),
-            onError: (Object error, StackTrace stack) {
-              _logger.error(
-                '[ChatViewModel] outbox count stream error for $instanceId: '
-                '$error',
-                stack,
-              );
-            },
-          );
-
-      _streamsInitialized = true;
+      await _loadMessages();
     } catch (error, stackTrace) {
       _logger.error(
-        '[ChatViewModel] _initStreamsAndHistory failed for '
-        '$instanceId/$agentId: $error',
+        'History fetch failed for $instanceId/$remoteId: $error',
         stackTrace,
       );
-      // 防止半订阅状态:失败时清空所有已建立的 subscription，
-      // 下次 _init / refreshAgent 再重试。
-      _teardownSubscriptions();
     }
+
+    // 7. outbox 计数 —— SSOT stream 驱动（取代散落的 _loadOutboxCount 轮询）。
+    //    bootstrap 一次拿初始值（await 保证 init 返回时 state 已就绪），
+    //    之后任何影响 outbox 的 DB 写入由 watchOutboxCount 自动推送。
+    final initCount = await _messageRepo.getOutboxCountByInstance(instanceId);
+    _updateState((s) => s.copyWith(outboxCount: initCount));
+    _outboxCountSubscription = _messageRepo
+        .watchOutboxCount(instanceId)
+        .listen(
+          (count) => _updateState((s) => s.copyWith(outboxCount: count)),
+          onError: (Object error, StackTrace stack) {
+            _logger.error(
+              '[ChatViewModel] outbox count stream error for $instanceId: '
+              '$error',
+              stack,
+            );
+          },
+        );
+
+    _streamsInitialized = true;
   }
 
   // ============================================================
@@ -1032,6 +1043,27 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     });
   }
 
+  /// Re-key the turn's ToolCall from `sessionKey` → [msg.clientId] so the
+  /// page's `toolCalls[message.clientId]` lookup (chat_room_page
+  /// `_buildMessageList`) finds it. The processor tags agent messages with
+  /// `metadata['sessionKey']`; ToolCalls arrive keyed by the same sessionKey
+  /// (`ToolCall.messageId = event.sessionKey`). Without this re-key the keys
+  /// live in different namespaces and ToolCallCard never renders
+  /// (review #1, Option C).
+  ///
+  /// 已知限制：tool call 必须在 final 消息之前到达才能被重键。tool call 迟到
+  /// （final 之后才到）不会被重键 → 不渲染。常见时序（tool → final）已覆盖。
+  void _rekeyToolCallForMessage(Message msg) {
+    final sk = msg.metadata?['sessionKey'];
+    if (sk is! String) return;
+    final tc = state.toolCalls[sk];
+    if (tc == null) return;
+    final rekeyed = Map<String, ToolCall>.from(state.toolCalls)
+      ..remove(sk)
+      ..[msg.clientId] = tc.copyWith(messageId: msg.clientId);
+    _updateState((s) => s.copyWith(toolCalls: rekeyed));
+  }
+
   /// 重载消息列表。供 [chatViewModelProvider] 响应
   /// [outboxFlushTickerProvider]（OutboxProcessor 后台冲刷完成信号）时调用，
   /// 替代重建 ViewModel。
@@ -1082,7 +1114,20 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     if (!_streamsInitialized &&
         currentAgent != null &&
         !currentAgent.isRemoved) {
-      await _initStreamsAndHistory(currentAgent);
+      // 复活路径：_initStreamsAndHistory 失败不再被内部 catch 吞掉（该 catch
+      // 已移除，异常上抛以让 _init 外层 catch 清 _initFuture）。本路径不经
+      // _init，必须自行捕获，防止异常冒泡到 ticker listener（best-effort
+      // 复活：失败留 _streamsInitialized=false，下次 ticker 再试）。
+      try {
+        await _initStreamsAndHistory(currentAgent);
+      } catch (e, st) {
+        _logger.error(
+          '[ChatViewModel] revive _initStreamsAndHistory failed for '
+          '$agentId: $e',
+          st,
+        );
+        _teardownSubscriptions();
+      }
     }
   }
 
