@@ -177,6 +177,7 @@ class NotificationCoordinator {
     // 与新订阅建立竞争 (fire-and-forget cancel 可能让旧流的事件在新流
     // 建立后才送达，造成重复/乱序)。
     await _subs.remove(instanceId)?.cancel();
+    if (_disposed) return;
 
     final messageSub = gatewayClient
         .messageStream(instanceId)
@@ -198,13 +199,34 @@ class NotificationCoordinator {
           ),
         );
 
-    _subs[instanceId] = _InstanceSubscriptions(messageSub, connSub);
+    final ours = _InstanceSubscriptions(messageSub, connSub);
+    // TOCTOU race guard (review #6): a concurrent _subscribeInstance call may
+    // have already written _subs[instanceId] while we awaited the cancel
+    // above (both calls' removes returned null, both created fresh subs). The
+    // read + write below is one synchronous block (no await between), so it's
+    // atomic — if another entry already exists, we lost the race: cancel our
+    // fresh subs to avoid a leak. Without this guard both calls would write
+    // and the loser's two subscriptions would never be cancelled → memory
+    // leak + duplicate notifications until app exit.
+    if (_subs[instanceId] != null) {
+      await ours.cancel();
+      return;
+    }
+    _subs[instanceId] = ours;
   }
 
   Future<void> _onMessage(String instanceId, Message msg) async {
     // 仅 Agent 回复触发通知 (用户自己发的消息不通知)。
     if (msg.role != MessageRole.agent) return;
-    if (msg.content == null || msg.content!.isEmpty) return;
+
+    // 纯图片/纯文件回复的可见内容在 type / metadata.imageUrl，不在 content
+    // (parseMessage 对只含图片块的 content 返回 '')。只挡真正无可见内容的
+    // 消息；图片/文件回复即便无 caption 也要通知，否则 Agent 回图/回文件时
+    // 用户永远收不到本地通知 (review #7)。
+    final hasText = msg.content != null && msg.content!.isNotEmpty;
+    final hasVisual =
+        msg.type == MessageType.image || msg.type == MessageType.file;
+    if (!hasText && !hasVisual) return;
 
     try {
       // Message.agentId 是 Gateway remoteId → 解析为本地 Agent (localId + 名称)。
@@ -238,12 +260,20 @@ class NotificationCoordinator {
       final agentName = agent?.displayName ?? '虾';
       final localId = agent?.localId ?? msg.agentId;
 
+      // 纯图片/纯文件无文本时用占位预览，保证通知 body 非空可读。
+      final String preview;
+      if (hasText) {
+        preview = msg.content!;
+      } else {
+        preview = msg.type == MessageType.file ? '[文件]' : '[图片]';
+      }
+
       _eventSink.add(
         ReplyEvent(
           agentId: localId,
           instanceId: instanceId,
           agentName: agentName,
-          contentPreview: msg.content!,
+          contentPreview: preview,
           messageServerId: msg.serverId,
           messageClientId: msg.clientId,
         ),

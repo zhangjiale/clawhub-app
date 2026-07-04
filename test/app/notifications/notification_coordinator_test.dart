@@ -619,6 +619,115 @@ void main() {
       expect(service.shown, isEmpty);
     });
 
+    // Review #7: 纯图片/纯文件回复的可见内容在 type/metadata.imageUrl，
+    // 不在 content（parseMessage 对只含图片块的 content 返回 ''）。
+    // 旧 guard `content == null || content!.isEmpty` 直接 return，导致
+    // Agent 回图/回文件时用户永远收不到本地通知。
+    test(
+      'agent pure-image reply -> notified with [图片] preview (review #7)',
+      () async {
+        agentRepo.agents['remote-1'] = Agent(
+          localId: 'local-1',
+          remoteId: 'remote-1',
+          instanceId: 'i',
+          name: '图虾',
+        );
+        final c = build();
+        await c.start();
+        gateway.messageController.add(
+          Message(
+            clientId: 'c1',
+            serverId: 'srv1',
+            conversationId: 'conv',
+            agentId: 'remote-1',
+            role: MessageRole.agent,
+            content: '',
+            type: MessageType.image,
+            status: MessageStatus.delivered,
+            logicalClock: 1,
+            timestamp: 1000,
+            metadata: const {'imageUrl': 'data:image/png;base64,iVBOR='},
+          ),
+        );
+        await _pump();
+        await c.dispose();
+
+        expect(service.shown.length, 1, reason: '纯图片回复必须触发通知');
+        expect(service.shown.first.title, '图虾');
+        expect(service.shown.first.body, '[图片]');
+        expect(service.shown.first.channel, NotificationChannelId.reply);
+      },
+    );
+
+    test(
+      'agent pure-file reply -> notified with [文件] preview (review #7)',
+      () async {
+        agentRepo.agents['remote-1'] = Agent(
+          localId: 'local-1',
+          remoteId: 'remote-1',
+          instanceId: 'i',
+          name: '文件虾',
+        );
+        final c = build();
+        await c.start();
+        gateway.messageController.add(
+          Message(
+            clientId: 'c2',
+            serverId: 'srv2',
+            conversationId: 'conv',
+            agentId: 'remote-1',
+            role: MessageRole.agent,
+            content: null,
+            type: MessageType.file,
+            status: MessageStatus.delivered,
+            logicalClock: 2,
+            timestamp: 2000,
+            metadata: const {'fileName': 'report.pdf'},
+          ),
+        );
+        await _pump();
+        await c.dispose();
+
+        expect(service.shown.length, 1, reason: '纯文件回复必须触发通知');
+        expect(service.shown.first.body, '[文件]');
+      },
+    );
+
+    test(
+      'agent image reply with caption -> notified with caption text',
+      () async {
+        // 有 caption 时优先用文本预览，不退化成 [图片]。
+        agentRepo.agents['remote-1'] = Agent(
+          localId: 'local-1',
+          remoteId: 'remote-1',
+          instanceId: 'i',
+          name: '图虾',
+        );
+        final c = build();
+        await c.start();
+        gateway.messageController.add(
+          Message(
+            clientId: 'c3',
+            serverId: 'srv3',
+            conversationId: 'conv',
+            agentId: 'remote-1',
+            role: MessageRole.agent,
+            content: '看这张图',
+            type: MessageType.image,
+            status: MessageStatus.delivered,
+            logicalClock: 3,
+            timestamp: 3000,
+            metadata: const {'imageUrl': 'https://x/y.png'},
+          ),
+        );
+        await _pump();
+        await c.dispose();
+
+        expect(service.shown.length, 1);
+        expect(service.shown.first.body, '看这张图');
+      },
+    );
+
     // US-021: tombstoned agent (Gateway 已删除) 不应触发通知。
     // 漏网之鱼场景：findByCompositeKey 故意不过滤 (复活契约)，
     // 但 _onMessage 必须在发送通知前检查 isRemoved。
@@ -795,6 +904,62 @@ void main() {
       );
     });
   });
+
+  // ── _subscribeInstance TOCTOU (review #6) ──────────────────────────
+  // 两次并发 _subscribeInstance(同一 instanceId) 都通过 await remove，都建
+  // 新订阅；旧实现 last-write-wins，输家的两个订阅永不取消 → 泄漏 + 重复
+  // 通知。race guard 让输家取消自己的新订阅。
+  group('_subscribeInstance TOCTOU (review #6)', () {
+    test('two concurrent calls for the same instance do not leak subs', () async {
+      final gateway = _CountingGateway();
+      final c = NotificationCoordinator(
+        orchestratorEvents: orchestratorEvents.stream,
+        gatewayClient: gateway,
+        // 空 instanceRepo → start() 不预订阅；只靠下面的 event 触发。
+        instanceRepo: _FakeInstanceRepo(),
+        agentRepo: _FakeAgentRepo(),
+        notificationRepo: repo,
+        notificationService: service,
+        evaluator: const EvaluateNotificationUseCase(),
+        prefsProvider: () => prefs,
+        clock: () => now,
+        logger: _FakeLogger(),
+      );
+      await c.start();
+
+      // Pre-seed _subs['A'] with one subscription so the next call's
+      // `await _subs.remove('A')?.cancel()` returns a REAL subscription whose
+      // cancel() yields — that yield is the race window. (When _subs is empty,
+      // `await null?.cancel()` = `await null` doesn't yield, so calls run
+      // sequentially and the race never triggers.)
+      orchestratorEvents.add(InstanceConnectedEvent('A'));
+      await _pump(2);
+
+      // Two more InstanceConnectedEvent(A) back-to-back → two concurrent
+      // _subscribeInstance(A) calls (orchestratorEvents listener is async,
+      // stream does not serialize callbacks). The first yields on subs0.cancel;
+      // the second runs to completion (writes subsB); the first then resumes.
+      orchestratorEvents.add(InstanceConnectedEvent('A'));
+      orchestratorEvents.add(InstanceConnectedEvent('A'));
+      await _pump(10);
+
+      // With race guard: the resuming (losing) call sees _subs['A'] already
+      // written and cancels its own fresh subs → 1 active message + 1 conn.
+      // Without guard: it overwrites subsB with subsA, leaving subsB never
+      // cancelled → 2 active each (leak).
+      expect(
+        gateway.activeMessageSubs,
+        1,
+        reason: "loser's message sub must be cancelled (no leak)",
+      );
+      expect(
+        gateway.activeConnSubs,
+        1,
+        reason: "loser's conn sub must be cancelled (no leak)",
+      );
+      await c.dispose();
+    });
+  });
 }
 
 /// 包装另一个 repo，统计 getPending 调用次数 (验证 #4 无冗余 flush)。
@@ -841,6 +1006,39 @@ class _ControllableGatewayClient implements IGatewayClient {
   @override
   Stream<GatewayConnectionState> connectionStateStream(String instanceId) =>
       connController.stream;
+
+  @override
+  noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// Review #6: counts active (non-cancelled) subscriptions by returning a
+/// FRESH broadcast controller per `messageStream`/`connectionStateStream`
+/// call, with onListen/onCancel tracking. This gives per-subscription cancel
+/// tracking (a shared controller's onCancel only fires when the LAST
+/// subscriber cancels, which can't distinguish the loser in a race).
+class _CountingGateway implements IGatewayClient {
+  int activeMessageSubs = 0;
+  int activeConnSubs = 0;
+
+  @override
+  Stream<Message> messageStream(String instanceId) {
+    late StreamController<Message> ctrl;
+    ctrl = StreamController<Message>.broadcast(
+      onListen: () => activeMessageSubs++,
+      onCancel: () => activeMessageSubs--,
+    );
+    return ctrl.stream;
+  }
+
+  @override
+  Stream<GatewayConnectionState> connectionStateStream(String instanceId) {
+    late StreamController<GatewayConnectionState> ctrl;
+    ctrl = StreamController<GatewayConnectionState>.broadcast(
+      onListen: () => activeConnSubs++,
+      onCancel: () => activeConnSubs--,
+    );
+    return ctrl.stream;
+  }
 
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
