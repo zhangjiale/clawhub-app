@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:claw_hub/app/router/router.dart';
@@ -167,9 +166,18 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ///
   /// 平台调用下沉到 [IAttachmentPickerService]（Law 2：widget 只渲染 UI）。
   /// 异步 gap 后校验 mounted；用户取消（pick 返回 null）静默忽略。
-  /// 平台错误（相机权限拒绝 / file_picker 错误 / missing-plugin）经
-  /// [PlatformException] 捕获并 toast 提示——之前未捕获会变成手势处理器中的
-  /// 未处理异步异常，'+' 按钮无反馈（review #10）。
+  ///
+  /// 选择/读取失败统一以 `on Exception` 捕获并 toast——覆盖三类原本会逃逸为
+  /// 未处理异步异常的失败（'+' 按钮无反馈）：
+  /// - PlatformException：相机权限拒绝 / file_picker 平台错误（review #10）
+  /// - FileSystemException：iOS 沙盒回收临时文件 / Android 13+ 撤销 SAF URI，
+  ///   `File.length()` 在 pick 返回后抛出（#11）
+  /// - MissingPluginException：Proguard 裁剪的 Android 变体 / web 回退，
+  ///   `image_picker`/`file_picker` 找不到平台实现（#12）
+  ///
+  /// 用 `on Exception` 而非逐类型 catch：三者都实现 Exception，widget 无需
+  /// 按平台类型分支——统一 toast + 日志即可。Error 子类（OutOfMemoryError 等）
+  /// 不被捕获，继续上抛。
   Future<void> _handlePickAttachment(
     AttachmentKind kind,
     ChatViewModel vm,
@@ -185,8 +193,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
             : ImageSource.gallery;
         result = await pickerService.pickImage(source: source);
       }
-    } on PlatformException catch (e) {
-      debugPrint('[ChatRoom] attachment pick platform error: $e');
+    } on Exception catch (e) {
+      debugPrint('[ChatRoom] attachment pick failed: $e');
       if (mounted) {
         XiaToast.show(context, '无法选择附件，请检查权限或重试');
       }

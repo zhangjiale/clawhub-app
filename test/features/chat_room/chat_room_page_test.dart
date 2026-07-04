@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,28 +33,97 @@ class _MockOrchestrator extends Mock implements ConnectionOrchestrator {}
 
 class _MockAchievementChecker extends Mock implements IAchievementChecker {}
 
-/// Review #10: 模拟相机权限拒绝 / file_picker 平台错误。
-/// 之前 [ChatRoomPage._handlePickAttachment] 未捕获 PlatformException →
-/// 手势处理器中未处理异步异常，'+' 按钮无反馈。
+/// 模拟附件选择失败：pickImage / pickFile 都抛 [error]。
+///
+/// 用于验证 `_handlePickAttachment` 的 `on Exception` 捕获覆盖三类原本会
+/// 逃逸为未处理异步异常的失败（'+' 按钮无 toast 反馈）：
+/// - PlatformException（review #10）
+/// - FileSystemException（#11）
+/// - MissingPluginException（#12）
 class _ThrowingAttachmentPicker implements IAttachmentPickerService {
+  _ThrowingAttachmentPicker(this.error);
+  final Object error;
+
   @override
   Future<AttachmentPickResult?> pickImage({
     required ImageSource source,
     int imageQuality = 85,
   }) async {
-    throw PlatformException(
-      code: 'MISSING_PERMISSION',
-      message: 'camera permission denied',
-    );
+    throw error;
   }
 
   @override
   Future<AttachmentPickResult?> pickFile() async {
-    throw PlatformException(
-      code: 'unknown_error',
-      message: 'file_picker error',
-    );
+    throw error;
   }
+}
+
+/// 共用脚手架：注入一个抛 [error] 的 picker，打开附件 sheet 并点「拍照」。
+///
+/// 三条 toast 回归测试（review #10 / #11 / #12）唯一变量就是被抛异常的
+/// 类型——`_handlePickAttachment` 经 `on Exception` 统一捕获，无需按类型
+/// 分支，故共享同一套 pump + tap 序列。
+Future<void> _pumpAndTapCameraWithThrowingPicker(
+  WidgetTester tester,
+  Object error,
+) async {
+  final agentRepo = InMemoryAgentRepo();
+  await agentRepo.syncFromGateway('inst-1', [
+    Agent(
+      localId: 'local-1',
+      remoteId: 'r-1',
+      instanceId: 'inst-1',
+      name: '产品虾',
+    ),
+  ]);
+  final messageRepo = InMemoryMessageRepo();
+  final conversationRepo = InMemoryConversationRepo();
+  final instanceRepo = InMemoryInstanceRepo();
+  final gateway = MockGatewayClient();
+  final vm = ChatViewModel(
+    agentRepo: agentRepo,
+    conversationRepo: conversationRepo,
+    messageRepo: messageRepo,
+    instanceRepo: instanceRepo,
+    gatewayClient: gateway,
+    sendMessageUseCase: SendMessageUseCase(
+      messageRepo: messageRepo,
+      conversationRepo: conversationRepo,
+      instanceRepo: instanceRepo,
+      gatewayClient: gateway,
+    ),
+    instanceId: 'inst-1',
+    agentId: 'local-1',
+    achievementChecker: _MockAchievementChecker(),
+    flushDelay: Duration.zero,
+  );
+  vm.state = const ChatSessionState(messages: LoadData(<Message>[]));
+
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        chatViewModelProvider(_key).overrideWith((ref) => vm),
+        attachmentPickerServiceProvider.overrideWithValue(
+          _ThrowingAttachmentPicker(error),
+        ),
+      ],
+      child: const MaterialApp(
+        home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
+      ),
+    ),
+  );
+  await tester.pump();
+
+  // 打开附件 sheet，点「拍照」→ _handlePickAttachment(camera) → pickImage
+  // 抛 error → on Exception 捕获 → XiaToast.show。
+  await tester.tap(find.byIcon(Icons.add));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.tap(find.text('拍照'));
+  await tester.pump();
+  await tester.pump();
+  await tester.pump();
+  await tester.pump();
 }
 
 const _key = (instanceId: 'inst-1', agentId: 'local-1');
@@ -765,77 +836,65 @@ void main() {
       );
     });
 
-    // Review #10: attachment picker PlatformException (相机权限拒绝 /
-    // file_picker 平台错误) 必须被 _handlePickAttachment 捕获并 toast，
-    // 而非变成手势处理器中的未处理异步异常（'+' 按钮无反馈）。
+    // Review #10 / #11 / #12: 附件选择失败必须被 _handlePickAttachment 捕获
+    // 并 toast，而非变成手势处理器中的未处理异步异常（'+' 按钮无反馈）。
+    // 三类异常都实现 Exception，由 `on Exception` 统一捕获；之前只 catch
+    // PlatformException，FileSystemException / MissingPluginException 逃逸。
     testWidgets(
       'attachment pick PlatformException -> toast feedback (review #10)',
       (tester) async {
-        final agentRepo = InMemoryAgentRepo();
-        await agentRepo.syncFromGateway('inst-1', [
-          Agent(
-            localId: 'local-1',
-            remoteId: 'r-1',
-            instanceId: 'inst-1',
-            name: '产品虾',
-          ),
-        ]);
-        final messageRepo = InMemoryMessageRepo();
-        final conversationRepo = InMemoryConversationRepo();
-        final instanceRepo = InMemoryInstanceRepo();
-        final gateway = MockGatewayClient();
-
-        final vm = ChatViewModel(
-          agentRepo: agentRepo,
-          conversationRepo: conversationRepo,
-          messageRepo: messageRepo,
-          instanceRepo: instanceRepo,
-          gatewayClient: gateway,
-          sendMessageUseCase: SendMessageUseCase(
-            messageRepo: messageRepo,
-            conversationRepo: conversationRepo,
-            instanceRepo: instanceRepo,
-            gatewayClient: gateway,
-          ),
-          instanceId: 'inst-1',
-          agentId: 'local-1',
-          achievementChecker: _MockAchievementChecker(),
-          flushDelay: Duration.zero,
-        );
-        vm.state = const ChatSessionState(messages: LoadData(<Message>[]));
-
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              chatViewModelProvider(_key).overrideWith((ref) => vm),
-              attachmentPickerServiceProvider.overrideWithValue(
-                _ThrowingAttachmentPicker(),
-              ),
-            ],
-            child: const MaterialApp(
-              home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
-            ),
+        await _pumpAndTapCameraWithThrowingPicker(
+          tester,
+          PlatformException(
+            code: 'MISSING_PERMISSION',
+            message: 'camera permission denied',
           ),
         );
-        await tester.pump();
-
-        // Open the attachment bottom sheet.
-        await tester.tap(find.byIcon(Icons.add));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
-
-        // Tap '拍照' (camera) → _handlePickAttachment(camera) → pickImage
-        // throws PlatformException → caught → XiaToast.show.
-        await tester.tap(find.text('拍照'));
-        await tester.pump();
-        await tester.pump();
-        await tester.pump();
-        await tester.pump();
-
         expect(
           find.text('无法选择附件，请检查权限或重试'),
           findsOneWidget,
           reason: 'PlatformException 必须被捕获并以 toast 反馈，不能静默抛出',
+        );
+      },
+    );
+
+    // #11: iOS 沙盒回收临时文件 / Android 13+ 撤销 SAF URI 时，pickImage 内
+    // File.length() 抛 FileSystemException（实现 Exception，非 PlatformException）。
+    // 之前 on PlatformException 不匹配 → 未 await 的 future 逃逸 → 无 toast。
+    testWidgets('attachment pick FileSystemException -> toast feedback (#11)', (
+      tester,
+    ) async {
+      await _pumpAndTapCameraWithThrowingPicker(
+        tester,
+        FileSystemException(
+          'Cannot read file',
+          '/tmp/picked.jpg',
+          OSError('No such file or directory', 2),
+        ),
+      );
+      expect(
+        find.text('无法选择附件，请检查权限或重试'),
+        findsOneWidget,
+        reason: 'FileSystemException 必须被 on Exception 捕获并 toast（#11）',
+      );
+    });
+
+    // #12: Proguard 裁剪的 Android 变体 / web 回退，image_picker 找不到平台
+    // 实现抛 MissingPluginException（实现 Exception，非 PlatformException）。
+    // 之前 on PlatformException 不匹配 → '+' 按钮静默失败，与 #11 同形态。
+    testWidgets(
+      'attachment pick MissingPluginException -> toast feedback (#12)',
+      (tester) async {
+        await _pumpAndTapCameraWithThrowingPicker(
+          tester,
+          MissingPluginException(
+            'No implementation found for method pickImage',
+          ),
+        );
+        expect(
+          find.text('无法选择附件，请检查权限或重试'),
+          findsOneWidget,
+          reason: 'MissingPluginException 必须被 on Exception 捕获并 toast（#12）',
         );
       },
     );
