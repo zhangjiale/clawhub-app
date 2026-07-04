@@ -4,14 +4,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/router/smart_back.dart';
 import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/i_attachment_picker_service.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
@@ -139,32 +138,29 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     }
   }
 
-  /// "+" 附件入口:相册/拍照用 image_picker,文件用 file_picker。
-  /// 选到文件后调 [ChatViewModel.sendImage]/[ChatViewModel.sendFile],
+  /// "+" 附件入口：相册/拍照用 [IAttachmentPickerService.pickImage]，
+  /// 文件用 [IAttachmentPickerService.pickFile]。
+  ///
+  /// 选到文件后调 [ChatViewModel.sendImage]/[ChatViewModel.sendFile]，
   /// metadata 含 fileName/mimeType/size。字节读取与 base64 由 ACL 在发送时完成。
   ///
-  /// 平台调用放在 page 层而非 widget(Law 2:widget 只渲染 UI)。
-  /// 异步 gap 后校验 mounted;用户取消(pick 返回 null)静默忽略。
+  /// 平台调用下沉到 [IAttachmentPickerService]（Law 2：widget 只渲染 UI）。
+  /// 异步 gap 后校验 mounted；用户取消（pick 返回 null）静默忽略。
   Future<void> _handlePickAttachment(
     AttachmentKind kind,
     ChatViewModel vm,
+    IAttachmentPickerService pickerService,
   ) async {
     if (kind == AttachmentKind.file) {
-      final result = await FilePicker.platform.pickFiles(type: FileType.any);
-      final path = result?.files.single.path;
-      if (path == null) return; // 用户取消
-      final file = File(path);
-      final name = result!.files.single.name;
-      // P3: async length (was lengthSync — blocked UI thread). mounted check
-      // moved AFTER the async gap so we don't send on an unmounted widget.
-      final size = await file.length();
+      final result = await pickerService.pickFile();
+      if (result == null) return; // 用户取消
       if (!mounted) return;
       await vm.sendFile(
-        path,
+        result.path,
         metadata: {
-          'fileName': name,
-          'mimeType': _mimeForExt(result.files.single.extension),
-          'size': size,
+          'fileName': result.fileName,
+          'mimeType': result.mimeType,
+          'size': result.size,
         },
       );
       return;
@@ -172,49 +168,17 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final source = kind == AttachmentKind.camera
         ? ImageSource.camera
         : ImageSource.gallery;
-    final picked = await ImagePicker().pickImage(
-      source: source,
-      imageQuality: 85,
-    );
-    if (picked == null) return; // 用户取消
-    final file = File(picked.path);
-    // P3: async length (was lengthSync — blocked UI thread). mounted check
-    // moved AFTER the async gap so we don't send on an unmounted widget.
-    final size = await file.length();
+    final result = await pickerService.pickImage(source: source);
+    if (result == null) return; // 用户取消
     if (!mounted) return;
     await vm.sendImage(
-      picked.path,
+      result.path,
       metadata: {
-        'fileName': picked.name,
-        'mimeType': picked.mimeType ?? 'image/jpeg',
-        'size': size,
+        'fileName': result.fileName,
+        'mimeType': result.mimeType,
+        'size': result.size,
       },
     );
-  }
-
-  /// 由扩展名粗推 MIME;file_picker 不返回 mimeType,给一个合理兜底。
-  String _mimeForExt(String? ext) {
-    switch (ext?.toLowerCase()) {
-      case 'pdf':
-        return 'application/pdf';
-      case 'txt':
-        return 'text/plain';
-      case 'json':
-        return 'application/json';
-      case 'zip':
-        return 'application/zip';
-      case 'png':
-        return 'image/png';
-      case 'jpg':
-      case 'jpeg':
-        return 'image/jpeg';
-      case 'mp3':
-        return 'audio/mpeg';
-      case 'mp4':
-        return 'video/mp4';
-      default:
-        return 'application/octet-stream';
-    }
   }
 
   @override
@@ -263,54 +227,58 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
 
     // 预计算 Agent 颜色 — 不再需要（EmojiAvatar 自身处理）
 
-    // C2: Auto-scroll — listen for state changes that should trigger scroll
+    // C2: Auto-scroll, retry-feedback timer, tombstone back navigation,
+    // and search-result highlight — all driven by a single listen on
+    // [chatViewModelProvider] to avoid registering multiple callbacks for the
+    // same state stream.
     ref.listen(chatViewModelProvider(params), (prev, next) {
+      final notifier = ref.read(chatViewModelProvider(params).notifier);
+
       void scheduleScroll() {
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
       }
 
-      // Scroll when messages change (after send)
+      // 1. Auto-scroll
       if (prev?.messages != next.messages) scheduleScroll();
-      // Scroll when thinking indicator appears
       if (next.thinkingState == ThinkingState.thinking &&
           prev?.thinkingState != ThinkingState.thinking) {
         scheduleScroll();
       }
-      // Scroll when streaming starts
       if (next.streamingText.isNotEmpty &&
           (prev?.streamingText.isEmpty ?? true)) {
         scheduleScroll();
       }
-    });
 
-    // Auto-dismiss retryFeedback after 3 seconds so the banner doesn't
-    // persist indefinitely. Uses a cancellable Timer so back navigation
-    // releases State immediately.
-    ref.listen(chatViewModelProvider(params), (prev, next) {
+      // 2. Auto-dismiss retryFeedback after 3 seconds.
       if (next.retryFeedback != null &&
           prev?.retryFeedback != next.retryFeedback) {
         _retryFeedbackTimer?.cancel();
         _retryFeedbackTimer = Timer(const Duration(seconds: 3), () {
-          if (mounted) {
-            ref
-                .read(chatViewModelProvider(params).notifier)
-                .clearRetryFeedback();
-          }
+          if (mounted) notifier.clearRetryFeedback();
         });
       }
-    });
 
-    // US-021 AC9: send() 检测到 agent tombstoned 时置 closeRequested=true,
-    // 触发 smartBack 保留 source 参数。post-frame 回调避免在 build() 阶段
-    // 调用导航 API;VM 一次性信号,pop 后 listener 随页面释放。
-    //
-    // 走 _handleBack() 而非直接调 smartBack —— 与本文件其他 5 处 back
-    // 触发点(line 100/155/250/265/364)共用同一入口,未来 _handleBack
-    // 加副作用(埋点/触感反馈/dispose 清理)时 tombstone 路径不会分裂。
-    ref.listen(chatViewModelProvider(params), (prev, next) {
+      // 3. US-021 AC9: tombstoned agent -> pop page.
       if (next.closeRequested && prev?.closeRequested != true) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _handleBack();
+        });
+      }
+
+      // 4. Apply search-result highlight when messages first load.
+      final highlightId = widget.highlightMessageId;
+      final highlightQ = widget.highlightQuery;
+      if (highlightId != null &&
+          highlightQ != null &&
+          next.messages is LoadData &&
+          next.highlightedMessageId != highlightId) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          notifier.loadHighlightWindow(highlightId, highlightQ);
+          _highlightFadeTimer?.cancel();
+          _highlightFadeTimer = Timer(const Duration(seconds: 2), () {
+            if (mounted) notifier.clearHighlight();
+          });
         });
       }
     });
@@ -344,30 +312,6 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         }
       },
     );
-
-    // Apply search-result highlight when messages first load, then auto-fade.
-    ref.listen(chatViewModelProvider(params), (prev, next) {
-      final highlightId = widget.highlightMessageId;
-      final highlightQ = widget.highlightQuery;
-      if (highlightId == null || highlightQ == null) return;
-      // Only fire once: when messages first transition to LoadData and the
-      // highlight hasn't been set yet.
-      if (next.messages is LoadData &&
-          next.highlightedMessageId != highlightId) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          ref
-              .read(chatViewModelProvider(params).notifier)
-              .loadHighlightWindow(highlightId, highlightQ);
-          _highlightFadeTimer?.cancel();
-          _highlightFadeTimer = Timer(const Duration(seconds: 2), () {
-            if (mounted) {
-              ref.read(chatViewModelProvider(params).notifier).clearHighlight();
-            }
-          });
-        });
-      }
-    });
 
     // Compute agent-themed colors *before* the Theme widget so the AppBar
     // (which is constructed using this build method's context, not a child
@@ -593,7 +537,11 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
 
                 ChatInputBar(
                   onSend: (text) => vm.send(text),
-                  onPickAttachment: (kind) => _handlePickAttachment(kind, vm),
+                  onPickAttachment: (kind) => _handlePickAttachment(
+                    kind,
+                    vm,
+                    ref.read(attachmentPickerServiceProvider),
+                  ),
                 ),
               ],
             ),

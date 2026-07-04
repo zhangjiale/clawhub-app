@@ -390,6 +390,75 @@ void main() {
     // 本测试驱动 gatewayNoticeProvider:override gatewayClientProvider 为
     // MockGatewayClient,page 的 ref.listen(gatewayNoticeProvider) 订阅
     // mock 的 gatewayNoticeStream,emit notice -> toast 出现。
+    testWidgets('pops page when closeRequested becomes true (tombstone)', (
+      tester,
+    ) async {
+      final agentRepo = InMemoryAgentRepo();
+      await agentRepo.syncFromGateway('inst-1', [
+        Agent(
+          localId: 'local-1',
+          remoteId: 'r-1',
+          instanceId: 'inst-1',
+          name: '产品虾',
+        ),
+      ]);
+      final messageRepo = InMemoryMessageRepo();
+      final conversationRepo = InMemoryConversationRepo();
+      final instanceRepo = InMemoryInstanceRepo();
+      final gateway = MockGatewayClient();
+
+      final vm = ChatViewModel(
+        agentRepo: agentRepo,
+        conversationRepo: conversationRepo,
+        messageRepo: messageRepo,
+        instanceRepo: instanceRepo,
+        gatewayClient: gateway,
+        sendMessageUseCase: SendMessageUseCase(
+          messageRepo: messageRepo,
+          conversationRepo: conversationRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+        ),
+        instanceId: 'inst-1',
+        agentId: 'local-1',
+        achievementChecker: _MockAchievementChecker(),
+      );
+      vm.state = const ChatSessionState(
+        messages: LoadData(<Message>[]),
+        closeRequested: false,
+      );
+
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (_, _) => ChatRoomPage(
+              agentId: 'local-1',
+              instanceId: 'inst-1',
+              source: 'messages',
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [chatViewModelProvider(_key).overrideWith((ref) => vm)],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pump();
+      expect(router.routerDelegate.currentConfiguration.uri.path, '/');
+
+      vm.state = vm.state.copyWith(closeRequested: true);
+      // post-frame callback schedules the pop; pump twice to flush.
+      await tester.pump();
+      await tester.pump();
+
+      expect(router.routerDelegate.currentConfiguration.uri.path, isNot('/'));
+    });
+
     testWidgets('shows a toast when a Gateway notice arrives '
         '(via gatewayNoticeProvider — Finding #9 fix)', (tester) async {
       final agentRepo = InMemoryAgentRepo();

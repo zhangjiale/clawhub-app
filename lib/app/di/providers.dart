@@ -10,7 +10,9 @@ import 'package:claw_hub/core/acl/mock_gateway_client.dart';
 import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/data/services/avatar_storage_service.dart';
+import 'package:claw_hub/data/services/attachment_picker_service.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_attachment_picker_service.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/iconnectivity.dart';
@@ -320,6 +322,16 @@ final connectivityProvider = Provider<IConnectivity>(
 /// [AgentProfileViewModel] 通过此接口保存/删除/检查头像文件。
 final avatarStorageServiceProvider = Provider<IAvatarStorageService>((ref) {
   return AvatarStorageService(logger: ref.watch(loggerProvider));
+});
+
+/// 附件选择服务 — 面向 [IAttachmentPickerService] 接口，便于单测 mock。
+///
+/// 封装 `ImagePicker`/`FilePicker` 的平台调用，把结果归一化为
+/// [AttachmentPickResult]。UI 层通过此接口选择附件，不直接依赖平台库。
+final attachmentPickerServiceProvider = Provider<IAttachmentPickerService>((
+  ref,
+) {
+  return const AttachmentPickerService();
 });
 
 // --- Connection Orchestrator ---

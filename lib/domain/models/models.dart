@@ -13,6 +13,7 @@ export 'stats_data.dart';
 export 'storage_info.dart';
 export 'user_preferences.dart';
 export 'clear_all_result.dart';
+export 'attachment_pick_result.dart';
 export 'notification_event.dart';
 export 'pending_notification.dart';
 export 'daily_activity.dart';
