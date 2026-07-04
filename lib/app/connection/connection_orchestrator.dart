@@ -473,7 +473,16 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
       try {
         // 只更新与当前数据库不同的状态（避免不必要的写入）
         final current = await _instanceRepo.getById(instanceId);
-        if (current != null && current.healthStatus != persistHealth) {
+        if (current == null) {
+          // 实例在连接状态变化与持久化之间被删除（典型场景：用户在
+          // banner 上点 "断开" / 从实例列表删除）。之前 silent — 现在
+          // 打日志保留可观察性。design 意图 (best-effort 持久化，用户
+          // 操作优先) 不变：不抛、不阻断后续 agent 同步分支。
+          debugPrint(
+            '[ConnectionOrchestrator] skip persist health for '
+            '$instanceId: instance not found (deleted mid-flight)',
+          );
+        } else if (current.healthStatus != persistHealth) {
           await _instanceRepo.updateHealthStatus(instanceId, persistHealth);
           if (health == HealthStatus.online) {
             await _instanceRepo.updateLastConnectedAt(
