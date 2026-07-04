@@ -94,8 +94,11 @@ ImageProvider _decodeDataUrl(String dataUrl) {
       bytes = base64Decode(payload);
     } else {
       // URL-encoded data: URL (rare for images; defensive).
-      bytes =
-          Uri.dataFromString(dataUrl).data?.contentAsBytes() ?? Uint8List(0);
+      // Uri.dataFromString WRAPS the whole string as a new data: URI's text
+      // content rather than parsing the existing one — it returned the ASCII
+      // bytes of the literal `data:...` string, not the decoded image. Use
+      // Uri.parse(...).data to actually decode it (review #2).
+      bytes = Uri.parse(dataUrl).data?.contentAsBytes() ?? Uint8List(0);
     }
     return MemoryImage(bytes);
   } on FormatException {

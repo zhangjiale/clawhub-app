@@ -22,6 +22,26 @@ void main() {
       expect((provider as MemoryImage).bytes.length, greaterThan(0));
     });
 
+    // Review #2: the non-base64 branch must PARSE the data: URL (URL-decode
+    // the payload), not wrap the whole string as a new data: URI's content.
+    // The old `Uri.dataFromString(dataUrl)` returned the ASCII bytes of the
+    // literal `data:...` string — a corrupt MemoryImage that hit errorBuilder
+    // and polluted the LRU cache.
+    test(
+      'non-base64 (URL-encoded) data: URL decodes actual content (review #2)',
+      () {
+        // URL-encoded "<svg/>" (%3C=<, %2F=/, %3E=>).
+        const dataUrl = 'data:image/svg+xml,%3Csvg%2F%3E';
+        final provider = resolveAttachmentImage(imageUrl: dataUrl);
+        expect(provider, isA<MemoryImage>());
+        final bytes = (provider as MemoryImage).bytes;
+        // Decoded content is "<svg/>" (6 bytes), NOT the 31-byte literal
+        // `data:image/svg+xml,%3Csvg%2F%3E` string the old bug produced.
+        expect(String.fromCharCodes(bytes), '<svg/>');
+        expect(bytes.length, 6);
+      },
+    );
+
     test('https URL → NetworkImage', () {
       final provider = resolveAttachmentImage(
         imageUrl: 'https://example.com/x.png',
