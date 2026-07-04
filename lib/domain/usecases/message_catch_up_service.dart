@@ -39,8 +39,7 @@ class MessageCatchUpService {
       MergeInboundMessageUseCase(messageRepo: _messageRepo);
 
   /// Per-instance 防重入锁
-  final Set<String> _catchingUp =
-      {}; // iron-law-allow: Law8 — empty Set literal, not catch block
+  final Set<String> _catchingUp = {};
 
   /// 每 Agent 最大翻页数（防止断线数天时无限制翻页）。
   ///

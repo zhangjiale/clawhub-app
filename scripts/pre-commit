@@ -172,10 +172,13 @@ check_law "Law6" "N+1 query pattern" \
 # --- Law 8: No empty catch blocks ---
 echo -e "${BOLD}Law 8${NC} — No empty catch blocks"
 # Matches single-line empty catches: catch (e) {}, catch (_, s) { }, etc.
-# Pattern: "catch" followed by any chars, then literal {} with only spaces inside.
+# Pattern: "catch" + optional spaces + "(" (anchor — catch blocks always
+# have a paren) + any chars + literal {} with only spaces inside. The "("
+# anchor avoids false positives on identifiers containing "catch" (e.g.
+# `_catchingUp = {}` — a Set literal, not a catch block).
 # Does NOT catch multi-line empty blocks (needs AST for that).
 check_law "Law8" "empty catch block" \
-  "catch.*{ *}" \
+  "catch *(.*{ *}" \
   "all"
 
 # --- Law 11: ListView.builder ---
