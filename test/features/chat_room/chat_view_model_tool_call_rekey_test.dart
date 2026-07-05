@@ -145,6 +145,73 @@ void main() {
     );
 
     test(
+      'LATE tool call (arrives after final message) re-keys to clientId',
+      () async {
+        // Regression: a ToolCall arriving AFTER the final agent message used
+        // to stay keyed by sessionKey forever — _rekeyToolCallForMessage had
+        // already run (no ToolCall to re-key yet) and never ran again, so the
+        // page's toolCalls[message.clientId] lookup missed it → ToolCallCard
+        // never rendered. The VM must remember sessionKey→clientId so a late
+        // ToolCall self-keys.
+        final vm = await setupVm();
+        const sessionKey = 'agent:r-1:main';
+
+        // 1. Final agent message arrives FIRST, tagged with metadata.sessionKey.
+        gateway.emitMessageForTesting(
+          'inst-1',
+          Message(
+            clientId: 'msg-late',
+            conversationId: '',
+            agentId: 'r-1',
+            role: MessageRole.agent,
+            content: 'reply',
+            type: MessageType.text,
+            status: MessageStatus.delivered,
+            logicalClock: 1700000000002,
+            timestamp: 1700000000002,
+            metadata: const {'sessionKey': sessionKey},
+          ),
+        );
+        for (var i = 0; i < 8; i++) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        // No tool call yet — re-key is a no-op but the sessionKey→clientId
+        // mapping must be recorded for the late tool call below.
+        expect(vm.state.toolCalls, isEmpty);
+
+        // 2. Tool call arrives AFTER the final message, keyed by sessionKey.
+        gateway.emitToolCallForTesting(
+          'inst-1',
+          ToolCall(
+            id: 'tc-late',
+            messageId: sessionKey,
+            toolName: 'search',
+            status: ToolCallStatus.success,
+            outputResult: '{}',
+          ),
+        );
+        for (var i = 0; i < 2; i++) {
+          await Future<void>.delayed(Duration.zero);
+        }
+
+        // 3. Late tool call self-keyed by clientId — page lookup finds it.
+        expect(
+          vm.state.toolCalls.containsKey('msg-late'),
+          isTrue,
+          reason: 'late tool call re-keyed to message clientId',
+        );
+        expect(
+          vm.state.toolCalls.containsKey(sessionKey),
+          isFalse,
+          reason: 'sessionKey entry not left dangling',
+        );
+        expect(vm.state.toolCalls['msg-late']!.messageId, 'msg-late');
+        expect(vm.state.toolCalls['msg-late']!.id, 'tc-late');
+        vm.dispose();
+      },
+    );
+
+    test(
       'agent message without sessionKey metadata is a no-op (no crash)',
       () async {
         // History / untagged messages have no sessionKey → re-key must skip

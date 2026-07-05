@@ -211,6 +211,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   StreamSubscription<int>? _outboxCountSubscription;
   Timer? _timeoutTimer;
 
+  /// sessionKey → clientId of the final agent message that closed the turn.
+  ///
+  /// ToolCalls stream keyed by `sessionKey` (`ToolCall.messageId`); the page
+  /// looks them up by `message.clientId`. When the final message lands it
+  /// re-keys any *early* ToolCalls (see [_rekeyToolCallForMessage]). This map
+  /// also lets a *late* ToolCall (arriving after the final message) self-key
+  /// by clientId — without it, a late ToolCall would stay keyed by sessionKey
+  /// forever and never render (review #14). Bounded by turn count per session
+  /// and cleared on teardown.
+  final Map<String, String> _sessionKeyToClientId = {};
+
   /// Bug 2 修复: 标记 [_initStreamsAndHistory] 是否已完成。
   /// - tombstone init 后为 false（早退未订阅）
   /// - refreshAgent 检测到 tombstone→alive 转换时调一次 [_initStreamsAndHistory]，
@@ -650,7 +661,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
         .listen(
           (tc) {
             final current = Map<String, ToolCall>.from(state.toolCalls);
-            current[tc.messageId] = tc;
+            // Late ToolCall (arrived after the final message): self-key by
+            // clientId so the page's toolCalls[message.clientId] lookup finds
+            // it. Early ToolCall (final message not yet landed): key by
+            // sessionKey, pending _rekeyToolCallForMessage (review #14).
+            final clientId = _sessionKeyToClientId[tc.messageId];
+            if (clientId != null) {
+              current.remove(tc.messageId);
+              current[clientId] = tc.copyWith(messageId: clientId);
+            } else {
+              current[tc.messageId] = tc;
+            }
             _updateState((s) => s.copyWith(toolCalls: current));
           },
           onError: (error, stackTrace) {
@@ -1062,13 +1083,17 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// live in different namespaces and ToolCallCard never renders
   /// (review #1, Option C).
   ///
-  /// 已知限制：tool call 必须在 final 消息之前到达才能被重键。tool call 迟到
-  /// （final 之后才到）不会被重键 → 不渲染。常见时序（tool → final）已覆盖。
+  /// Also records the sessionKey → clientId mapping in
+  /// [_sessionKeyToClientId] so a *late* ToolCall (arriving AFTER this final
+  /// message) can self-key in the ToolCall listener — otherwise it would stay
+  /// keyed by sessionKey and never render (review #14).
   void _rekeyToolCallForMessage(Message msg) {
     final sk = msg.metadata?['sessionKey'];
     if (sk is! String) return;
+    _sessionKeyToClientId[sk] = msg.clientId;
     final tc = state.toolCalls[sk];
-    if (tc == null) return;
+    if (tc == null) return; // No early ToolCall to re-key; mapping recorded
+    // above lets a late ToolCall self-key.
     final rekeyed = Map<String, ToolCall>.from(state.toolCalls)
       ..remove(sk)
       ..[msg.clientId] = tc.copyWith(messageId: msg.clientId);
@@ -1330,5 +1355,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // correctly skips the synthetic connected seed from
     // ReplayableConnectionState and avoids a redundant reloadMessages().
     _isInitialConnectionEvent = true;
+    // Drop sessionKey → clientId mappings from prior turns (review #14).
+    _sessionKeyToClientId.clear();
   }
 }
