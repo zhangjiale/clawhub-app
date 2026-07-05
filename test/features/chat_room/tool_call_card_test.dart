@@ -154,6 +154,60 @@ void main() {
 
       expect(find.text('hello world'), findsOneWidget);
     });
+
+    // 折叠/展开:长输出默认截断,点开看完整,再点收起。
+    testWidgets('taps to expand long output, taps again to collapse', (
+      tester,
+    ) async {
+      final longOutput = 'x' * 200;
+      await tester.pumpWidget(
+        buildCard(
+          ToolCall(
+            id: 'tc-exp',
+            messageId: 'msg-exp',
+            toolName: 'Bash',
+            status: ToolCallStatus.success,
+            outputResult: longOutput,
+          ),
+        ),
+      );
+
+      // Collapsed: truncated to 120 chars + "展开全部" hint.
+      expect(find.text('${'x' * 120}...'), findsOneWidget);
+      expect(find.text('展开全部 ▼'), findsOneWidget);
+      expect(find.text(longOutput), findsNothing);
+
+      // Tap the output to expand.
+      await tester.tap(find.text('${'x' * 120}...'));
+      await tester.pumpAndSettle();
+
+      // Expanded: full output + "收起" hint.
+      expect(find.text(longOutput), findsOneWidget);
+      expect(find.text('收起 ▲'), findsOneWidget);
+      expect(find.text('${'x' * 120}...'), findsNothing);
+
+      // Tap again to collapse.
+      await tester.tap(find.text(longOutput));
+      await tester.pumpAndSettle();
+      expect(find.text('${'x' * 120}...'), findsOneWidget);
+      expect(find.text('展开全部 ▼'), findsOneWidget);
+    });
+
+    testWidgets('short output shows fully with no expand hint', (tester) async {
+      await tester.pumpWidget(
+        buildCard(
+          ToolCall(
+            id: 'tc-short',
+            messageId: 'msg-short',
+            toolName: 'Bash',
+            status: ToolCallStatus.success,
+            outputResult: 'short',
+          ),
+        ),
+      );
+      expect(find.text('short'), findsOneWidget);
+      expect(find.text('展开全部 ▼'), findsNothing);
+    });
   });
 
   // ───── toolCallFromMessage: 历史路径(退出再进来)把 toolResult Message 转成
@@ -210,6 +264,70 @@ void main() {
     test('null content maps to null outputResult', () {
       final tc = toolCallFromMessage(mkMessage(content: null));
       expect(tc.outputResult, isNull);
+    });
+  });
+
+  group('groupToolResultsByOwner', () {
+    Message msg({
+      required String clientId,
+      required MessageRole role,
+      required int logicalClock,
+    }) => Message(
+      clientId: clientId,
+      conversationId: 'conv',
+      agentId: 'a',
+      role: role,
+      content: 'x',
+      type: MessageType.text,
+      logicalClock: logicalClock,
+      timestamp: logicalClock,
+      status: MessageStatus.delivered,
+    );
+
+    test('toolResult attaches to the next non-toolResult message', () {
+      final grouped = groupToolResultsByOwner([
+        msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
+        msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
+        msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 3),
+      ]);
+      expect(grouped.byOwner['a1']?.map((m) => m.clientId).toList(), ['t1']);
+      expect(grouped.ownedIds, {'t1'});
+    });
+
+    test('multiple toolResults before one agent message all attach to it', () {
+      final grouped = groupToolResultsByOwner([
+        msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
+        msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
+        msg(clientId: 't2', role: MessageRole.toolResult, logicalClock: 3),
+        msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 4),
+      ]);
+      expect(grouped.byOwner['a1']?.map((m) => m.clientId).toList(), [
+        't1',
+        't2',
+      ]);
+      expect(grouped.ownedIds, {'t1', 't2'});
+    });
+
+    test(
+      'toolResult with no following non-toolResult is orphan (not owned)',
+      () {
+        final grouped = groupToolResultsByOwner([
+          msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 1),
+          msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
+        ]);
+        expect(grouped.byOwner, isEmpty);
+        expect(grouped.ownedIds, isEmpty);
+      },
+    );
+
+    test('order-independent: groups by logicalClock even if list is DESC', () {
+      final grouped = groupToolResultsByOwner([
+        msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 3),
+        msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
+        msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
+      ]);
+      expect(grouped.byOwner['a1']?.map((m) => m.clientId).toList(), ['t1']);
+      expect(grouped.ownedIds, {'t1'});
     });
   });
 }

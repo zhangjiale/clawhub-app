@@ -639,6 +639,14 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     String? highlightedMessageId,
   ) {
     final params = (instanceId: widget.instanceId, agentId: widget.agentId);
+
+    // 历史 toolResult 消息挂到它后面那条非 toolResult 消息(通常是 agent 回复)
+    // 下面渲染 —— 和实时路径一致(exec 卡在 agent 气泡下,而不是按时间戳卡在
+    // user 和 agent 之间)。没 owner 的 toolResult(会话最后一条)退回独立行。
+    final grouped = groupToolResultsByOwner(messages);
+    final toolResultsByOwner = grouped.byOwner;
+    final ownedToolResultIds = grouped.ownedIds;
+
     return ListView.builder(
       controller: _scrollController,
       reverse: true,
@@ -646,13 +654,17 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       itemCount: messages.length,
       itemBuilder: (context, index) {
         final message = messages[index];
-        // 历史工具结果(role=toolResult)直接用 ToolCallCard 渲染,与实时路径
-        // 合流 —— 不走 MessageBubble(原 _buildToolResult 折叠卡和实时长相不一致:
-        // 没对号、没 Completed、输出截断不同)。
+        // 被 owner 认领的 toolResult → 不独立渲染(在 owner 气泡下渲染)。
+        if (message.role == MessageRole.toolResult &&
+            ownedToolResultIds.contains(message.clientId)) {
+          return const SizedBox.shrink();
+        }
+        // 孤儿 toolResult(后面没有非 toolResult 消息)→ 独立渲染。
         if (message.role == MessageRole.toolResult) {
           return ToolCallCard(toolCall: toolCallFromMessage(message));
         }
         final tc = toolCalls[message.clientId];
+        final historyTools = toolResultsByOwner[message.clientId] ?? const [];
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -668,6 +680,8 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                   : null,
             ),
             if (tc != null) ToolCallCard(toolCall: tc),
+            for (final ht in historyTools)
+              ToolCallCard(toolCall: toolCallFromMessage(ht)),
           ],
         );
       },
