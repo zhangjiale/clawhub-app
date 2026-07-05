@@ -156,21 +156,40 @@ void main() {
       expect(find.text('📎 文件已上传'), findsOneWidget);
     });
 
-    testWidgets('system role produces no bubble widget (SizedBox.shrink)', (
+    testWidgets(
+      'system role renders content as a centered notice (NOT dropped)',
+      (tester) async {
+        final sysMsg = Message(
+          clientId: 's1',
+          conversationId: 'conv1',
+          agentId: 'agent1',
+          role: MessageRole.system,
+          content: 'system notice',
+          type: MessageType.text,
+          logicalClock: 5,
+          status: MessageStatus.delivered,
+        );
+        await tester.pumpWidget(buildBubble(sysMsg, agentName: '日程虾'));
+        // system 消息不再凭空消失(SizedBox.shrink)——渲染成居中淡灰小条,内容可见。
+        expect(find.text('system notice'), findsOneWidget);
+      },
+    );
+
+    testWidgets('system role with empty content renders nothing', (
       tester,
     ) async {
       final sysMsg = Message(
-        clientId: 's1',
+        clientId: 's2',
         conversationId: 'conv1',
         agentId: 'agent1',
         role: MessageRole.system,
-        content: 'system notice',
+        content: '',
         type: MessageType.text,
-        logicalClock: 5,
+        logicalClock: 6,
         status: MessageStatus.delivered,
       );
       await tester.pumpWidget(buildBubble(sysMsg, agentName: '日程虾'));
-      expect(find.text('system notice'), findsNothing);
+      expect(find.byType(Text), findsNothing);
     });
   });
 }

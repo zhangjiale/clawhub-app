@@ -18,7 +18,7 @@ import 'message_file_content.dart';
 /// - [MessageRole.agent]: surface2 左气泡，text1，14px 圆角带左下角 tail + hairline border
 /// - [MessageRole.userPlaceholder]: OpenClaw 上传占位 → 居中折叠小条（📎 1 个文件已上传）
 /// - [MessageRole.toolResult]: 工具调用输出 → 居中折叠卡（⌨ exec · 0.02s）
-/// - [MessageRole.system]: 不渲染（让位上游 banner）
+/// - [MessageRole.system]: 居中淡灰斜体小条(系统通知,内容可见不丢)
 ///
 /// **Animation (B3)**: 250ms opacity(0→1) + translateY(10px→0) enter
 /// animation via [StaggeredEnterItem] based on [index].
@@ -71,11 +71,12 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 非气泡类消息(userPlaceholder / toolResult / system)在上层
-    // ListView 的 item 高度需要脉冲 — 均由 _buildMessageList 负责空尺寸。
+    // 非气泡类消息(userPlaceholder / toolResult / system)走各自折叠渲染,
+    // 不占 user/agent 气泡。system 不再凭空消失(原 SizedBox.shrink 会静默
+    // 丢消息,且未知 role 也兜到 system)——渲染成居中淡灰小条,内容可见。
     if (_isUserPlaceholder) return _buildPlaceholder(context);
     if (_isToolResult) return _buildToolResult(context);
-    if (_isSystem) return const SizedBox.shrink();
+    if (_isSystem) return _buildSystemNotice(context);
 
     return StaggeredEnterItem(
       index: index,
@@ -282,6 +283,31 @@ class MessageBubble extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// system 消息(含未知 role 兜底过来的)——渲染成居中淡灰斜体小条,内容可见。
+  /// 原实现返回 SizedBox.shrink 会让消息凭空消失(chat_room 无上游 banner 兜它,
+  /// 且 commit 1 后未知 role 也归到 system)。空内容的 system 仍返回空 widget。
+  Widget _buildSystemNotice(BuildContext context) {
+    final text = message.content ?? '';
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.pagePaddingH,
+        vertical: 4,
+      ),
+      child: Center(
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 12,
+            color: XiaColors.text3,
+            fontStyle: FontStyle.italic,
           ),
         ),
       ),
