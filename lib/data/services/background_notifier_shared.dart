@@ -7,6 +7,7 @@ import 'package:claw_hub/domain/models/pending_notification.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 import 'package:claw_hub/domain/repositories/i_notification_repo.dart';
 import 'package:claw_hub/domain/usecases/evaluate_notification.dart';
+import 'package:claw_hub/domain/usecases/generate_preview.dart';
 
 /// Shared evaluate-then-enqueue logic for pulled messages.
 ///
@@ -110,11 +111,20 @@ class BackgroundNotifierShared {
       // clearAgentContent(widget.agentId) (route param = localId). Storing
       // remoteId here would leave background-enqueued rows un-deleted when
       // the user clears the agent's content.
+      //
+      // Use GeneratePreview so that image/file messages with empty text
+      // content show [图片]/[文件] in the notification body, matching the
+      // live notification path.
+      final contentPreview = GeneratePreview().execute(
+        role: msg.role,
+        type: msg.type,
+        content: msg.content,
+      );
       final event = ReplyEvent(
         agentId: agent.localId,
         instanceId: agent.instanceId,
         agentName: agent.displayName,
-        contentPreview: msg.content ?? '',
+        contentPreview: contentPreview,
         messageServerId: msg.serverId,
         messageClientId: msg.clientId,
       );

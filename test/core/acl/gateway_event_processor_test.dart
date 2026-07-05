@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:claw_hub/core/acl/gateway_domain_mapper.dart';
 import 'package:claw_hub/core/acl/gateway_event_processor.dart';
+import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/acl/gateway_instance_connection.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
@@ -9,6 +10,17 @@ import 'package:claw_hub/core/debug_print_logger.dart';
 import 'package:claw_hub/domain/models/models.dart';
 import 'package:uuid/uuid.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+class _RecordingLogger implements ILogger {
+  final List<String> infos = [];
+  final List<String> errors = [];
+
+  @override
+  void info(String message) => infos.add(message);
+
+  @override
+  void error(String message, [StackTrace? stackTrace]) => errors.add(message);
+}
 
 void main() {
   late GatewayEventProcessor processor;
@@ -408,6 +420,108 @@ void main() {
         expect(messages, hasLength(1));
       },
     );
+  });
+
+  group('unresolvable sessionKey log dedup', () {
+    test(
+      'logs error once for repeated deltas on same unresolvable key',
+      () async {
+        final logger = _RecordingLogger();
+        final proc = GatewayEventProcessor(
+          uuid: const Uuid(),
+          mapper: GatewayDomainMapper(),
+          logger: logger,
+        );
+        addTearDown(proc.dispose);
+
+        final localConn = GatewayInstanceConnection(
+          messageCtrl: StreamController<Message>.broadcast(),
+          toolCallCtrl: StreamController<ToolCall>.broadcast(),
+          pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
+          streamingCtrl: StreamController<StreamingEvent>.broadcast(),
+        );
+        addTearDown(localConn.dispose);
+
+        for (var i = 0; i < 5; i++) {
+          proc.processEvent(
+            'inst-1',
+            localConn,
+            const EventFrame(
+              event: 'chat',
+              payload: {
+                'sessionKey': 'bad:session',
+                'state': 'delta',
+                'deltaText': 'delta',
+              },
+            ),
+          );
+        }
+
+        await pumpEventQueue();
+        expect(
+          logger.errors
+              .where((e) => e.contains('Cannot resolve agentId'))
+              .length,
+          1,
+        );
+      },
+    );
+
+    test('cleanupInstance resets dedup so error is logged again', () async {
+      final logger = _RecordingLogger();
+      final proc = GatewayEventProcessor(
+        uuid: const Uuid(),
+        mapper: GatewayDomainMapper(),
+        logger: logger,
+      );
+      addTearDown(proc.dispose);
+
+      final localConn = GatewayInstanceConnection(
+        messageCtrl: StreamController<Message>.broadcast(),
+        toolCallCtrl: StreamController<ToolCall>.broadcast(),
+        pairingInfoCtrl: StreamController<GatewayPairingInfo?>.broadcast(),
+        streamingCtrl: StreamController<StreamingEvent>.broadcast(),
+      );
+      addTearDown(localConn.dispose);
+
+      proc.processEvent(
+        'inst-1',
+        localConn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'bad:session',
+            'state': 'delta',
+            'deltaText': 'delta',
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(
+        logger.errors.where((e) => e.contains('Cannot resolve agentId')).length,
+        1,
+      );
+
+      proc.cleanupInstance('inst-1');
+
+      proc.processEvent(
+        'inst-1',
+        localConn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'bad:session',
+            'state': 'delta',
+            'deltaText': 'delta',
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(
+        logger.errors.where((e) => e.contains('Cannot resolve agentId')).length,
+        2,
+      );
+    });
   });
 
   group('delta-source lock (cross-turn clearing)', () {

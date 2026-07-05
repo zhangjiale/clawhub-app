@@ -80,7 +80,7 @@ void main() {
       expect(preview, isNot(contains('[')));
     });
 
-    test('空消息返回空字符串', () {
+    test('空文本消息保留用户前缀', () {
       final preview = useCase.execute(
         role: MessageRole.user,
         type: MessageType.text,
@@ -89,13 +89,49 @@ void main() {
       expect(preview, '你: ');
     });
 
-    test('null 内容处理', () {
+    test('null 文本内容返回空字符串', () {
       final preview = useCase.execute(
         role: MessageRole.system,
         type: MessageType.text,
         content: null,
       );
       expect(preview, '');
+    });
+
+    test('空图片内容按类型返回占位（用户）', () {
+      final preview = useCase.execute(
+        role: MessageRole.user,
+        type: MessageType.image,
+        content: '',
+      );
+      expect(preview, '你: [图片]');
+    });
+
+    test('空图片内容按类型返回占位（Agent）', () {
+      final preview = useCase.execute(
+        role: MessageRole.agent,
+        type: MessageType.image,
+        content: null,
+      );
+      expect(preview, '[图片]');
+    });
+
+    test('空文件内容按类型返回占位（Agent）', () {
+      final preview = useCase.execute(
+        role: MessageRole.agent,
+        type: MessageType.file,
+        content: '',
+      );
+      expect(preview, '[文件]');
+    });
+
+    test('空工具调用内容按类型返回占位', () {
+      final preview = useCase.execute(
+        role: MessageRole.agent,
+        type: MessageType.toolCall,
+        content: null,
+      );
+      expect(preview, '[工具调用]');
     });
   });
 }

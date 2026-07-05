@@ -82,14 +82,35 @@ class Message {
   bool get isFile => type == MessageType.file;
 
   /// 用户发送图片/文件的本地路径。
-  /// 仅 image/file 类型、**无** imageUrl(即用户本地附件,非 Agent 回图)、
-  /// 且 content 非空时返回。Agent 回图(imageUrl 非空)或空 content 返回 null。
+  ///
+  /// 仅当满足以下全部条件时返回 [content]：
+  /// - 类型为 image/file；
+  /// - 无响应侧 URL（imageUrl/fileUrl 为 null），即不是 Agent 回图/回文件；
+  /// - [content] 非空；
+  /// - [content] 看起来像本地路径（含路径分隔符或以 `file://` 开头），
+  ///   避免把 Agent 的文本 caption 当成路径喂给 FileImage。
   String? get imagePath =>
-      isImage && imageUrl == null && content != null && content!.isNotEmpty
+      isImage &&
+          imageUrl == null &&
+          content != null &&
+          content!.isNotEmpty &&
+          _contentLooksLikeLocalPath(content!)
       ? content
       : null;
   String? get filePath =>
-      isFile && content != null && content!.isNotEmpty ? content : null;
+      isFile &&
+          fileUrl == null &&
+          content != null &&
+          content!.isNotEmpty &&
+          _contentLooksLikeLocalPath(content!)
+      ? content
+      : null;
+
+  static bool _contentLooksLikeLocalPath(String value) {
+    return value.startsWith('file://') ||
+        value.contains('/') ||
+        value.contains(r'\');
+  }
 
   /// 附件文件名 / MIME 类型 / 字节数 / 图片说明（均从 metadata 读取）。
   String? get fileName => metadata?['fileName'] as String?;
@@ -99,6 +120,9 @@ class Message {
 
   /// Agent 回图的图片 URL（data: URL 或 https URL，响应侧）。
   String? get imageUrl => metadata?['imageUrl'] as String?;
+
+  /// Agent 回文件的文件 URL（响应侧）。
+  String? get fileUrl => metadata?['fileUrl'] as String?;
 
   /// 图片气泡的显示说明（SSOT：集中「存储约定」于 domain，widget 只读取）。
   ///

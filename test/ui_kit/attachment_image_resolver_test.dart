@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:claw_hub/ui_kit/attachment_image_resolver.dart';
 import 'package:flutter/painting.dart';
@@ -137,6 +139,8 @@ void main() {
     // (which fires ~6×/sec during streaming).
     // -------------------------------------------------------------------------
     group('data: URL decode cache', () {
+      setUp(resetDataUrlImageCacheForTesting);
+
       test('same data: URL returns identical ImageProvider across calls', () {
         // Distinct URL so prior tests' cache entries don't influence this.
         const dataUrl =
@@ -153,6 +157,46 @@ void main() {
               'same data: URL must return the same MemoryImage instance so '
               'ImageCache hits and base64Decode runs once, not per rebuild',
         );
+      });
+
+      test('single entry larger than 1MB is not cached', () {
+        // 1.5MB of base64-encoded zeros (≈2MB data URL string).
+        const onePointFiveMb = 1536 * 1024;
+        final bigBytes = Uint8List(onePointFiveMb);
+        final dataUrl = 'data:image/png;base64,${base64Encode(bigBytes)}';
+
+        resolveAttachmentImage(imageUrl: dataUrl);
+
+        expect(dataUrlImageCacheBytesForTesting, 0);
+      });
+
+      test('total cache byte budget evicts LRU when exceeded', () {
+        // Each entry is ~700KB decoded, well under the per-entry cap but
+        // 12 of them exceed the 8MB total budget.
+        const entrySize = 700 * 1024;
+        final urls = <String>[];
+        for (var i = 0; i < 12; i++) {
+          final bytes = Uint8List(entrySize);
+          bytes[0] = i; // make each payload distinct
+          final url = 'data:image/png;base64,${base64Encode(bytes)}';
+          urls.add(url);
+          resolveAttachmentImage(imageUrl: url);
+        }
+
+        expect(
+          dataUrlImageCacheBytesForTesting,
+          lessThanOrEqualTo(8 * 1024 * 1024),
+          reason: 'cache must evict LRU entries to stay under total budget',
+        );
+        expect(
+          dataUrlImageCacheBytesForTesting,
+          greaterThan(0),
+          reason: 'recent entries should still be cached',
+        );
+
+        // The most-recently-used entry must still be cached.
+        final lastProvider = resolveAttachmentImage(imageUrl: urls.last);
+        expect(lastProvider, isA<MemoryImage>());
       });
     });
   });

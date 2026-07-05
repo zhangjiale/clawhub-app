@@ -35,6 +35,7 @@ Message _msg({
   String clientId = 'c',
   String agentId = 'a',
   String content = 'reply',
+  MessageType type = MessageType.text,
 }) {
   return Message(
     clientId: clientId,
@@ -43,7 +44,7 @@ Message _msg({
     agentId: agentId,
     role: MessageRole.agent,
     content: content,
-    type: MessageType.text,
+    type: type,
     logicalClock: 1,
   );
 }
@@ -240,6 +241,54 @@ void main() {
       expect(recLogger.infos.single, contains('agentId='));
     },
   );
+
+  test('media_message_with_empty_content_uses_image_placeholder', () async {
+    final agent = _agent();
+    final messages = [
+      _msg(serverId: 'img', content: '', type: MessageType.image),
+    ];
+    when(() => repo.enqueueBatch(any())).thenAnswer((_) async => []);
+
+    await BackgroundNotifierShared.enqueuePulled(
+      messages: messages,
+      resolveAgent: (_) => agent,
+      prefs: _prefs(),
+      evaluator: const EvaluateNotificationUseCase(),
+      repo: repo,
+      logger: logger,
+    );
+
+    final captured =
+        verify(
+              () => repo.enqueueBatch(captureAny<List<PendingNotification>>()),
+            ).captured.single
+            as List<PendingNotification>;
+    expect(captured.single.summary, '[图片]');
+  });
+
+  test('media_message_with_empty_content_uses_file_placeholder', () async {
+    final agent = _agent();
+    final messages = [
+      _msg(serverId: 'file', content: '', type: MessageType.file),
+    ];
+    when(() => repo.enqueueBatch(any())).thenAnswer((_) async => []);
+
+    await BackgroundNotifierShared.enqueuePulled(
+      messages: messages,
+      resolveAgent: (_) => agent,
+      prefs: _prefs(),
+      evaluator: const EvaluateNotificationUseCase(),
+      repo: repo,
+      logger: logger,
+    );
+
+    final captured =
+        verify(
+              () => repo.enqueueBatch(captureAny<List<PendingNotification>>()),
+            ).captured.single
+            as List<PendingNotification>;
+    expect(captured.single.summary, '[文件]');
+  });
 
   test('regression_guard_healthyBatch_noDroppedLog_emitsNothing', () async {
     // Sanity counterpart: when every message resolves to an agent and

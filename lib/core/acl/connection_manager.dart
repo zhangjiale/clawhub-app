@@ -322,6 +322,8 @@ class ConnectionManager {
   /// 发送请求并等待响应。
   ///
   /// 返回 [ResponseFrame]（ok=true 时 payload 有值，否则 error 有值）。
+  /// 本方法在主 isolate 完成 `buildRequest` + `utf8.encode` 字节数计算；
+  /// 大 payload 调用方应改用 [sendRawRequest] 在 worker isolate 预构建 JSON。
   Future<ResponseFrame> sendRequest(
     String method,
     Map<String, dynamic> params,
@@ -332,6 +334,32 @@ class ConnectionManager {
 
     final id = _uuid.v4();
     final requestJson = buildRequest(id: id, method: method, params: params);
+    final payloadSize = utf8.encode(requestJson).length;
+
+    return sendRawRequest(
+      id: id,
+      requestJson: requestJson,
+      payloadSize: payloadSize,
+    );
+  }
+
+  /// Sends a pre-built JSON request frame.
+  ///
+  /// [requestJson] is the already-serialized `req` frame. [payloadSize] is its
+  /// precise UTF-8 byte count (computed by the caller, typically in a worker
+  /// isolate). This avoids `jsonEncode` + `utf8.encode` on the main isolate
+  /// for large `chat.send` payloads.
+  ///
+  /// Throws [NotConnectedException], [PayloadTooLargeException], or
+  /// [BufferOverflowException] before writing to the socket.
+  Future<ResponseFrame> sendRawRequest({
+    required String id,
+    required String requestJson,
+    required int payloadSize,
+  }) async {
+    if (_state != GatewayConnectionState.connected) {
+      throw NotConnectedException('WebSocket not connected (state: $_state)');
+    }
 
     // Gap #2: client-side guard against payloads larger than the
     // server-declared maxPayload (spec §2.2 + §3.5). Without this,
@@ -341,23 +369,13 @@ class ConnectionManager {
     // way the user sees "message disappeared". Throwing here gives
     // the ViewModel a typed error to surface.
     //
-    // Always compute the precise UTF-8 byte count. `String.length`
-    // (UTF-16 code units) is a LOWER bound on byte count for non-ASCII
-    // content — e.g. CJK characters encode to 3 UTF-8 bytes per code
-    // unit, so a 25M-char CJK payload reads as ~25M code units but
-    // ~75M bytes on the wire. A previous "cheap upper-bound" attempt
-    // using String.length was wrong for non-ASCII and silently bypassed
-    // the guard (regression test: connection_manager_policy_test.dart
-    // "CJK payload is measured in UTF-8 bytes, not code units").
-    // Allocating the Uint8List is negligible vs. the network write
-    // that follows — typical chat messages are < 100KB.
+    // The precise UTF-8 byte count is supplied by the caller so large
+    // payloads can be measured in a worker isolate.
     final maxPayload = _maxPayloadBytes;
-    final payloadSize = utf8.encode(requestJson).length;
     if (payloadSize > maxPayload) {
       throw PayloadTooLargeException(
         message:
-            'Request $method payload size $payloadSize exceeds '
-            'maxPayload $maxPayload',
+            'Request payload size $payloadSize exceeds maxPayload $maxPayload',
         actualSize: payloadSize,
         maxSize: maxPayload,
       );
@@ -380,8 +398,8 @@ class ConnectionManager {
     if (_bufferedBytes + payloadSize > maxBuffered) {
       throw BufferOverflowException(
         message:
-            'In-flight buffer full: $method payload ($payloadSize) would '
-            'push counter past maxBufferedBytes',
+            'In-flight buffer full: payload ($payloadSize) would push '
+            'counter past maxBufferedBytes',
         bufferedBytes: _bufferedBytes,
         attemptedSize: payloadSize,
         maxSize: maxBuffered,
@@ -399,7 +417,7 @@ class ConnectionManager {
 
       return await completer.future.timeout(
         const Duration(milliseconds: requestTimeoutMs),
-        onTimeout: () => throw TimeoutException('Request $method timed out'),
+        onTimeout: () => throw TimeoutException('Request timed out'),
       );
     } finally {
       _pendingRequests.remove(id);

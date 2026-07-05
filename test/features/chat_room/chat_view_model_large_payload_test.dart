@@ -233,7 +233,7 @@ void main() {
     // F-4: 缓冲满翻译成的诊断事件。文案契约：只定性 + 安抚「自动重试」，
     // 不暴露字节数（用户看不懂也无从操作；缓冲满是瞬态，等在途请求收完即恢复）。
     test('BufferOverflowNotice formats a non-actionable retry message', () {
-      final message = formatGatewayNotice(const BufferOverflowNotice());
+      final message = formatGatewayNotice(BufferOverflowNotice());
       expect(message, isA<String>());
       expect(message, isNotEmpty);
       expect(message, contains('自动重试'));

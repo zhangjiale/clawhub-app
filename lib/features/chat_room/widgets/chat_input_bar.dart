@@ -156,7 +156,7 @@ class _SendButton extends StatelessWidget {
 /// "+" 附件按钮 —— 36×36 圆形,点击弹出 [AttachmentSheet]。
 /// 仅当 [ChatInputBar.onPickAttachment] 非空时渲染。
 class _AttachButton extends StatelessWidget {
-  final Future<void> Function() onTap;
+  final VoidCallback onTap;
 
   const _AttachButton({required this.onTap});
 

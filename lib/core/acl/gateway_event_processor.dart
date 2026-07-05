@@ -98,6 +98,12 @@ class GatewayEventProcessor {
   /// instance churn (add → remove → add → …).
   final Map<String, Set<String>> _sessionKeysByInstance = {};
 
+  /// Tracks sessionKeys that have already been logged as unresolvable so a
+  /// long streaming turn with hundreds of deltas does not emit hundreds of
+  /// identical error logs. Cleared when the corresponding instance is cleaned
+  /// up or the processor is disposed.
+  final Set<String> _unresolvableSessionKeys = <String>{};
+
   /// 测试缝隙 — 返回 [_sessionToAgentId] 当前条目数。
   ///
   /// 用于验证实例断开后映射被正确清理（防内存泄漏）。只在测试中调用。
@@ -172,6 +178,7 @@ class GatewayEventProcessor {
     _activeRunIdBySession.clear();
     _sessionToAgentId.clear();
     _sessionKeysByInstance.clear();
+    _unresolvableSessionKeys.clear();
   }
 
   /// Clears all per-instance streaming state and session mappings.
@@ -189,6 +196,10 @@ class GatewayEventProcessor {
         _sessionToAgentId.remove(key);
       }
     }
+    // Reset the unresolvable log-dedup set when an instance is cleaned up.
+    // This is instance-level dedup in the sense that a fresh connection context
+    // for any instance gets a fresh error log for a previously-unresolvable key.
+    _unresolvableSessionKeys.clear();
   }
 
   /// Processes a single Gateway event frame for [instanceId].
@@ -584,10 +595,14 @@ class GatewayEventProcessor {
   String? _resolveAgentId(String sessionKey) {
     final result = resolveAgentId(sessionKey, _sessionToAgentId);
     if (result == null) {
-      _logger.error(
-        '[WsGateway] Cannot resolve agentId from sessionKey: '
-        '"$sessionKey" — mapping contains ${_sessionToAgentId.length} entries',
-      );
+      // Only log the first time a sessionKey fails resolution; repeated deltas
+      // for the same unresolvable session should not spam the logs.
+      if (_unresolvableSessionKeys.add(sessionKey)) {
+        _logger.error(
+          '[WsGateway] Cannot resolve agentId from sessionKey: '
+          '"$sessionKey" — mapping contains ${_sessionToAgentId.length} entries',
+        );
+      }
     }
     return result;
   }

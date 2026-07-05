@@ -548,14 +548,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                     LoadData(:final value) => _buildMessageList(
                       value,
                       session.toolCalls,
-                      // The tombstone guard at the top of build() (returns
-                      // AgentRemovedPlaceholder) proves `agent != null`, but
-                      // Dart's flow analysis doesn't carry that promotion
-                      // across the intervening ref.watch / ref.listen block,
-                      // so we re-assert here. The `?? 'Agent'` fallback the
-                      // original used was unreachable defensive code —
-                      // tombstoned agents short-circuit at the top.
-                      agent!.displayName,
+                      // US-021: agent may become null after a hard-delete while
+                      // messages are still LoadData (watchById sets _agent=null
+                      // but does not reset the message list). Keep the safe
+                      // fallback instead of `agent!`, which threw
+                      // NullCheckFailureError in that race.
+                      agent?.displayName ?? 'Agent',
                       theme,
                       session.highlightedMessageId,
                     ),
@@ -566,10 +564,9 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                 if (session.streamingText.isNotEmpty)
                   StreamingBubble(
                     text: session.streamingText,
-                    // See comment at line ~528 — `agent!` is asserted
-                    // non-null; the tombstone guard makes the
-                    // `?? 'Agent'` fallback unreachable.
-                    agentName: agent!.displayName,
+                    // Same null-safety guard as the message list: streaming
+                    // text can outlive the agent when it is hard-deleted.
+                    agentName: agent?.displayName ?? 'Agent',
                   )
                 // Thinking indicator — show dots while waiting for first text
                 else if (session.thinkingState == ThinkingState.thinking)

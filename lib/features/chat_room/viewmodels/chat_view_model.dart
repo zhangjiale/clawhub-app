@@ -960,11 +960,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     });
   }
 
-  /// 流错误时由 [_streaming] 回调 —— 取消 60s _timeoutTimer,避免错误后误触
-  /// timeout banner(对齐原 _startStreaming onError 的 _timeoutTimer?.cancel())。
+  /// 流错误时由 [_streaming] 回调 —— 取消 60s _timeoutTimer 与 120s
+  /// _overallTimeoutTimer,避免错误后误触 timeout banner。
   void _onStreamError() {
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
+    _overallTimeoutTimer?.cancel();
+    _overallTimeoutTimer = null;
   }
 
   void _startThinking() {
@@ -1324,5 +1326,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // Bug 2 修复: 同步 [_streamsInitialized] 让 refreshAgent 知道
     // 下次 tombstone→alive 转换时需要重新订阅。
     _streamsInitialized = false;
+    // Reset the connection-event seed guard so a subsequent retry()/init()
+    // correctly skips the synthetic connected seed from
+    // ReplayableConnectionState and avoids a redundant reloadMessages().
+    _isInitialConnectionEvent = true;
   }
 }

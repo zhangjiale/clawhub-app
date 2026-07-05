@@ -7,14 +7,13 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../domain/models/models.dart';
 import '../debug_print_logger.dart';
 import '../i_logger.dart';
-import 'attachment_encoder.dart';
 import 'connection_manager.dart';
 import 'device_identity.dart';
+import 'outbound_request_builder.dart';
 import 'gateway_domain_mapper.dart';
 import 'gateway_event_processor.dart';
 import 'gateway_instance_connection.dart';
 import 'gateway_protocol.dart';
-import 'outbound_message_serializer.dart';
 import 'i_device_identity_provider.dart';
 import 'i_device_token_store.dart';
 import 'i_gateway_client.dart';
@@ -35,9 +34,8 @@ class WsGatewayClient implements IGatewayClient {
   final Uuid _uuid = const Uuid();
   final GatewayDomainMapper _mapper = GatewayDomainMapper();
   final GatewayEventProcessor _eventProcessor;
-  final AttachmentEncoder _attachmentEncoder = const AttachmentEncoder();
-  final OutboundMessageSerializer _outboundSerializer =
-      const OutboundMessageSerializer();
+  final OutboundRequestBuilder _outboundRequestBuilder =
+      const OutboundRequestBuilder();
   final IDeviceIdentityProvider _identityProvider;
   final ConnectionConfig _config;
   final ILogger _logger;
@@ -269,26 +267,24 @@ class WsGatewayClient implements IGatewayClient {
     // PROTOCOL-VERIFY (appendix F, 2026-07-03): chat.send 的 `message` 必须是字符串,
     // 多模态走顶层 `attachments` 数组(元素弱约束,推荐 {mimeType, content: base64, filename?})。
     // Gateway 拒绝 `metadata`(实测 "unexpected property")。图片/文件字节由
-    // _readFileBase64 从 message.content(本地路径)读取 base64,DB 只存路径。
-    // 大小限制(F.6):图片 <10MB、文件 <5MB,超限 encode 抛错 → FAILED。
-    final base64Data = await _attachmentEncoder.encode(
-      type: message.type,
-      path: message.content,
-    );
-    final sendPayload = _outboundSerializer.serialize(
-      message,
-      base64Data: base64Data,
+    // worker isolate 从 message.content(本地路径)读取 base64 并直接完成序列化，
+    // 主 isolate 只接收最终 JSON 字符串与字节数，避免大 base64 在主 isolate 上
+    // jsonEncode + utf8.encode 造成 jank。
+    final requestId = _uuid.v4();
+    final outbound = await _outboundRequestBuilder.buildChatSendRequest(
+      message: message,
+      sessionKey: sessionKey,
+      idempotencyKey: message.clientId,
+      requestId: requestId,
     );
 
     final ResponseFrame res;
     try {
-      res = await manager.sendRequest(Methods.chatSend, {
-        'sessionKey': sessionKey,
-        'message': sendPayload.message,
-        'idempotencyKey': message.clientId,
-        if (sendPayload.attachments != null)
-          'attachments': sendPayload.attachments,
-      });
+      res = await manager.sendRawRequest(
+        id: requestId,
+        requestJson: outbound.requestJson,
+        payloadSize: outbound.payloadSize,
+      );
     } on BufferOverflowException catch (e) {
       // F-4: 在途缓冲满（reject-new，spec §2.2 maxBufferedBytes）。把 ACL
       // 内部的背压信号翻译成 [BufferOverflowNotice] 推上诊断流，UI 层据此
@@ -312,7 +308,7 @@ class WsGatewayClient implements IGatewayClient {
       );
       final conn = _connections[instanceId];
       if (conn != null && !conn.gatewayNoticeCtrl.isClosed) {
-        conn.gatewayNoticeCtrl.add(const BufferOverflowNotice());
+        conn.gatewayNoticeCtrl.add(BufferOverflowNotice());
       }
       rethrow;
     }

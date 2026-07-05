@@ -219,6 +219,57 @@ void main() {
         expect(file.imagePath, isNull); // file 消息不暴露 imagePath
       });
 
+      test('imagePath 不把普通文本 caption 当成本地路径', () {
+        final agentImageWithCaption = Message(
+          clientId: 'c-agent-img-caption',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.agent,
+          content: '这是一只虾的插图',
+          type: MessageType.image,
+          logicalClock: 1,
+          // No imageUrl: mimics an unrecognized image block shape from Gateway.
+        );
+
+        expect(agentImageWithCaption.imageUrl, isNull);
+        expect(agentImageWithCaption.imagePath, isNull);
+      });
+
+      test('filePath 不把普通文本说明当成本地路径', () {
+        final agentFileWithCaption = Message(
+          clientId: 'c-agent-file-caption',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.agent,
+          content: '请查收报告',
+          type: MessageType.file,
+          logicalClock: 1,
+          // No fileUrl: mimics a file reply that carries a text caption.
+        );
+
+        expect(agentFileWithCaption.fileUrl, isNull);
+        expect(agentFileWithCaption.filePath, isNull);
+      });
+
+      test('fileUrl 用于 Agent 回文件(响应侧)', () {
+        final agentFile = Message(
+          clientId: 'c-agent-file',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.agent,
+          content: null,
+          type: MessageType.file,
+          logicalClock: 1,
+          metadata: const {
+            'fileUrl': 'https://example.com/report.pdf',
+            'mimeType': 'application/pdf',
+          },
+        );
+
+        expect(agentFile.fileUrl, 'https://example.com/report.pdf');
+        expect(agentFile.filePath, isNull); // 响应侧无本地路径
+      });
+
       test('fileName / mimeType / caption / fileSize 从 metadata 读取', () {
         final image = Message(
           clientId: 'c-img',

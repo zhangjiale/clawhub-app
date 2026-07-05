@@ -52,9 +52,12 @@ final class LargePayloadNotice extends GatewayNotice {
 ///
 /// 与 [LargePayloadNotice] 的关键差异：缓冲满是**瞬态、不可由用户缓解**
 /// —— 不像 payload.large 可以缩短内容重发，缓冲满只需等在途请求收完响应
-/// 释放即可重试成功。故本子类型是**无字段标记**：toast 文案只定性
-/// （「网关繁忙，将自动重试」）不定量，不向用户暴露 buffered/attempted/max
-/// 字节数（用户既看不懂也无法操作）。
+/// 释放即可重试成功。故 toast 文案只定性（「网关繁忙，将自动重试」）不定量，
+/// 不向用户暴露 buffered/attempted/max 字节数（用户既看不懂也无法操作）。
+///
+/// [emittedAt] 是内部去重标记：连续缓冲溢出事件的时间戳不同，确保
+/// `gatewayNoticeProvider` + `ref.listen` 的去重层不会把第二次事件当成
+/// 同一个 notice 而吞掉 toast。时间戳不向 UI 展示。
 ///
 /// 触发链路：`ConnectionManager.sendRequest` reject-new 抛
 /// `BufferOverflowException` → `WsGatewayClient.sendMessage` 捕获后 `add()`
@@ -62,14 +65,20 @@ final class LargePayloadNotice extends GatewayNotice {
 /// 的 toast 基建。异常仍 rethrow，`SendMessageUseCase` 照常标 FAILED（可重试），
 /// OutboxProcessor 在缓冲排空后自动重发 —— 数据不丢。
 final class BufferOverflowNotice extends GatewayNotice {
-  const BufferOverflowNotice();
+  final DateTime emittedAt;
+
+  BufferOverflowNotice({DateTime? emittedAt})
+    : emittedAt = emittedAt ?? DateTime.now();
 
   @override
-  bool operator ==(Object other) => other is BufferOverflowNotice;
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BufferOverflowNotice && emittedAt == other.emittedAt;
 
   @override
-  int get hashCode => runtimeType.hashCode;
+  int get hashCode => Object.hash(runtimeType, emittedAt);
 
   @override
-  String toString() => 'BufferOverflowNotice()';
+  String toString() =>
+      'BufferOverflowNotice(emittedAt: ${emittedAt.toIso8601String()})';
 }

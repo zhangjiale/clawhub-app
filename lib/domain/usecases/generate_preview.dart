@@ -19,14 +19,18 @@ class GeneratePreview {
     required MessageType type,
     String? content,
   }) {
+    final prefix = _getPrefix(role);
+
+    // 空 content 时仍按消息类型返回占位，避免消息中心/通知 body 空白。
+    // 例如 Agent 纯图片回复的 content 来自 extractTextContent 对纯图片块
+    // 返回 ''，此时应显示 [图片]/[文件] 而不是空字符串。
     if (content == null || content.isEmpty) {
-      if (role == MessageRole.user) return _userPrefix;
-      return '';
+      final placeholder = _placeholderFor(type);
+      if (placeholder.isNotEmpty) return '$prefix$placeholder';
+      return prefix;
     }
 
-    final prefix = _getPrefix(role);
     final body = _getBody(type, content);
-
     return '$prefix$body';
   }
 
@@ -44,6 +48,19 @@ class GeneratePreview {
         return '[工具调用]';
       case MessageType.text:
         return _truncate(_stripMarkdown(content));
+    }
+  }
+
+  String _placeholderFor(MessageType type) {
+    switch (type) {
+      case MessageType.image:
+        return '[图片]';
+      case MessageType.file:
+        return '[文件]';
+      case MessageType.toolCall:
+        return '[工具调用]';
+      case MessageType.text:
+        return '';
     }
   }
 

@@ -52,28 +52,54 @@ void main() {
   // F-4 (Law 17 RED): 客户端在途缓冲满（maxBufferedBytes）时 ConnectionManager
   // 抛 BufferOverflowException。ACL 把它翻译成本子类型推上 gatewayNoticeStream，
   // 复用 LargePayloadNotice 的 toast 基建 —— 用户看到「网关繁忙，将自动重试」
-  // 而不是无说明的 FAILED。本子类型是无字段标记：缓冲满是瞬态、不可由用户
-  // 缓解（不同于 payload.large 可缩短内容），文案只定性不定量。
+  // 而不是无说明的 FAILED。本子类型带 [emittedAt] 时间戳：缓冲满是瞬态、
+  // 不可由用户缓解（不同于 payload.large 可缩短内容），文案只定性不定量；
+  // 时间戳只用于去重层区分连续事件，不向用户展示。
   group('BufferOverflowNotice', () {
-    test('is constructible with no fields (marker subtype)', () {
-      const notice = BufferOverflowNotice();
+    test('is constructible and defaults emittedAt to now', () {
+      final before = DateTime.now();
+      final notice = BufferOverflowNotice();
+      final after = DateTime.now();
       expect(notice, isA<GatewayNotice>());
+      expect(
+        notice.emittedAt.isAfter(before) || notice.emittedAt == before,
+        isTrue,
+      );
+      expect(
+        notice.emittedAt.isBefore(after) || notice.emittedAt == after,
+        isTrue,
+      );
     });
 
-    test('all instances are equal (value-less marker)', () {
-      // 无字段 -> 所有实例值相等。toast 触发靠 gatewayNoticeProvider
-      // (StreamProvider) 每次流 emit 调一次 ref.listen callback
-      // （见 lib/app/di/providers.dart gatewayNoticeProvider），
-      // 不靠 == 区分，故标量相等不会抑制连续 toast。
-      const a = BufferOverflowNotice();
-      const b = BufferOverflowNotice();
+    test('emittedAt can be injected for tests', () {
+      final t = DateTime.utc(2026, 7, 5, 12, 0);
+      final notice = BufferOverflowNotice(emittedAt: t);
+      expect(notice.emittedAt, t);
+    });
+
+    test('instances with different emittedAt are not equal', () {
+      final a = BufferOverflowNotice(
+        emittedAt: DateTime.utc(2026, 7, 5, 12, 0),
+      );
+      final b = BufferOverflowNotice(
+        emittedAt: DateTime.utc(2026, 7, 5, 12, 1),
+      );
+      expect(a == b, isFalse);
+    });
+
+    test('instances with same emittedAt are equal', () {
+      final t = DateTime.utc(2026, 7, 5, 12, 0);
+      final a = BufferOverflowNotice(emittedAt: t);
+      final b = BufferOverflowNotice(emittedAt: t);
       expect(a, equals(b));
       expect(a.hashCode, b.hashCode);
     });
 
-    test('toString is stable and mentions the subtype name', () {
-      const notice = BufferOverflowNotice();
+    test('toString includes emittedAt for diagnostics', () {
+      final t = DateTime.utc(2026, 7, 5, 12, 0);
+      final notice = BufferOverflowNotice(emittedAt: t);
       expect(notice.toString(), contains('BufferOverflowNotice'));
+      expect(notice.toString(), contains(t.toIso8601String()));
     });
   });
 
@@ -92,7 +118,7 @@ void main() {
         describe(LargePayloadNotice(sessionKey: 'k', size: 30, limit: 20)),
         'large:30/20',
       );
-      expect(describe(const BufferOverflowNotice()), 'buffer');
+      expect(describe(BufferOverflowNotice()), 'buffer');
     });
 
     test('LargePayloadNotice is a GatewayNotice (subtype)', () {
@@ -105,7 +131,7 @@ void main() {
     });
 
     test('BufferOverflowNotice is a GatewayNotice (subtype)', () {
-      const GatewayNotice asBase = BufferOverflowNotice();
+      final GatewayNotice asBase = BufferOverflowNotice();
       expect(asBase, isA<BufferOverflowNotice>());
     });
   });

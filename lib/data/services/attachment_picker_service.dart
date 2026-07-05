@@ -38,15 +38,24 @@ class AttachmentPickerService implements IAttachmentPickerService {
   @override
   Future<AttachmentPickResult?> pickFile() async {
     final result = await FilePicker.platform.pickFiles(type: FileType.any);
-    final path = result?.files.single.path;
+    // Defensive: `files` may be empty on some Android SAF paths, and
+    // `single` throws StateError (an Error, not Exception) which would
+    // escape the caller's `on Exception catch`. Use first-or-null and a
+    // null path guard so cancellation/empty results return gracefully.
+    final platformFile = result != null && result.files.isNotEmpty
+        ? result.files.first
+        : null;
+    final path = platformFile?.path;
     if (path == null) return null;
 
     final file = File(path);
     final size = await file.length();
+    // `path` non-null implies `platformFile` is non-null because it was
+    // derived from `platformFile?.path`.
     return AttachmentPickResult(
       path: path,
-      fileName: result!.files.single.name,
-      mimeType: inferMimeType(result.files.single.extension),
+      fileName: platformFile!.name,
+      mimeType: inferMimeType(platformFile.extension),
       size: size,
     );
   }

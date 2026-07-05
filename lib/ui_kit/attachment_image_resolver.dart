@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
 /// Resolves a message attachment's image source to an [ImageProvider].
@@ -52,18 +52,27 @@ ImageProvider? resolveAttachmentImage({String? imageUrl, String? imagePath}) {
 ///
 /// Insertion-ordered [Map] used as an LRU: a cache hit is moved to the end
 /// (most-recently-used) via remove + re-insert; eviction drops `keys.first`
-/// (least-recently-used). 16 entries bounds raw-bytes retention (data URLs can
-/// be MB-scale) while covering a conversation's visible inline-image bubbles.
+/// (least-recently-used).
+///
+/// Two budgets bound memory retention (data URLs can be MB-scale):
+/// - [_dataUrlImageCacheMaxBytes]: total bytes across all cached entries.
+/// - [_dataUrlImageCacheMaxEntryBytes]: a single entry larger than this is
+///   not cached at all (decoding cost is paid, but the raw bytes are not
+///   retained). This prevents one giant inline image from evicting everything
+///   else or pinning a huge allocation.
 const int _dataUrlImageCacheLimit = 16;
-final Map<String, ImageProvider> _dataUrlImageCache = {};
+const int _dataUrlImageCacheMaxBytes = 8 * 1024 * 1024;
+const int _dataUrlImageCacheMaxEntryBytes = 1024 * 1024;
+final Map<String, MemoryImage> _dataUrlImageCache = {};
+int _dataUrlImageCacheBytes = 0;
 
-/// Decodes a `data:` URL to an [ImageProvider], memoized per URL.
+/// Decodes a `data:` URL to a [MemoryImage], memoized per URL.
 ///
 /// Format: `data:<mime>;base64,<payload>` or `data:<mime>,<url-encoded>`.
 /// - base64 path: [base64Decode] the payload → [MemoryImage].
 /// - non-base64 path: parse via [Uri.dataFromString] → [MemoryImage].
 /// - corrupt input: return [MemoryImage] with empty bytes (errorBuilder path).
-ImageProvider _dataUrlToImageProvider(String dataUrl) {
+MemoryImage _dataUrlToImageProvider(String dataUrl) {
   final cached = _dataUrlImageCache[dataUrl];
   if (cached != null) {
     // LRU refresh: move to most-recently-used so the entry survives eviction.
@@ -73,14 +82,46 @@ ImageProvider _dataUrlToImageProvider(String dataUrl) {
   }
 
   final provider = _decodeDataUrl(dataUrl);
-  if (_dataUrlImageCache.length >= _dataUrlImageCacheLimit) {
-    _dataUrlImageCache.remove(_dataUrlImageCache.keys.first);
+  final bytes = provider.bytes.length;
+
+  // Do not cache giant single entries; just return the decoded provider.
+  if (bytes > _dataUrlImageCacheMaxEntryBytes) {
+    return provider;
   }
+
+  // Evict LRU entries until the new entry fits under the total byte budget.
+  while (_dataUrlImageCacheBytes + bytes > _dataUrlImageCacheMaxBytes &&
+      _dataUrlImageCache.isNotEmpty) {
+    final oldestKey = _dataUrlImageCache.keys.first;
+    final oldest = _dataUrlImageCache.remove(oldestKey)!;
+    _dataUrlImageCacheBytes -= oldest.bytes.length;
+  }
+
   _dataUrlImageCache[dataUrl] = provider;
+  _dataUrlImageCacheBytes += bytes;
+
+  // Keep the legacy entry-count cap as a secondary guard.
+  while (_dataUrlImageCache.length > _dataUrlImageCacheLimit) {
+    final oldestKey = _dataUrlImageCache.keys.first;
+    final oldest = _dataUrlImageCache.remove(oldestKey)!;
+    _dataUrlImageCacheBytes -= oldest.bytes.length;
+  }
+
   return provider;
 }
 
-ImageProvider _decodeDataUrl(String dataUrl) {
+/// Test-only hook: clears the data: URL image cache and resets the byte counter.
+@visibleForTesting
+void resetDataUrlImageCacheForTesting() {
+  _dataUrlImageCache.clear();
+  _dataUrlImageCacheBytes = 0;
+}
+
+/// Test-only hook: current total bytes retained in the data: URL image cache.
+@visibleForTesting
+int get dataUrlImageCacheBytesForTesting => _dataUrlImageCacheBytes;
+
+MemoryImage _decodeDataUrl(String dataUrl) {
   final comma = dataUrl.indexOf(',');
   if (comma < 0) {
     // Malformed (no comma) — let errorBuilder render _BrokenImage.
