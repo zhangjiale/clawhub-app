@@ -203,6 +203,12 @@ class GatewayDomainMapper {
     // 用户上传文件时,OpenClaw 协议自动插入一条 user message,但 body 是固定的
     // 占位文本,从语义上「不是用户打字的输入」,不该占 user 气泡。在 ACL 层
     // 识别出来归到 userPlaceholder,UI 折叠成「📎 1 个文件已上传」小条。
+    //
+    // PROTOCOL-VERIFY (capture 2026-07-05, OpenClaw v2026.6.10): 真机实测确认
+    // 上传占位消息的 body 就是这个固定字符串,且顶层带 MediaPath/MediaPaths/
+    // MediaType/MediaTypes。⚠️ 若 OpenClaw 改文案/做多语言,此匹配会静默失效 →
+    // 占位回退成 user 黄气泡(原 bug 复现)。改文案时需同步更新此处 + 测试。
+    // 详见 memory openclaw-v2026-6-10-wire-format。
     const mediaPlaceholder = '[User sent media without caption]';
     if (role == 'user' && content == mediaPlaceholder) {
       return MessageRole.userPlaceholder;
