@@ -43,11 +43,13 @@ void main() {
       expect(MessageRole.fromInt(0), MessageRole.user);
       expect(MessageRole.fromInt(1), MessageRole.agent);
       expect(MessageRole.fromInt(2), MessageRole.system);
+      expect(MessageRole.fromInt(3), MessageRole.toolResult);
+      expect(MessageRole.fromInt(4), MessageRole.userPlaceholder);
     });
 
     test('无效值抛异常', () {
       expect(() => MessageRole.fromInt(-1), throwsA(isA<ArgumentError>()));
-      expect(() => MessageRole.fromInt(3), throwsA(isA<ArgumentError>()));
+      expect(() => MessageRole.fromInt(99), throwsA(isA<ArgumentError>()));
     });
   });
 

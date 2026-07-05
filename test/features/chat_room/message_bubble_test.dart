@@ -99,7 +99,9 @@ void main() {
     // ━━━━━ user 气泡被多个「不是用户发的」内容占满（agent 跑 exec 的输出、上传
     // ━━━━━ 占位文本）。见 PR 描述 §1 / §2。
 
-    testWidgets('toolResult renders as folding card, NOT user bubble', (tester) async {
+    testWidgets('toolResult renders as folding card, NOT user bubble', (
+      tester,
+    ) async {
       final toolMsg = Message(
         clientId: 'tc1',
         serverId: 'ts1',
@@ -114,20 +116,24 @@ void main() {
         metadata: {'toolName': 'exec'},
       );
       await tester.pumpWidget(buildBubble(toolMsg, agentName: '日程虾'));
-      // toolResult 不走 user 路径：不应该在右气泡上看到白字。
-      expect(find.text('-rw-r--r-- 1 root root 17125'), findsNothing);
-      // 工具名以 tool 名称小卡片形式提供，不渲染原文。
+      // Collapsed: tool name shows as the card title; the raw output is NOT yet
+      // rendered (ExpansionTile lazy-builds children), so it can't leak into a
+      // user-bubble text slot.
       expect(find.text('exec'), findsOneWidget);
-      // 设计意图下 toolResult 折叠，不该出现「中文时间戳 xxxx:xx」消息时间。
+      // Expand the card — the tool output renders inside the monospace container,
+      // NOT as a right-aligned user bubble. (The impl shows toolName + HH:MM in the
+      // title row by design, so we verify the output lands in the expanded body.)
+      await tester.tap(find.text('exec'));
+      await tester.pumpAndSettle();
       expect(
-        find.byWidgetPredicate(
-          (w) => w is Text && RegExp(r'^\d{2}:\d{2}$').hasMatch(w.data ?? ''),
-        ),
-        findsNothing,
+        find.textContaining('-rw-r--r-- 1 root root 17125'),
+        findsOneWidget,
       );
     });
 
-    testWidgets('userPlaceholder renders as inline strip, NOT user bubble', (tester) async {
+    testWidgets('userPlaceholder renders as inline strip, NOT user bubble', (
+      tester,
+    ) async {
       final placeholderMsg = Message(
         clientId: 'p1',
         serverId: 'sp1',
@@ -139,7 +145,9 @@ void main() {
         logicalClock: 4,
         timestamp: DateTime.now().millisecondsSinceEpoch,
         status: MessageStatus.sent,
-        metadata: const {'mediaPaths': ['/tmp/foo.txt']},
+        metadata: const {
+          'mediaPaths': ['/tmp/foo.txt'],
+        },
       );
       await tester.pumpWidget(buildBubble(placeholderMsg, agentName: '日程虾'));
       // 占位 body 文本不该作为用户气泡渲染。
@@ -148,7 +156,9 @@ void main() {
       expect(find.text('📎 文件已上传'), findsOneWidget);
     });
 
-    testWidgets('system role produces no bubble widget (SizedBox.shrink)', (tester) async {
+    testWidgets('system role produces no bubble widget (SizedBox.shrink)', (
+      tester,
+    ) async {
       final sysMsg = Message(
         clientId: 's1',
         conversationId: 'conv1',

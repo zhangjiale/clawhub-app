@@ -112,6 +112,29 @@ class GatewayDomainMapper {
     if (imageRef != null) {
       incomingMetadata['imageUrl'] = imageRef;
     }
+    // Capture-verified (2026-07-05, OpenClaw v2026.6.10): toolResult / 上传占位消息把
+    // toolName / toolCallId / isError / MediaPaths 放在**顶层字段**,不在 metadata
+    // 对象里(消息本身也没有 metadata 字段)。这里提取到 incomingMetadata,供
+    // MessageBubble._buildToolResult / _buildPlaceholder 通过 message.metadata 读取。
+    // 详见 memory openclaw-v2026-6-10-wire-format。
+    final toolName = json['toolName'];
+    if (toolName is String && toolName.isNotEmpty) {
+      incomingMetadata['toolName'] = toolName;
+    }
+    final toolCallId = json['toolCallId'];
+    if (toolCallId is String && toolCallId.isNotEmpty) {
+      incomingMetadata['toolCallId'] = toolCallId;
+    }
+    final isError = json['isError'];
+    if (isError is bool) {
+      incomingMetadata['isError'] = isError;
+    }
+    // MediaPaths(大写 M,顶层 List)→ mediaPaths(供 _buildPlaceholder 数份数)。
+    // 兼容单数 MediaPath(字符串)——UI 的 `rawPaths is List` 判断会兜成 1 份。
+    final mediaPaths = json['MediaPaths'] ?? json['MediaPath'];
+    if (mediaPaths != null) {
+      incomingMetadata['mediaPaths'] = mediaPaths;
+    }
     return Message(
       clientId: json['clientId'] as String? ?? _uuid.v4(),
       serverId: json['serverId'] as String? ?? json['id'] as String?,
@@ -186,8 +209,11 @@ class GatewayDomainMapper {
     }
     return switch (role) {
       'agent' || 'assistant' => MessageRole.agent,
+      'user' => MessageRole.user,
       'system' => MessageRole.system,
-      _ => MessageRole.user,
+      // 未知 role 字符串兜到 system(渲染为空)而不是 user(黄气泡)——
+      // 这是本 fix 真正要堵的口:下一个未识别的 role 不再冒充用户输入。
+      _ => MessageRole.system,
     };
   }
 

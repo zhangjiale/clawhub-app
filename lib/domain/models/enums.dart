@@ -74,10 +74,11 @@ enum MessageRole {
   static MessageRole fromInt(int value) {
     return MessageRole.values.firstWhere(
       (s) => s.value == value,
-      // 未知值兜底为 system 而不是抛错:防止老 DB 行 / 旧版本写入被读崩,且不会让
-      // 不被识别的 role 误渲成 user 气泡(原来 throw 之外的默认值是 user,
-      // 这正是本 fix 要堵的口)。
-      orElse: () => MessageRole.system,
+      // 未知值抛错(Law 18:keyed lookup 不能静默兜默认值)。静默兜 system 会让
+      // 损坏/降级 DB 行的消息凭空消失(system → MessageBubble 渲染为 SizedBox.shrink)。
+      // 未知 role 的真正防线在 ACL 的 _parseMessageRole(把未知字符串 role 兜到
+      // system 而非 user),不该在 DB 反序列化层吞错。
+      orElse: () => throw ArgumentError('Invalid MessageRole value: $value'),
     );
   }
 

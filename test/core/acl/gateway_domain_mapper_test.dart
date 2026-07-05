@@ -188,29 +188,35 @@ void main() {
       expect(msg.role, MessageRole.toolResult);
       expect(msg.content, '-rw-r--r-- 1 root root 17125 ...');
     });
-    test('tool_result / toolCall / tool_call aliases all map to toolResult', () {
-      for (final alias in ['tool_result', 'toolCall', 'tool_call']) {
-        final msg = mapper.parseMessage({'role': alias, 'content': 'x'});
-        expect(
-          msg.role,
-          MessageRole.toolResult,
-          reason: 'alias "$alias" should map to toolResult',
-        );
-      }
-    });
+    test(
+      'tool_result / toolCall / tool_call aliases all map to toolResult',
+      () {
+        for (final alias in ['tool_result', 'toolCall', 'tool_call']) {
+          final msg = mapper.parseMessage({'role': alias, 'content': 'x'});
+          expect(
+            msg.role,
+            MessageRole.toolResult,
+            reason: 'alias "$alias" should map to toolResult',
+          );
+        }
+      },
+    );
 
     // ----- regression #2: user-upload placeholder must be reclassified. -----
     // OpenClaw inserts a user message whose body is the fixed placeholder
     // '[User sent media without caption]' when the user uploads a file. It is
     // role=user on the wire but semantically is NOT a user-typed input — it
     // should not occupy a user bubble in the chat view.
-    test('user-role message whose body is the media placeholder is reclassified', () {
-      final msg = mapper.parseMessage({
-        'role': 'user',
-        'content': '[User sent media without caption]',
-      });
-      expect(msg.role, MessageRole.userPlaceholder);
-    });
+    test(
+      'user-role message whose body is the media placeholder is reclassified',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'user',
+          'content': '[User sent media without caption]',
+        });
+        expect(msg.role, MessageRole.userPlaceholder);
+      },
+    );
     test('user-role message with non-placeholder content remains user', () {
       final msg = mapper.parseMessage({'role': 'user', 'content': '你好'});
       expect(msg.role, MessageRole.user);
@@ -223,6 +229,68 @@ void main() {
         ],
       });
       expect(asBlocks.role, MessageRole.userPlaceholder);
+    });
+
+    // ----- regression #3: unknown role strings must NOT silently become user. -----
+    // The switch's default arm was `_ => MessageRole.user` — any unrecognized role
+    // string (e.g. a future 'function' / 'moderator') would render as a yellow user
+    // bubble, which is the same bug class as toolResult. Unknown roles now fall to
+    // system (rendered as nothing) instead of masquerading as user input.
+    test('unknown role string maps to system (NOT user)', () {
+      final msg = mapper.parseMessage({'role': 'function', 'content': 'x'});
+      expect(msg.role, MessageRole.system);
+    });
+
+    // ----- capture-verified (2026-07-05, OpenClaw v2026.6.10): toolResult and
+    // upload-placeholder messages carry toolName / toolCallId / isError / MediaPaths
+    // as TOP-LEVEL fields, NOT inside a `metadata` object. parseMessage must extract
+    // them into message.metadata so MessageBubble._buildToolResult / _buildPlaceholder
+    // can read them. See memory openclaw-v2026-6-10-wire-format.
+    test(
+      'toolResult extracts top-level toolName/toolCallId/isError into metadata',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'toolResult',
+          'toolCallId': 'call_abc',
+          'toolName': 'exec',
+          'content': '-rw-r--r-- 1 root root 17125 ...',
+          'isError': false,
+          'timestamp': 1718000000000,
+        });
+        expect(msg.role, MessageRole.toolResult);
+        expect(msg.metadata?['toolName'], 'exec');
+        expect(msg.metadata?['toolCallId'], 'call_abc');
+        expect(msg.metadata?['isError'], false);
+      },
+    );
+    test('toolResult with isError=true still extracts fields', () {
+      final msg = mapper.parseMessage({
+        'role': 'toolResult',
+        'toolName': 'message',
+        'content': '{"status":"error"}',
+        'isError': true,
+      });
+      expect(msg.metadata?['isError'], true);
+      expect(msg.metadata?['toolName'], 'message');
+    });
+    test(
+      'userPlaceholder extracts top-level MediaPaths into metadata.mediaPaths',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'user',
+          'content': '[User sent media without caption]',
+          'MediaPaths': ['/tmp/a.txt', '/tmp/b.txt'],
+          'MediaTypes': ['text/plain', 'text/plain'],
+        });
+        expect(msg.role, MessageRole.userPlaceholder);
+        expect(msg.metadata?['mediaPaths'], ['/tmp/a.txt', '/tmp/b.txt']);
+      },
+    );
+    test('plain user message does NOT synthesize empty metadata', () {
+      // Sanity: extraction must not create a metadata map for ordinary messages
+      // that carry none of the tool/media top-level fields.
+      final msg = mapper.parseMessage({'role': 'user', 'content': '你好'});
+      expect(msg.metadata, isNull);
     });
 
     test('seconds-scale timestamp is normalized to milliseconds', () {

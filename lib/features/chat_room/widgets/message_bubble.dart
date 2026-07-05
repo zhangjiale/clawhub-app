@@ -166,9 +166,7 @@ class MessageBubble extends StatelessWidget {
   Widget _buildPlaceholder(BuildContext context) {
     final rawPaths = message.metadata?['mediaPaths'];
     final fileCount = (rawPaths is List) ? rawPaths.length : 1;
-    final label = fileCount > 1
-        ? '📎 $fileCount 个文件已上传'
-        : '📎 文件已上传';
+    final label = fileCount > 1 ? '📎 $fileCount 个文件已上传' : '📎 文件已上传';
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: XiaSpacing.pagePaddingH,
@@ -186,10 +184,7 @@ class MessageBubble extends StatelessWidget {
           ),
           child: Text(
             label,
-            style: const TextStyle(
-              fontSize: 12,
-              color: XiaColors.text3,
-            ),
+            style: const TextStyle(fontSize: 12, color: XiaColors.text3),
           ),
         ),
       ),
@@ -217,67 +212,74 @@ class MessageBubble extends StatelessWidget {
                 left: BorderSide(color: XiaColors.accent2, width: 2),
               ),
             ),
-            child: Theme(
-              // 去掉 ExpansionTile 默认的点击水波 + 惨怏高亮，保持低调。
-              data: Theme.of(context).copyWith(
-                splashFactory: NoSplash.splashFactory,
-                highlightColor: Colors.transparent,
-              ),
-              child: ExpansionTile(
-                tilePadding: const EdgeInsets.symmetric(
-                  horizontal: XiaSpacing.s4,
-                  vertical: 0,
+            child: Material(
+              // ListTile 的 ink 画在最近 Material 祖先上;Container 的 bg color
+              // (DecoratedBox)夹在中间会触发"ListTile background color may be
+              // invisible" debug 断言。包一层透明 Material 让 ListTile 在装饰盒
+              // 内找到 Material 祖先(Theme 已禁 splash,透明即可)。
+              type: MaterialType.transparency,
+              child: Theme(
+                // 去掉 ExpansionTile 默认的点击水波 + 惨怏高亮，保持低调。
+                data: Theme.of(context).copyWith(
+                  splashFactory: NoSplash.splashFactory,
+                  highlightColor: Colors.transparent,
                 ),
-                childrenPadding: const EdgeInsets.only(
-                  left: XiaSpacing.s4,
-                  right: XiaSpacing.s4,
-                  bottom: XiaSpacing.s3,
-                ),
-                leading: const Icon(
-                  Icons.terminal,
-                  size: 16,
-                  color: XiaColors.accent2,
-                ),
-                title: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      message.metadata?['toolName']?.toString() ?? 'tool',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: XiaColors.accent2,
-                        fontSize: 12,
+                child: ExpansionTile(
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: XiaSpacing.s4,
+                    vertical: 0,
+                  ),
+                  childrenPadding: const EdgeInsets.only(
+                    left: XiaSpacing.s4,
+                    right: XiaSpacing.s4,
+                    bottom: XiaSpacing.s3,
+                  ),
+                  leading: const Icon(
+                    Icons.terminal,
+                    size: 16,
+                    color: XiaColors.accent2,
+                  ),
+                  title: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        message.metadata?['toolName']?.toString() ?? 'tool',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: XiaColors.accent2,
+                          fontSize: 12,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _formatTime(message.timestamp),
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: XiaColors.text4,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                      const SizedBox(width: 6),
+                      Text(
+                        _formatTime(message.timestamp),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: XiaColors.text4,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ),
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(XiaSpacing.s2),
+                      decoration: BoxDecoration(
+                        color: XiaColors.bg,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        message.content ?? '',
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          color: XiaColors.text1,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(XiaSpacing.s2),
-                    decoration: BoxDecoration(
-                      color: XiaColors.bg,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      message.content ?? '',
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                        color: XiaColors.text1,
-                      ),
-                    ),
-                  ),
-                ],
               ),
             ),
           ),
