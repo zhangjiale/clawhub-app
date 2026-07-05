@@ -55,9 +55,12 @@ final class LargePayloadNotice extends GatewayNotice {
 /// 释放即可重试成功。故 toast 文案只定性（「网关繁忙，将自动重试」）不定量，
 /// 不向用户暴露 buffered/attempted/max 字节数（用户既看不懂也无法操作）。
 ///
-/// [emittedAt] 是内部去重标记：连续缓冲溢出事件的时间戳不同，确保
-/// `gatewayNoticeProvider` + `ref.listen` 的去重层不会把第二次事件当成
-/// 同一个 notice 而吞掉 toast。时间戳不向 UI 展示。
+/// [emittedAt] 仅用于 toString 诊断，不参与相等性比较（review #9）。本类
+/// 故意不重写 `==` / `hashCode` —— 每个实例都是独立的一次溢出事件，用
+/// Object 默认的 identity 相等。此前 == 比较 emittedAt，Riverpod
+/// `gatewayNoticeProvider` (StreamProvider) 对连续相等的 AsyncData 去重，
+/// 导致同毫秒(web)/同微秒(native)的连续溢出只弹一次 toast。identity 相等
+/// 保证每条 notice 都触发 ref.listen。时间戳不向 UI 展示。
 ///
 /// 触发链路：`ConnectionManager.sendRequest` reject-new 抛
 /// `BufferOverflowException` → `WsGatewayClient.sendMessage` 捕获后 `add()`
@@ -70,13 +73,9 @@ final class BufferOverflowNotice extends GatewayNotice {
   BufferOverflowNotice({DateTime? emittedAt})
     : emittedAt = emittedAt ?? DateTime.now();
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BufferOverflowNotice && emittedAt == other.emittedAt;
-
-  @override
-  int get hashCode => Object.hash(runtimeType, emittedAt);
+  // No `==` / `hashCode` override — see class doc (review #9). Identity
+  // equality ensures every transient notice is distinct, so Riverpod's
+  // StreamProvider does not dedup consecutive BufferOverflowNotice events.
 
   @override
   String toString() =>

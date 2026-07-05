@@ -77,22 +77,23 @@ void main() {
       expect(notice.emittedAt, t);
     });
 
-    test('instances with different emittedAt are not equal', () {
-      final a = BufferOverflowNotice(
-        emittedAt: DateTime.utc(2026, 7, 5, 12, 0),
-      );
-      final b = BufferOverflowNotice(
-        emittedAt: DateTime.utc(2026, 7, 5, 12, 1),
-      );
-      expect(a == b, isFalse);
-    });
-
-    test('instances with same emittedAt are equal', () {
+    test('instances are identity-equal only — no value dedup (#9)', () {
+      // Review #9: BufferOverflowNotice is a transient event, not a value
+      // object. Consecutive notices must NOT be ==, or Riverpod's
+      // StreamProvider dedups consecutive AsyncData and the second
+      // ref.listen (toast) is suppressed. Pre-fix == compared emittedAt,
+      // which collapsed same-millisecond (web) / same-microsecond (native)
+      // bursts into one toast. Identity equality guarantees every notice is
+      // distinct regardless of timestamp precision.
       final t = DateTime.utc(2026, 7, 5, 12, 0);
       final a = BufferOverflowNotice(emittedAt: t);
       final b = BufferOverflowNotice(emittedAt: t);
-      expect(a, equals(b));
-      expect(a.hashCode, b.hashCode);
+      expect(a == b, isFalse, reason: 'distinct instances must not be ==');
+      expect(a == a, isTrue, reason: 'identity self-equality');
+      final other = BufferOverflowNotice(
+        emittedAt: DateTime.utc(2026, 7, 5, 12, 1),
+      );
+      expect(a == other, isFalse);
     });
 
     test('toString includes emittedAt for diagnostics', () {
