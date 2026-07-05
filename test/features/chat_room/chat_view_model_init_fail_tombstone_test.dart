@@ -272,4 +272,40 @@ void main() {
     );
     vm.dispose();
   });
+
+  // #4: _init 在 agent==null（硬删除 / 从未创建）时不得静默早退——之前只
+  // log + return，state 永久停在 LoadInProgress（默认值），没有 retry 按钮，
+  // 也没有 closeRequested 把用户 pop 回上一页。send() 的 agent==null 分支早
+  // 就有 LoadError+closeRequested，init 没对齐。修复后 init 走同一出口
+  // （_rejectMissingAgent）。
+  test('init with missing agent (null) surfaces LoadError + closeRequested, '
+      'not stuck LoadInProgress (#4)', () async {
+    when(() => agentRepo.getById(_agentId)).thenAnswer((_) async => null);
+
+    final vm = createViewModel();
+    await vm.init();
+
+    // 不应停在 LoadInProgress —— 必须推 LoadError 让 UI 有可见状态。
+    expect(
+      vm.state.messages,
+      isA<LoadError>(),
+      reason:
+          'agent==null 时 init 必须推 LoadError，不能静默早退留在 '
+          'LoadInProgress（#4：之前无任何恢复入口）',
+    );
+    // closeRequested 让 chat_room_page 触发 smartBack 回上一页。
+    expect(
+      vm.state.closeRequested,
+      isTrue,
+      reason:
+          'agent==null 等价于已被删除，init 必须置 closeRequested 让用户 '
+          '被 pop 回上一页（与 send() 的 agent==null 分支对齐）',
+    );
+    expect(vm.agent, isNull, reason: 'setAgent(null) 已同步');
+
+    // agent 已不存在，重试无意义 —— _initFuture 不清，二次 init 返回缓存
+    // future，不重跑 getById。
+    await vm.init();
+    verify(() => agentRepo.getById(_agentId)).called(1);
+  });
 }

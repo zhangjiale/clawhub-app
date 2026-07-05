@@ -389,13 +389,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       final agent = await _agentRepo.getById(agentId);
       setAgent(agent);
       if (agent == null) {
-        _logger.error(
-          '[ChatViewModel] Agent not found: agentId=$agentId, '
-          'instanceId=$instanceId — chat unavailable.',
-        );
-        // Early return: without an agent, streaming/message routing is
-        // impossible (requires agentId for filtering).  The UI will show
-        // LoadError via [send()] if the user attempts to send.
+        // agent 行不存在（硬删除 / 从未创建）——推 LoadError + closeRequested
+        // 让 chat_room_page 立即 smartBack 回上一页，不静默早退（#4）。
+        _rejectMissingAgent();
         return;
       }
       // US-021: tombstoned agent 同样早退 —— 不订阅 stream、不创建 dangling
@@ -800,6 +796,34 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     );
   }
 
+  /// agent 行不存在（getById 返回 null —— 硬删除 / 从未创建）的统一出口。
+  ///
+  /// 与 [_rejectTombstonedSend] 对称：tombstone 是「远端软删」（行还在，
+  /// isRemoved=true），missing 是「本地行不存在」。两者都推 LoadError +
+  /// [ChatSessionState.closeRequested] 让 chat_room_page 触发 smartBack 回
+  /// 上一页。
+  ///
+  /// 不清 _initFuture、不调 _teardownSubscriptions：agent 已不在，重试只会
+  /// 再次拿到 null，重试入口对用户无意义。#4：之前 [_init] 在 agent==null 时
+  /// 静默早退（只 log + return），state 永久停在 LoadInProgress，无任何恢复
+  /// 入口；[send] 的 agent==null 分支早就有这套 LoadError+closeRequested，
+  /// init 没对齐。
+  void _rejectMissingAgent() {
+    _updateState(
+      (s) => s.copyWith(
+        messages: LoadError(
+          'Agent not found. '
+          'It may have been removed. Please go back and try again.',
+          StackTrace.current,
+        ),
+        closeRequested: true,
+      ),
+    );
+    _logger.error(
+      '[ChatViewModel] agent $agentId not found in instance $instanceId.',
+    );
+  }
+
   /// Send a text message.
   ///
   /// If [init] hasn't completed yet, awaits it first so the user's message
@@ -839,24 +863,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     await init();
 
     if (agent == null) {
-      _updateState(
-        (s) => s.copyWith(
-          messages: LoadError(
-            'Agent not found. '
-            'It may have been removed. Please go back and try again.',
-            StackTrace.current,
-          ),
-          // 与下方 tombstone 分支对齐:agent 不存在等价于已被删除
-          // (deleteByInstanceId 级联或从未存在),都该走 AC8 关闭信号。
-          // 文案保留"not found"措辞以区分 tombstone 的"has been removed",
-          // 但 closeRequested 触发逻辑统一。
-          closeRequested: true,
-        ),
-      );
-      _logger.error(
-        '[ChatViewModel] send() blocked: agent $agentId not found '
-        'in instance $instanceId.',
-      );
+      // init 的 agent==null 分支已推过 LoadError+closeRequested；这里是
+      // 安全网（init 未跑 / agent 在 init 后被清空），行为一致。
+      _rejectMissingAgent();
       return;
     }
 
