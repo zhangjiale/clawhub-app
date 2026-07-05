@@ -85,32 +85,29 @@ class Message {
   ///
   /// 仅当满足以下全部条件时返回 [content]：
   /// - 类型为 image/file；
-  /// - 无响应侧 URL（imageUrl/fileUrl 为 null），即不是 Agent 回图/回文件；
-  /// - [content] 非空；
-  /// - [content] 看起来像本地路径（含路径分隔符或以 `file://` 开头），
-  ///   避免把 Agent 的文本 caption 当成路径喂给 FileImage。
+  /// - 角色为 [MessageRole.user]（用户本地附件,非 Agent 回图/回文件）；
+  /// - 无响应侧 URL（imageUrl/fileUrl 为 null）,防御性二次校验；
+  /// - [content] 非空。
+  ///
+  /// 用 role 而非"content 是否像路径"做判别:Agent 文本 caption 可能含 `/`、`\`
+  /// 或 `file://`(URL、日期、路径示例),形状启发式会误判 → 把 caption 喂给
+  /// FileImage 导致破图。role 是身份判别,无歧义。
   String? get imagePath =>
       isImage &&
+          role == MessageRole.user &&
           imageUrl == null &&
           content != null &&
-          content!.isNotEmpty &&
-          _contentLooksLikeLocalPath(content!)
+          content!.isNotEmpty
       ? content
       : null;
   String? get filePath =>
       isFile &&
+          role == MessageRole.user &&
           fileUrl == null &&
           content != null &&
-          content!.isNotEmpty &&
-          _contentLooksLikeLocalPath(content!)
+          content!.isNotEmpty
       ? content
       : null;
-
-  static bool _contentLooksLikeLocalPath(String value) {
-    return value.startsWith('file://') ||
-        value.contains('/') ||
-        value.contains(r'\');
-  }
 
   /// 附件文件名 / MIME 类型 / 字节数 / 图片说明（均从 metadata 读取）。
   String? get fileName => metadata?['fileName'] as String?;

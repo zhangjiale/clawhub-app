@@ -251,6 +251,40 @@ void main() {
         expect(agentFileWithCaption.filePath, isNull);
       });
 
+      test('imagePath 不把含路径分隔符的 Agent caption 当成本地路径', () {
+        // 回归:启发式 _contentLooksLikeLocalPath 会因含 '/' 误判为本地路径,
+        // 把 Agent 的文本 caption 喂给 FileImage → 破图。改用 role==user 判别。
+        final agentImageWithSlash = Message(
+          clientId: 'c-agent-img-slash',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.agent,
+          content: '生成于 2026/07/05,见图 https://ex.com/p.png',
+          type: MessageType.image,
+          logicalClock: 1,
+          // No imageUrl: mimics an unrecognized image block shape from Gateway.
+        );
+
+        expect(agentImageWithSlash.imageUrl, isNull);
+        expect(agentImageWithSlash.imagePath, isNull);
+      });
+
+      test('filePath 不把含路径分隔符的 Agent 说明当成本地路径', () {
+        final agentFileWithSlash = Message(
+          clientId: 'c-agent-file-slash',
+          conversationId: 'conv-001',
+          agentId: 'agent-local-1',
+          role: MessageRole.agent,
+          content: '报告归档于 docs/2026/q3 见 https://ex.com/r.pdf',
+          type: MessageType.file,
+          logicalClock: 1,
+          // No fileUrl: mimics a file reply that carries a text caption.
+        );
+
+        expect(agentFileWithSlash.fileUrl, isNull);
+        expect(agentFileWithSlash.filePath, isNull);
+      });
+
       test('fileUrl 用于 Agent 回文件(响应侧)', () {
         final agentFile = Message(
           clientId: 'c-agent-file',
