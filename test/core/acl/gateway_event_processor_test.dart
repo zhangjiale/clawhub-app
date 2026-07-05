@@ -288,6 +288,97 @@ void main() {
       expect(tools.first.status, ToolCallStatus.success);
     });
 
+    // Review #3: tool result must extract event.data['output'], not stringify
+    // the whole data map. Pre-fix outputResult was event.data.toString() →
+    // "{toolCallId: tc-1, name: search, phase: result, output: {hits: 3}}",
+    // surfacing the wrapper keys (toolCallId/name/phase) to the ToolCallCard.
+    test(
+      'agent.tool result extracts output field, not whole data map (#3)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final tools = <ToolCall>[];
+        conn.toolCallCtrl.stream.listen(tools.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'tool',
+              'data': {
+                'phase': 'result',
+                'toolCallId': 'tc-1',
+                'name': 'search',
+                'output': {'hits': 3},
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(tools, hasLength(1));
+        expect(tools.first.id, 'tc-1');
+        expect(tools.first.toolName, 'search');
+        expect(
+          tools.first.outputResult,
+          '{"hits":3}',
+          reason:
+              'outputResult should be the JSON-encoded `output` field, not the '
+              'whole data map (which leaks toolCallId/name/phase to the card)',
+        );
+      },
+    );
+
+    // String outputs are preserved verbatim (not double-encoded).
+    test(
+      'agent.tool result with string output keeps it verbatim (#3)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final tools = <ToolCall>[];
+        conn.toolCallCtrl.stream.listen(tools.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'tool',
+              'data': {
+                'phase': 'result',
+                'toolCallId': 'tc-2',
+                'name': 'echo',
+                'output': 'pong',
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(tools, hasLength(1));
+        expect(
+          tools.first.outputResult,
+          'pong',
+          reason:
+              'string output must be stored verbatim, not jsonEncode-d to '
+              '"pong" with quotes',
+        );
+      },
+    );
+
     // Review #1 (Option C): lifecycle.end fallback message must also carry the
     // sessionKey tag (v3 Gateway path that never sends chat.final).
     test(
@@ -743,6 +834,90 @@ void main() {
         expect(messages.last.content, 'turn2');
       },
     );
+  });
+
+  group('no-runId aborted-turn buffer clearing (#2)', () {
+    // Review #2: registerSend on the no-runId path must also clear the
+    // streaming buffer + delta-source lock. An aborted prior turn (delta
+    // arrived, no chat.final / lifecycle.end) leaves a non-empty buffer that
+    // the next turn's deltas append to (stale_turn1 + turn2 corruption).
+    // With runId, _resetTurnForSession handles this; the no-runId else-branch
+    // previously only cleared _finalizedSessions.
+    test('registerSend (no runId) clears stale buffer so next turn is not '
+        'corrupted with prior-turn text', () async {
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+        // no runId — simulates an old Gateway, _resetTurnForSession skipped
+      );
+
+      final messages = <Message>[];
+      conn.messageCtrl.stream.listen(messages.add);
+
+      // Turn 1: chat.delta accumulates 'turn1' into the buffer.
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'state': 'delta',
+            'deltaText': 'turn1',
+          },
+        ),
+      );
+
+      // Turn 1 is ABORTED — no chat.final, no lifecycle.end. The buffer
+      // retains 'turn1'.
+
+      // Turn 2: user sends again → registerSend (no runId).
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+
+      // Turn 2: chat.delta 'turn2' + lifecycle.end (v3 fallback consumes
+      // the buffer). Pre-fix: buffer = 'turn1' + 'turn2' → fallback message
+      // 'turn1turn2'. Post-fix: registerSend cleared the buffer → 'turn2'.
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'state': 'delta',
+            'deltaText': 'turn2',
+          },
+        ),
+      );
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'agent',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'stream': 'lifecycle',
+            'data': {'phase': 'end'},
+          },
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(messages, hasLength(1));
+      expect(
+        messages.first.content,
+        'turn2',
+        reason:
+            'registerSend (no runId) must clear the stale prior-turn '
+            'buffer — pre-fix the aborted turn-1 text "turn1" was prepended '
+            'to turn-2 ("turn1turn2"), corrupting the reply',
+      );
+    });
   });
 
   group('streaming buffer GC (aging)', () {

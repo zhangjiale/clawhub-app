@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../../domain/models/enums.dart';
+import '../../domain/utils/format_bytes.dart';
 
 /// Typed exception for attachment (image/file) read failures in the ACL.
 ///
@@ -23,14 +24,19 @@ class AttachmentReadException implements Exception {
   AttachmentReadException(this.reason, {this.path, this.cause});
 
   /// File size exceeds the inline-attachment limit.
+  ///
+  /// Sizes are formatted via [formatBytes] (one-decimal B/KB/MB). Pre-fix the
+  /// inline `${size ~/ 1024 ~/ 1024}MB` floored both size and limit to integer
+  /// MB, so a 5.5 MB file over a 5.0 MB limit rendered as the contradictory
+  /// "5MB > 5MB limit", and sub-MB sizes collapsed to "0MB" (review #14).
   factory AttachmentReadException.tooLarge({
     required int size,
     required int limit,
     required MessageType type,
   }) {
     return AttachmentReadException(
-      'Attachment too large (${size ~/ 1024 ~/ 1024}MB > '
-      '${limit ~/ 1024 ~/ 1024}MB limit for $type; see appendix F.6 — '
+      'Attachment too large (${formatBytes(size)} > '
+      '${formatBytes(limit)} limit for $type; see appendix F.6 — '
       'use OSS URL for large files)',
     );
   }

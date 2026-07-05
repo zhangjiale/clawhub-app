@@ -81,4 +81,44 @@ void main() {
       );
     });
   });
+
+  group('AttachmentReadException.tooLarge formatting (#14)', () {
+    // Review #14: the inline `${size ~/ 1024 ~/ 1024}MB` floored both size and
+    // limit to integer MB, so a 5.5 MB file over a 5.0 MB limit rendered as
+    // "5MB > 5MB limit" (contradictory). formatBytes preserves one decimal
+    // and handles KB, so the message now reads "5.5 MB > 5.0 MB limit".
+    test('MB-range sizes format with one decimal (no integer-MB collapse)', () {
+      final exc = AttachmentReadException.tooLarge(
+        size: 5767168, // 5.5 MB
+        limit: 5242880, // 5.0 MB
+        type: MessageType.file,
+      );
+      final msg = exc.toString();
+      expect(msg, contains('5.5 MB'));
+      expect(msg, contains('5.0 MB'));
+      expect(
+        msg,
+        isNot(contains('5MB > 5MB')),
+        reason:
+            'double ~/ must not collapse size and limit to the same '
+            'integer MB — that reads as "5MB > 5MB" (contradictory)',
+      );
+    });
+
+    test('sub-MB sizes format as KB (previously 999KB → "0MB")', () {
+      final exc = AttachmentReadException.tooLarge(
+        size: 999 * 1024, // 999.0 KB
+        limit: 500 * 1024, // 500.0 KB
+        type: MessageType.image,
+      );
+      final msg = exc.toString();
+      expect(msg, contains('999.0 KB'));
+      expect(msg, contains('500.0 KB'));
+      expect(
+        msg,
+        isNot(contains('0MB')),
+        reason: 'sub-MB sizes must show KB, not floor to "0MB"',
+      );
+    });
+  });
 }

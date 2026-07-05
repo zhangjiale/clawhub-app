@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:uuid/uuid.dart';
 
 import '../../domain/models/models.dart';
@@ -146,7 +148,19 @@ class GatewayEventProcessor {
     if (runId != null) {
       _resetTurnForSession(bufferKey, runId);
     } else {
+      // Review #2: clear the streaming buffer + delta-source lock too. An
+      // aborted prior turn (delta arrived, no chat.final / lifecycle.end)
+      // leaves a non-empty buffer that this turn's deltas append to
+      // (stale_turn1 + turn2 corruption), and a delta-source lock that
+      // drops this turn's cross-source deltas. Safe because registerSend
+      // fires on the chat.send response — before any of this turn's deltas
+      // arrive — so clearing here only drops the prior turn's residue.
+      // _activeRunIdBySession is runId-specific and never populated on the
+      // no-runId path, so it is left untouched (preserves the documented
+      // no-runId degradation; see _applyRunId).
       _finalizedSessions.remove(bufferKey);
+      _streamingBuffers.remove(bufferKey);
+      _deltaSource.remove(bufferKey);
     }
 
     // Periodic GC: age out abandoned streaming buffers (mid-stream turns
@@ -422,12 +436,22 @@ class GatewayEventProcessor {
           // tool 结束 — 发出带结果的 ToolCall
           if (!conn.toolCallCtrl.isClosed) {
             try {
+              // Review #3: extract event.data['output'] rather than stringifying
+              // the whole data map — pre-fix the ToolCallCard rendered the
+              // wrapper keys (toolCallId/name/phase) as the result text.
+              // Strings stay verbatim (not double-encoded); structured output
+              // (Map/List/num/bool) is JSON-encoded to match the
+              // `outputResult` "JSON 格式输出结果" contract on [ToolCall].
+              final rawOutput = event.data['output'];
+              final outputResult = rawOutput is String
+                  ? rawOutput
+                  : (rawOutput == null ? null : jsonEncode(rawOutput));
               final tc = ToolCall(
                 id: event.data['toolCallId'] as String? ?? _uuid.v4(),
                 messageId: event.sessionKey,
                 toolName: event.data['name'] as String? ?? 'unknown',
                 status: ToolCallStatus.success,
-                outputResult: event.data.toString(),
+                outputResult: outputResult,
                 endedAt: DateTime.now().millisecondsSinceEpoch,
               );
               conn.toolCallCtrl.add(tc);
