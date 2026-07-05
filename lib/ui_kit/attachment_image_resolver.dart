@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart';
 
 /// Resolves a message attachment's image source to an [ImageProvider].
 ///
@@ -72,7 +72,17 @@ int _dataUrlImageCacheBytes = 0;
 /// - base64 path: [base64Decode] the payload → [MemoryImage].
 /// - non-base64 path: parse via [Uri.dataFromString] → [MemoryImage].
 /// - corrupt input: return [MemoryImage] with empty bytes (errorBuilder path).
+/// Total retained bytes for one cache entry: the data: URL string key (the
+/// [Map] retains it as a Dart String) plus the decoded [Uint8List]. Both must
+/// be counted — otherwise the budget under-counts actual retention ~2.3×
+/// (a 5MB image is ~6.7MB base64 string + 5MB bytes ≈ 11.7MB, not 5MB)
+/// (review #11).
+int _dataUrlEntryBytes(String dataUrl, int decodedBytes) =>
+    dataUrl.length + decodedBytes;
+
 MemoryImage _dataUrlToImageProvider(String dataUrl) {
+  _DataUrlImageCacheMemoryObserver.ensureRegistered();
+
   final cached = _dataUrlImageCache[dataUrl];
   if (cached != null) {
     // LRU refresh: move to most-recently-used so the entry survives eviction.
@@ -82,32 +92,66 @@ MemoryImage _dataUrlToImageProvider(String dataUrl) {
   }
 
   final provider = _decodeDataUrl(dataUrl);
-  final bytes = provider.bytes.length;
+  final decodedBytes = provider.bytes.length;
 
   // Do not cache giant single entries; just return the decoded provider.
-  if (bytes > _dataUrlImageCacheMaxEntryBytes) {
+  if (decodedBytes > _dataUrlImageCacheMaxEntryBytes) {
     return provider;
   }
 
+  final entryBytes = _dataUrlEntryBytes(dataUrl, decodedBytes);
+
   // Evict LRU entries until the new entry fits under the total byte budget.
-  while (_dataUrlImageCacheBytes + bytes > _dataUrlImageCacheMaxBytes &&
+  while (_dataUrlImageCacheBytes + entryBytes > _dataUrlImageCacheMaxBytes &&
       _dataUrlImageCache.isNotEmpty) {
     final oldestKey = _dataUrlImageCache.keys.first;
     final oldest = _dataUrlImageCache.remove(oldestKey)!;
-    _dataUrlImageCacheBytes -= oldest.bytes.length;
+    _dataUrlImageCacheBytes -= _dataUrlEntryBytes(
+      oldestKey,
+      oldest.bytes.length,
+    );
   }
 
   _dataUrlImageCache[dataUrl] = provider;
-  _dataUrlImageCacheBytes += bytes;
+  _dataUrlImageCacheBytes += entryBytes;
 
   // Keep the legacy entry-count cap as a secondary guard.
   while (_dataUrlImageCache.length > _dataUrlImageCacheLimit) {
     final oldestKey = _dataUrlImageCache.keys.first;
     final oldest = _dataUrlImageCache.remove(oldestKey)!;
-    _dataUrlImageCacheBytes -= oldest.bytes.length;
+    _dataUrlImageCacheBytes -= _dataUrlEntryBytes(
+      oldestKey,
+      oldest.bytes.length,
+    );
   }
 
   return provider;
+}
+
+/// Clears the data: URL image cache when the OS signals memory pressure
+/// (backgrounding / low-memory), so inline Agent images don't pin MB-scale
+/// decoded bytes until LRU eviction (review #11). The cache is process-global
+/// (module-level), so the observer is registered once on first cache use and
+/// lives for the app's lifetime — it does not need to be removed.
+class _DataUrlImageCacheMemoryObserver extends WidgetsBindingObserver {
+  _DataUrlImageCacheMemoryObserver._();
+  static _DataUrlImageCacheMemoryObserver? _instance;
+  static bool _registered = false;
+
+  /// Idempotently registers this observer with the [WidgetsBinding]. Safe to
+  /// call on every cache insertion; only the first call has effect.
+  static void ensureRegistered() {
+    if (_registered) return;
+    _instance ??= _DataUrlImageCacheMemoryObserver._();
+    WidgetsBinding.instance.addObserver(_instance!);
+    _registered = true;
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    _dataUrlImageCache.clear();
+    _dataUrlImageCacheBytes = 0;
+  }
 }
 
 /// Test-only hook: clears the data: URL image cache and resets the byte counter.
@@ -120,6 +164,10 @@ void resetDataUrlImageCacheForTesting() {
 /// Test-only hook: current total bytes retained in the data: URL image cache.
 @visibleForTesting
 int get dataUrlImageCacheBytesForTesting => _dataUrlImageCacheBytes;
+
+/// Test-only hook: number of entries currently in the data: URL image cache.
+@visibleForTesting
+int get dataUrlImageCacheLengthForTesting => _dataUrlImageCache.length;
 
 MemoryImage _decodeDataUrl(String dataUrl) {
   final comma = dataUrl.indexOf(',');

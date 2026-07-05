@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:claw_hub/ui_kit/attachment_image_resolver.dart';
-import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Unit tests for [resolveAttachmentImage].
@@ -12,6 +12,8 @@ import 'package:flutter_test/flutter_test.dart';
 /// This file was created BEFORE its source counterpart (`attachment_image_resolver.dart`)
 /// to satisfy the RED→GREEN flow.
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('resolveAttachmentImage', () {
     test('data: URL with valid base64 → MemoryImage', () {
       // 1×1 transparent PNG, well-known base64.
@@ -197,6 +199,56 @@ void main() {
         // The most-recently-used entry must still be cached.
         final lastProvider = resolveAttachmentImage(imageUrl: urls.last);
         expect(lastProvider, isA<MemoryImage>());
+      });
+
+      test(
+        'byte budget counts the data: URL string key + decoded bytes (review #11)',
+        () {
+          // The cache retains BOTH the data: URL string (Map key) and the
+          // decoded Uint8List (MemoryImage value). The budget must account
+          // for both, not just the decoded bytes — otherwise actual retention
+          // is ~2.3× the nominal 8MB cap.
+          const payload =
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+          const dataUrl = 'data:image/png;base64,$payload';
+          final decodedBytes = base64Decode(payload);
+
+          resolveAttachmentImage(imageUrl: dataUrl);
+
+          expect(
+            dataUrlImageCacheBytesForTesting,
+            dataUrl.length + decodedBytes.length,
+            reason:
+                'budget must include the data: URL string key length plus '
+                'the decoded Uint8List length',
+          );
+        },
+      );
+
+      test('memory pressure clears the data: URL cache (review #11)', () {
+        // The OS signals memory pressure (backgrounding, low-memory). The
+        // cache must release its MB-scale decoded bytes via a
+        // WidgetsBindingObserver.didHaveMemoryPressure handler, not pin them
+        // until LRU eviction.
+        const dataUrl =
+            'data:image/png;base64,'
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+P///38GAwACvAEB1YwAAAAASUVORK5CYII=';
+        resolveAttachmentImage(imageUrl: dataUrl);
+        expect(dataUrlImageCacheBytesForTesting, greaterThan(0));
+        expect(dataUrlImageCacheLengthForTesting, 1);
+
+        WidgetsBinding.instance.handleMemoryPressure();
+
+        expect(
+          dataUrlImageCacheBytesForTesting,
+          0,
+          reason: 'memory pressure must clear cached bytes',
+        );
+        expect(
+          dataUrlImageCacheLengthForTesting,
+          0,
+          reason: 'memory pressure must empty the cache map',
+        );
       });
     });
   });
