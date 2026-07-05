@@ -275,6 +275,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   @visibleForTesting
   final Duration flushDelay;
 
+  /// Configurable overall-response timeout — the hard ceiling that fires
+  /// regardless of delta activity, preventing a trickling gateway (one char
+  /// every <60s, which keeps resetting [_timeoutTimer]) from keeping the user
+  /// waiting indefinitely. Defaults to 120s; tests inject a small value to
+  /// exercise the timer in real async (mirrors [flushDelay]).
+  @visibleForTesting
+  final Duration overallTimeoutDelay;
+
   /// Cached future for [init] so [send] can await initialization if the
   /// user sends a message before [init] completes.
   Future<void>? _initFuture;
@@ -331,6 +339,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     required this.instanceId,
     required this.agentId,
     this.flushDelay = const Duration(milliseconds: 150),
+    this.overallTimeoutDelay = const Duration(seconds: 120),
     ILogger? logger,
   }) : _logger = logger ?? const DebugPrintLogger(),
        super(const ChatSessionState());
@@ -508,6 +517,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               _streaming.onConnectionLost();
               _timeoutTimer?.cancel();
               _timeoutTimer = null;
+              // Review #4: cancel the overall timer too — it is armed on
+              // [send], not on first delta, so without this it keeps running
+              // after a mid-stream disconnect and pops a "timeout" banner on
+              // an already-offline page (no delta will ever arrive). Mirrors
+              // [_onStreamError], which cancels both timers on stream error.
+              _overallTimeoutTimer?.cancel();
+              _overallTimeoutTimer = null;
             }
             // Post-sync reload is driven by catchUpCompletedTickerProvider
             // (wired in chatViewModelProvider), which fires AFTER
@@ -598,6 +614,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
                 '${fixedMsg.clientId}: $error',
                 stackTrace,
               );
+              // Review #6: if the agent reply itself failed to persist, stop
+              // the thinking spinner + clear streaming text — pre-fix the
+              // listener returned here and the spinner spun until the 60s/
+              // 120s timer, misleading (the reply did arrive, it just could
+              // not be saved). Mirrors the normal agent-reply path
+              // (onReplyArrived + _stopThinking below).
+              if (fixedMsg.role == MessageRole.agent) {
+                _streaming.onReplyArrived();
+                _stopThinking();
+              }
               return;
             }
             // 同步会话预览 —— 让消息中心展示「真正的最后一条消息」。
@@ -925,10 +951,7 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       // a Gateway that trickles one char every 59s from keeping the user
       // waiting indefinitely.  Longer than the per-delta 60s timer because
       // it never resets: it covers the entire request lifecycle.
-      _overallTimeoutTimer?.cancel();
-      _overallTimeoutTimer = Timer(const Duration(seconds: 120), () {
-        _updateState((s) => s.copyWith(thinkingState: ThinkingState.timeout));
-      });
+      _armOverallTimeout();
     }
 
     // outbox 计数由 _outboxCountSubscription 自动驱动，无需在此手动刷新。
@@ -945,9 +968,15 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _stopThinking();
   }
 
-  /// Continue waiting — dismiss the timeout banner and restart the timer.
+  /// Continue waiting — dismiss the timeout banner and restart both timers.
+  ///
+  /// Re-arms [_overallTimeoutTimer] (review #11) so the documented "no
+  /// indefinite trickle" invariant survives a user-dismissed timeout. Pre-fix
+  /// this only re-armed the 60s per-delta timer via [_startThinking], so a
+  /// trickling gateway could keep the user waiting forever after one dismiss.
   void continueWaiting() {
     _startThinking();
+    _armOverallTimeout();
   }
 
   /// delta 到达时由 [_streaming] 回调 —— 重新 arm 60s 活动 _timeoutTimer
@@ -978,6 +1007,18 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _timeoutTimer?.cancel();
     _overallTimeoutTimer?.cancel();
     _updateState((s) => s.copyWith(thinkingState: ThinkingState.idle));
+  }
+
+  /// (Re-)arm the overall-response timeout ([_overallTimeoutTimer]).
+  ///
+  /// Extracted from [_sendCore] so [continueWaiting] can re-arm it after a
+  /// user-dismissed timeout (review #11). Cancels any prior instance first
+  /// to avoid stacking callbacks.
+  void _armOverallTimeout() {
+    _overallTimeoutTimer?.cancel();
+    _overallTimeoutTimer = Timer(overallTimeoutDelay, () {
+      _updateState((s) => s.copyWith(thinkingState: ThinkingState.timeout));
+    });
   }
 
   /// Reload messages from the repository and push to the notifier.
@@ -1013,6 +1054,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   ///
   /// toolCall 过滤由上游 [PreviewUpdater.schedule] 统一承担（它是本方法唯一
   /// 调用方，经 `onFlush` 回调进入），故此处不再重复 guard。
+  /// Tolerance for the preview future-skew guard (review #10). A message
+  /// timestamp more than this far ahead of the client clock is treated as
+  /// server clock skew (catch-up replay) and does not advance
+  /// [Conversation.lastMessageTime]. 5 min accommodates real NTP drift
+  /// while catching the +N-minute skew from catch-up replays.
+  static const int _previewClockSkewToleranceMs = 5 * 60 * 1000;
+
   Future<void> _updateConversationPreview(Message message) async {
     try {
       // 护栏：乱序/重发旧消息不得回卷 lastMessageTime。
@@ -1020,6 +1068,19 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       if (current != null &&
           message.timestamp < current.lastMessageTime &&
           message.clientId != current.lastMessageId) {
+        return;
+      }
+
+      // Review #10: future-skew guard. A catch-up replay with a server clock
+      // ahead of the client passes the rewind guard above (its timestamp is
+      // greater than lastMessageTime) and would push lastMessageTime into
+      // the future, freezing the conversation-list preview until a real-time
+      // message with an even-larger timestamp arrives. A real message cannot
+      // arrive from the future; a timestamp beyond now + tolerance is clock
+      // skew — skip the preview update (the message still renders, driven by
+      // logicalClock).
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (message.timestamp > now + _previewClockSkewToleranceMs) {
         return;
       }
 
