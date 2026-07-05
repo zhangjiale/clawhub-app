@@ -175,6 +175,56 @@ void main() {
       expect(msg.status, MessageStatus.delivered);
     });
 
+    // ----- regression #1: toolResult must NOT fall through to user role. -----
+    // Before the fix, 'toolResult' / 'tool_result' / 'toolCall' / 'tool_call' all
+    // returned MessageRole.user because the switch had no case for them. UI then
+    // rendered the tool output (e.g. `ls -la`) as a yellow user-side bubble,
+    // which is the bug reported against the openclaw-android client.
+    test('toolResult role maps to MessageRole.toolResult (NOT user)', () {
+      final msg = mapper.parseMessage({
+        'role': 'toolResult',
+        'content': '-rw-r--r-- 1 root root 17125 ...',
+      });
+      expect(msg.role, MessageRole.toolResult);
+      expect(msg.content, '-rw-r--r-- 1 root root 17125 ...');
+    });
+    test('tool_result / toolCall / tool_call aliases all map to toolResult', () {
+      for (final alias in ['tool_result', 'toolCall', 'tool_call']) {
+        final msg = mapper.parseMessage({'role': alias, 'content': 'x'});
+        expect(
+          msg.role,
+          MessageRole.toolResult,
+          reason: 'alias "$alias" should map to toolResult',
+        );
+      }
+    });
+
+    // ----- regression #2: user-upload placeholder must be reclassified. -----
+    // OpenClaw inserts a user message whose body is the fixed placeholder
+    // '[User sent media without caption]' when the user uploads a file. It is
+    // role=user on the wire but semantically is NOT a user-typed input — it
+    // should not occupy a user bubble in the chat view.
+    test('user-role message whose body is the media placeholder is reclassified', () {
+      final msg = mapper.parseMessage({
+        'role': 'user',
+        'content': '[User sent media without caption]',
+      });
+      expect(msg.role, MessageRole.userPlaceholder);
+    });
+    test('user-role message with non-placeholder content remains user', () {
+      final msg = mapper.parseMessage({'role': 'user', 'content': '你好'});
+      expect(msg.role, MessageRole.user);
+    });
+    test('userPlaceholder handles string AND structured content blocks', () {
+      final asBlocks = mapper.parseMessage({
+        'role': 'user',
+        'content': [
+          {'type': 'text', 'text': '[User sent media without caption]'},
+        ],
+      });
+      expect(asBlocks.role, MessageRole.userPlaceholder);
+    });
+
     test('seconds-scale timestamp is normalized to milliseconds', () {
       final msg = mapper.parseMessage({
         'role': 'agent',

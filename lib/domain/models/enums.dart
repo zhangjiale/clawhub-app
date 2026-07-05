@@ -53,10 +53,20 @@ enum HealthStatus {
 }
 
 /// 消息角色
+///
+/// 范围意图:
+/// - [user] 用户真实文本输入(右气泡,资产:AgentTheme.primary + 白字)
+/// - [agent] bot 助手回复(左气泡,资产:sapphire / surface2)
+/// - [system] 系统消息(不渲染气泡,通常折叠成 banner / 折叠卡)
+/// - [toolResult] Gateway 工具调用的输出(不渲染气泡,折叠成「⌨ exec · 0.02s」)
+/// - [userPlaceholder] OpenClaw 上传文件时自动插入的占位 user message(不渲染气泡,
+///   折叠成「📎 1 个文件已上传」)
 enum MessageRole {
   user(0),
   agent(1),
-  system(2);
+  system(2),
+  toolResult(3),
+  userPlaceholder(4);
 
   const MessageRole(this.value);
   final int value;
@@ -64,7 +74,10 @@ enum MessageRole {
   static MessageRole fromInt(int value) {
     return MessageRole.values.firstWhere(
       (s) => s.value == value,
-      orElse: () => throw ArgumentError('Invalid MessageRole value: $value'),
+      // 未知值兜底为 system 而不是抛错:防止老 DB 行 / 旧版本写入被读崩,且不会让
+      // 不被识别的 role 误渲成 user 气泡(原来 throw 之外的默认值是 user,
+      // 这正是本 fix 要堵的口)。
+      orElse: () => MessageRole.system,
     );
   }
 

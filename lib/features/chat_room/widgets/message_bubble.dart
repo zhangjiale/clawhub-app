@@ -13,10 +13,12 @@ import 'message_file_content.dart';
 
 /// Message bubble — matching V2 ComponentSpec Section 4.2.2.
 ///
-/// User: sapphire bg (#4F83FF), white text, right-aligned, 14px radius with
-///       4px bottom-right corner (speech tail).
-/// Agent: surface2 bg, text1, left-aligned, 14px radius with
-///        4px bottom-left corner, hairline border (no shadow).
+/// 渲染优先级（按 [message.role] 分支):
+/// - [MessageRole.user] (真实文本输入): sapphire 右气泡，白字，14px 圆角带右下角 tail
+/// - [MessageRole.agent]: surface2 左气泡，text1，14px 圆角带左下角 tail + hairline border
+/// - [MessageRole.userPlaceholder]: OpenClaw 上传占位 → 居中折叠小条（📎 1 个文件已上传）
+/// - [MessageRole.toolResult]: 工具调用输出 → 居中折叠卡（⌨ exec · 0.02s）
+/// - [MessageRole.system]: 不渲染（让位上游 banner）
 ///
 /// **Animation (B3)**: 250ms opacity(0→1) + translateY(10px→0) enter
 /// animation via [StaggeredEnterItem] based on [index].
@@ -37,6 +39,9 @@ class MessageBubble extends StatelessWidget {
   });
 
   bool get _isUser => message.role == MessageRole.user;
+  bool get _isUserPlaceholder => message.role == MessageRole.userPlaceholder;
+  bool get _isToolResult => message.role == MessageRole.toolResult;
+  bool get _isSystem => message.role == MessageRole.system;
 
   /// 失败消息且 [onRetry] 可用时，渲染可点击的"状态图标 + 重试"组合；
   /// 否则渲染普通 [StatusIcon]。
@@ -66,6 +71,12 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 非气泡类消息(userPlaceholder / toolResult / system)在上层
+    // ListView 的 item 高度需要脉冲 — 均由 _buildMessageList 负责空尺寸。
+    if (_isUserPlaceholder) return _buildPlaceholder(context);
+    if (_isToolResult) return _buildToolResult(context);
+    if (_isSystem) return const SizedBox.shrink();
+
     return StaggeredEnterItem(
       index: index,
       child: Padding(
@@ -143,6 +154,133 @@ class MessageBubble extends StatelessWidget {
             ),
             if (_isUser) ...[const SizedBox(width: 4), _buildStatusIndicator()],
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 用户上传文件占位（role=userPlaceholder,占位文本固定为 OpenClaw
+  /// 拼接的「[User sent media without caption]」）— 折叠为居中淡灰小条，
+  /// 不占用户气泡。metadata.mediaPaths 中携带具体文件清单，按份数染上
+  /// 「📎 N 个文件已上传」之类的提示文案。
+  Widget _buildPlaceholder(BuildContext context) {
+    final rawPaths = message.metadata?['mediaPaths'];
+    final fileCount = (rawPaths is List) ? rawPaths.length : 1;
+    final label = fileCount > 1
+        ? '📎 $fileCount 个文件已上传'
+        : '📎 文件已上传';
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.pagePaddingH,
+        vertical: 6,
+      ),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: XiaSpacing.s3,
+            vertical: 4,
+          ),
+          decoration: BoxDecoration(
+            color: XiaColors.surface2,
+            borderRadius: BorderRadius.circular(XiaRadius.lg),
+          ),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: XiaColors.text3,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 工具调用输出（role=toolResult,例如 atlas 跑 `ls / wc` 后的多行输出）
+  /// — 折叠为居中淡紫边的折叠卡。用户可点开查看完整输出。
+  Widget _buildToolResult(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: XiaSpacing.pagePaddingH,
+        vertical: 4,
+      ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.86,
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              color: XiaColors.surface,
+              borderRadius: BorderRadius.circular(XiaRadius.md),
+              border: const Border(
+                left: BorderSide(color: XiaColors.accent2, width: 2),
+              ),
+            ),
+            child: Theme(
+              // 去掉 ExpansionTile 默认的点击水波 + 惨怏高亮，保持低调。
+              data: Theme.of(context).copyWith(
+                splashFactory: NoSplash.splashFactory,
+                highlightColor: Colors.transparent,
+              ),
+              child: ExpansionTile(
+                tilePadding: const EdgeInsets.symmetric(
+                  horizontal: XiaSpacing.s4,
+                  vertical: 0,
+                ),
+                childrenPadding: const EdgeInsets.only(
+                  left: XiaSpacing.s4,
+                  right: XiaSpacing.s4,
+                  bottom: XiaSpacing.s3,
+                ),
+                leading: const Icon(
+                  Icons.terminal,
+                  size: 16,
+                  color: XiaColors.accent2,
+                ),
+                title: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      message.metadata?['toolName']?.toString() ?? 'tool',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: XiaColors.accent2,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _formatTime(message.timestamp),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: XiaColors.text4,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(XiaSpacing.s2),
+                    decoration: BoxDecoration(
+                      color: XiaColors.bg,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      message.content ?? '',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        color: XiaColors.text1,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

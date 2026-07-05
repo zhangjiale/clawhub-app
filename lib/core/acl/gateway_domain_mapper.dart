@@ -85,7 +85,11 @@ class GatewayDomainMapper {
 
   /// 解析入站或历史 [Message] JSON。
   Message parseMessage(Map<String, dynamic> json) {
-    final role = _parseMessageRole(json['role'] as String?);
+    // 注意顺序:必须先抽到 textContent 才能识别 user 上传文件占位,否则
+    // _parseMessageRole 拿不到 content 也识别不出来。
+    final rawText =
+        extractTextContent(json['content']) ?? extractTextContent(json['text']);
+    final role = _parseMessageRole(json['role'] as String?, content: rawText);
     // Bug #2 (重启错乱): 时间戳归一化为毫秒。Gateway 历史可能用秒级时间戳
     // (doc §5.4 示意图: 1718000000)；与本地消息(DateTime.now().ms, ~1.7e12)
     // 不同量级会导致软匹配 ±60s 永不命中 + 排序错乱。< 1e12 视为秒级(1e12 ms
@@ -95,8 +99,7 @@ class GatewayDomainMapper {
     // block,提升 type=image,把 imageUrl 写入 metadata。content 保留文本(作为
     // 图片说明);imagePath getter 靠 imageUrl==null 区分用户本地图 vs Agent 回图,
     // 故无需 null content。详见 extractImageRef。
-    final textContent =
-        extractTextContent(json['content']) ?? extractTextContent(json['text']);
+    final textContent = rawText;
     final imageRef =
         extractImageRef(json['content']) ?? extractImageRef(json['text']);
     final parsedType = _parseMessageType(json['type'] as String?);
@@ -164,7 +167,23 @@ class GatewayDomainMapper {
     return value < 1000000000000 ? value * 1000 : value;
   }
 
-  MessageRole _parseMessageRole(String? role) {
+  MessageRole _parseMessageRole(String? role, {String? content}) {
+    // 工具调用结果:不归到 user,归到独立 role.MessageBubble 按 role 分支渲染
+    // 折叠卡 (⌨ exec · 0.02s),而不再画成「用户发的」黄色右气泡 —— 即
+    // 用户在 openclaw-android 客户端反馈的「图 3」bug 修复点。
+    if (role == 'toolResult' ||
+        role == 'tool_result' ||
+        role == 'toolCall' ||
+        role == 'tool_call') {
+      return MessageRole.toolResult;
+    }
+    // 用户上传文件时,OpenClaw 协议自动插入一条 user message,但 body 是固定的
+    // 占位文本,从语义上「不是用户打字的输入」,不该占 user 气泡。在 ACL 层
+    // 识别出来归到 userPlaceholder,UI 折叠成「📎 1 个文件已上传」小条。
+    const mediaPlaceholder = '[User sent media without caption]';
+    if (role == 'user' && content == mediaPlaceholder) {
+      return MessageRole.userPlaceholder;
+    }
     return switch (role) {
       'agent' || 'assistant' => MessageRole.agent,
       'system' => MessageRole.system,

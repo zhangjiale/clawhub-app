@@ -94,5 +94,73 @@ void main() {
       await tester.pumpWidget(buildBubble(fileMsg));
       expect(find.text('[文件]'), findsOneWidget);
     });
+
+    // ───── regression: chat history 把 toolResult / userPlaceholder 误分类为 user 后
+    // ━━━━━ user 气泡被多个「不是用户发的」内容占满（agent 跑 exec 的输出、上传
+    // ━━━━━ 占位文本）。见 PR 描述 §1 / §2。
+
+    testWidgets('toolResult renders as folding card, NOT user bubble', (tester) async {
+      final toolMsg = Message(
+        clientId: 'tc1',
+        serverId: 'ts1',
+        conversationId: 'conv1',
+        agentId: 'agent1',
+        role: MessageRole.toolResult,
+        content: '-rw-r--r-- 1 root root 17125 ... 17:56 foo.txt\n325 foo.txt',
+        type: MessageType.text,
+        logicalClock: 3,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        status: MessageStatus.delivered,
+        metadata: {'toolName': 'exec'},
+      );
+      await tester.pumpWidget(buildBubble(toolMsg, agentName: '日程虾'));
+      // toolResult 不走 user 路径：不应该在右气泡上看到白字。
+      expect(find.text('-rw-r--r-- 1 root root 17125'), findsNothing);
+      // 工具名以 tool 名称小卡片形式提供，不渲染原文。
+      expect(find.text('exec'), findsOneWidget);
+      // 设计意图下 toolResult 折叠，不该出现「中文时间戳 xxxx:xx」消息时间。
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Text && RegExp(r'^\d{2}:\d{2}$').hasMatch(w.data ?? ''),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('userPlaceholder renders as inline strip, NOT user bubble', (tester) async {
+      final placeholderMsg = Message(
+        clientId: 'p1',
+        serverId: 'sp1',
+        conversationId: 'conv1',
+        agentId: 'agent1',
+        role: MessageRole.userPlaceholder,
+        content: '[User sent media without caption]',
+        type: MessageType.file,
+        logicalClock: 4,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        status: MessageStatus.sent,
+        metadata: const {'mediaPaths': ['/tmp/foo.txt']},
+      );
+      await tester.pumpWidget(buildBubble(placeholderMsg, agentName: '日程虾'));
+      // 占位 body 文本不该作为用户气泡渲染。
+      expect(find.text('[User sent media without caption]'), findsNothing);
+      // 应该看到脟耕的「文件已上传」提示。
+      expect(find.text('📎 文件已上传'), findsOneWidget);
+    });
+
+    testWidgets('system role produces no bubble widget (SizedBox.shrink)', (tester) async {
+      final sysMsg = Message(
+        clientId: 's1',
+        conversationId: 'conv1',
+        agentId: 'agent1',
+        role: MessageRole.system,
+        content: 'system notice',
+        type: MessageType.text,
+        logicalClock: 5,
+        status: MessageStatus.delivered,
+      );
+      await tester.pumpWidget(buildBubble(sysMsg, agentName: '日程虾'));
+      expect(find.text('system notice'), findsNothing);
+    });
   });
 }
