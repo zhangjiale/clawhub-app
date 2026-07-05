@@ -15,6 +15,7 @@ import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/attachment_pick_result.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
+import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/features/chat_room/providers/chat_providers.dart';
 import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
@@ -645,6 +646,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
       itemCount: messages.length,
       itemBuilder: (context, index) {
         final message = messages[index];
+        // 历史工具结果(role=toolResult)直接用 ToolCallCard 渲染,与实时路径
+        // 合流 —— 不走 MessageBubble(原 _buildToolResult 折叠卡和实时长相不一致:
+        // 没对号、没 Completed、输出截断不同)。
+        if (message.role == MessageRole.toolResult) {
+          return ToolCallCard(toolCall: toolCallFromMessage(message));
+        }
         final tc = toolCalls[message.clientId];
         return Column(
           mainAxisSize: MainAxisSize.min,

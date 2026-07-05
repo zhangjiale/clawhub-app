@@ -95,41 +95,10 @@ void main() {
       expect(find.text('[文件]'), findsOneWidget);
     });
 
-    // ───── regression: chat history 把 toolResult / userPlaceholder 误分类为 user 后
-    // ━━━━━ user 气泡被多个「不是用户发的」内容占满（agent 跑 exec 的输出、上传
-    // ━━━━━ 占位文本）。见 PR 描述 §1 / §2。
-
-    testWidgets('toolResult renders as folding card, NOT user bubble', (
-      tester,
-    ) async {
-      final toolMsg = Message(
-        clientId: 'tc1',
-        serverId: 'ts1',
-        conversationId: 'conv1',
-        agentId: 'agent1',
-        role: MessageRole.toolResult,
-        content: '-rw-r--r-- 1 root root 17125 ... 17:56 foo.txt\n325 foo.txt',
-        type: MessageType.text,
-        logicalClock: 3,
-        timestamp: DateTime.now().millisecondsSinceEpoch,
-        status: MessageStatus.delivered,
-        metadata: {'toolName': 'exec'},
-      );
-      await tester.pumpWidget(buildBubble(toolMsg, agentName: '日程虾'));
-      // Collapsed: tool name shows as the card title; the raw output is NOT yet
-      // rendered (ExpansionTile lazy-builds children), so it can't leak into a
-      // user-bubble text slot.
-      expect(find.text('exec'), findsOneWidget);
-      // Expand the card — the tool output renders inside the monospace container,
-      // NOT as a right-aligned user bubble. (The impl shows toolName + HH:MM in the
-      // title row by design, so we verify the output lands in the expanded body.)
-      await tester.tap(find.text('exec'));
-      await tester.pumpAndSettle();
-      expect(
-        find.textContaining('-rw-r--r-- 1 root root 17125'),
-        findsOneWidget,
-      );
-    });
+    // ───── regression: chat history 把 userPlaceholder 误分类为 user 后,user 气泡
+    // ━━━━━ 被上传占位文本占满。见 PR 描述 §2。(toolResult 的渲染测试移至
+    // ━━━━━ tool_call_card_test.dart 的 toolCallFromMessage 组 —— 历史路径改用
+    // ━━━━━ ToolCallCard,不再走 MessageBubble。)
 
     testWidgets('userPlaceholder renders as inline strip, NOT user bubble', (
       tester,

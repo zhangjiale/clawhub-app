@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/domain/models/message.dart';
 
 /// Tool call card — matching V2 ComponentSpec Section 4.2.3.
 ///
@@ -132,4 +133,21 @@ class ToolCallCard extends StatelessWidget {
     if (output.length <= maxLen) return output;
     return '${output.substring(0, maxLen)}...';
   }
+}
+
+/// 从历史 toolResult [Message] 构造 [ToolCall],让历史路径复用 [ToolCallCard]
+/// 渲染(与实时 toolCallStream → ToolCall → ToolCallCard 路径合流,避免两套
+/// widget 长得不一致 —— 之前历史用 _buildToolResult 折叠卡,没对号/Completed)。
+/// toolName / isError 来自 parseMessage 提取的顶层字段(metadata.toolName /
+/// metadata.isError);outputResult 取 message.content。
+ToolCall toolCallFromMessage(Message m) {
+  final isError = m.metadata?['isError'] == true;
+  return ToolCall(
+    id: m.serverId ?? m.clientId,
+    messageId: m.clientId,
+    toolName: m.metadata?['toolName']?.toString() ?? 'tool',
+    status: isError ? ToolCallStatus.failed : ToolCallStatus.success,
+    outputResult: m.content,
+    endedAt: m.timestamp,
+  );
 }
