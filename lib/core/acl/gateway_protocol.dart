@@ -496,20 +496,40 @@ ChatEventData parseChatEvent(Map<String, dynamic> payload) {
 
 /// 从 `agent` 事件的 payload 中解析 [AgentEventData]。
 AgentEventData parseAgentEvent(Map<String, dynamic> payload) {
+  final data = payload['data'] as Map<String, dynamic>? ?? payload;
   final streamStr = payload['stream'] as String? ?? 'unknown';
+  final stream = switch (streamStr) {
+    'assistant' => AgentStreamType.assistant,
+    'tool' => AgentStreamType.tool,
+    'lifecycle' => AgentStreamType.lifecycle,
+    'item' => AgentStreamType.item,
+    'message' => AgentStreamType.message,
+    _ => AgentStreamType.unknown,
+  };
   return AgentEventData(
     runId: payload['runId'] as String?,
     sessionKey: payload['sessionKey'] as String? ?? '',
-    stream: switch (streamStr) {
-      'assistant' => AgentStreamType.assistant,
-      'tool' => AgentStreamType.tool,
-      'lifecycle' => AgentStreamType.lifecycle,
-      'item' => AgentStreamType.item,
-      'message' => AgentStreamType.message,
-      _ => AgentStreamType.unknown,
-    },
-    data: payload['data'] as Map<String, dynamic>? ?? payload,
+    // v2026.6.10 协议漂移:工具执行事件不带 `stream` 字段,改用 data 里的
+    // itemId(`command:` 前缀)/ toolCallId + name + phase 标识。识别出来归到
+    // tool,否则会被当成 unknown 丢弃(用户实时看不到工具执行)。
+    stream: stream == AgentStreamType.unknown && _looksLikeToolEvent(data)
+        ? AgentStreamType.tool
+        : stream,
+    data: data,
   );
+}
+
+/// v2026.6.10 工具执行事件识别(无 `stream` 字段时按 data 形态推断)。
+/// capture-verified 2026-07-05,见 memory openclaw-v2026-6-10-wire-format。
+bool _looksLikeToolEvent(Map<String, dynamic> data) {
+  final itemId = data['itemId'];
+  if (itemId is String && itemId.startsWith('command:')) {
+    return true;
+  }
+  // 兜底:toolCallId + name + phase 同时存在(工具执行形态)。
+  return data['toolCallId'] is String &&
+      data['name'] is String &&
+      data['phase'] is String;
 }
 
 // ============================================================================

@@ -432,7 +432,9 @@ class GatewayEventProcessor {
 
     switch (event.stream) {
       case AgentStreamType.tool:
-        if (event.data['phase'] == 'result') {
+        final phase = event.data['phase'] as String?;
+        // v2026.6.6: phase='result'; v2026.6.10: phase='end'(带 exitCode/durationMs)。
+        if (phase == 'result' || phase == 'end') {
           // tool 结束 — 发出带结果的 ToolCall
           if (!conn.toolCallCtrl.isClosed) {
             try {
@@ -446,11 +448,16 @@ class GatewayEventProcessor {
               final outputResult = rawOutput is String
                   ? rawOutput
                   : (rawOutput == null ? null : jsonEncode(rawOutput));
+              // v2026.6.10 exec 工具:exitCode != 0 → failed;缺省/0 → success。
+              final exitCode = event.data['exitCode'];
+              final isFailed = exitCode is int && exitCode != 0;
               final tc = ToolCall(
                 id: event.data['toolCallId'] as String? ?? _uuid.v4(),
                 messageId: event.sessionKey,
                 toolName: event.data['name'] as String? ?? 'unknown',
-                status: ToolCallStatus.success,
+                status: isFailed
+                    ? ToolCallStatus.failed
+                    : ToolCallStatus.success,
                 outputResult: outputResult,
                 endedAt: DateTime.now().millisecondsSinceEpoch,
               );

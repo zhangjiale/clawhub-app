@@ -143,6 +143,53 @@ void main() {
       final event = parseAgentEvent(payload);
       expect(event.stream, AgentStreamType.item);
     });
+
+    // v2026.6.10 drift: tool execution events arrive WITHOUT a `stream` field,
+    // carrying toolCallId + name + phase (+ itemId prefix `command:`) in data.
+    // parseAgentEvent must infer AgentStreamType.tool so they reach the tool
+    // handler instead of being dropped as unknown. See memory
+    // openclaw-v2026-6-10-wire-format.
+    test(
+      'infers tool stream when stream absent but data has toolCallId+name+phase',
+      () {
+        final payload = {
+          'sessionKey': 'agent:main:main',
+          'data': {
+            'phase': 'end',
+            'toolCallId': 'call_abc',
+            'name': 'exec',
+            'output': '-rw-r--r-- ...',
+            'exitCode': 0,
+          },
+        };
+        final event = parseAgentEvent(payload);
+        expect(event.stream, AgentStreamType.tool);
+      },
+    );
+
+    test('infers tool stream from itemId command: prefix (v2026.6.10)', () {
+      final payload = {
+        'sessionKey': 'agent:main:main',
+        'data': {
+          'itemId': 'command:call_abc',
+          'phase': 'delta',
+          'name': 'exec',
+          'output': 'scanning...',
+          'status': 'running',
+        },
+      };
+      final event = parseAgentEvent(payload);
+      expect(event.stream, AgentStreamType.tool);
+    });
+
+    test('leaves unknown when stream absent and data is not tool-shaped', () {
+      final payload = {
+        'sessionKey': 'agent:main:main',
+        'data': {'foo': 'bar'},
+      };
+      final event = parseAgentEvent(payload);
+      expect(event.stream, AgentStreamType.unknown);
+    });
   });
 
   group('StreamingBuffer', () {

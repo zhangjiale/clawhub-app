@@ -379,6 +379,171 @@ void main() {
       },
     );
 
+    // v2026.6.10 drift: tool completion uses phase: 'end' (not 'result') and
+    // carries exitCode / durationMs. phase: 'delta' is streaming output.
+    // See memory openclaw-v2026-6-10-wire-format.
+    test(
+      'agent.tool phase=end with exitCode 0 → success (v2026.6.10)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final tools = <ToolCall>[];
+        conn.toolCallCtrl.stream.listen(tools.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'tool',
+              'data': {
+                'phase': 'end',
+                'toolCallId': 'tc-end',
+                'name': 'exec',
+                'output': '-rw-r--r-- 1 root root 17125 ...',
+                'exitCode': 0,
+                'durationMs': 21,
+                'status': 'completed',
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(tools, hasLength(1));
+        expect(tools.first.id, 'tc-end');
+        expect(tools.first.toolName, 'exec');
+        expect(tools.first.status, ToolCallStatus.success);
+        expect(tools.first.outputResult, '-rw-r--r-- 1 root root 17125 ...');
+      },
+    );
+
+    test('agent.tool phase=end with non-zero exitCode → failed', () async {
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+
+      final tools = <ToolCall>[];
+      conn.toolCallCtrl.stream.listen(tools.add);
+
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'agent',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'stream': 'tool',
+            'data': {
+              'phase': 'end',
+              'toolCallId': 'tc-fail',
+              'name': 'exec',
+              'output': 'command not found',
+              'exitCode': 127,
+            },
+          },
+        ),
+      );
+
+      await pumpEventQueue();
+      expect(tools, hasLength(1));
+      expect(tools.first.status, ToolCallStatus.failed);
+    });
+
+    test(
+      'agent.tool phase=delta → running ToolCall (v2026.6.10 streaming)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final tools = <ToolCall>[];
+        conn.toolCallCtrl.stream.listen(tools.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'tool',
+              'data': {
+                'phase': 'delta',
+                'toolCallId': 'tc-delta',
+                'name': 'exec',
+                'output': 'partial output',
+                'status': 'running',
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(tools, hasLength(1));
+        expect(tools.first.status, ToolCallStatus.running);
+      },
+    );
+
+    // The KEY fix: v2026.6.10 tool events have NO `stream` field — pre-fix
+    // they hit AgentStreamType.unknown and were silently dropped, so users
+    // never saw live tool execution. parseAgentEvent now infers tool.
+    test(
+      'null-stream tool event (itemId: command:*) routed to toolCallStream',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final tools = <ToolCall>[];
+        conn.toolCallCtrl.stream.listen(tools.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              // NO 'stream' field — v2026.6.10 shape (capture-verified)
+              'data': {
+                'itemId': 'command:call_abc',
+                'phase': 'end',
+                'toolCallId': 'call_abc',
+                'name': 'exec',
+                'output': '-rw-r--r-- 1 root root 17125 ...',
+                'status': 'completed',
+                'exitCode': 0,
+                'durationMs': 21,
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(
+          tools,
+          hasLength(1),
+          reason: 'null-stream tool event must not be dropped',
+        );
+        expect(tools.first.id, 'call_abc');
+        expect(tools.first.toolName, 'exec');
+        expect(tools.first.status, ToolCallStatus.success);
+      },
+    );
+
     // Review #1 (Option C): lifecycle.end fallback message must also carry the
     // sessionKey tag (v3 Gateway path that never sends chat.final).
     test(
