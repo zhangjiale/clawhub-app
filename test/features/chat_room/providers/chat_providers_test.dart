@@ -336,6 +336,52 @@ void main() {
     },
   );
 
+  // review #15: post-sync reload is driven solely by
+  // catchUpCompletedTickerProvider (the VM no longer reloads on the transport
+  // `connected` event, which fired before catch-up and raced this ticker).
+  // Verify the provider-level ref.listen fires vm.reloadMessages on a bump.
+  test('ref.listen(catchUpCompletedTickerProvider) triggers vm.reloadMessages '
+      'on ticker bump (review #15)', () async {
+    when(
+      () => agentRepo.getById('local-a'),
+    ).thenAnswer((_) async => activeAgent);
+    await instanceRepo.save(
+      Instance(
+        id: 'inst-1',
+        name: 'Test',
+        gatewayUrl: 'wss://test:18789',
+        tokenRef: 'tok',
+        healthStatus: HealthStatus.online,
+        isLocalNetwork: false,
+      ),
+    );
+    messageRepo = _CountingMessageRepo();
+
+    final container = createContainer();
+    container.read(
+      chatViewModelProvider((instanceId: 'inst-1', agentId: 'local-a')),
+    );
+    await waitForInitComplete(container);
+    final baseline =
+        (messageRepo as _CountingMessageRepo).getByConversationCount;
+
+    // Bump the catch-up ticker — simulates MessageCatchUpService completion
+    // (the post-connect handler increments it after catchUp, success or
+    // failure — see providers.dart).
+    container.read(catchUpCompletedTickerProvider('inst-1').notifier).state++;
+    for (var i = 0; i < 4; i++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    expect(
+      (messageRepo as _CountingMessageRepo).getByConversationCount,
+      baseline + 1,
+      reason:
+          'catchUpCompleted ticker bump must trigger vm.reloadMessages — '
+          'it is the sole post-sync reload signal after review #15.',
+    );
+  });
+
   // `if (initFuture == null) return;` 会让 init 未跑的窗口期内
   // vm._agent 维持 null,用户看到的是普通 ChatRoom UI 而不是占位页。
   //
@@ -430,4 +476,24 @@ void main() {
           '_teardownSubscriptions tore the subs down.',
     );
   });
+}
+
+/// [InMemoryMessageRepo] subclass that counts [getByConversation] calls, used
+/// to verify the catchUpCompletedTicker → reloadMessages wiring (review #15).
+class _CountingMessageRepo extends InMemoryMessageRepo {
+  int getByConversationCount = 0;
+
+  @override
+  Future<List<Message>> getByConversation(
+    String conversationId, {
+    String? before,
+    int limit = 50,
+  }) {
+    getByConversationCount++;
+    return super.getByConversation(
+      conversationId,
+      before: before,
+      limit: limit,
+    );
+  }
 }

@@ -403,14 +403,6 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
                 truncatedNotifier.state = {...truncatedNotifier.state}
                   ..remove(instanceId);
               }
-              // US-016 AC-1: notify ChatViewModel that catch-up is complete.
-              // Increment ticker even when result.inserted == 0 — the ViewModel
-              // must reload after the connected-triggered reload (which may have
-              // run before catchUp finished), ensuring the UI always reflects
-              // the post-sync state.
-              ref
-                  .read(catchUpCompletedTickerProvider(instanceId).notifier)
-                  .state++;
             } catch (e, st) {
               ref
                   .read(loggerProvider)
@@ -420,6 +412,18 @@ final connectionOrchestratorProvider = Provider<ConnectionOrchestrator>((ref) {
                     st,
                   );
             }
+
+            // US-016 AC-1: notify ChatViewModel that catch-up has been
+            // ATTEMPTED (success or failure). This is the SINGLE post-sync
+            // reload signal — the ViewModel no longer reloads on the transport
+            // `connected` event (which fires before catch-up and raced this
+            // ticker, causing a redundant premature reload + a stale-then-fresh
+            // flash). Moved outside the try so a catch-up failure still
+            // triggers a reload (no new messages inserted on failure, but the
+            // VM resyncs to a consistent state). See review #15.
+            ref
+                .read(catchUpCompletedTickerProvider(instanceId).notifier)
+                .state++;
 
             // Step 2: Outbox flush (US-015) — always runs.
             try {

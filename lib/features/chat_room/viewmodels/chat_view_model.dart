@@ -295,17 +295,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// 缓存的 tombstone 状态与 DB 一致,可安全复用,无需冗余 getById。
   bool _tombstoneSuspect = false;
 
-  /// 标记连接状态订阅收到的「首个事件」。
-  ///
-  /// `_init()` 在订阅前已执行 `_loadMessages()`。对已处于 connected 的实例，
-  /// [ReplayableConnectionState] 会向新订阅者同步下沉一个合成的 connected
-  /// seed —— 若不抑制，该 seed 会在每次冷启动已连接聊天时触发一次冗余的
-  /// `reloadMessages()`（重复 Drift `getByConversation` 查询），正是种子层想
-  /// 避免的回归。真实的 `connecting → connected` 转换首个事件是 connecting，
-  /// 会先消费本标记，故其后的 connected 仍照常重载（拾取 OutboxProcessor
-  /// 的 PENDING→SENT 后台冲刷）。
-  bool _isInitialConnectionEvent = true;
-
   /// 是否正在流式接收回复。供 [chatViewModelProvider] 的 tick 监听器
   /// 决定是否触发温和刷新（流式中跳过）。委托 [_streaming]。
   bool get isStreaming => _streaming.isStreaming;
@@ -504,8 +493,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
         .connectionStateStream(instanceId)
         .listen(
           (state) {
-            final wasInitial = _isInitialConnectionEvent;
-            _isInitialConnectionEvent = false;
             _updateState((s) => s.copyWith(connectionState: state));
             // 连接断开/恢复路径必须重置 _streaming.isStreaming —— 否则一次中途
             // 网关掉线（无 StreamingDone）会让 reloadMessages 在
@@ -522,20 +509,12 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               _timeoutTimer?.cancel();
               _timeoutTimer = null;
             }
-            // 连接状态变化时刷新消息列表 —
-            // OutboxProcessor 可能在后台冲刷，将 PENDING 推进到 SENT；
-            // 这些状态变更通过 messageStream 不会传达（DB 直接更新），
-            // 故 connected 后重载一次消息列表以反映最新状态。
-            // outbox 计数不再在此刷新 —— 由 _outboxCountSubscription 自动驱动。
-            if (state == GatewayConnectionState.connected) {
-              if (wasInitial) {
-                // 合成 connected seed：_init() 刚执行过 _loadMessages()，
-                // 再 reload 是每次冷启动已连接聊天都会浪费一次 Drift 查询的
-                // 回归。跳过；真实 connecting→connected 转换会照常重载。
-              } else {
-                unawaited(reloadMessages());
-              }
-            }
+            // Post-sync reload is driven by catchUpCompletedTickerProvider
+            // (wired in chatViewModelProvider), which fires AFTER
+            // MessageCatchUpService completes — NOT by the transport `connected`
+            // event, which arrives before catch-up and caused a redundant
+            // premature reload + a stale-then-fresh flash. Outbox PENDING→SENT
+            // flushes are picked up by outboxFlushTickerProvider. (review #15)
           },
           onError: (Object error, StackTrace stackTrace) {
             // Symmetry with the message/tool/outbox/agent listeners (review #4):
@@ -1351,10 +1330,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // Bug 2 修复: 同步 [_streamsInitialized] 让 refreshAgent 知道
     // 下次 tombstone→alive 转换时需要重新订阅。
     _streamsInitialized = false;
-    // Reset the connection-event seed guard so a subsequent retry()/init()
-    // correctly skips the synthetic connected seed from
-    // ReplayableConnectionState and avoids a redundant reloadMessages().
-    _isInitialConnectionEvent = true;
     // Drop sessionKey → clientId mappings from prior turns (review #14).
     _sessionKeyToClientId.clear();
   }

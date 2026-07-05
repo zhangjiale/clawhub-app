@@ -544,49 +544,51 @@ void main() {
       },
     );
 
-    test(
-      'connected seed does NOT trigger redundant reloadMessages on cold start',
-      () async {
-        // 模拟「实例已 connected」：connectionStateStream 下沉 connected seed。
-        gateway = _ControllableStreamsGateway(seedConnectedOnSubscribe: true);
-        final countingRepo = _CountingGetByConversationRepo();
+    test('connected events (seed and real transition) do NOT reload at the VM '
+        'layer (review #15)', () async {
+      // 模拟「实例已 connected」：connectionStateStream 下沉 connected seed。
+      gateway = _ControllableStreamsGateway(seedConnectedOnSubscribe: true);
+      final countingRepo = _CountingGetByConversationRepo();
 
-        final vm = await setupAndInit(countingRepo);
-        await Future<void>.delayed(const Duration(milliseconds: 10));
+      final vm = await setupAndInit(countingRepo);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        // _init() 自身调用 _loadMessages() 两次（初始快照 + 历史拉取后）,
-        // 加 N+1 修复后的历史预取（line 635），故基线为 3。connected seed
-        // 必须被抑制 —— 否则会在此多出第 4 次 getByConversation
-        // （即本次回归要锁住的冗余查询）。
-        expect(
-          countingRepo.getByConversationCallCount,
-          3,
-          reason:
-              'connected seed must not trigger a redundant reloadMessages — '
-              '_init() already loaded the latest snapshot twice (initial + '
-              'post-history) plus one history prefetch (N+1 fix). A 4th call '
-              'means the synthetic seed slipped through and fired '
-              'reloadMessages() on cold start.',
-        );
+      // _init() 自身调用 _loadMessages() 两次（初始快照 + 历史拉取后）,
+      // 加 N+1 修复后的历史预取（line 635），故基线为 3。connected seed
+      // 不应触发重载 —— post-sync reload 由 catchUpCompletedTickerProvider
+      // 驱动（见 chatViewModelProvider 的 ref.listen），不再由 transport
+      // connected 事件直接触发（review #15）。
+      expect(
+        countingRepo.getByConversationCallCount,
+        3,
+        reason:
+            'connected seed must not trigger a redundant reloadMessages — '
+            '_init() already loaded the latest snapshot twice (initial + '
+            'post-history) plus one history prefetch (N+1 fix). A 4th call '
+            'means the synthetic seed slipped through and fired '
+            'reloadMessages() on cold start.',
+      );
 
-        // 真实 connecting→connected 转换仍照常重载（拾取 outbox 冲刷）。
-        gateway.emitConnectionState(
-          'inst-1',
-          GatewayConnectionState.connecting,
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-        gateway.emitConnectionState('inst-1', GatewayConnectionState.connected);
-        await Future<void>.delayed(const Duration(milliseconds: 10));
+      // 真实 connecting→connected 转换也不在 VM 层重载 —— post-sync reload
+      // 改由 catchUpCompletedTickerProvider 单信号驱动（catch-up 完成后），
+      // 避免与 catch-up 竞态（review #15）。outbox 的 PENDING→SENT 由
+      // outboxFlushTickerProvider 单独拾取。本测试用 mock gateway，不走
+      // orchestrator→ticker 链路，故此处计数不应增长。
+      gateway.emitConnectionState('inst-1', GatewayConnectionState.connecting);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      gateway.emitConnectionState('inst-1', GatewayConnectionState.connected);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(
-          countingRepo.getByConversationCallCount,
-          4,
-          reason:
-              'real connecting→connected transition must still reload to pick '
-              'up OutboxProcessor PENDING→SENT flushes.',
-        );
-        vm.dispose();
-      },
-    );
+      expect(
+        countingRepo.getByConversationCallCount,
+        3,
+        reason:
+            'transport connecting→connected must NOT reload at the VM '
+            'layer — post-sync reload is driven by '
+            'catchUpCompletedTickerProvider (review #15). A 4th call means '
+            'the connected event still fires reloadMessages() directly.',
+      );
+      vm.dispose();
+    });
   });
 }
