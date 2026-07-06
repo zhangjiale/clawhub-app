@@ -34,9 +34,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
         horizontal: XiaSpacing.pagePaddingH,
         vertical: 4,
       ),
+      // 卡片左边缘对齐 agent 气泡左边缘(都在 pagePaddingH)——外层 Row 的
+      // mainAxisSize.max + mainAxisAlignment.start 让卡左对齐,同时占满行宽
+      // 防止父 Column(crossAxisAlignment.center 默认)把窄卡居中。历史上这里
+      // 有个 SizedBox(width:36) 想对齐头像缩进,但 MessageBubble 早就没有头像了,
+      // 那个 36px 把卡顶到屏幕中间(用户投诉"exec 卡显示在中间")。
       child: Row(
         children: [
-          const SizedBox(width: 36),
           Flexible(
             child: Container(
               constraints: BoxConstraints(
