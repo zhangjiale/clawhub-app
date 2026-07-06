@@ -663,7 +663,9 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         if (message.role == MessageRole.toolResult) {
           // 优先用 live ToolCall(如有):纯工具结果回合里它仍 keyed by
           // sessionKey,经 ChatViewModel._rekeyToolCallForMessage 转到
-          // toolResult.clientId。
+          // toolResult.clientId。**该 re-key 是本分支的前提**(R2 contract)—
+          // 改 _rekeyToolCallForMessage 的调用方(去掉 toolResult 一支)
+          // 会让本行永远 null,孤儿 toolResult 失去 running 态。
           final live = toolCalls[message.clientId];
           if (live != null) return ToolCallCard(toolCall: live);
           // 若同 toolCallId 的 live 卡已挂在别的消息(如 agent 回复)下,

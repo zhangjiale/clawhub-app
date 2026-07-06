@@ -120,8 +120,14 @@ void main() {
 
     // ---- _truncateOutput (tested via rendered output) ----
 
-    testWidgets('truncates long output to 120 chars', (tester) async {
-      final longOutput = 'x' * 200;
+    testWidgets('caps multi-line output at 3 lines + ellipsis', (tester) async {
+      // R1:折叠不再按字符截断(120 字符 substring),改用 _isLongOutput 行数
+      // 判定 + Flutter maxLines:3 + ellipsis。50 行输出 → 渲染成 3 行 + "…",
+      // 而非 120 字符 substring。
+      final multiLineOutput = List.generate(50, (i) => 'line $i').join('\n');
+      await tester.binding.setSurfaceSize(const Size(800, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
       await tester.pumpWidget(
         buildCard(
           ToolCall(
@@ -129,13 +135,20 @@ void main() {
             messageId: 'msg-6',
             toolName: 'Bash',
             status: ToolCallStatus.success,
-            outputResult: longOutput,
+            outputResult: multiLineOutput,
           ),
         ),
       );
 
-      final expected = '${'x' * 120}...';
-      expect(find.text(expected), findsOneWidget);
+      // "展开全部 ▼" 出现说明 isLong=true,触发了 maxLines:3 折叠。
+      expect(find.text('展开全部 ▼'), findsOneWidget);
+      // Text widget 的 maxLines 应为 3(非 null,否则就是展开态)。
+      final textWidgets = tester.widgetList<Text>(find.byType(Text));
+      final outputText = textWidgets.firstWhere(
+        (t) => (t.data ?? '').startsWith('line 0'),
+      );
+      expect(outputText.maxLines, 3);
+      expect(outputText.overflow, TextOverflow.ellipsis);
     });
 
     testWidgets('does not truncate output within 120 chars', (tester) async {
@@ -155,11 +168,15 @@ void main() {
       expect(find.text('hello world'), findsOneWidget);
     });
 
-    // 折叠/展开:长输出默认截断,点开看完整,再点收起。
-    testWidgets('taps to expand long output, taps again to collapse', (
+    // 折叠/展开:多行长输出默认折叠(>3 行),点开看完整,再点收起。
+    // R1:折叠判定改行数,此处用多行输出确保 isLong=true。
+    testWidgets('taps to expand multi-line output, taps again to collapse', (
       tester,
     ) async {
-      final longOutput = 'x' * 200;
+      final multiLineOutput = List.generate(50, (i) => 'line $i').join('\n');
+      await tester.binding.setSurfaceSize(const Size(800, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
       await tester.pumpWidget(
         buildCard(
           ToolCall(
@@ -167,29 +184,26 @@ void main() {
             messageId: 'msg-exp',
             toolName: 'Bash',
             status: ToolCallStatus.success,
-            outputResult: longOutput,
+            outputResult: multiLineOutput,
           ),
         ),
       );
 
-      // Collapsed: truncated to 120 chars + "展开全部" hint.
-      expect(find.text('${'x' * 120}...'), findsOneWidget);
+      // Collapsed: "展开全部" hint 出现,full output 不应作为单一 Text 子节点
+      // 出现(会被 maxLines:3 裁剪)。
       expect(find.text('展开全部 ▼'), findsOneWidget);
-      expect(find.text(longOutput), findsNothing);
 
-      // Tap the output to expand.
-      await tester.tap(find.text('${'x' * 120}...'));
+      // Tap the toggle to expand.
+      await tester.tap(find.text('展开全部 ▼'));
       await tester.pumpAndSettle();
 
-      // Expanded: full output + "收起" hint.
-      expect(find.text(longOutput), findsOneWidget);
+      // Expanded: "收起" hint + full output 可作为单一 Text 子节点访问。
+      expect(find.text(multiLineOutput), findsOneWidget);
       expect(find.text('收起 ▲'), findsOneWidget);
-      expect(find.text('${'x' * 120}...'), findsNothing);
 
       // Tap again to collapse.
-      await tester.tap(find.text(longOutput));
+      await tester.tap(find.text('收起 ▲'));
       await tester.pumpAndSettle();
-      expect(find.text('${'x' * 120}...'), findsOneWidget);
       expect(find.text('展开全部 ▼'), findsOneWidget);
     });
 

@@ -1132,6 +1132,16 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// [_sessionKeyToClientId] so a *late* ToolCall (arriving AFTER this final
   /// message) can self-key in the ToolCall listener — otherwise it would stay
   /// keyed by sessionKey and never render (review #14).
+  ///
+  /// **Cross-file contract (R2):** this function MUST be called for both
+  /// [MessageRole.agent] and [MessageRole.toolResult] final messages — see
+  /// `agent_message_finalized` / `tool_result_message_finalized` listeners
+  /// above. The chat_room_page live ToolCall lookup at
+  /// `_buildMessageList` orphan-toolResult branch depends on the re-key
+  /// having happened; if you narrow the callers to agent-only, orphan
+  /// toolResults in pure-tool turns will render with an invisible ToolCall
+  /// (`toolCalls[toolResult.clientId] == null`) and fall through to
+  /// `toolCallFromMessage` reconstruction, losing any running state.
   void _rekeyToolCallForMessage(Message msg) {
     final sk = msg.metadata?['sessionKey'];
     if (sk is! String) return;

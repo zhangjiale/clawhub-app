@@ -23,11 +23,27 @@ class _ToolCallCardState extends State<ToolCallCard> {
   void didUpdateWidget(ToolCallCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     // 输出从长变短时重置展开状态,否则用户失去折叠入口。
-    final wasLong = (oldWidget.toolCall.outputResult ?? '').length > 120;
-    final isLong = (widget.toolCall.outputResult ?? '').length > 120;
+    // 折叠判定按行数(R1):gateway_event_processor delta 阶段对非 String 输出
+    // 走 jsonEncode,200 字符的单行 JSON 会被旧 120 字符阈值误判为 long。
+    // 行数判定天然对单行/多行结构稳定,且 Flutter maxLines:3 + ellipsis
+    // 会自然处理单行长字符串的视觉换行。
+    final wasLong = _isLongOutput(oldWidget.toolCall.outputResult);
+    final isLong = _isLongOutput(widget.toolCall.outputResult);
     if (wasLong && !isLong) {
       _expanded = false;
     }
+  }
+
+  /// 折叠阈值:>3 行视为长输出。返回 [outputResult] 是否需要折叠。
+  ///
+  /// 按行数而非字符数判定,原因:`outputResult` 在
+  /// [gateway_event_processor.dart](gateway_event_processor.dart) delta 阶段
+  /// 会对非 String 输出走 `jsonEncode`,把 50 字符的 `{"ok":true}` 编码为
+  /// ~12 字符但把 100 字符的 stdout 编码为 ~140 字符(JSON 形态),
+  /// 纯字符阈值不稳定(R1 回归)。
+  bool _isLongOutput(String? output) {
+    if (output == null || output.isEmpty) return false;
+    return output.split('\n').length > 3;
   }
 
   @override
@@ -35,7 +51,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final tc = widget.toolCall;
     final hasOutput = tc.isCompleted && tc.outputResult != null;
     final output = tc.outputResult ?? '';
-    final isLong = output.length > 120;
+    final isLong = _isLongOutput(output);
     // 折叠时截断到 120 字符(3 行);展开时显示完整输出。
     final display = !_expanded && isLong
         ? '${output.substring(0, 120)}...'
