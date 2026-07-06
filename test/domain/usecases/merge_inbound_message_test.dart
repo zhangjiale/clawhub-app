@@ -460,6 +460,42 @@ void main() {
       expect(result, msg);
       verifyNever(() => messageRepo.insert(any()));
     });
+
+    // -------------------------------------------------------------------------
+    // toolResult 空 stdout 不应被跳过：这类消息承载工具执行记录(toolName/status
+    // 在 metadata 里),内容为空只是工具没输出。跳过会导致 chat_room 找不到行、
+    // 历史 rewind 丢失工具存在痕迹。
+    // -------------------------------------------------------------------------
+    test(
+      'empty-content toolResult message is preserved and inserted',
+      () async {
+        final msg = inbound(
+          clientId: 'tool-cid',
+          serverId: 'tool-srv',
+          role: MessageRole.toolResult,
+          content: '',
+          timestamp: 1718000000000,
+        );
+        when(
+          () => messageRepo.getByClientId('tool-cid'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('tool-srv'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByConversation(
+            'conv-1',
+            limit: any(named: 'limit'),
+          ),
+        ).thenAnswer((_) async => []);
+        when(() => messageRepo.insert(any())).thenAnswer((_) async => msg);
+
+        final result = await useCase.merge(msg);
+
+        expect(result, msg);
+        verify(() => messageRepo.insert(any())).called(1);
+      },
+    );
   });
 
   // -------------------------------------------------------------------------

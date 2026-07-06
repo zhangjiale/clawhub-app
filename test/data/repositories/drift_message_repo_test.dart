@@ -331,6 +331,86 @@ void main() {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // 损坏 role int 防御:一行非法 role 不应导致整个会话加载崩溃。
+  // ---------------------------------------------------------------------------
+  group('DriftMessageRepo.getByConversation corrupt role defense', () {
+    late db.AppDatabase database;
+    late DriftMessageRepo messageRepo;
+
+    setUp(() async {
+      database = await _createTestDb();
+      messageRepo = DriftMessageRepo(database);
+
+      final instanceRepo = DriftInstanceRepo(database);
+      await instanceRepo.save(
+        Instance(
+          id: 'inst-1',
+          name: 'Test',
+          gatewayUrl: 'ws://test:18789',
+          tokenRef: 'tok',
+          healthStatus: HealthStatus.online,
+        ),
+      );
+
+      final agentRepo = DriftAgentRepo(database);
+      await agentRepo.syncFromGateway('inst-1', [
+        Agent(
+          localId: 'agent-1',
+          remoteId: 'remote-1',
+          instanceId: 'inst-1',
+          name: '虾',
+        ),
+      ]);
+
+      final conversationRepo = DriftConversationRepo(database);
+      await conversationRepo.getOrCreate('inst-1', 'agent-1');
+    });
+
+    test(
+      'skips row with invalid role int instead of crashing whole conversation',
+      () async {
+        final valid = Message(
+          clientId: 'valid',
+          conversationId: Conversation.generateId('inst-1', 'agent-1'),
+          agentId: 'agent-1',
+          role: MessageRole.user,
+          content: 'hello',
+          type: MessageType.text,
+          status: MessageStatus.sent,
+          logicalClock: 1,
+          timestamp: 1718000000000,
+        );
+        await messageRepo.insert(valid);
+
+        // 直接插入一个 role=99 的损坏行,模拟降级/手动 SQL/备份恢复场景。
+        await database.customStatement(
+          'INSERT INTO messages '
+          '(client_id, conversation_id, agent_id, role, content, type, status, logical_clock, timestamp) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            'corrupt',
+            Conversation.generateId('inst-1', 'agent-1'),
+            'agent-1',
+            99,
+            'x',
+            MessageType.text.toInt(),
+            MessageStatus.sent.toInt(),
+            2,
+            1718000000001,
+          ],
+        );
+
+        final messages = await messageRepo.getByConversation(
+          Conversation.generateId('inst-1', 'agent-1'),
+        );
+
+        expect(messages, hasLength(1));
+        expect(messages.single.clientId, 'valid');
+      },
+    );
+  });
+
   group('DriftMessageRepo image/file persistence', () {
     late db.AppDatabase database;
     late DriftMessageRepo messageRepo;

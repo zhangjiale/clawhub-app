@@ -45,6 +45,12 @@ class PreviewUpdater {
   /// - 重置 timer,在事件队列排空时统一 flush。
   void schedule(Message message) {
     if (message.type == MessageType.toolCall) return;
+    // 这些角色不用于会话侧边栏预览:toolResult 是工具输出、userPlaceholder
+    // 是上传占位、system 是系统通知,写入预览会覆盖真正的最后聊天消息。
+    if (message.role == MessageRole.toolResult ||
+        message.role == MessageRole.userPlaceholder ||
+        message.role == MessageRole.system)
+      return;
 
     if (_pending == null || message.timestamp >= _pending!.timestamp) {
       _pending = message;

@@ -432,7 +432,12 @@ class GatewayEventProcessor {
 
     switch (event.stream) {
       case AgentStreamType.tool:
-        final phase = event.data['phase'] as String?;
+        // 安全提取:网关若把 phase 序列化为 int/bool/double,`as String?`
+        // 会同步抛 TypeError,且此处位于 try/catch 之外,导致整帧事件丢失。
+        final phase = switch (event.data['phase']) {
+          final String s => s,
+          _ => null,
+        };
         // v2026.6.6: phase='result'; v2026.6.10: phase='end'(带 exitCode/durationMs)。
         if (phase == 'result' || phase == 'end') {
           // tool 结束 — 发出带结果的 ToolCall
@@ -449,8 +454,9 @@ class GatewayEventProcessor {
                   ? rawOutput
                   : (rawOutput == null ? null : jsonEncode(rawOutput));
               // v2026.6.10 exec 工具:exitCode != 0 → failed;缺省/0 → success。
+              // 用 num 而非 int,兼容 JS 序列化产生的 double(如 127.0)。
               final exitCode = event.data['exitCode'];
-              final isFailed = exitCode is int && exitCode != 0;
+              final isFailed = exitCode is num && exitCode != 0;
               final tc = ToolCall(
                 id: event.data['toolCallId'] as String? ?? _uuid.v4(),
                 messageId: event.sessionKey,
@@ -470,14 +476,26 @@ class GatewayEventProcessor {
             }
           }
         } else {
-          // tool 开始 — 发出 running 状态的 ToolCall
+          // tool 开始/增量 — 发出 running 状态的 ToolCall。
+          // v2026.6.10 delta 事件带 output/inputArgs;即使终端 end 事件丢失,
+          // 最后一条 delta 的输出仍能保留在卡片上。
           if (!conn.toolCallCtrl.isClosed) {
             try {
+              final rawOutput = event.data['output'];
+              final outputResult = rawOutput is String
+                  ? rawOutput
+                  : (rawOutput == null ? null : jsonEncode(rawOutput));
+              final rawInput = event.data['inputArgs'];
+              final inputArgs = rawInput is String
+                  ? rawInput
+                  : (rawInput == null ? null : jsonEncode(rawInput));
               final tc = ToolCall(
                 id: event.data['toolCallId'] as String? ?? _uuid.v4(),
                 messageId: event.sessionKey,
                 toolName: event.data['name'] as String? ?? 'unknown',
                 status: ToolCallStatus.running,
+                inputArgs: inputArgs,
+                outputResult: outputResult,
                 startedAt: DateTime.now().millisecondsSinceEpoch,
               );
               conn.toolCallCtrl.add(tc);

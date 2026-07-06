@@ -635,6 +635,14 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
             if (!_highlightActive) {
               _scheduleMessagesReload();
             }
+            if (fixedMsg.role == MessageRole.agent ||
+                fixedMsg.role == MessageRole.toolResult) {
+              // Re-key the turn's ToolCall from sessionKey → clientId so
+              // the page's `toolCalls[message.clientId]` lookup finds it.
+              // 对 toolResult 也要做:纯工具结果回合(无 agent 文本回复)中,
+              // live ToolCall 一直 keyed by sessionKey,不重键就会 invisible。
+              _rekeyToolCallForMessage(fixedMsg);
+            }
             if (fixedMsg.role == MessageRole.agent) {
               // Clear streaming text when the final message lands —
               // eliminates the race window between StreamingDone and
@@ -642,9 +650,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               _awaitingReply = false;
               _streaming.onReplyArrived();
               _stopThinking();
-              // Re-key the turn's ToolCall from sessionKey → clientId so
-              // the page's `toolCalls[message.clientId]` lookup finds it.
-              _rekeyToolCallForMessage(fixedMsg);
               onStatsChanged?.call();
               // Fire-and-forget achievement evaluation — deferred to
               // agent reply arrival so stats include the latest message

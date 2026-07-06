@@ -6,6 +6,7 @@ import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/features/chat_room/widgets/message_bubble.dart';
+import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 void main() {
   group('MessageBubble agent theme', () {
@@ -361,6 +362,107 @@ void main() {
         expect(find.byType(Image), findsOneWidget);
         // 用户图无 caption(content 是路径,不应作为 caption 文本显示)
         expect(find.text('/tmp/nonexistent.jpg'), findsNothing);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // userPlaceholder 文件上传条
+    // -----------------------------------------------------------------------
+    group('userPlaceholder file upload strip', () {
+      Widget wrap(Widget child) => MaterialApp(
+        home: Scaffold(body: SizedBox(width: 400, child: child)),
+      );
+
+      Message placeholder({List<dynamic>? mediaPaths}) => Message(
+        clientId: 'ph-1',
+        conversationId: 'conv-1',
+        agentId: 'agent-1',
+        role: MessageRole.userPlaceholder,
+        content: '[User sent media without caption]',
+        type: MessageType.text,
+        status: MessageStatus.delivered,
+        timestamp: 0,
+        logicalClock: 0,
+        metadata: mediaPaths != null ? {'mediaPaths': mediaPaths} : null,
+      );
+
+      testWidgets('empty MediaPaths renders zero-file label', (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: placeholder(mediaPaths: []),
+              agentName: '虾',
+            ),
+          ),
+        );
+        expect(find.text('📎 空附件'), findsOneWidget);
+      });
+
+      testWidgets('single MediaPath renders singular label', (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: placeholder(mediaPaths: ['/tmp/a.jpg']),
+              agentName: '虾',
+            ),
+          ),
+        );
+        expect(find.text('📎 文件已上传'), findsOneWidget);
+      });
+
+      testWidgets('multiple MediaPaths renders count label', (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: placeholder(mediaPaths: ['/tmp/a.jpg', '/tmp/b.jpg']),
+              agentName: '虾',
+            ),
+          ),
+        );
+        expect(find.text('📎 2 个文件已上传'), findsOneWidget);
+      });
+
+      // 回归:placeholder/system 消息必须走 StaggeredEnterItem,保持列表进入动画一致。
+      testWidgets('placeholder is wrapped in StaggeredEnterItem', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          wrap(
+            MessageBubble(
+              message: placeholder(mediaPaths: ['/tmp/a.jpg']),
+              agentName: '虾',
+            ),
+          ),
+        );
+        final enter = find.ancestor(
+          of: find.text('📎 文件已上传'),
+          matching: find.byType(StaggeredEnterItem),
+        );
+        expect(enter, findsOneWidget);
+      });
+
+      testWidgets('system notice is wrapped in StaggeredEnterItem', (
+        tester,
+      ) async {
+        final system = Message(
+          clientId: 'sys-1',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.system,
+          content: 'system notice',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          timestamp: 0,
+          logicalClock: 0,
+        );
+        await tester.pumpWidget(
+          wrap(MessageBubble(message: system, agentName: '虾')),
+        );
+        final enter = find.ancestor(
+          of: find.text('system notice'),
+          matching: find.byType(StaggeredEnterItem),
+        );
+        expect(enter, findsOneWidget);
       });
     });
   });

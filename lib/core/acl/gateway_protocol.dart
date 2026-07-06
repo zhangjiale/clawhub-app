@@ -496,7 +496,10 @@ ChatEventData parseChatEvent(Map<String, dynamic> payload) {
 
 /// 从 `agent` 事件的 payload 中解析 [AgentEventData]。
 AgentEventData parseAgentEvent(Map<String, dynamic> payload) {
-  final data = payload['data'] as Map<String, dynamic>? ?? payload;
+  // 安全提取:data 字段只在我们确认它是 Map 时才用;null 或非 Map(List/num/
+  // String)都回退到 payload 本身,避免 `as Map?` 在字段名冲突时抛 TypeError。
+  final rawData = payload['data'];
+  final data = rawData is Map<String, dynamic> ? rawData : payload;
   final streamStr = payload['stream'] as String? ?? 'unknown';
   final stream = switch (streamStr) {
     'assistant' => AgentStreamType.assistant,
@@ -526,10 +529,12 @@ bool _looksLikeToolEvent(Map<String, dynamic> data) {
   if (itemId is String && itemId.startsWith('command:')) {
     return true;
   }
-  // 兜底:toolCallId + name + phase 同时存在(工具执行形态)。
+  // 兜底:toolCallId + name + phase 同时存在,且至少带 output 或 exitCode
+  // 字段之一。仅靠 3 个常见字段名太容易误判未来新事件。
   return data['toolCallId'] is String &&
       data['name'] is String &&
-      data['phase'] is String;
+      data['phase'] is String &&
+      (data['output'] != null || data['exitCode'] != null);
 }
 
 // ============================================================================

@@ -20,6 +20,17 @@ class _ToolCallCardState extends State<ToolCallCard> {
   bool _expanded = false;
 
   @override
+  void didUpdateWidget(ToolCallCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 输出从长变短时重置展开状态,否则用户失去折叠入口。
+    final wasLong = (oldWidget.toolCall.outputResult ?? '').length > 120;
+    final isLong = (widget.toolCall.outputResult ?? '').length > 120;
+    if (wasLong && !isLong) {
+      _expanded = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final tc = widget.toolCall;
     final hasOutput = tc.isCompleted && tc.outputResult != null;
@@ -187,9 +198,10 @@ ToolCall toolCallFromMessage(Message m) {
   );
 }
 
-/// 把历史 toolResult 消息按 logicalClock 排序后,挂到它**后面第一条非 toolResult
-/// 消息**(通常是 agent 回复)名下 —— 这样 toolResult 会渲染在 agent 气泡下面
-/// (和实时路径一致),而不是按时间戳卡在 user 和 agent 之间。
+/// 把历史 toolResult 消息按 logicalClock 排序后,挂到它**后面第一条 agent
+/// 回复**名下 —— 这样 toolResult 会渲染在 agent 气泡下面(和实时路径一致),
+/// 而不是按时间戳卡在 user 和 agent 之间,也不会误挂到 userPlaceholder 或
+/// system 消息上。
 ///
 /// 返回 `(byOwner, ownedIds)`:
 /// - `byOwner`: owner 的 clientId → 挂到它名下的 toolResult 列表(按时间顺序)。
@@ -204,7 +216,8 @@ groupToolResultsByOwner(List<Message> messages) {
   for (var i = 0; i < sorted.length; i++) {
     if (sorted[i].role != MessageRole.toolResult) continue;
     for (var j = i + 1; j < sorted.length; j++) {
-      if (sorted[j].role != MessageRole.toolResult) {
+      // 只挂到 agent 回复名下;userPlaceholder/system/user 都不应拥有工具卡。
+      if (sorted[j].role == MessageRole.agent) {
         byOwner.putIfAbsent(sorted[j].clientId, () => []).add(sorted[i]);
         ownedIds.add(sorted[i].clientId);
         break;

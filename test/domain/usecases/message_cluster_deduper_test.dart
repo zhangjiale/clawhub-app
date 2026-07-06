@@ -167,5 +167,30 @@ void main() {
 
       expect(doomed, isEmpty, reason: '|Δ|=61s 超出窗口（>60s）不合并');
     });
+
+    // -------------------------------------------------------------------------
+    // toolResult 空 stdout 不应被清理：它承载工具执行记录，按 content 聚簇
+    // 删除会把工具卡整个移除。
+    // -------------------------------------------------------------------------
+    test('empty-content toolResult message is NOT deleted', () {
+      final msgs = [
+        makeMsg(
+          clientId: 'tool-empty',
+          role: MessageRole.toolResult,
+          content: '',
+          timestamp: 1718000000000,
+          serverId: 'srv-tool',
+          clock: 100,
+        ),
+      ];
+
+      final doomed = MessageClusterDeduper.plan(msgs);
+
+      expect(
+        doomed.contains('tool-empty'),
+        isFalse,
+        reason: '空 content 的 toolResult 必须保留',
+      );
+    });
   });
 }

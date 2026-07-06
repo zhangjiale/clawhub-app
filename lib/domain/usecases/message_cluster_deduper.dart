@@ -34,10 +34,13 @@ class MessageClusterDeduper {
     final doomed = <String>{};
 
     // 收集：空 content text 消息 + 参与聚簇的非空 text 消息。
+    // toolResult 角色的空 content 不清理：stdout 为空的 shell 命令(cp/mv 等)
+    // 仍需要保留行以展示工具执行记录(toolName/status)。
     final textByKey = <String, List<Message>>{};
     for (final m in all) {
       if (m.type != MessageType.text) continue;
-      if (m.content == null || m.content!.isEmpty) {
+      if (m.role != MessageRole.toolResult &&
+          (m.content == null || m.content!.isEmpty)) {
         doomed.add(m.clientId);
         continue;
       }

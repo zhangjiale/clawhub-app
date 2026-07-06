@@ -121,7 +121,20 @@ class DriftMessageRepo implements IMessageRepo {
         : await _database
               .getMessagesByConversationFirst(conversationId, limit)
               .get();
-    return rows.map(MessageMapper.toDomain).toList();
+    // 逐行防御:损坏的 role/type/status int(降级/手动 SQL/备份恢复)不应让
+    // 整个会话加载崩溃。跳过无法解析的行并 debugPrint,保留 Law 18 的显式
+    // 处理(不静默兜默认值,而是记录并丢弃)。
+    final messages = <Message>[];
+    for (final row in rows) {
+      try {
+        messages.add(MessageMapper.toDomain(row));
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Failed to map message row ${row.clientId}: $error\n$stackTrace',
+        );
+      }
+    }
+    return messages;
   }
 
   @override

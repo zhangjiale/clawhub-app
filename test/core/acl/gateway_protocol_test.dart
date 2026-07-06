@@ -182,11 +182,58 @@ void main() {
       expect(event.stream, AgentStreamType.tool);
     });
 
+    // 回归:3 键兜底(toolCallId+name+phase)太宽松;未来任何带这 3 个常见字段名
+    // 的 payload 都会被误判为工具事件。要求至少带 output 或 exitCode 才走兜底。
+    test(
+      'does NOT infer tool stream from toolCallId+name+phase alone (no output/exitCode)',
+      () {
+        final payload = {
+          'sessionKey': 'agent:main:main',
+          'data': {
+            'toolCallId': 'call_abc',
+            'name': 'exec',
+            'phase': 'end',
+            // 缺少 output / exitCode
+          },
+        };
+        final event = parseAgentEvent(payload);
+        expect(event.stream, AgentStreamType.unknown);
+      },
+    );
+
     test('leaves unknown when stream absent and data is not tool-shaped', () {
       final payload = {
         'sessionKey': 'agent:main:main',
         'data': {'foo': 'bar'},
       };
+      final event = parseAgentEvent(payload);
+      expect(event.stream, AgentStreamType.unknown);
+    });
+
+    // 回归:data 字段未来可能被网关用作 List/num/String(字段名冲突),`as Map?`
+    // 会同步抛 TypeError,且 parseAgentEvent 在所有 try/catch 之外,导致事件
+    // 处理链崩溃。必须安全降级。
+    test('survives List-typed data field without throwing', () {
+      final payload = {
+        'sessionKey': 'agent:main:main',
+        'data': ['foo', 'bar'],
+      };
+      expect(() => parseAgentEvent(payload), returnsNormally);
+      final event = parseAgentEvent(payload);
+      expect(event.stream, AgentStreamType.unknown);
+      expect(event.data, payload, reason: '非 Map data 应回退到 payload 本身');
+    });
+
+    test('survives String-typed data field without throwing', () {
+      final payload = {'sessionKey': 'agent:main:main', 'data': 'plain text'};
+      expect(() => parseAgentEvent(payload), returnsNormally);
+      final event = parseAgentEvent(payload);
+      expect(event.stream, AgentStreamType.unknown);
+    });
+
+    test('survives int-typed data field without throwing', () {
+      final payload = {'sessionKey': 'agent:main:main', 'data': 42};
+      expect(() => parseAgentEvent(payload), returnsNormally);
       final event = parseAgentEvent(payload);
       expect(event.stream, AgentStreamType.unknown);
     });

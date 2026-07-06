@@ -63,14 +63,17 @@ class MergeInboundMessageUseCase {
     bool softMatch = true,
     List<Message>? recent,
   }) async {
-    // 0. 空内容 text 消息不入库。
+    // 0. 空内容 text 消息不入库(但 toolResult 除外)。
     //    网关历史/实时回传的空 text 消息(典型: agent 这一轮只有 tool_call,
     //    无文本回复,网关存了空 text 行)无展示价值 —— 显示为空气泡。
     //    入站直接丢弃。用户主动发的空消息走 SendMessageUseCase.insert(不经
     //    merge),不受影响,保留用户意图。
+    //    toolResult 角色即使 content 为空也必须保留:它携带工具执行记录
+    //    (toolName/status 在 metadata 里),跳过会导致历史里丢失该工具存在。
     //    标记 wasSkipped=true,让 MessageCatchUpService 不把空内容计入
     //    pageKnown,避免误触发「已追平」停止条件导致真实新消息被丢。
     if (inbound.type == MessageType.text &&
+        inbound.role != MessageRole.toolResult &&
         (inbound.content == null || inbound.content!.isEmpty)) {
       return MergeResult(message: inbound, wasNew: false, wasSkipped: true);
     }

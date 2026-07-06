@@ -458,8 +458,48 @@ void main() {
       expect(tools.first.status, ToolCallStatus.failed);
     });
 
+    // JS 序列化常见把 127 写成 127.0;Dart 中 `127.0 is int` 为 false,必须
+    // 显式按数值比较,否则失败命令会被标成 success。
+    test('agent.tool phase=end with double exitCode 127.0 → failed', () async {
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+
+      final tools = <ToolCall>[];
+      conn.toolCallCtrl.stream.listen(tools.add);
+
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'agent',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'stream': 'tool',
+            'data': {
+              'phase': 'end',
+              'toolCallId': 'tc-fail-double',
+              'name': 'exec',
+              'output': 'command not found',
+              'exitCode': 127.0,
+            },
+          },
+        ),
+      );
+
+      await pumpEventQueue();
+      expect(tools, hasLength(1));
+      expect(
+        tools.first.status,
+        ToolCallStatus.failed,
+        reason: 'double exitCode 127.0 必须被视为非零失败',
+      );
+    });
+
     test(
-      'agent.tool phase=delta → running ToolCall (v2026.6.10 streaming)',
+      'agent.tool phase=delta → running ToolCall with output/inputArgs (v2026.6.10)',
       () async {
         processor.registerSend(
           instanceId: 'inst-1',
@@ -483,6 +523,7 @@ void main() {
                 'toolCallId': 'tc-delta',
                 'name': 'exec',
                 'output': 'partial output',
+                'inputArgs': {'path': '/tmp'},
                 'status': 'running',
               },
             },
@@ -492,8 +533,51 @@ void main() {
         await pumpEventQueue();
         expect(tools, hasLength(1));
         expect(tools.first.status, ToolCallStatus.running);
+        expect(tools.first.outputResult, 'partial output');
+        expect(tools.first.inputArgs, '{"path":"/tmp"}');
       },
     );
+
+    // 回归:phase 字段若被网关序列化为 int/bool/double,`as String?` 会同步抛
+    // TypeError,且该转换在 try/catch 之外,导致整帧工具事件丢失。
+    test('agent.tool event with non-string phase does not throw', () async {
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+
+      final tools = <ToolCall>[];
+      conn.toolCallCtrl.stream.listen(tools.add);
+      Object? thrown;
+      try {
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'stream': 'tool',
+              'data': {
+                'phase': 1, // int, not String
+                'toolCallId': 'tc-int-phase',
+                'name': 'exec',
+              },
+            },
+          ),
+        );
+      } catch (e) {
+        thrown = e;
+      }
+
+      await pumpEventQueue();
+      expect(thrown, isNull, reason: '非 String phase 不应抛 TypeError');
+      // phase 不是 result/end → 走 running 分支,应发出 running ToolCall。
+      expect(tools, hasLength(1));
+      expect(tools.first.id, 'tc-int-phase');
+      expect(tools.first.status, ToolCallStatus.running);
+    });
 
     // The KEY fix: v2026.6.10 tool events have NO `stream` field — pre-fix
     // they hit AgentStreamType.unknown and were silently dropped, so users

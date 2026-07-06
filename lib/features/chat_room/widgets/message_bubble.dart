@@ -75,8 +75,18 @@ class MessageBubble extends StatelessWidget {
     // (历史与实时复用同一个 widget,避免两套长相不一致)。system 不再凭空消失
     // (原 SizedBox.shrink 会静默丢消息,且未知 role 也兜到 system)——渲染成居中
     // 淡灰小条,内容可见。
-    if (_isUserPlaceholder) return _buildPlaceholder(context);
-    if (_isSystem) return _buildSystemNotice(context);
+    if (_isUserPlaceholder) {
+      return StaggeredEnterItem(
+        index: index,
+        child: _buildPlaceholder(context),
+      );
+    }
+    if (_isSystem) {
+      return StaggeredEnterItem(
+        index: index,
+        child: _buildSystemNotice(context),
+      );
+    }
 
     return StaggeredEnterItem(
       index: index,
@@ -166,8 +176,14 @@ class MessageBubble extends StatelessWidget {
   /// 「📎 N 个文件已上传」之类的提示文案。
   Widget _buildPlaceholder(BuildContext context) {
     final rawPaths = message.metadata?['mediaPaths'];
-    final fileCount = (rawPaths is List) ? rawPaths.length : 1;
-    final label = fileCount > 1 ? '📎 $fileCount 个文件已上传' : '📎 文件已上传';
+    final fileCount = (rawPaths is List && rawPaths.isNotEmpty)
+        ? rawPaths.length
+        : 0;
+    final label = fileCount == 0
+        ? '📎 空附件'
+        : fileCount > 1
+        ? '📎 $fileCount 个文件已上传'
+        : '📎 文件已上传';
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: XiaSpacing.pagePaddingH,

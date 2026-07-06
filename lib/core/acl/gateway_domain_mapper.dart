@@ -210,7 +210,7 @@ class GatewayDomainMapper {
     // 占位回退成 user 黄气泡(原 bug 复现)。改文案时需同步更新此处 + 测试。
     // 详见 memory openclaw-v2026-6-10-wire-format。
     const mediaPlaceholder = '[User sent media without caption]';
-    if (role == 'user' && content == mediaPlaceholder) {
+    if (role == 'user' && content?.trim() == mediaPlaceholder) {
       return MessageRole.userPlaceholder;
     }
     return switch (role) {

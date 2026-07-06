@@ -661,10 +661,32 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         }
         // 孤儿 toolResult(后面没有非 toolResult 消息)→ 独立渲染。
         if (message.role == MessageRole.toolResult) {
+          // 优先用 live ToolCall(如有):纯工具结果回合里它仍 keyed by
+          // sessionKey,经 ChatViewModel._rekeyToolCallForMessage 转到
+          // toolResult.clientId。
+          final live = toolCalls[message.clientId];
+          if (live != null) return ToolCallCard(toolCall: live);
+          // 若同 toolCallId 的 live 卡已挂在别的消息(如 agent 回复)下,
+          // 避免重复渲染历史卡。
+          final toolCallId = message.metadata?['toolCallId'] as String?;
+          final hasLiveElsewhere =
+              toolCallId != null &&
+              toolCalls.values.any((tc) => tc.id == toolCallId);
+          if (hasLiveElsewhere) return const SizedBox.shrink();
           return ToolCallCard(toolCall: toolCallFromMessage(message));
         }
         final tc = toolCalls[message.clientId];
-        final historyTools = toolResultsByOwner[message.clientId] ?? const [];
+        final historyTools = (toolResultsByOwner[message.clientId] ?? const [])
+            // 同 toolCallId 的 live 卡已存在时,跳过历史卡,避免与 agent 气泡下
+            // 的 live 卡重复渲染。
+            .where(
+              (ht) =>
+                  !(ht.metadata?['toolCallId'] is String &&
+                      toolCalls.values.any(
+                        (tc) => tc.id == ht.metadata!['toolCallId'],
+                      )),
+            )
+            .toList();
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [

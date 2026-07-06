@@ -231,6 +231,16 @@ void main() {
       expect(asBlocks.role, MessageRole.userPlaceholder);
     });
 
+    // 回归:网关若给占位文本加尾空格/换行,精确字符串匹配会失效,导致占位消息
+    // 被当成普通 user 消息渲染成黄色气泡。
+    test('userPlaceholder detection tolerates trailing whitespace', () {
+      final msg = mapper.parseMessage({
+        'role': 'user',
+        'content': '[User sent media without caption]\n',
+      });
+      expect(msg.role, MessageRole.userPlaceholder);
+    });
+
     // ----- regression #3: unknown role strings must NOT silently become user. -----
     // The switch's default arm was `_ => MessageRole.user` — any unrecognized role
     // string (e.g. a future 'function' / 'moderator') would render as a yellow user
