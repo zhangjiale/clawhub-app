@@ -232,6 +232,9 @@ class GatewayEventProcessor {
       case Events.agent:
         _onAgentEvent(instanceId, conn, payload);
 
+      case Events.sessionMessage:
+        _onSessionMessageEvent(instanceId, conn, payload);
+
       case Events.payloadLarge:
         // Gap #6: Gateway told us we sent an over-sized payload. Surface
         // it on the diagnostic stream so the UI can show a user-visible
@@ -413,6 +416,81 @@ class GatewayEventProcessor {
 
       case ChatState.unknown:
         break;
+    }
+  }
+
+  /// `session.message` 事件 — Gateway v2026.6.10+ 会话转录流。
+  ///
+  /// v2026.6.10 把 agent 最终回复(含图片 image block)从 `chat.final` 改为通过
+  /// `session.message` 投递:`payload.message` 携带完整 content blocks,
+  /// `payload.agentId` / `payload.messageId` 在 payload 根(不在 message 对象里)。
+  /// 旧实现只认 `chat`/`agent` 事件 → session.message 落到 `default: break` 被
+  /// 静默丢弃 → agent 回图永不渲染(用户看到流式文本但图片缺失)。
+  ///
+  /// 此处把 agent-role 的 session.message 走与 [chat.final] 相同的解析 + 去重 +
+  /// StreamingDone 路径:
+  /// - [_finalizedSessions] 去重:若 chat.final / agent.lifecycle.end 已为本 turn
+  ///   落过最终消息,跳过(反之亦然,chat.final 那边的同款检查会跳过本 turn),
+  ///   避免 v2026.6.10 同时投递两路时产生重复气泡。
+  /// - 注入 agentId(payload 根)+ serverId(payload.messageId)+ sessionKey
+  ///   (metadata),供 messageStream 监听器按 agent 路由 + merge 去重。
+  ///
+  /// 仅处理 agent-role(role=agent/assistant)消息:user/tool/system 的
+  /// session.message 仍走各自既有路径(本地发送 / 工具事件),避免重复。
+  void _onSessionMessageEvent(
+    String instanceId,
+    GatewayInstanceConnection conn,
+    Map<String, dynamic> payload,
+  ) {
+    final msgJson = payload['message'];
+    if (msgJson is! Map<String, dynamic>) return;
+
+    final sessionKey = payload['sessionKey'] as String? ?? '';
+    final bufferKey = '$instanceId:$sessionKey';
+
+    // Only agent-role replies — the captured v2026.6.10 image-bearing final
+    // reply is role=assistant. user/tool/system session.message would
+    // duplicate the local-send / tool-event paths, so leave them dropped.
+    final role = msgJson['role'] as String?;
+    if (role != 'agent' && role != 'assistant') return;
+
+    // Dedup against chat.final / agent.lifecycle.end for this turn — first
+    // handler to finalise wins.
+    if (!_finalizedSessions.add(bufferKey)) return;
+
+    final agentId =
+        (payload['agentId'] as String?) ?? _resolveAgentId(sessionKey) ?? '';
+
+    try {
+      final parsed = _mapper.parseMessage(msgJson);
+      final messageId = payload['messageId'] as String?;
+      // Inject agentId (at payload root, not in message) + serverId
+      // (payload.messageId) so the messageStream listener routes by agent
+      // and the merge layer can dedup by serverId.
+      conn.messageCtrl.add(
+        parsed.copyWith(
+          agentId: agentId,
+          serverId: parsed.serverId ?? messageId,
+          metadata: <String, dynamic>{
+            ...?parsed.metadata,
+            'sessionKey': sessionKey,
+          },
+        ),
+      );
+    } catch (error, stackTrace) {
+      _logger.error(
+        '[WsGateway] Failed to handle session.message for $instanceId: $error',
+        stackTrace,
+      );
+    }
+
+    // Turn complete — same cleanup as chat.final.
+    _streamingBuffers.remove(bufferKey);
+    _deltaSource.remove(bufferKey);
+    _activeRunIdBySession.remove(bufferKey);
+
+    if (agentId.isNotEmpty && !conn.streamingCtrl.isClosed) {
+      conn.streamingCtrl.add(StreamingDone(agentId: agentId));
     }
   }
 

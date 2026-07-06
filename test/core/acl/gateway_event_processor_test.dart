@@ -229,6 +229,143 @@ void main() {
     });
   });
 
+  // ----- session.message (v2026.6.10 protocol drift) -----
+  // Gateway v2026.6.10 delivers the agent's final reply (incl. image blocks)
+  // via `session.message` instead of `chat.final`. Captured packet at
+  // docs/technical/图片抓包.txt confirms: payload.message carries the full
+  // content blocks; payload.agentId / payload.messageId sit at the payload
+  // root. Without a handler the event hits `default: break` and is silently
+  // dropped → agent reply images never render.
+  group('session.message events', () {
+    test(
+      'session.message with agent reply emits Message + StreamingDone + image',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final messages = <Message>[];
+        conn.messageCtrl.stream.listen(messages.add);
+        final deltas = <StreamingEvent>[];
+        conn.streamingCtrl.stream.listen(deltas.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'session.message',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'agentId': 'a1',
+              'messageId': 'msg-uuid-1',
+              'message': {
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': '看这个图'},
+                  {'type': 'image', 'url': '/api/chat/media/outgoing/abc/full'},
+                ],
+                'timestamp': 1783350705336,
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(messages, hasLength(1));
+        final msg = messages.first;
+        expect(msg.role, MessageRole.agent);
+        expect(msg.type, MessageType.image);
+        expect(msg.metadata?['imageUrl'], '/api/chat/media/outgoing/abc/full');
+        expect(msg.agentId, 'a1'); // injected from payload.agentId
+        expect(msg.serverId, 'msg-uuid-1'); // injected from payload.messageId
+        expect(msg.metadata?['sessionKey'], 'agent:a1:main');
+        expect(deltas, hasLength(1));
+        expect(deltas.first, isA<StreamingDone>());
+        expect((deltas.first as StreamingDone).agentId, 'a1');
+      },
+    );
+
+    test('session.message dedups with chat.final for the same turn', () async {
+      processor.registerSend(
+        instanceId: 'inst-1',
+        sessionKey: 'agent:a1:main',
+        agentId: 'a1',
+      );
+
+      final messages = <Message>[];
+      conn.messageCtrl.stream.listen(messages.add);
+
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'session.message',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'agentId': 'a1',
+            'messageId': 'msg-uuid-1',
+            'message': {
+              'role': 'assistant',
+              'content': 'hello',
+              'timestamp': 1783350705336,
+            },
+          },
+        ),
+      );
+      processor.processEvent(
+        'inst-1',
+        conn,
+        const EventFrame(
+          event: 'chat',
+          payload: {
+            'sessionKey': 'agent:a1:main',
+            'state': 'final',
+            'message': {'role': 'agent', 'content': 'hello'},
+          },
+        ),
+      );
+
+      await pumpEventQueue();
+      // Only ONE message — whichever handler fires first finalizes the turn.
+      expect(messages, hasLength(1));
+    });
+
+    test(
+      'non-agent session.message is dropped (no duplicate with local send)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final messages = <Message>[];
+        conn.messageCtrl.stream.listen(messages.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'session.message',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'agentId': 'a1',
+              'messageId': 'msg-user-1',
+              'message': {'role': 'user', 'content': 'hi'},
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        // user-role session.message not handled — avoids duplicate with the
+        // locally-added sent message.
+        expect(messages, isEmpty);
+      },
+    );
+  });
+
   group('agent events', () {
     test('agent.assistant delta emits StreamingDelta', () async {
       processor.registerSend(

@@ -120,6 +120,12 @@ class Events {
   static const String connectChallenge = 'connect.challenge';
   static const String chat = 'chat';
   static const String agent = 'agent';
+
+  /// v2026.6.10+ 会话转录流 — agent 最终回复(含图片 block)改由
+  /// `session.message` 投递(payload.message 携带完整 content blocks),而非
+  /// `chat.final`。见 docs/technical/图片抓包.txt + memory
+  /// openclaw-v2026-6-10-wire-format。
+  static const String sessionMessage = 'session.message';
   static const String tick = 'tick';
   static const String presence = 'presence';
   static const String health = 'health';
