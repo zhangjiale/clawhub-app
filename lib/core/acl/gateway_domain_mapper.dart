@@ -91,21 +91,46 @@ class GatewayDomainMapper {
     // 不同量级会导致软匹配 ±60s 永不命中 + 排序错乱。< 1e12 视为秒级(1e12 ms
     // ≈ 2001 年,任何真实毫秒时间戳都 >= 1e12),×1000 归一化。
     final timestamp = _normalizeEpochMs(json['timestamp'] as int?);
-    // 响应侧图片捕获(PROTOCOL-VERIFY):若 content 是结构化 blocks 且含 image
-    // block,提升 type=image,把 imageUrl 写入 metadata。content 保留文本(作为
-    // 图片说明);imagePath getter 靠 imageUrl==null 区分用户本地图 vs Agent 回图,
-    // 故无需 null content。详见 extractImageRef。
-    final textContent =
-        extractTextContent(json['content']) ?? extractTextContent(json['text']);
+    // 响应侧图片捕获(PROTOCOL-VERIFY):入站 message 可能以下列任一形态携带图片,
+    // 任一命中即提升 type=image 并把 imageUrl 写入 metadata(image-fix-spec.md §3
+    // root cause):
+    //   1. content/text 是结构化 blocks 且含 image block → [extractImageRef]
+    //   2. OpenClaw 官方 payloads[].mediaUrl 字段
+    //      (docs.openclaw.ai/cli/agent: payloads:[{text, mediaUrl}])
+    //   3. metadata.imageUrl 独立存在(形态 4 兜底)
+    // content 保留文本(作为图片说明);imagePath getter 靠 imageUrl==null 区分
+    // 用户本地图 vs Agent 回图,故无需 null content。
+    final textContent = extractTextContent(json['content']) ??
+        extractTextContent(json['text']) ??
+        _extractTextFromPayloads(json);
     final imageRef =
         extractImageRef(json['content']) ?? extractImageRef(json['text']);
     final parsedType = _parseMessageType(json['type'] as String?);
-    final type = parsedType == MessageType.toolCall
-        ? parsedType
-        : (imageRef != null ? MessageType.image : parsedType);
+
+    // 提前构建 metadata(原在 type 判断之后,提前以读 metadata.imageUrl 兜底)。
     final incomingMetadata = json['metadata'] is Map<String, dynamic>
         ? Map<String, dynamic>.from(json['metadata'] as Map<String, dynamic>)
         : <String, dynamic>{};
+
+    // Phase 2 修复(image-fix-spec.md §4.2):从 OpenClaw 官方 payloads[] 提取
+    // mediaUrl 写入 metadata。不读这个字段,Agent 回图 type='text' + content=null
+    // 必然空白。优先级:imageRef > payloads[].mediaUrl > metadata.imageUrl。
+    final payloadMediaUrl = _extractMediaUrlFromPayloads(json);
+    if (payloadMediaUrl != null) {
+      incomingMetadata['imageUrl'] = payloadMediaUrl;
+    }
+
+    // 类型提升:imageRef 命中 OR metadata.imageUrl 非空 → image。
+    // toolCall 永不提升(保留工具调用语义)。
+    final hasImageMetadata = incomingMetadata['imageUrl'] is String &&
+        (incomingMetadata['imageUrl'] as String).isNotEmpty;
+    final type = parsedType == MessageType.toolCall
+        ? parsedType
+        : (imageRef != null || hasImageMetadata
+            ? MessageType.image
+            : parsedType);
+
+    // imageRef 命中时覆盖 metadata.imageUrl(保持原行为兼容:imageRef 优先级最高)。
     if (imageRef != null) {
       incomingMetadata['imageUrl'] = imageRef;
     }
@@ -232,5 +257,42 @@ class GatewayDomainMapper {
       }
     }
     return null;
+  }
+
+  /// Phase 2 修复(image-fix-spec.md §4.2.1):从 OpenClaw 官方 `payloads[]` 提取
+  /// 第一个非空 `mediaUrl`。
+  ///
+  /// OpenClaw CLI/agent 协议(docs.openclaw.ai/cli/agent):
+  ///   payloads: [{text, mediaUrl}, ...]
+  /// Agent 回图时 mediaUrl 携带 data: URL 或 https URL。原 parseMessage 只看
+  /// content blocks(imageRef),漏掉此字段 → type='text' + content=null → 空白。
+  static String? _extractMediaUrlFromPayloads(dynamic json) {
+    final payloads = json is Map ? json['payloads'] : null;
+    if (payloads is! List) return null;
+    for (final p in payloads) {
+      if (p is Map && p['mediaUrl'] is String) {
+        final url = (p['mediaUrl'] as String).trim();
+        if (url.isNotEmpty && url != 'null') return url;
+      }
+    }
+    return null;
+  }
+
+  /// Phase 2 修复:从 `payloads[]` 拼接非空 `text` 作为 content 兜底。
+  ///
+  /// OpenClaw payloads 形态每个元素含 {text, mediaUrl};当顶层 content 为 null
+  /// 时,文字描述(图片说明)在 payloads[].text。与 [extractTextContent] 的
+  /// block 拼接风格一致(空分隔符 join)。
+  static String? _extractTextFromPayloads(dynamic json) {
+    final payloads = json is Map ? json['payloads'] : null;
+    if (payloads is! List) return null;
+    final texts = <String>[];
+    for (final p in payloads) {
+      if (p is Map && p['text'] is String) {
+        final t = p['text'] as String;
+        if (t.isNotEmpty) texts.add(t);
+      }
+    }
+    return texts.isEmpty ? null : texts.join();
   }
 }

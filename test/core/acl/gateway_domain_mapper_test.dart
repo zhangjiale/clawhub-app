@@ -242,6 +242,68 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // parseMessage — Phase 2 image-fix (payloads / metadata.imageUrl)
+  // See docs/technical/image-fix-spec.md §4.3
+  // ---------------------------------------------------------------------------
+  group('Bug fix: Agent 回图 type="text" 但 payloads[].mediaUrl / metadata.imageUrl', () {
+    test('形态 1: type=text + content=null + payloads 含 mediaUrl → type=image', () {
+      final msg = mapper.parseMessage({
+        'agentId': 'r-1',
+        'sessionKey': 'agent:r-1:main',
+        'content': null,
+        'role': 'agent',
+        'type': 'text',
+        'payloads': [
+          {'text': '图表说明', 'mediaUrl': 'data:image/png;base64,XXX'},
+        ],
+      });
+      expect(msg.type, MessageType.image); // 提升为 image
+      expect(msg.imageUrl, 'data:image/png;base64,XXX');
+      expect(msg.content, '图表说明'); // payloads[0].text 也读
+    });
+
+    test('形态 1 多 payload: 第一个 text-only, 第二个纯 image → type=image', () {
+      final msg = mapper.parseMessage({
+        'content': null,
+        'role': 'agent',
+        'type': 'text',
+        'payloads': [
+          {'text': '这是图表', 'mediaUrl': null},
+          {'text': null, 'mediaUrl': 'https://cdn.example.com/chart.png'},
+        ],
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.imageUrl, 'https://cdn.example.com/chart.png');
+    });
+
+    test('形态 4: type=text + content=描述文本 + metadata.imageUrl 独立 → type=image', () {
+      final msg = mapper.parseMessage({
+        'content': '这是图表',
+        'role': 'agent',
+        'type': 'text',
+        'metadata': {'imageUrl': 'data:image/png;base64,XXX'},
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.imageUrl, 'data:image/png;base64,XXX');
+      expect(msg.content, '这是图表');
+    });
+
+    test('形态 5 兼容: content=blocks(image) → 保持原行为(imageRef 命中)', () {
+      final msg = mapper.parseMessage({
+        'content': [
+          {'type': 'text', 'text': '描述'},
+          {'type': 'image', 'url': 'https://x.com/a.png'},
+        ],
+        'role': 'agent',
+        'type': 'image',
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.imageUrl, 'https://x.com/a.png');
+      expect(msg.content, '描述');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // buildAgentFallbackMessage
   // ---------------------------------------------------------------------------
   group('buildAgentFallbackMessage', () {
