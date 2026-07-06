@@ -49,8 +49,9 @@ class PreviewUpdater {
     // 是上传占位、system 是系统通知,写入预览会覆盖真正的最后聊天消息。
     if (message.role == MessageRole.toolResult ||
         message.role == MessageRole.userPlaceholder ||
-        message.role == MessageRole.system)
+        message.role == MessageRole.system) {
       return;
+    }
 
     if (_pending == null || message.timestamp >= _pending!.timestamp) {
       _pending = message;

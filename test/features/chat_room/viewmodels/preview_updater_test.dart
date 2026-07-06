@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
@@ -7,7 +5,7 @@ import 'package:claw_hub/features/chat_room/viewmodels/preview_updater.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  Message _msg({
+  Message msg({
     required String clientId,
     required MessageRole role,
     MessageType type = MessageType.text,
@@ -33,7 +31,7 @@ void main() {
         isMounted: () => true,
       );
 
-      updater.schedule(_msg(clientId: 'm1', role: MessageRole.agent));
+      updater.schedule(msg(clientId: 'm1', role: MessageRole.agent));
       await pumpEventQueue();
 
       expect(flushed, isNotNull);
@@ -48,7 +46,7 @@ void main() {
       );
 
       updater.schedule(
-        _msg(
+        msg(
           clientId: 'm1',
           role: MessageRole.agent,
           type: MessageType.toolCall,
@@ -67,7 +65,7 @@ void main() {
         isMounted: () => true,
       );
 
-      updater.schedule(_msg(clientId: 'm1', role: MessageRole.toolResult));
+      updater.schedule(msg(clientId: 'm1', role: MessageRole.toolResult));
       await pumpEventQueue();
 
       expect(flushed, isNull);
@@ -80,7 +78,7 @@ void main() {
         isMounted: () => true,
       );
 
-      updater.schedule(_msg(clientId: 'm1', role: MessageRole.userPlaceholder));
+      updater.schedule(msg(clientId: 'm1', role: MessageRole.userPlaceholder));
       await pumpEventQueue();
 
       expect(flushed, isNull);
@@ -93,7 +91,7 @@ void main() {
         isMounted: () => true,
       );
 
-      updater.schedule(_msg(clientId: 'm1', role: MessageRole.system));
+      updater.schedule(msg(clientId: 'm1', role: MessageRole.system));
       await pumpEventQueue();
 
       expect(flushed, isNull);
@@ -109,10 +107,10 @@ void main() {
         );
 
         updater.schedule(
-          _msg(clientId: 'old', role: MessageRole.agent, timestamp: 1000),
+          msg(clientId: 'old', role: MessageRole.agent, timestamp: 1000),
         );
         updater.schedule(
-          _msg(clientId: 'new', role: MessageRole.agent, timestamp: 2000),
+          msg(clientId: 'new', role: MessageRole.agent, timestamp: 2000),
         );
         await pumpEventQueue();
 

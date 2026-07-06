@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  Message _msg({
+  Message msg({
     required String clientId,
     required MessageRole role,
     String content = '',
@@ -27,9 +27,9 @@ void main() {
   group('groupToolResultsByOwner', () {
     test('attaches toolResult to the following agent message', () {
       final messages = [
-        _msg(clientId: 'user', role: MessageRole.user, logicalClock: 1),
-        _msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
-        _msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
+        msg(clientId: 'user', role: MessageRole.user, logicalClock: 1),
+        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
+        msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
       ];
 
       final grouped = groupToolResultsByOwner(messages);
@@ -43,14 +43,14 @@ void main() {
     // 挂到这些非 agent 消息上;否则 agent 回复会缺少工具卡。
     test('does NOT attach toolResult to userPlaceholder', () {
       final messages = [
-        _msg(clientId: 'user', role: MessageRole.user, logicalClock: 1),
-        _msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
-        _msg(
+        msg(clientId: 'user', role: MessageRole.user, logicalClock: 1),
+        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
+        msg(
           clientId: 'placeholder',
           role: MessageRole.userPlaceholder,
           logicalClock: 3,
         ),
-        _msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 4),
+        msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 4),
       ];
 
       final grouped = groupToolResultsByOwner(messages);
@@ -62,9 +62,9 @@ void main() {
 
     test('does NOT attach toolResult to system message', () {
       final messages = [
-        _msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
-        _msg(clientId: 'system', role: MessageRole.system, logicalClock: 2),
-        _msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
+        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
+        msg(clientId: 'system', role: MessageRole.system, logicalClock: 2),
+        msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
       ];
 
       final grouped = groupToolResultsByOwner(messages);
@@ -76,9 +76,9 @@ void main() {
 
     test('does NOT attach toolResult to user message', () {
       final messages = [
-        _msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
-        _msg(clientId: 'user', role: MessageRole.user, logicalClock: 2),
-        _msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
+        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
+        msg(clientId: 'user', role: MessageRole.user, logicalClock: 2),
+        msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
       ];
 
       final grouped = groupToolResultsByOwner(messages);
@@ -90,8 +90,8 @@ void main() {
 
     test('orphan toolResult at end is not owned', () {
       final messages = [
-        _msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 1),
-        _msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
+        msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 1),
+        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
       ];
 
       final grouped = groupToolResultsByOwner(messages);
@@ -124,14 +124,14 @@ void main() {
     // - 多行 shell stdout(>3 行)折叠成 3 行 + "展开全部"。
     // - 单行长字符串(罕见,如 500 字符单行错误消息)让 maxLines 自然换行,
     //   不会被字符阈值误判。
-    String _multiLine(int n) => List.generate(n, (i) => 'line $i').join('\n');
+    String multiLine(int n) => List.generate(n, (i) => 'line $i').join('\n');
 
     testWidgets('multi-line output can be expanded and collapsed', (
       tester,
     ) async {
       await tester.binding.setSurfaceSize(const Size(800, 1200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(wrap(tc(output: _multiLine(50))));
+      await tester.pumpWidget(wrap(tc(output: multiLine(50))));
       expect(find.text('展开全部 ▼'), findsOneWidget);
 
       await tester.tap(find.text('展开全部 ▼'));
@@ -150,7 +150,7 @@ void main() {
     ) async {
       await tester.binding.setSurfaceSize(const Size(800, 1200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(wrap(tc(output: _multiLine(50))));
+      await tester.pumpWidget(wrap(tc(output: multiLine(50))));
       await tester.tap(find.text('展开全部 ▼'));
       await tester.pumpAndSettle();
       expect(find.text('收起 ▲'), findsOneWidget);
@@ -196,7 +196,7 @@ void main() {
     ) async {
       await tester.binding.setSurfaceSize(const Size(800, 1200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(wrap(tc(output: _multiLine(50))));
+      await tester.pumpWidget(wrap(tc(output: multiLine(50))));
       await tester.tap(find.text('展开全部 ▼'));
       await tester.pumpAndSettle();
       expect(find.text('收起 ▲'), findsOneWidget);
