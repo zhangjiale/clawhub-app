@@ -117,23 +117,27 @@ class GatewayDomainMapper {
     final incomingMetadata = json['metadata'] is Map<String, dynamic>
         ? Map<String, dynamic>.from(json['metadata'] as Map<String, dynamic>)
         : <String, dynamic>{};
-    final payloadMediaUrl = _extractMediaUrlFromPayloads(json);
-    if (payloadMediaUrl != null) {
-      incomingMetadata['imageUrl'] = payloadMediaUrl;
+    // 归一化已存在的 metadata.imageUrl(trim + 拒绝 'null'/空串),与 payloads 路径
+    // 保持一致(#15)。优先级: imageRef(含 attachment) > payloads[].mediaUrl > metadata.imageUrl。
+    final normalizedExisting = _normalizeImageUrl(incomingMetadata['imageUrl']);
+    if (normalizedExisting != null) {
+      incomingMetadata['imageUrl'] = normalizedExisting;
+    } else {
+      incomingMetadata.remove('imageUrl');
     }
-    // 类型提升:imageRef 命中 OR metadata.imageUrl 非空 → image。
-    // toolCall 永不提升(保留工具调用语义,由 MessageBubble._buildToolResult 渲染)。
-    final hasImageMetadata =
-        incomingMetadata['imageUrl'] is String &&
-        (incomingMetadata['imageUrl'] as String).isNotEmpty;
-    final type = parsedType == MessageType.toolCall
-        ? parsedType
-        : ((imageRef != null || hasImageMetadata)
-              ? MessageType.image
-              : parsedType);
-    // imageRef 命中时覆盖 metadata.imageUrl(优先级最高,含 attachment)。
-    if (imageRef != null) {
-      incomingMetadata['imageUrl'] = imageRef;
+    final effectiveImageUrl =
+        imageRef ?? _extractMediaUrlFromPayloads(json) ?? normalizedExisting;
+    // 类型提升:仅 text → image。toolCall 保留工具调用语义(由 ToolCallCard 渲染);
+    // file 保留文件渲染语义(由 MessageFileContent 渲染文件名/大小/下载)。任一携带
+    // imageUrl 都不得提升为 image,否则会丢掉各自的渲染语义(#4/#6)。
+    final type = (parsedType == MessageType.text && effectiveImageUrl != null)
+        ? MessageType.image
+        : parsedType;
+    // 仅 image 消息持久化 imageUrl;非 image 消息清除,避免 type 与 metadata 矛盾(#6)。
+    if (type == MessageType.image && effectiveImageUrl != null) {
+      incomingMetadata['imageUrl'] = effectiveImageUrl;
+    } else {
+      incomingMetadata.remove('imageUrl');
     }
     // Capture-verified (2026-07-05, OpenClaw v2026.6.10): toolResult / 上传占位消息把
     // toolName / toolCallId / isError / MediaPaths 放在**顶层字段**,不在 metadata
@@ -153,7 +157,7 @@ class GatewayDomainMapper {
       incomingMetadata['isError'] = isError;
     }
     // MediaPaths(大写 M,顶层 List)→ mediaPaths(供 _buildPlaceholder 数份数)。
-    // 兼容单数 MediaPath(字符串)——UI 的 `rawPaths is List` 判断会兜成 1 份。
+    // 兼容单数 MediaPath(字符串)——_buildPlaceholder 把非空 String 视为 1 份。
     final mediaPaths = json['MediaPaths'] ?? json['MediaPath'];
     if (mediaPaths != null) {
       incomingMetadata['mediaPaths'] = mediaPaths;
@@ -262,22 +266,32 @@ class GatewayDomainMapper {
   /// This method normalises both formats to a single [String] (or `null`).
   static String? extractTextContent(dynamic raw) {
     if (raw == null) return null;
-    if (raw is String) return raw;
+    if (raw is String) {
+      // '' → null: an empty string is "no text", not a caption. Returning ''
+      // would short-circuit the ?? fallback chain in [parseMessage] and drop a
+      // payloads[].text caption (#3).
+      return raw.isEmpty ? null : raw;
+    }
     if (raw is List) {
       if (raw.isEmpty) return null; // [] → null, avoid '[]' literal in content
       // Structured content blocks: [{"type": "text", "text": "..."}, ...]
       // Join all text-type blocks with empty separator.
       if (raw.first is Map) {
-        return (raw)
+        final text = (raw)
             .whereType<Map<String, dynamic>>()
             .where((b) => b['type'] == 'text')
             .map((b) => (b['text'] as String?) ?? '')
             .join();
+        // No text blocks (e.g. only attachment/image blocks) → null, so the
+        // ?? chain falls through to payloads[].text (#3). Returning '' here
+        // would silently swallow the caption.
+        return text.isEmpty ? null : text;
       }
       // Simple string list: ["a", "b"]
       // Note: null entries are filtered by whereType<String>();
       // empty strings silently contribute nothing to join('').
-      return (raw).whereType<String>().join();
+      final text = (raw).whereType<String>().join();
+      return text.isEmpty ? null : text;
     }
     return raw.toString();
   }
@@ -292,16 +306,17 @@ class GatewayDomainMapper {
       if (block is! Map<String, dynamic>) continue;
       if (block['type'] == 'image_url') {
         final url = (block['image_url'] as Map?)?['url'];
-        if (url is String && url.isNotEmpty) return url;
+        final normalized = _normalizeImageUrl(url);
+        if (normalized != null) return normalized;
       } else if (block['type'] == 'image') {
         // F.5 实测:url 直接在 block 根。
-        final url = block['url'];
-        if (url is String && url.isNotEmpty) return url;
+        final normalized = _normalizeImageUrl(block['url']);
+        if (normalized != null) return normalized;
         // 防御性兼容:嵌套在 image:{url}(未见实测,但 extractTextContent 旧测试用过)。
         final img = block['image'];
         if (img is Map) {
-          final innerUrl = img['url'];
-          if (innerUrl is String && innerUrl.isNotEmpty) return innerUrl;
+          final normalizedInner = _normalizeImageUrl(img['url']);
+          if (normalizedInner != null) return normalizedInner;
         }
       } else if (block['type'] == 'attachment') {
         // PROTOCOL-VERIFY (docs/technical/openclaw-media-protocol.md §4.2):
@@ -314,13 +329,23 @@ class GatewayDomainMapper {
         if (att is Map) {
           final kind = att['kind'];
           if (kind == 'image' || kind == null) {
-            final url = att['url'];
-            if (url is String && url.isNotEmpty) return url;
+            final normalized = _normalizeImageUrl(att['url']);
+            if (normalized != null) return normalized;
           }
         }
       }
     }
     return null;
+  }
+
+  /// 归一化候选 imageUrl:trim + 拒绝空串与字面量 'null'(部分 adapter 把 null
+  /// 字符串化)。所有 imageUrl 来源(metadata / payloads / attachment / image
+  /// block)统一过此函数,使类型提升门与 metadata 持久化防御一致(#15/#16)。
+  static String? _normalizeImageUrl(Object? url) {
+    if (url is! String) return null;
+    final trimmed = url.trim();
+    if (trimmed.isEmpty || trimmed == 'null') return null;
+    return trimmed;
   }
 
   /// 防御兜底(PROTOCOL-VERIFY-PENDING):从 `payloads[]` 提取第一个非空 `mediaUrl`。
@@ -332,9 +357,9 @@ class GatewayDomainMapper {
     final payloads = json is Map ? json['payloads'] : null;
     if (payloads is! List) return null;
     for (final p in payloads) {
-      if (p is Map && p['mediaUrl'] is String) {
-        final url = (p['mediaUrl'] as String).trim();
-        if (url.isNotEmpty && url != 'null') return url;
+      if (p is Map) {
+        final normalized = _normalizeImageUrl(p['mediaUrl']);
+        if (normalized != null) return normalized;
       }
     }
     return null;

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:claw_hub/app/theme/agent_theme.dart';
+import 'package:claw_hub/core/utils/gateway_media_url.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/enums.dart';
@@ -28,6 +29,10 @@ class MessageBubble extends StatelessWidget {
   final int index; // B3: for staggered enter delay
   final VoidCallback? onRetry; // US-015 AC2: retry FAILED messages
   final bool isHighlighted; // search-result highlight
+  // #1: Gateway HTTP base URL + device token, used to resolve Agent reply
+  // images (relative /api/chat/media/outgoing/... URLs) to authenticated
+  // absolute URLs. null in tests / when instance context is unavailable.
+  final GatewayMediaAuth? mediaAuth;
 
   const MessageBubble({
     super.key,
@@ -36,6 +41,7 @@ class MessageBubble extends StatelessWidget {
     this.index = 0,
     this.onRetry,
     this.isHighlighted = false,
+    this.mediaAuth,
   });
 
   bool get _isUser => message.role == MessageRole.user;
@@ -176,9 +182,10 @@ class MessageBubble extends StatelessWidget {
   /// 「📎 N 个文件已上传」之类的提示文案。
   Widget _buildPlaceholder(BuildContext context) {
     final rawPaths = message.metadata?['mediaPaths'];
-    final fileCount = (rawPaths is List && rawPaths.isNotEmpty)
-        ? rawPaths.length
-        : 0;
+    // MediaPaths 是顶层 List;兼容单数 MediaPath(字符串)——非空 String 视为 1 份(#5)。
+    final fileCount = rawPaths is List
+        ? (rawPaths.isNotEmpty ? rawPaths.length : 0)
+        : (rawPaths is String && rawPaths.isNotEmpty ? 1 : 0);
     final label = fileCount == 0
         ? '📎 空附件'
         : fileCount > 1
@@ -249,7 +256,11 @@ class MessageBubble extends StatelessWidget {
   Widget _buildContent(Message message) {
     switch (message.type) {
       case MessageType.image:
-        return MessageImageContent(message: message, isUser: _isUser);
+        return MessageImageContent(
+          message: message,
+          isUser: _isUser,
+          mediaAuth: mediaAuth,
+        );
       case MessageType.file:
         return MessageFileContent(message: message, isUser: _isUser);
       case MessageType.text:

@@ -1,0 +1,136 @@
+{
+    "type": "event",
+    "event": "session.message",
+    "payload": {
+        "sessionKey": "agent:english-tutor:main",
+        "agentId": "english-tutor",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "当然可以！再发一次给你 💕\n📌 **小提示：** 长按图片就能保存到手机相册啦~\n喜欢的话就收好！要不要我再生成一张**不同姿势**或**不同配色**的给你收藏？比如：\n- 🌙 暗黑哥特风\n- ☀️ 阳光活泼风\n- 🎀 粉嫩甜美风\n- ⚔️ 战士/勇者风\n或者保持原样再来一张也行！😊"
+                },
+                {
+                    "type": "image",
+                    "url": "/api/chat/media/outgoing/agent%3Aenglish-tutor%3Amain/c3e0409e-3a5e-4a9b-aae2-60110368dc4b/full",
+                    "openUrl": "/api/chat/media/outgoing/agent%3Aenglish-tutor%3Amain/c3e0409e-3a5e-4a9b-aae2-60110368dc4b/full",
+                    "alt": "chibi-character-red-white---46206cec-e4f0-4efa-9950-da559c170eed.png",
+                    "mimeType": "image/jpeg",
+                    "width": 1024,
+                    "height": 1024
+                }
+            ],
+            "timestamp": 1783350705336,
+            "stopReason": "stop",
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "totalTokens": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": {
+                    "total": 0
+                }
+            },
+            "api": "openai-responses",
+            "provider": "openclaw",
+            "model": "gateway-injected",
+            "idempotencyKey": "8b49d8d5-8011-4c00-a6b1-6da9b9705383:assistant-media",
+            "__openclaw": {
+                "id": "edb8d11f-d368-47ac-9fd4-ae22c67b7d94",
+                "seq": 13
+            }
+        },
+        "messageId": "edb8d11f-d368-47ac-9fd4-ae22c67b7d94",
+        "messageSeq": 13,
+        "session": {
+            "key": "agent:english-tutor:main",
+            "kind": "direct",
+            "displayName": "虾Hub",
+            "channel": "webchat",
+            "chatType": "direct",
+            "origin": {
+                "label": "虾Hub",
+                "provider": "webchat",
+                "surface": "webchat",
+                "chatType": "direct"
+            },
+            "updatedAt": 1783350705348,
+            "sessionId": "801eb426-8f12-41e5-b7fa-643393daf6ae",
+            "systemSent": true,
+            "abortedLastRun": false,
+            "thinkingLevels": [
+                {
+                    "id": "off",
+                    "label": "off"
+                },
+                {
+                    "id": "adaptive",
+                    "label": "adaptive"
+                }
+            ],
+            "thinkingOptions": [
+                "off",
+                "adaptive"
+            ],
+            "thinkingDefault": "adaptive",
+            "effectiveFastMode": false,
+            "effectiveFastModeSource": "default",
+            "fastAutoOnSeconds": 60,
+            "inputTokens": 3057,
+            "outputTokens": 254,
+            "totalTokens": 27761,
+            "totalTokensFresh": true,
+            "estimatedCostUsd": 0.0226494,
+            "status": "done",
+            "startedAt": 1783350698057,
+            "endedAt": 1783350704968,
+            "runtimeMs": 6911,
+            "modelProvider": "minimax-portal",
+            "model": "MiniMax-M3",
+            "agentRuntime": {
+                "id": "auto",
+                "source": "implicit"
+            },
+            "contextTokens": 1000000,
+            "deliveryContext": {
+                "channel": "webchat"
+            },
+            "lastChannel": "webchat",
+            "hasActiveRun": false
+        },
+        "updatedAt": 1783350705348,
+        "sessionId": "801eb426-8f12-41e5-b7fa-643393daf6ae",
+        "kind": "direct",
+        "channel": "webchat",
+        "chatType": "direct",
+        "origin": {
+            "label": "虾Hub",
+            "provider": "webchat",
+            "surface": "webchat",
+            "chatType": "direct"
+        },
+        "displayName": "虾Hub",
+        "deliveryContext": {
+            "channel": "webchat"
+        },
+        "systemSent": true,
+        "abortedLastRun": false,
+        "inputTokens": 3057,
+        "outputTokens": 254,
+        "lastChannel": "webchat",
+        "totalTokens": 27761,
+        "totalTokensFresh": true,
+        "goal": null,
+        "contextTokens": 1000000,
+        "estimatedCostUsd": 0.0226494,
+        "modelProvider": "minimax-portal",
+        "model": "MiniMax-M3",
+        "status": "done",
+        "hasActiveRun": false,
+        "startedAt": 1783350698057,
+        "endedAt": 1783350704968,
+        "runtimeMs": 6911
+    }
+}

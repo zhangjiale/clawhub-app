@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/app/di/providers.dart';
+import 'package:claw_hub/core/utils/gateway_media_url.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/chat_view_model.dart';
 import 'package:claw_hub/features/settings/providers/clear_cache_guard.dart';
 
@@ -122,4 +123,29 @@ final chatViewModelProvider =
       });
 
       return vm;
+    });
+
+/// #1: Gateway HTTP base URL + device token for [instanceId], used to
+/// authenticate Agent reply image fetches. Agent images arrive as relative
+/// `/api/chat/media/outgoing/...` URLs (see docs/technical/图片抓包.txt);
+/// [NetworkImage] needs an absolute URL + Bearer auth (§6.2) to render them.
+///
+/// Resolves once per instance and stays cached (instance URL + device token
+/// are stable across message list rebuilds). Both fields are null while
+/// loading or if the instance/token is unavailable — images then render
+/// broken (errorBuilder → "图片不可用") rather than crashing.
+///
+/// Watched by [ChatRoomPage] and threaded down to [MessageBubble] /
+/// MessageImageContent. Kept out of [ChatSessionState] so message-stream
+/// rebuilds don't re-await the secure-storage read.
+final gatewayMediaAuthProvider =
+    FutureProvider.family<GatewayMediaAuth, String>((ref, instanceId) async {
+      final instance = await ref
+          .watch(instanceRepoProvider)
+          .getById(instanceId);
+      final baseUrl = instance != null
+          ? httpBaseFromWsUrl(instance.gatewayUrl)
+          : null;
+      final token = await ref.watch(deviceTokenStoreProvider).load(instanceId);
+      return GatewayMediaAuth(baseUrl: baseUrl, token: token);
     });

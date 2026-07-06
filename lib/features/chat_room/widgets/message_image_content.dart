@@ -1,4 +1,5 @@
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/core/utils/gateway_media_url.dart';
 import 'package:claw_hub/ui_kit/attachment_image_resolver.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:flutter/material.dart';
@@ -15,17 +16,22 @@ import 'package:flutter/material.dart';
 ///   are downsampled at decode time, avoiding OOM in long lists. Adds a
 ///   [loadingBuilder] placeholder.
 /// - **P2**: no `dart:io` import here (lives in [resolveAttachmentImage]).
+/// - **#1**: [mediaAuth] supplies the Gateway HTTP base URL + device token so
+///   Agent reply images (relative `/api/chat/media/outgoing/...` URLs) resolve
+///   to an authenticated absolute URL instead of failing in [NetworkImage].
 ///
 /// Law 2 compliant: this widget renders UI only — all path/URL → ImageProvider
 /// resolution is delegated to the core util.
 class MessageImageContent extends StatelessWidget {
   final Message message;
   final bool isUser;
+  final GatewayMediaAuth? mediaAuth;
 
   const MessageImageContent({
     super.key,
     required this.message,
     required this.isUser,
+    this.mediaAuth,
   });
 
   @override
@@ -33,6 +39,8 @@ class MessageImageContent extends StatelessWidget {
     final provider = resolveAttachmentImage(
       imageUrl: message.imageUrl,
       imagePath: message.imagePath,
+      gatewayBaseUrl: mediaAuth?.baseUrl,
+      authToken: mediaAuth?.token,
     );
     if (provider == null) {
       return Text(

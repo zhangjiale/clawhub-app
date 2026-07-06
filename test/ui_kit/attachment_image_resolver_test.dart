@@ -60,6 +60,68 @@ void main() {
       expect(provider, isA<NetworkImage>());
     });
 
+    // ----- #1: Gateway-relative media URL resolution + auth -----
+    test(
+      'gateway-relative URL + base + token → resolved URL + Bearer header (#1)',
+      () {
+        final provider =
+            resolveAttachmentImage(
+                  imageUrl: '/api/chat/media/outgoing/abc/full',
+                  gatewayBaseUrl: 'http://192.168.1.5:3000',
+                  authToken: 'dev-token-abc',
+                )
+                as NetworkImage;
+        expect(
+          provider.url,
+          'http://192.168.1.5:3000/api/chat/media/outgoing/abc/full',
+        );
+        expect(provider.headers?['Authorization'], 'Bearer dev-token-abc');
+      },
+    );
+
+    test(
+      'gateway-relative URL + base, no token → resolved URL, no auth header (#1)',
+      () {
+        final provider =
+            resolveAttachmentImage(
+                  imageUrl: '/api/chat/media/outgoing/abc/full',
+                  gatewayBaseUrl: 'http://192.168.1.5:3000',
+                )
+                as NetworkImage;
+        expect(
+          provider.url,
+          'http://192.168.1.5:3000/api/chat/media/outgoing/abc/full',
+        );
+        expect(provider.headers?['Authorization'], isNull);
+      },
+    );
+
+    test(
+      'absolute https URL never gets Bearer header (no token leak) (#1)',
+      () {
+        final provider =
+            resolveAttachmentImage(
+                  imageUrl: 'https://cdn.example.com/x.png',
+                  gatewayBaseUrl: 'http://192.168.1.5:3000',
+                  authToken: 'dev-token-abc',
+                )
+                as NetworkImage;
+        expect(provider.url, 'https://cdn.example.com/x.png');
+        expect(provider.headers?['Authorization'], isNull);
+      },
+    );
+
+    test('relative URL with no base stays relative, no auth (#1)', () {
+      final provider =
+          resolveAttachmentImage(
+                imageUrl: '/api/chat/media/outgoing/abc',
+                authToken: 'dev-token-abc',
+              )
+              as NetworkImage;
+      expect(provider.url, '/api/chat/media/outgoing/abc');
+      expect(provider.headers?['Authorization'], isNull);
+    });
+
     test('local file path → FileImage', () async {
       final tempDir = await Directory.systemTemp.createTemp('resolver_test_');
       final tempFile = File('${tempDir.path}/img.jpg');

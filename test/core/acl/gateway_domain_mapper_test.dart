@@ -42,6 +42,19 @@ void main() {
     test('falls back to toString for unrecognized non-list types', () {
       expect(GatewayDomainMapper.extractTextContent(42), '42');
     });
+
+    // ----- #3: extractTextContent must return null (not '') for "no text" so
+    // the ?? fallback chain in parseMessage reaches _extractTextFromPayloads.
+    test('returns null for empty string (#3)', () {
+      expect(GatewayDomainMapper.extractTextContent(''), isNull);
+    });
+
+    test('returns null for content list with only non-text blocks (#3)', () {
+      final blocks = [
+        {'type': 'image', 'url': 'https://x.com/a.png'},
+      ];
+      expect(GatewayDomainMapper.extractTextContent(blocks), isNull);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -517,6 +530,104 @@ void main() {
       expect(msg.type, MessageType.image);
       expect(msg.metadata?['imageUrl'], 'https://x.com/a.png');
       expect(msg.content, '描述');
+    });
+
+    // ----- #3 integration: content list with only non-text blocks must fall
+    // through to payloads[].text instead of swallowing the caption with ''.
+    test(
+      'content list with only non-text blocks falls through to payloads[].text (#3)',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'agent',
+          'type': 'text',
+          'content': [
+            {
+              'type': 'attachment',
+              'attachment': {'url': '/img.png', 'kind': 'image'},
+            },
+          ],
+          'payloads': [
+            {'text': 'caption'},
+          ],
+        });
+        expect(msg.type, MessageType.image);
+        expect(msg.metadata?['imageUrl'], '/img.png');
+        expect(msg.content, 'caption');
+      },
+    );
+
+    // ----- #4: a file-typed message must NOT be promoted to image even when
+    // metadata.imageUrl is present (file keeps file rendering affordances).
+    test('file type with imageUrl is NOT promoted to image (#4)', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'file',
+        'metadata': {'imageUrl': 'thumb.png'},
+      });
+      expect(msg.type, MessageType.file);
+    });
+
+    // ----- #6: payloadMediaUrl must not leak a spurious imageUrl onto a
+    // toolCall-typed message (type says tool-call, metadata said image-present).
+    test(
+      'toolCall with payloads mediaUrl does not carry spurious imageUrl (#6)',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'toolResult',
+          'type': 'toolCall',
+          'content': 'result',
+          'payloads': [
+            {'mediaUrl': 'https://x.png'},
+          ],
+        });
+        expect(msg.type, MessageType.toolCall);
+        expect(msg.metadata?['imageUrl'], isNull);
+      },
+    );
+
+    // ----- #15: metadata.imageUrl gate must reject whitespace-only and the
+    // literal string 'null' (consistent with _extractMediaUrlFromPayloads).
+    test(
+      'metadata.imageUrl whitespace-only does not promote to image (#15)',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'agent',
+          'type': 'text',
+          'metadata': {'imageUrl': ' '},
+        });
+        expect(msg.type, MessageType.text);
+        expect(msg.metadata?['imageUrl'], isNull);
+      },
+    );
+
+    test(
+      'metadata.imageUrl literal "null" does not promote to image (#15)',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'agent',
+          'type': 'text',
+          'metadata': {'imageUrl': 'null'},
+        });
+        expect(msg.type, MessageType.text);
+        expect(msg.metadata?['imageUrl'], isNull);
+      },
+    );
+
+    // ----- #16: extractImageRef's attachment branch must reject the literal
+    // string 'null' as a URL (consistent with the payloads path).
+    test('attachment block url literal "null" is not extracted (#16)', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': [
+          {
+            'type': 'attachment',
+            'attachment': {'url': 'null', 'kind': 'image'},
+          },
+        ],
+      });
+      expect(msg.type, MessageType.text);
+      expect(msg.metadata?['imageUrl'], isNull);
     });
   });
 

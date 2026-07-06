@@ -10,6 +10,7 @@ import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/utils/gateway_media_url.dart';
 import 'package:claw_hub/core/i_attachment_picker_service.dart';
 import 'package:claw_hub/domain/models/agent.dart';
 import 'package:claw_hub/domain/models/attachment_pick_result.dart';
@@ -258,6 +259,14 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     final historyTruncated = ref.watch(
       catchUpTruncatedProvider.select((s) => s.contains(widget.instanceId)),
     );
+
+    // #1: Gateway HTTP base URL + device token — resolves Agent reply images
+    // (relative /api/chat/media/outgoing/... URLs) to authenticated absolute
+    // URLs. null while the FutureProvider loads (instance/token from secure
+    // storage); the page rebuilds to AsyncData once resolved.
+    final mediaAuth = ref
+        .watch(gatewayMediaAuthProvider(widget.instanceId))
+        .valueOrNull;
 
     // 预计算 Agent 颜色 — 不再需要（EmojiAvatar 自身处理）
 
@@ -557,6 +566,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                       agent?.displayName ?? 'Agent',
                       theme,
                       session.highlightedMessageId,
+                      mediaAuth,
                     ),
                   },
                 ),
@@ -637,6 +647,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
     String agentName,
     ThemeData theme,
     String? highlightedMessageId,
+    GatewayMediaAuth? mediaAuth,
   ) {
     final params = (instanceId: widget.instanceId, agentId: widget.agentId);
 
@@ -697,6 +708,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
               agentName: agentName,
               index: index,
               isHighlighted: highlightedMessageId == message.clientId,
+              mediaAuth: mediaAuth,
               onRetry: message.status == MessageStatus.failed
                   ? () => ref
                         .read(chatViewModelProvider(params).notifier)

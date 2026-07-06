@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/app/theme/agent_theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
+import 'package:claw_hub/core/utils/gateway_media_url.dart';
 import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
@@ -363,6 +364,51 @@ void main() {
         // 用户图无 caption(content 是路径,不应作为 caption 文本显示)
         expect(find.text('/tmp/nonexistent.jpg'), findsNothing);
       });
+
+      // #1: mediaAuth threads MessageBubble → MessageImageContent → resolver.
+      // A relative Agent reply URL must resolve to an absolute URL with a
+      // Bearer header when mediaAuth is supplied.
+      testWidgets(
+        'agent image with relative URL + mediaAuth resolves to authed NetworkImage (#1)',
+        (tester) async {
+          final msg = Message(
+            clientId: 'i-rel',
+            conversationId: 'conv-1',
+            agentId: 'agent-1',
+            role: MessageRole.agent,
+            content: null,
+            type: MessageType.image,
+            status: MessageStatus.delivered,
+            timestamp: 0,
+            logicalClock: 0,
+            metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+          );
+          await tester.pumpWidget(
+            wrap(
+              MessageBubble(
+                message: msg,
+                agentName: '虾',
+                mediaAuth: const GatewayMediaAuth(
+                  baseUrl: 'http://192.168.1.5:3000',
+                  token: 'dev-token-abc',
+                ),
+              ),
+            ),
+          );
+
+          // MessageImageContent wraps the provider in ResizeImage.
+          final image = tester.widget<Image>(find.byType(Image));
+          expect(image.image, isA<ResizeImage>());
+          final inner = (image.image as ResizeImage).imageProvider;
+          expect(inner, isA<NetworkImage>());
+          final net = inner as NetworkImage;
+          expect(
+            net.url,
+            'http://192.168.1.5:3000/api/chat/media/outgoing/abc/full',
+          );
+          expect(net.headers?['Authorization'], 'Bearer dev-token-abc');
+        },
+      );
     });
 
     // -----------------------------------------------------------------------
@@ -406,6 +452,30 @@ void main() {
               agentName: '虾',
             ),
           ),
+        );
+        expect(find.text('📎 文件已上传'), findsOneWidget);
+      });
+
+      // #5: gateway may emit a singular top-level MediaPath (String) instead of
+      // a MediaPaths List. The mapper stores it raw; the bubble must count it
+      // as 1 file, not render '空附件'.
+      testWidgets('singular String MediaPath renders singular label (#5)', (
+        tester,
+      ) async {
+        final msg = Message(
+          clientId: 'ph-str',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.userPlaceholder,
+          content: '[User sent media without caption]',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          timestamp: 0,
+          logicalClock: 0,
+          metadata: const {'mediaPaths': '/tmp/a.jpg'},
+        );
+        await tester.pumpWidget(
+          wrap(MessageBubble(message: msg, agentName: '虾')),
         );
         expect(find.text('📎 文件已上传'), findsOneWidget);
       });

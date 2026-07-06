@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import '../core/utils/gateway_media_url.dart';
+
 /// Resolves a message attachment's image source to an [ImageProvider].
 ///
 /// Centralizes the data: vs http(s) vs local-file branching so that:
@@ -12,6 +14,11 @@ import 'package:flutter/widgets.dart';
 ///   and would trigger errorBuilder → broken-image placeholder).
 /// - P2: `dart:io` (for [FileImage]) lives here, NOT in the widget layer
 ///   (Law 2: widgets render UI only, no direct platform/File calls).
+/// - #1: Gateway-relative media URLs (`/api/chat/media/outgoing/...`,
+///   `/__openclaw__/assistant-media?...`) are resolved against
+///   [gatewayBaseUrl] and, when [authToken] is supplied, fetched with an
+///   `Authorization: Bearer` header — [NetworkImage] otherwise fails on the
+///   relative URL (no host) and 401s without auth (§6.2).
 ///
 /// Contract:
 /// - [imageUrl] (Agent response image) takes precedence over [imagePath].
@@ -35,12 +42,30 @@ import 'package:flutter/widgets.dart';
 /// hit, skipping both costs after the first decode. Network/file paths are NOT
 /// cached here: [NetworkImage] and [FileImage] already override `==`/hashCode
 /// by URL/path, so [ImageCache] dedups them without help.
-ImageProvider? resolveAttachmentImage({String? imageUrl, String? imagePath}) {
+ImageProvider? resolveAttachmentImage({
+  String? imageUrl,
+  String? imagePath,
+  String? gatewayBaseUrl,
+  String? authToken,
+}) {
   if (imageUrl != null && imageUrl.isNotEmpty) {
     if (imageUrl.startsWith('data:')) {
       return _dataUrlToImageProvider(imageUrl);
     }
-    return NetworkImage(imageUrl);
+    final resolved = resolveGatewayMediaUrl(
+      imageUrl,
+      gatewayBaseUrl: gatewayBaseUrl,
+    );
+    // Only Gateway-relative URLs (resolved against our base) get the device
+    // token — never attach it to absolute http(s) URLs (could be a public CDN,
+    // would leak the token to a third party).
+    if (resolved.needsAuth && authToken != null && authToken.isNotEmpty) {
+      return NetworkImage(
+        resolved.url,
+        headers: {'Authorization': 'Bearer $authToken'},
+      );
+    }
+    return NetworkImage(resolved.url);
   }
   if (imagePath != null && imagePath.isNotEmpty) {
     return FileImage(File(imagePath));
