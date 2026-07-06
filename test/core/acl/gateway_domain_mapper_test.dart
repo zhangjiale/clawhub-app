@@ -367,6 +367,157 @@ void main() {
       expect(msg.type, MessageType.image);
       expect(msg.content, 'image text');
     });
+
+    // ----- Agent 回图修复:attachment block + payloads/mediaUrl 兜底 -----
+    // Root cause: extractImageRef 原只认 image/image_url block,漏掉 gateway
+    // 解析 MEDIA: 指令后 emit 的 attachment block(docs/technical/
+    // openclaw-media-protocol.md §4.2)→ type=text + 空白。
+    // 优先级: imageRef(含 attachment) > payloads[].mediaUrl > metadata.imageUrl
+    test('attachment block (kind=image) promotes type=image with imageUrl', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': [
+          {
+            'type': 'attachment',
+            'attachment': {
+              'url':
+                  '/__openclaw__/assistant-media?source=probe.png&mediaTicket=v1.x',
+              'kind': 'image',
+              'label': 'probe-1783347699.png',
+              'mimeType': 'image/png',
+            },
+          },
+        ],
+      });
+      expect(msg.type, MessageType.image);
+      expect(
+        msg.metadata?['imageUrl'],
+        '/__openclaw__/assistant-media?source=probe.png&mediaTicket=v1.x',
+      );
+    });
+
+    test('attachment block with kind=audio is NOT promoted to image', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': [
+          {
+            'type': 'attachment',
+            'attachment': {
+              'url': '/__openclaw__/assistant-media?source=clip.mp3',
+              'kind': 'audio',
+              'mimeType': 'audio/mpeg',
+            },
+          },
+        ],
+      });
+      expect(msg.type, MessageType.text);
+      expect(msg.metadata?['imageUrl'], isNull);
+    });
+
+    test('attachment block with missing kind defensively extracts url', () {
+      // 防御:部分形态可能省略 kind,仍尝试取 url(避免漏渲染)。
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': [
+          {
+            'type': 'attachment',
+            'attachment': {'url': 'https://cdn.example.com/chart.png'},
+          },
+        ],
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], 'https://cdn.example.com/chart.png');
+    });
+
+    test('payloads[].mediaUrl fallback promotes type=image with caption', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': null,
+        'payloads': [
+          {'text': '图表说明', 'mediaUrl': 'data:image/png;base64,XXX'},
+        ],
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], 'data:image/png;base64,XXX');
+      expect(msg.content, '图表说明'); // payloads[0].text 作为 caption
+    });
+
+    test('payloads multi-payload: first text-only, second image-only', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': null,
+        'payloads': [
+          {'text': '这是图表', 'mediaUrl': null},
+          {'text': null, 'mediaUrl': 'https://cdn.example.com/chart.png'},
+        ],
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], 'https://cdn.example.com/chart.png');
+    });
+
+    test('metadata.imageUrl independent fallback promotes type=image', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': '这是图表',
+        'metadata': {'imageUrl': 'data:image/png;base64,XXX'},
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], 'data:image/png;base64,XXX');
+      expect(msg.content, '这是图表');
+    });
+
+    test('priority: attachment block wins over payloads[].mediaUrl', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'text',
+        'content': [
+          {
+            'type': 'attachment',
+            'attachment': {
+              'url': '/__openclaw__/assistant-media?from=attachment',
+              'kind': 'image',
+            },
+          },
+        ],
+        'payloads': [
+          {'text': 'x', 'mediaUrl': 'https://from-payloads.png'},
+        ],
+      });
+      expect(
+        msg.metadata?['imageUrl'],
+        '/__openclaw__/assistant-media?from=attachment',
+      );
+    });
+
+    test(
+      'regression: plain agent message without image fields stays text + null metadata',
+      () {
+        // 整合 image 兜底后,必须确保普通消息不合成空 metadata、不被误提升。
+        final msg = mapper.parseMessage({'role': 'agent', 'content': '你好'});
+        expect(msg.type, MessageType.text);
+        expect(msg.metadata, isNull);
+      },
+    );
+
+    test('content=blocks(image) keeps original imageRef behavior (compat)', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'type': 'image',
+        'content': [
+          {'type': 'text', 'text': '描述'},
+          {'type': 'image', 'url': 'https://x.com/a.png'},
+        ],
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], 'https://x.com/a.png');
+      expect(msg.content, '描述');
+    });
   });
 
   // ---------------------------------------------------------------------------

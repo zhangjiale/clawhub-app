@@ -86,29 +86,52 @@ class GatewayDomainMapper {
   /// 解析入站或历史 [Message] JSON。
   Message parseMessage(Map<String, dynamic> json) {
     // 注意顺序:必须先抽到 textContent 才能识别 user 上传文件占位,否则
-    // _parseMessageRole 拿不到 content 也识别不出来。
+    // _parseMessageRole 拿不到 content 也识别不出来。末尾兜底 payloads[].text
+    // (Agent 回图时图片说明可能在 payloads 里,见下文 image 捕获)。
     final rawText =
-        extractTextContent(json['content']) ?? extractTextContent(json['text']);
+        extractTextContent(json['content']) ??
+        extractTextContent(json['text']) ??
+        _extractTextFromPayloads(json);
     final role = _parseMessageRole(json['role'] as String?, content: rawText);
     // Bug #2 (重启错乱): 时间戳归一化为毫秒。Gateway 历史可能用秒级时间戳
     // (doc §5.4 示意图: 1718000000)；与本地消息(DateTime.now().ms, ~1.7e12)
     // 不同量级会导致软匹配 ±60s 永不命中 + 排序错乱。< 1e12 视为秒级(1e12 ms
     // ≈ 2001 年,任何真实毫秒时间戳都 >= 1e12),×1000 归一化。
     final timestamp = _normalizeEpochMs(json['timestamp'] as int?);
-    // 响应侧图片捕获(PROTOCOL-VERIFY):若 content 是结构化 blocks 且含 image
-    // block,提升 type=image,把 imageUrl 写入 metadata。content 保留文本(作为
-    // 图片说明);imagePath getter 靠 imageUrl==null 区分用户本地图 vs Agent 回图,
-    // 故无需 null content。详见 extractImageRef。
     final textContent = rawText;
+    // 响应侧图片捕获(PROTOCOL-VERIFY):入站 message 可能以下列任一形态携带图片,
+    // 任一命中即提升 type=image 并把 imageUrl 写入 metadata。优先级:
+    //   imageRef(含 attachment) > payloads[].mediaUrl > metadata.imageUrl
+    //   1. content/text 结构化 blocks 含 image / image_url / attachment block
+    //      → [extractImageRef](attachment 形态见
+    //      docs/technical/openclaw-media-protocol.md §4.2:gateway 解析 MEDIA:
+    //      指令后 emit {type:attachment, attachment:{url, kind, mimeType}})
+    //   2. payloads[].mediaUrl(防御兜底,待 wire 捕获确认,no-op 安全)
+    //   3. metadata.imageUrl 独立存在(兜底)
+    // content 保留文本(作为图片说明);imagePath getter 靠 imageUrl==null 区分
+    // 用户本地图 vs Agent 回图,故无需 null content。
     final imageRef =
         extractImageRef(json['content']) ?? extractImageRef(json['text']);
     final parsedType = _parseMessageType(json['type'] as String?);
-    final type = parsedType == MessageType.toolCall
-        ? parsedType
-        : (imageRef != null ? MessageType.image : parsedType);
+    // 提前构建 metadata:payloads 兜底要写入 imageUrl,且 type 提升要读它。
     final incomingMetadata = json['metadata'] is Map<String, dynamic>
         ? Map<String, dynamic>.from(json['metadata'] as Map<String, dynamic>)
         : <String, dynamic>{};
+    final payloadMediaUrl = _extractMediaUrlFromPayloads(json);
+    if (payloadMediaUrl != null) {
+      incomingMetadata['imageUrl'] = payloadMediaUrl;
+    }
+    // 类型提升:imageRef 命中 OR metadata.imageUrl 非空 → image。
+    // toolCall 永不提升(保留工具调用语义,由 MessageBubble._buildToolResult 渲染)。
+    final hasImageMetadata =
+        incomingMetadata['imageUrl'] is String &&
+        (incomingMetadata['imageUrl'] as String).isNotEmpty;
+    final type = parsedType == MessageType.toolCall
+        ? parsedType
+        : ((imageRef != null || hasImageMetadata)
+              ? MessageType.image
+              : parsedType);
+    // imageRef 命中时覆盖 metadata.imageUrl(优先级最高,含 attachment)。
     if (imageRef != null) {
       incomingMetadata['imageUrl'] = imageRef;
     }
@@ -280,8 +303,57 @@ class GatewayDomainMapper {
           final innerUrl = img['url'];
           if (innerUrl is String && innerUrl.isNotEmpty) return innerUrl;
         }
+      } else if (block['type'] == 'attachment') {
+        // PROTOCOL-VERIFY (docs/technical/openclaw-media-protocol.md §4.2):
+        // Agent 回图经 gateway 解析 MEDIA: 指令后 emit 的 attachment block:
+        //   {type:attachment, attachment:{url, kind:'image', label, mimeType}}
+        // url 通常是 /__openclaw__/assistant-media?... 相对路径(UI 需拼 gateway
+        // host,本层只负责提取)。kind=='image' 才算图片;kind 缺省时也尝试(防御,
+        // 部分形态可能省略 kind 字段)。
+        final att = block['attachment'];
+        if (att is Map) {
+          final kind = att['kind'];
+          if (kind == 'image' || kind == null) {
+            final url = att['url'];
+            if (url is String && url.isNotEmpty) return url;
+          }
+        }
       }
     }
     return null;
+  }
+
+  /// 防御兜底(PROTOCOL-VERIFY-PENDING):从 `payloads[]` 提取第一个非空 `mediaUrl`。
+  ///
+  /// docs/technical/openclaw-media-protocol.md §4.2 记录的 Agent 回图主路径是
+  /// attachment block;payloads:[{text, mediaUrl}] 是另一疑似形态,待 wire 捕获
+  /// 确认。字段不存在时返回 null(no-op 安全,不会破坏现有行为)。
+  static String? _extractMediaUrlFromPayloads(dynamic json) {
+    final payloads = json is Map ? json['payloads'] : null;
+    if (payloads is! List) return null;
+    for (final p in payloads) {
+      if (p is Map && p['mediaUrl'] is String) {
+        final url = (p['mediaUrl'] as String).trim();
+        if (url.isNotEmpty && url != 'null') return url;
+      }
+    }
+    return null;
+  }
+
+  /// 防御兜底:从 `payloads[]` 拼接非空 `text` 作为 content 兜底。
+  ///
+  /// 与 [extractTextContent] 的 block 拼接风格一致(空分隔符 join)。当顶层
+  /// content 为 null 而图片说明在 payloads[].text 时使用。
+  static String? _extractTextFromPayloads(dynamic json) {
+    final payloads = json is Map ? json['payloads'] : null;
+    if (payloads is! List) return null;
+    final texts = <String>[];
+    for (final p in payloads) {
+      if (p is Map && p['text'] is String) {
+        final t = p['text'] as String;
+        if (t.isNotEmpty) texts.add(t);
+      }
+    }
+    return texts.isEmpty ? null : texts.join();
   }
 }
