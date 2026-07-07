@@ -107,6 +107,11 @@ class SettingsPage extends ConsumerWidget {
                 value: 'v${AppClientInfo.version}',
                 onTap: null,
               ),
+              SettingsRow(
+                label: '诊断',
+                value: 'API 日志',
+                onTap: () => context.push(AppRoutes.settingsDiagnostics),
+              ),
               SettingsRow(label: '源代码', onTap: () {}),
               SettingsRow(label: '检查更新', onTap: () {}),
             ],

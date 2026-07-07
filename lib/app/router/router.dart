@@ -19,6 +19,7 @@ import 'package:claw_hub/features/settings/biometric_settings_page.dart';
 import 'package:claw_hub/features/settings/network_settings_page.dart';
 import 'package:claw_hub/features/settings/storage_management_page.dart';
 import 'package:claw_hub/features/settings/about_page.dart';
+import 'package:claw_hub/features/diagnostics/diagnostics_page.dart';
 import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
@@ -38,6 +39,7 @@ class AppRoutes {
   static const String settingsNetwork = '/claws/settings/network';
   static const String settingsStorage = '/claws/settings/storage';
   static const String settingsAbout = '/claws/settings/about';
+  static const String settingsDiagnostics = '/claws/settings/diagnostics';
   static const String search = '/search';
   static const String addInstance = '/instances/add';
   static const String editInstance = '/instances/edit/:instanceId';
@@ -219,6 +221,10 @@ class AppRouter {
                           const StorageManagementPage(),
                         ),
                         _settingsSubRoute('about', const AboutPage()),
+                        _settingsSubRoute(
+                          'diagnostics',
+                          const DiagnosticsPage(),
+                        ),
                       ],
                     ),
                     GoRoute(
