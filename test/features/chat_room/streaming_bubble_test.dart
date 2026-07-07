@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:claw_hub/features/chat_room/widgets/streaming_bubble.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
 Widget buildBubble(String text, {String agentName = '产品虾'}) {
   return MaterialApp(
@@ -122,6 +123,31 @@ void main() {
         foundHeightConstraint,
         isTrue,
         reason: 'maxBubbleHeight must be 40% of viewport height',
+      );
+    });
+
+    testWidgets('bubble maxWidth = 88% of screen width', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: Scaffold(
+              body: StreamingBubble(text: 'width test', agentName: '虾'),
+            ),
+          ),
+        ),
+      );
+      final found = find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.constraints != null &&
+            w.decoration is BoxDecoration,
+      );
+      expect(found, findsOneWidget);
+      final bubble = tester.widget<Container>(found);
+      expect(
+        bubble.constraints!.maxWidth,
+        400 * XiaLayout.agentBubbleMaxWidthRatio,
       );
     });
 

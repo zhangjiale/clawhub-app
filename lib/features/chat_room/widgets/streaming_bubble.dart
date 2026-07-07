@@ -102,7 +102,9 @@ class _StreamingBubbleState extends State<StreamingBubble>
                 constraints: BoxConstraints(maxHeight: maxBubbleHeight),
                 child: Container(
                   constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.78,
+                    maxWidth:
+                        MediaQuery.of(context).size.width *
+                        XiaLayout.agentBubbleMaxWidthRatio,
                   ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 13,
