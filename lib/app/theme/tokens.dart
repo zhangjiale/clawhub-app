@@ -250,3 +250,20 @@ class XiaGlass {
   /// Toast blur radius (unchanged).
   static const double toastBlur = 12;
 }
+
+// ─── Layout Ratios (chat bubble widths — fraction of screen width) ─────────
+
+class XiaLayout {
+  XiaLayout._();
+
+  /// Agent (虾) reply bubble max width as a fraction of screen width.
+  /// Widened 78% → 88% (2026-07-07) so long markdown/tables fit more
+  /// characters per line. Stays below the ~91.5% theoretical max
+  /// (screenWidth − 2 × pagePaddingH) to keep a visible right gap.
+  static const double agentBubbleMaxWidthRatio = 0.88;
+
+  /// User-sent bubble max width as a fraction of screen width. Kept at 78% —
+  /// user messages are short typed text; widening reduces side distinction
+  /// without readability gain.
+  static const double userBubbleMaxWidthRatio = 0.78;
+}

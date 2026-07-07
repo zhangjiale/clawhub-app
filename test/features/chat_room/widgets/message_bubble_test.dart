@@ -535,5 +535,71 @@ void main() {
         expect(enter, findsOneWidget);
       });
     });
+
+    // -----------------------------------------------------------------------
+    // 气泡 maxWidth 比例:agent 88% / user 78%（issue 1）
+    // -----------------------------------------------------------------------
+    group('bubble maxWidth ratio', () {
+      Future<void> pumpWithWidth(
+        WidgetTester tester,
+        double width,
+        Message msg,
+      ) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: MediaQuery(
+              data: MediaQueryData(size: Size(width, 800)),
+              child: Scaffold(
+                body: SizedBox(
+                  width: width,
+                  child: MessageBubble(message: msg, agentName: '产品虾'),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      // 气泡 Container 同时带 constraints + BoxDecoration,借此精确定位
+      // (StatusIcon 是裸 Icon,MarkdownBody 纯文本无此 Container,不会误匹配)。
+      Container findBubbleContainer(WidgetTester tester) {
+        final found = find.byWidgetPredicate(
+          (w) =>
+              w is Container &&
+              w.constraints != null &&
+              w.decoration is BoxDecoration,
+        );
+        expect(found, findsOneWidget);
+        return tester.widget<Container>(found);
+      }
+
+      testWidgets('agent bubble maxWidth = 88% of screen width', (
+        tester,
+      ) async {
+        await pumpWithWidth(
+          tester,
+          400,
+          message(role: MessageRole.agent, content: 'agent-bubble-width'),
+        );
+        final bubble = findBubbleContainer(tester);
+        expect(
+          bubble.constraints!.maxWidth,
+          400 * XiaLayout.agentBubbleMaxWidthRatio,
+        );
+      });
+
+      testWidgets('user bubble maxWidth = 78% of screen width', (tester) async {
+        await pumpWithWidth(
+          tester,
+          400,
+          message(role: MessageRole.user, content: 'user-bubble-width'),
+        );
+        final bubble = findBubbleContainer(tester);
+        expect(
+          bubble.constraints!.maxWidth,
+          400 * XiaLayout.userBubbleMaxWidthRatio,
+        );
+      });
+    });
   });
 }
