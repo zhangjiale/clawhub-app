@@ -2,7 +2,7 @@
 
 - **日期**：2026-07-07
 - **关联**：排查 Gateway 连接/协议问题；无直接 US
-- **状态**：设计已与用户确认（§1–§4 逐段通过）；经架构评审委员会（Full，5 维度）评审，unanimously 推荐方案 A，已折入 4 项必修修订 + 短期发现；待写实现计划
+- **状态**：设计已与用户确认（§1–§4 逐段通过）；经架构评审委员会（Full，5 维度）评审，unanimously 推荐方案 A，已折入 4 项必修修订 + 短期发现；planning 阶段修正 biometric 假设（App 无真实生物识别实现，改 tap-to-reveal + 首次警告）；待写实现计划
 
 ---
 
@@ -81,10 +81,13 @@
    在 `app/di/` 包一层 provider 暴露给 UI。同一 store 实例既被 `ConnectionManager`
    当 logger 用、又被 UI provider 当数据源读——保证 SSOT。
 3. **`MockGatewayClient` 不接入日志**（非目标）。
-4. **诊断页在 release 可见，但用现有 biometric 设置门禁**。页面会展示 500 条最近协议
-   帧含原始用户文本（可能含粘贴的 API key/密码/2FA/他人 PII），物理访问/屏幕共享下是
-   真实泄露面。复用现有 `lib/features/settings/biometric_settings_page.dart` 基础设施，
-   进入诊断页前要求生物识别解锁——既保留 release 自诊断/截图上报的 ROI，又 bound 泄露面。
+4. **诊断页在 release 可见，payload 默认折叠 + 首次进入警告**。页面会展示 500 条最近协议
+   帧含原始用户文本（可能含粘贴的 API key/密码/2FA/他人 PII）。原评审建议 biometric 门禁，
+   但核查发现 App 目前**无真实生物识别解锁实现**（`biometricEnabled` 仅是 stub toggle，无
+   `local_auth`），构建真实门禁是独立特性、超出本 spec 范围。v1 采用：payload preview 默认
+   折叠（tap-to-reveal）+ 首次进入弹一次性警告「本页含消息原文/协议细节」。这与 chat 页
+   release 可见（本来就明文显示消息）一致，无需新依赖。未来 App 落地真实 biometric 后可
+   再加门禁。
 5. **`IApiLogger` 补充（不替换）现有 `ILogger`/`debugPrint`**。`ConnectionManager` 现有
    ~30 处 `debugPrint` 服务 console/dev 路径，**本设计不移除**；`IApiLogger` 服务 App 内
    结构化路径（带 req↔res 链接/durationMs/instanceId）。两者受众不同，v1 共存。未来统一
@@ -143,8 +146,8 @@ enum ApiLogKind { req, res, state }
 
 **用户消息内容不脱敏**：`chat.send` 的 `message`（用户文本）和 `chat.history` 返回的
 历史消息不脱敏——这是用户自己的消息，排查时正是要看「发了什么/收到了什么」；base64
-附件会被 2KB 截断自然吃掉，不会爆内存。其 release 可见性靠 §2.3 决策 4 的 biometric
-门禁 bound，而非改脱敏策略。
+附件会被 2KB 截断自然吃掉，不会爆内存。其 release 可见性靠 §2.3 决策 4 的 payload
+默认折叠 + 首次警告 bound，而非改脱敏策略。
 
 **调用位置**：脱敏在 `ApiLogStore` 内部完成（`logRequest`/`logResponse` 收到 rawJson +
 byteSize 后调 `redactAndTruncate(rawJson, payloadSize: byteSize)`）。ACL 采集点只传原始
@@ -317,8 +320,9 @@ final apiLoggerProvider = Provider<IApiLogger>(
 CTO 评审建议 v1 砍掉过滤行，扁平逆序列表先上——约砍一半 UI 成本和测试面（Law 14）。
 过滤 chip / 实例下拉延到 v2。
 
-- **进入门禁**：进入页面前要求 biometric 解锁（复用 `biometric_settings_page.dart`
-  基础设施，§2.3 决策 4）。
+- **访问控制**：payload preview 默认折叠（tap-to-reveal，§2.3 决策 4）；首次进入弹一次性
+  警告 dialog「本页含消息原文与协议细节，请勿在他人旁观看」，用 `SharedPreferences` 记
+  `diagnostics_warning_shown` 标志，确认后不再弹。
 - AppBar：「诊断」+ 右上角「清空」按钮（带确认 dialog）+ 副标题 `N / 500`。
 - 列表：`ListView.builder`（Law 11），**最新在最上**，扁平逆序，无过滤行。每个 tile
   一行紧凑布局：
@@ -347,8 +351,7 @@ SSOT：UI 只 watch `diagnosticsEntriesProvider`，不自己维护 ephemeral fla
 
 ### 7.3 路由 + 入口
 
-- `lib/app/router/` 加 `/settings/diagnostics` 路由（从 settings tab push），进入时
-  触发 biometric 门禁（§7.1）。
+- `lib/app/router/` 加 `/settings/diagnostics` 路由（从 settings tab push）。
 - `settings_page.dart` 加一行「诊断」→ 跳转。
 
 ---
