@@ -2272,7 +2272,7 @@ class BottomNavBar extends StatelessWidget {
 |------|------|------|
 | **小屏 (iPhone SE, 375px)** | 默认适配 | 所有间距使用 Design Token，自动收缩 |
 | **标准 (iPhone 14/15, 390-393px)** | 最佳体验 | 原型设计基准尺寸 |
-| **大屏 (iPhone Pro Max, 430px)** | 内容区自然扩展 | 消息气泡 maxWidth 78%，列表自然填充 |
+| **大屏 (iPhone Pro Max, 430px)** | 内容区自然扩展 | 消息气泡 maxWidth agent 88% / user 78%，列表自然填充 |
 | **Android 主流机型** | 自适应 | MediaQuery 获取安全区域，StatusBar 适配 |
 | **Safe Area** | 全面支持 | `SafeArea` Widget 包裹，底部导航 + 输入区域适配 |
 

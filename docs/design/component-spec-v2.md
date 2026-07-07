@@ -632,7 +632,7 @@ onclick 跳转 `page-agent-detail`。
 
 | 属性 | 值 |
 |---|---|
-| max-width | 78% |
+| max-width | agent 88% / user 78% |
 | padding | `9px 13px` |
 | border-radius | `var(--r-xl)` = 14px |
 | font-size | 14px |
@@ -669,6 +669,7 @@ onclick 跳转 `page-agent-detail`。
 | `pre`（代码块） | background: `var(--surface2)`, padding: `var(--s4)` = 12px, border-radius: `var(--r-md)`, margin: `var(--s2) 0` = 6px 0, overflow-x: auto, font-size: 12px, line-height: 1.5 |
 | `strong` | `<strong>` 标签，bold |
 | `em` | `<em>` 标签，italic |
+| `table` | border: `1px solid var(--border)`，列宽按内容(`IntrinsicColumnWidth`，不换行)，超宽时横向滚动 + 常驻滚动条 |
 
 #### 4.2.3 Tool Card（工具调用卡片）
 
@@ -685,7 +686,7 @@ onclick 跳转 `page-agent-detail`。
 | padding | `8px 12px` |
 | font-size | 12px |
 | color | `var(--text-2)` |
-| max-width | 78% |
+| max-width | 88% |
 
 | 元素 | 样式 |
 |---|---|
@@ -1907,8 +1908,8 @@ V2 表单输入框使用 `border: 1px solid var(--border)` 替代 V1 的 `box-sh
 | Secondary Button | calc(100% - 32px) | auto | 10px | — |
 | Bottom Nav | 100% | 56px | — | — |
 | QR Scanner Mock | 180px | 180px | 10px | 40px emoji |
-| Chat Bubble | max 78% | auto | 14px (corner: 4px) | — |
-| Tool Card | max 78% | auto | 8px | — |
+| Chat Bubble | max agent 88% / user 78% | auto | 14px (corner: 4px) | — |
+| Tool Card | max 88% | auto | 8px | — |
 | Toggle | 40px | 22px | 11px | — |
 | Toggle Knob | — | — | 999px (18px) | — |
 
