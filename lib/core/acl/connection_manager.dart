@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import 'package:flutter/foundation.dart';
 
 import '../utils/retry_strategy.dart';
+import '../i_api_logger.dart';
 import 'i_device_token_store.dart';
 import 'i_gateway_client.dart';
 import 'gateway_protocol.dart';
@@ -28,6 +29,10 @@ typedef TimerFactory = Timer Function(Duration, void Function());
 /// - 请求-响应：`req`/`res` 帧 + Completer 关联
 /// - 事件：`event` 帧路由到 [events] 流
 /// - 重连：指数退避（1→2→4→8→16→30s max）
+///
+/// 日志采集（spec §5）：通过 [_apiLogger] 在 15 个 observation-only 站点采集
+/// req/res + 生命周期事件。每个采集点经 [_safeLog] 包裹（吞 logger 异常，不改
+/// 协议控制流）。详见 docs/superpowers/specs/2026-07-07-api-logging-design.md §5.2。
 class ConnectionManager {
   final String _instanceId;
   final String _gatewayUrl;
@@ -153,6 +158,10 @@ class ConnectionManager {
   /// 并在 hello-ok 时把新签发的令牌落盘（spec §2.2 / §4.11）。
   final IDeviceTokenStore? _deviceTokenStore;
 
+  /// API/生命周期日志采集器（spec §5）。所有调用点经 [_safeLog] 包裹，纯观察
+  /// 不改协议控制流。null = 不采集（如后台 isolate）。
+  final IApiLogger? _apiLogger;
+
   /// Effective bearer token used for the current connect attempt.
   ///
   /// Resolved once at the start of [_doConnect] by [_resolveBearerToken]
@@ -266,6 +275,7 @@ class ConnectionManager {
     TimerFactory? timerFactory,
     RetryStrategy? retryStrategy,
     this._deviceTokenStore,
+    this._apiLogger,
   }) : _retryStrategy = retryStrategy ?? _defaultRetryStrategy,
        _token = token,
        _webSocketFactory = webSocketFactory ?? WebSocketChannel.connect,
@@ -340,6 +350,7 @@ class ConnectionManager {
       id: id,
       requestJson: requestJson,
       payloadSize: payloadSize,
+      method: method,
     );
   }
 
@@ -356,6 +367,7 @@ class ConnectionManager {
     required String id,
     required String requestJson,
     required int payloadSize,
+    String? method, // observation-only — threaded from callers (spec §5.1 #1)
   }) async {
     if (_state != GatewayConnectionState.connected) {
       throw NotConnectedException('WebSocket not connected (state: $_state)');
@@ -373,6 +385,14 @@ class ConnectionManager {
     // payloads can be measured in a worker isolate.
     final maxPayload = _maxPayloadBytes;
     if (payloadSize > maxPayload) {
+      // observation-only — wrapped in _safeLog
+      _safeLog(
+        () => _apiLogger?.logStateChange(
+          instanceId: _instanceId,
+          state: null,
+          message: 'Payload too large: $payloadSize > maxPayload $maxPayload',
+        ),
+      );
       throw PayloadTooLargeException(
         message:
             'Request payload size $payloadSize exceeds maxPayload $maxPayload',
@@ -396,6 +416,15 @@ class ConnectionManager {
     // for PayloadTooLargeException one block above.
     final maxBuffered = _maxBufferedBytes;
     if (_bufferedBytes + payloadSize > maxBuffered) {
+      // observation-only — wrapped in _safeLog
+      _safeLog(
+        () => _apiLogger?.logStateChange(
+          instanceId: _instanceId,
+          state: null,
+          message:
+              'Buffer overflow: buffered=$_bufferedBytes, attempted=$payloadSize, max=$maxBuffered',
+        ),
+      );
       throw BufferOverflowException(
         message:
             'In-flight buffer full: payload ($payloadSize) would push '
@@ -413,6 +442,16 @@ class ConnectionManager {
     _bufferedBytes += payloadSize;
 
     try {
+      // observation-only — wrapped in _safeLog; do not add protocol control flow
+      _safeLog(
+        () => _apiLogger?.logRequest(
+          instanceId: _instanceId,
+          requestId: id,
+          method: method ?? '',
+          byteSize: payloadSize,
+          rawJson: requestJson,
+        ),
+      );
       _channel!.sink.add(requestJson);
 
       return await completer.future.timeout(
@@ -497,6 +536,14 @@ class ConnectionManager {
     _connectTimeoutTimer = null;
 
     _setState(GatewayConnectionState.connecting);
+    // observation-only — wrapped in _safeLog
+    _safeLog(
+      () => _apiLogger?.logStateChange(
+        instanceId: _instanceId,
+        state: 'connecting',
+        message: 'Connecting to $_gatewayUrl',
+      ),
+    );
 
     try {
       // Resolve the bearer token for this connect attempt and stash it for
@@ -598,6 +645,18 @@ class ConnectionManager {
             return;
           }
           completer.complete(frame);
+          // observation-only — wrapped in _safeLog; AFTER complete so a logging
+          // failure can never block response delivery (spec §5.1 #3).
+          _safeLog(
+            () => _apiLogger?.logResponse(
+              instanceId: _instanceId,
+              requestId: id,
+              ok: ok,
+              errorCode: frame.error?.code,
+              byteSize: raw.length,
+              rawJson: raw,
+            ),
+          );
 
         case EventFrame(:final event, :final payload):
           _handleEvent(event, payload);
@@ -727,6 +786,16 @@ class ConnectionManager {
     final completer = Completer<ResponseFrame>();
     _pendingRequests[id] = completer;
 
+    // observation-only — wrapped in _safeLog; do not add protocol control flow
+    _safeLog(
+      () => _apiLogger?.logRequest(
+        instanceId: _instanceId,
+        requestId: id,
+        method: Methods.connect,
+        byteSize: utf8.encode(requestJson).length,
+        rawJson: requestJson,
+      ),
+    );
     _channel!.sink.add(requestJson);
 
     // bug #8: .then() 返回的 Future 若 _handleConnectResponse 同步抛异常
@@ -833,6 +902,16 @@ class ConnectionManager {
         // Gap #1+: reset the per-session retry budget on successful
         // hello-ok so a future AUTH_TOKEN_MISMATCH can retry again.
         _hasAttemptedDeviceTokenRetry = false;
+        // observation-only — wrapped in _safeLog; after policy parsing so
+        // _maxPayloadBytes / _tickIntervalMs reflect negotiated values.
+        _safeLog(
+          () => _apiLogger?.logStateChange(
+            instanceId: _instanceId,
+            state: 'connected',
+            message:
+                'Connected (protocol: ${payload['protocol']}, maxPayload: $_maxPayloadBytes, tick: ${_tickIntervalMs}ms)',
+          ),
+        );
       } else {
         _handleAuthFailure('Unexpected hello payload type: $payloadType');
       }
@@ -936,6 +1015,14 @@ class ConnectionManager {
     if (_intentionalDisconnect) return;
 
     _setState(GatewayConnectionState.pairingRequired);
+    // observation-only — wrapped in _safeLog
+    _safeLog(
+      () => _apiLogger?.logStateChange(
+        instanceId: _instanceId,
+        state: 'pairingRequired',
+        message: 'Pairing required — waiting for approval',
+      ),
+    );
 
     // 定期重试（每 10s），等待用户在服务器审批
     _schedulePairingRetry();
@@ -977,6 +1064,14 @@ class ConnectionManager {
     if (_intentionalDisconnect) return;
 
     _setState(GatewayConnectionState.recovering);
+    // observation-only — wrapped in _safeLog
+    _safeLog(
+      () => _apiLogger?.logStateChange(
+        instanceId: _instanceId,
+        state: 'recovering',
+        message: 'Device ID mismatch — transient race, retry 2s',
+      ),
+    );
     _scheduleDoConnect(
       delaySeconds: 2,
       reason: 'device ID mismatch retry',
@@ -1080,6 +1175,14 @@ class ConnectionManager {
     if (_intentionalDisconnect) return;
 
     _setState(GatewayConnectionState.disconnected);
+    // observation-only — wrapped in _safeLog
+    _safeLog(
+      () => _apiLogger?.logStateChange(
+        instanceId: _instanceId,
+        state: 'disconnected',
+        message: pendingFailReason,
+      ),
+    );
     _scheduleDoConnect(
       delaySeconds: 0,
       reason: scheduleReason,
@@ -1151,6 +1254,14 @@ class ConnectionManager {
       Duration(milliseconds: _tickIntervalMs * _tickTimeoutMultiplier),
       () {
         debugPrint('[CM] Tick timeout for $_instanceId — connection lost');
+        // observation-only — wrapped in _safeLog
+        _safeLog(
+          () => _apiLogger?.logStateChange(
+            instanceId: _instanceId,
+            state: 'recovering',
+            message: 'Tick timeout — connection lost',
+          ),
+        );
         // _closeWebSocket() is async (StreamSubscription.cancel /
         // WebSocketSink.close may take non-trivial time).  The Timer
         // callback is void, so we MUST sequence via .then() — a bare
@@ -1185,6 +1296,15 @@ class ConnectionManager {
         'after $_reconnectAttempt consecutive failures',
       );
       _setState(GatewayConnectionState.reconnectExhausted);
+      // observation-only — wrapped in _safeLog
+      _safeLog(
+        () => _apiLogger?.logStateChange(
+          instanceId: _instanceId,
+          state: 'reconnectExhausted',
+          message:
+              'Reconnect exhausted after $_reconnectAttempt consecutive failures',
+        ),
+      );
       return;
     }
 
@@ -1261,6 +1381,15 @@ class ConnectionManager {
       );
     });
     _setState(GatewayConnectionState.authFailed);
+    // observation-only — wrapped in _safeLog
+    _safeLog(
+      () => _apiLogger?.logStateChange(
+        instanceId: _instanceId,
+        state: 'authFailed',
+        message:
+            'Auth failed: $reason${errorCode != null ? ' (code: $errorCode)' : ''}',
+      ),
+    );
   }
 
   void _onConnectionError(Object error) {
@@ -1310,6 +1439,14 @@ class ConnectionManager {
       // timer; [_doConnect] re-arms tick/connect timers on the next attempt.
       _cancelTimers();
       _setState(GatewayConnectionState.recovering);
+      // observation-only — wrapped in _safeLog
+      _safeLog(
+        () => _apiLogger?.logStateChange(
+          instanceId: _instanceId,
+          state: 'recovering',
+          message: 'WebSocket error: $error',
+        ),
+      );
       _scheduleReconnect();
     }
   }
@@ -1328,6 +1465,14 @@ class ConnectionManager {
       _setState(GatewayConnectionState.recovering);
       _scheduleReconnect();
     }
+    // observation-only — wrapped in _safeLog
+    _safeLog(
+      () => _apiLogger?.logStateChange(
+        instanceId: _instanceId,
+        state: _state.name,
+        message: 'WebSocket closed',
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1374,6 +1519,16 @@ class ConnectionManager {
     if (_state == newState) return;
     _state = newState;
     _connectionStateController.add(newState);
+  }
+
+  /// 防御性日志包裹：吞掉 logger 抛出的异常（含 debugPrint 面包屑），确保采集
+  /// 失败绝不影响协议路径（spec §4.2/§10 不变量）。不改协议控制流。
+  void _safeLog(void Function() log) {
+    try {
+      log();
+    } catch (e, st) {
+      debugPrint('[CM] apiLogger threw: $e\n$st');
+    }
   }
 
   /// Test-only entry point to set internal connection state without a real
