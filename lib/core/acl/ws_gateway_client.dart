@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../domain/models/models.dart';
 import '../debug_print_logger.dart';
+import '../i_api_logger.dart';
 import '../i_logger.dart';
 import 'connection_manager.dart';
 import 'device_identity.dart';
@@ -59,6 +60,12 @@ class WsGatewayClient implements IGatewayClient {
   /// re-pair each time.  Production should always inject.
   final IDeviceTokenStore? _deviceTokenStore;
 
+  /// Optional: structured API/生命周期日志采集 sink (spec §2.3).
+  /// Forwarded to every per-instance [ConnectionManager] constructed in
+  /// [connect] / [testConnection]. When null (background isolate default),
+  /// no logging occurs — the [ApiLogStore] lives in the main isolate only.
+  final IApiLogger? _apiLogger;
+
   /// Optional WebSocket / timer factories — test injection only. Production
   /// leaves them null (ConnectionManager defaults). Passed straight through to
   /// each per-instance [ConnectionManager] constructed in [connect] /
@@ -87,6 +94,7 @@ class WsGatewayClient implements IGatewayClient {
     this._timerFactory,
     this._modelIdentifierLoader,
     this._deviceTokenStore,
+    this._apiLogger,
     ILogger? logger,
   }) : _config = config ?? ConnectionConfig(),
        _logger = logger ?? const DebugPrintLogger(),
@@ -201,6 +209,7 @@ class WsGatewayClient implements IGatewayClient {
         webSocketFactory: _webSocketFactory,
         timerFactory: _timerFactory,
         deviceTokenStore: _deviceTokenStore,
+        apiLogger: _apiLogger,
       );
 
       // 复用已有的流控制器（若有），否则创建新的
@@ -284,6 +293,7 @@ class WsGatewayClient implements IGatewayClient {
         id: requestId,
         requestJson: outbound.requestJson,
         payloadSize: outbound.payloadSize,
+        method: Methods.chatSend,
       );
     } on BufferOverflowException catch (e) {
       // F-4: 在途缓冲满（reject-new，spec §2.2 maxBufferedBytes）。把 ACL
@@ -453,6 +463,7 @@ class WsGatewayClient implements IGatewayClient {
       webSocketFactory: _webSocketFactory,
       timerFactory: _timerFactory,
       deviceTokenStore: _deviceTokenStore,
+      apiLogger: _apiLogger,
     );
 
     try {

@@ -21,6 +21,7 @@ import 'package:claw_hub/core/acl/i_device_token_store.dart';
 import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_gate.dart';
 import 'package:claw_hub/core/lifecycle/background_sync_prefs_shared_prefs.dart';
@@ -78,6 +79,7 @@ WsGatewayClient buildGatewayClient({
   IDeviceIdentityProvider? identityProvider,
   IDeviceTokenStore? deviceTokenStore,
   Future<String?> Function()? modelIdentifierLoader,
+  IApiLogger? apiLogger, // NEW — main isolate injects; background passes null
 }) {
   final os = platformOS(); // 'ios', 'android', 'macos', 'web', ...
   final clientId = ClientIds.forPlatform(os);
@@ -106,6 +108,7 @@ WsGatewayClient buildGatewayClient({
         SecureStorageDeviceTokenStore(
           secureStorage: const FlutterSecureStorage(),
         ),
+    apiLogger: apiLogger,
     logger: logger,
   );
 }

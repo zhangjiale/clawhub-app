@@ -11,6 +11,7 @@ import 'package:claw_hub/core/acl/attachment_encoder.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/acl/replayable_connection_state.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
+import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/domain/models/enums.dart'
     show HealthStatus, MessageRole, MessageType, ToolCallStatus;
@@ -91,6 +92,37 @@ class FakeLogger implements ILogger {
   @override
   void error(String message, [StackTrace? stackTrace]) =>
       errors.add((message, stackTrace));
+}
+
+class _RecordingApiLogger implements IApiLogger {
+  final List<String> requestMethods = [];
+  final List<String> stateNames = [];
+
+  @override
+  void logRequest({
+    required String instanceId,
+    required String requestId,
+    required String method,
+    required int byteSize,
+    required String rawJson,
+  }) => requestMethods.add(method);
+
+  @override
+  void logResponse({
+    required String instanceId,
+    required String requestId,
+    required bool ok,
+    String? errorCode,
+    required int byteSize,
+    String? rawJson,
+  }) {}
+
+  @override
+  void logStateChange({
+    required String instanceId,
+    String? state,
+    required String message,
+  }) => stateNames.add(state ?? '');
 }
 
 /// A minimal [Instance] for testing.
@@ -3337,6 +3369,40 @@ void _replayableConnectionStateTests() {
           '"payload":{"runId":"run-1","timestamp":1700000000000}}',
         );
         await future;
+        await client.dispose();
+      },
+    );
+  });
+
+  // ==========================================================================
+  // apiLogger forwarding
+  // ==========================================================================
+  group('apiLogger forwarding', () {
+    test(
+      'WsGatewayClient forwards apiLogger to ConnectionManager — handshake is logged',
+      () async {
+        final logger = _RecordingApiLogger();
+        final ws = ControllableWebSocket.ready();
+        final client = WsGatewayClient(
+          identityProvider: FakeDeviceIdentityProvider(),
+          webSocketFactory: (_) => ws.channel,
+          apiLogger: logger,
+        );
+
+        unawaited(client.connect(testInstance()));
+        await pumpMicrotasks();
+        ws.simulateServerFrame(challengeJson());
+        await pumpMicrotasks();
+        final reqId = extractReqId(ws.sentFrames.first);
+        ws.simulateServerFrame(helloOkJson(reqId));
+        await pumpMicrotasks();
+
+        // The connect handshake req must have been logged (method = connect) and
+        // the hello-ok must have produced a 'connected' state log. This proves the
+        // logger flowed WsGatewayClient → ConnectionManager → IApiLogger.
+        expect(logger.requestMethods, contains(Methods.connect));
+        expect(logger.stateNames, contains('connected'));
+
         await client.dispose();
       },
     );

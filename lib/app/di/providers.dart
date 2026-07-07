@@ -11,7 +11,9 @@ import 'package:claw_hub/core/acl/secure_storage_device_token_store.dart';
 import 'package:claw_hub/core/acl/ws_gateway_client.dart';
 import 'package:claw_hub/data/services/avatar_storage_service.dart';
 import 'package:claw_hub/data/services/attachment_picker_service.dart';
+import 'package:claw_hub/core/api_log_store.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/i_attachment_picker_service.dart';
 import 'package:claw_hub/core/i_avatar_storage_service.dart';
 import 'package:claw_hub/core/i_logger.dart';
@@ -286,6 +288,7 @@ final wsGatewayClientProvider = Provider<WsGatewayClient>((ref) {
     identityProvider: ref.watch(deviceIdentityProvider),
     deviceTokenStore: ref.watch(deviceTokenStoreProvider),
     modelIdentifierLoader: () => ref.read(deviceModelIdentifierProvider.future),
+    apiLogger: ref.watch(apiLoggerProvider),
   );
   ref.onDispose(() => client.dispose());
   return client;
@@ -305,6 +308,21 @@ final gatewayClientProvider = Provider<IGatewayClient>((ref) {
 ///
 /// 测试可通过 override 注入 fake 以验证日志输出。
 final loggerProvider = Provider<ILogger>((ref) => const DebugPrintLogger());
+
+/// API/生命周期日志环形缓冲 — App 生命周期单例（普通 Provider，非 autoDispose）。
+/// 同一实例既注入 [WsGatewayClient] 当采集 sink，又供诊断页 provider 读取（SSOT）。
+/// spec §6。
+final apiLogStoreProvider = Provider<ApiLogStore>(
+  (ref) => ApiLogStore(
+    maxEntries: ApiLogStore.defaultMaxEntries,
+    logger: ref.watch(loggerProvider),
+  ),
+);
+
+/// 面向 ACL 的日志抽象 —— 指向 [apiLogStoreProvider] 同一实例。
+final apiLoggerProvider = Provider<IApiLogger>(
+  (ref) => ref.watch(apiLogStoreProvider),
+);
 
 /// 网络连接监听器 — 面向 [IConnectivity] 接口，便于单测 mock。
 ///
