@@ -432,7 +432,7 @@ git commit -m "feat(api-logging): add truncate-then-parse redactor"
 
 **Interfaces:**
 - Consumes: `IApiLogger`/`ApiLogEntry` (Task 1), `redactAndTruncate` (Task 2), `ILogger` (existing `lib/core/i_logger.dart`).
-- Produces: `class ApiLogStore implements IApiLogger` with ctor `ApiLogStore({int maxEntries, ILogger? logger})`, `List<ApiLogEntry> snapshot()`, `Stream<ApiLogEntry> get onEntry`, `void clear()`, `void dispose()`; constants `defaultMaxEntries`, `pendingReqSweepThreshold`, `pendingReqTtlMs`.
+- Produces: `class ApiLogStore implements IApiLogger` with ctor `ApiLogStore({int maxEntries, ILogger? logger, int Function()? clock})`, `List<ApiLogEntry> snapshot()`, `Stream<ApiLogEntry> get onEntry`, `void clear()`, `void dispose()`; constants `defaultMaxEntries`, `pendingReqSweepThreshold`, `pendingReqTtlMs`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -557,9 +557,14 @@ void main() {
     });
 
     test('orphan sweep evicts stale pending reqs and emits a state log', () {
-      // Force sweep: exceed pendingReqSweepThreshold (200) with orphan reqs.
-      for (var i = 0; i < 205; i++) {
-        store.logRequest(
+      // Injectable clock: add a batch of reqs, advance the clock past the TTL so
+      // they become "stale", then one more logRequest trips the sweep threshold
+      // and _maybeSweep evicts the stale batch + emits a state log. Without the
+      // injectable clock the test couldn't advance time past the 30s TTL.
+      var now = 1000000;
+      final sweepStore = ApiLogStore(maxEntries: 500, clock: () => now);
+      for (var i = 0; i < 201; i++) {
+        sweepStore.logRequest(
           instanceId: 'i',
           requestId: 'req-$i',
           method: 'm',
@@ -567,8 +572,17 @@ void main() {
           rawJson: '{}',
         );
       }
-      // The last logRequest triggers a sweep; a state entry about eviction should exist.
-      final hasEvictLog = store.snapshot().any(
+      // All 201 pending reqs are now stale (>30s old).
+      now += ApiLogStore.pendingReqTtlMs + 1;
+      // This logRequest pushes length > 200 and triggers the sweep.
+      sweepStore.logRequest(
+        instanceId: 'i',
+        requestId: 'trigger',
+        method: 'm',
+        byteSize: 1,
+        rawJson: '{}',
+      );
+      final hasEvictLog = sweepStore.snapshot().any(
             (e) =>
                 e.kind == ApiLogKind.state &&
                 (e.message?.contains('evicted') ?? false),
@@ -594,7 +608,7 @@ void main() {
 }
 ```
 
-Note on the sweep test: `logRequest` calls `_maybeSweep` only when `_pendingReqTs.length > 200`. Each `logRequest` adds one pending entry, so the 201st `logRequest` triggers the sweep. 205 calls guarantees the sweep fires and emits the eviction state log.
+Note on the sweep test: the store takes an injectable `clock` (`int Function()? clock`, default `DateTime.now().millisecondsSinceEpoch`) so tests can advance time. The sweep test adds 201 reqs at t=base, advances `now` past `pendingReqTtlMs`, then one more `logRequest` trips the threshold and `_maybeSweep` evicts the 201 stale entries + emits the eviction state log. The injectable clock also makes `durationMs` deterministic if a test wants exact values (the shared `store` in setUp uses the default clock; the duration test asserts `>= 0`, robust to wall-clock jitter).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -619,8 +633,14 @@ import 'package:uuid/uuid.dart';
 /// 同一实例既被 [ConnectionManager] 当 logger 用、又被 UI provider 当数据源读
 /// （SSOT，spec §2.3 决策 2）。永不抛（spec §4.2 不变量）。
 class ApiLogStore implements IApiLogger {
-  ApiLogStore({this.maxEntries = defaultMaxEntries, ILogger? logger})
-      : _logger = logger;
+  ApiLogStore({
+    this.maxEntries = defaultMaxEntries,
+    ILogger? logger,
+    int Function()? clock,
+  })  : _logger = logger,
+        _clock = clock ?? _defaultClock;
+
+  static int _defaultClock() => DateTime.now().millisecondsSinceEpoch;
 
   static const int defaultMaxEntries = 500;
   static const int pendingReqSweepThreshold = 200;
@@ -628,6 +648,7 @@ class ApiLogStore implements IApiLogger {
 
   final int maxEntries;
   final ILogger? _logger;
+  final int Function() _clock;
   final Uuid _uuid = const Uuid();
 
   final List<ApiLogEntry> _entries = [];
@@ -654,7 +675,7 @@ class ApiLogStore implements IApiLogger {
     required String rawJson,
   }) {
     try {
-      final now = DateTime.now().millisecondsSinceEpoch;
+      final now = _clock();
       _pendingReqTs[requestId] = now;
       _maybeSweep(now);
       _add(ApiLogEntry(
@@ -683,7 +704,7 @@ class ApiLogStore implements IApiLogger {
     String? rawJson,
   }) {
     try {
-      final now = DateTime.now().millisecondsSinceEpoch;
+      final now = _clock();
       final sentAt = _pendingReqTs.remove(requestId);
       final durationMs = sentAt == null ? null : now - sentAt;
       _maybeSweep(now);
@@ -716,7 +737,7 @@ class ApiLogStore implements IApiLogger {
     try {
       _add(ApiLogEntry(
         id: _uuid.v4(),
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        timestampMs: _clock(),
         instanceId: instanceId,
         kind: ApiLogKind.state,
         state: state,

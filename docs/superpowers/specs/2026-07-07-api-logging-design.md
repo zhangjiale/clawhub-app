@@ -227,6 +227,9 @@ class ApiLogStore implements IApiLogger {
 - **永不抛**：`logXxx` 全程 try/catch，内部异常吞掉并 `debugPrint` 面包屑（Law 8——
   非空 catch，有日志）。`redactAndTruncate` 已防御畸形 JSON。**采集日志绝不能影响
   协议路径。**
+- **可注入时钟**：`ApiLogStore` 接受可选 `int Function()? clock`（默认
+  `DateTime.now().millisecondsSinceEpoch`），用于测试中推进时间验证 sweep（plan Task 3
+  的 sweep 测试依赖它越过 30s TTL）。
 
 ---
 
