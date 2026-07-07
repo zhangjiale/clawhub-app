@@ -11,8 +11,7 @@ ConnectionConfig testConfig() => ConnectionConfig();
 /// Records every logXxx call as a map for assertions.
 class RecordingApiLogger implements IApiLogger {
   final List<({String method, String requestId, int byteSize})> requests = [];
-  final List<({String requestId, bool ok, String? errorCode, int? durationMs})>
-  responses = [];
+  final List<({String requestId, bool ok, String? errorCode})> responses = [];
   final List<({String? state, String message})> states = [];
 
   @override
@@ -35,12 +34,7 @@ class RecordingApiLogger implements IApiLogger {
     required int byteSize,
     String? rawJson,
   }) {
-    responses.add((
-      requestId: requestId,
-      ok: ok,
-      errorCode: errorCode,
-      durationMs: null,
-    ));
+    responses.add((requestId: requestId, ok: ok, errorCode: errorCode));
   }
 
   @override

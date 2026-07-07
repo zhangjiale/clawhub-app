@@ -6,10 +6,11 @@ import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:uuid/uuid.dart';
 
-// ignore_for_file: prefer_initializing_formals — ctor keeps a public `logger:`
-// named param so other libraries (Task 4 ConnectionManager wiring) can supply
-// it; converting to the initializing formal `this._logger` would make the
-// parameter library-private (Dart `_`-prefix), uncallable from other files.
+// ignore_for_file: prefer_initializing_formals — the `logger` ctor param uses
+// direct field assignment (`_logger = logger`) so it stays a public named param
+// (DI-able from providers.dart). The initializing formal `this._logger` would be
+// library-private (Dart `_`-prefix) and uncallable from other files. (Line-level
+// ignore is unstable: dart format reflows the assignment across lines.)
 
 /// 环形缓冲实现 [IApiLogger]（spec §4）。纯 Dart，不碰 Flutter/Riverpod。
 ///
