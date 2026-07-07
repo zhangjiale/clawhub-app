@@ -5,6 +5,7 @@ import 'package:claw_hub/domain/models/tool_call.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/models/enums.dart';
+import 'package:claw_hub/app/theme/tokens.dart';
 
 void main() {
   group('ToolCallCard', () {
@@ -24,6 +25,37 @@ void main() {
       );
 
       expect(find.text('ReadFile'), findsOneWidget);
+    });
+
+    testWidgets('card maxWidth = 88% of screen width', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: Scaffold(
+              body: ToolCallCard(
+                toolCall: ToolCall(
+                  id: 'tc-width',
+                  messageId: 'msg-width',
+                  toolName: 'ReadFile',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final found = find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.constraints != null &&
+            w.decoration is BoxDecoration,
+      );
+      expect(found, findsOneWidget);
+      final card = tester.widget<Container>(found);
+      expect(
+        card.constraints!.maxWidth,
+        400 * XiaLayout.agentBubbleMaxWidthRatio,
+      );
     });
 
     testWidgets('shows "Pending..." text and spinner when pending', (

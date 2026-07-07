@@ -71,7 +71,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
           Flexible(
             child: Container(
               constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.78,
+                maxWidth:
+                    MediaQuery.of(context).size.width *
+                    XiaLayout.agentBubbleMaxWidthRatio,
               ),
               padding: const EdgeInsets.symmetric(
                 horizontal: XiaSpacing.s4,
