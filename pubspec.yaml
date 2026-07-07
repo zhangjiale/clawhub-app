@@ -80,9 +80,9 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "docs/design/assets/xiahub-icon-v3.png"
+  image_path: "docs/design/assets/xiahub-icon-v4.png"
   adaptive_icon_background: "#111110"
-  adaptive_icon_foreground: "docs/design/assets/xiahub-icon-v3.png"
+  adaptive_icon_foreground: "docs/design/assets/xiahub-icon-v4.png"
 
 flutter_native_splash:
   color: "#111110"
