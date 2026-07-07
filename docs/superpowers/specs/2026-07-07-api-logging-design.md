@@ -278,9 +278,10 @@ class ApiLogStore implements IApiLogger {
 pendingFailReason)` 一条覆盖（state + reason 都在），避免重复。buffer overflow /
 payload too large 是诊断事件非状态转换，`state` 传 null。
 
-**共 15 个采集点（3 req/res + 12 state），全是单行 `_apiLogger?.logXxx(...)`，不改任何
-控制流。每个采集点附一行 `// observation-only — do not add control flow` 注释，防未来
-漂移。`ConnectionManager` 类 docstring 交叉引用本 spec §5.2。**
+**共 15 个采集点（3 req/res + 12 state），每个是单行 `_safeLog(() => _apiLogger?.logXxx(...))`——
+防御性 try/catch 吞 logger 异常，不改协议控制流（解决 §8 throwing-logger 契约与「无控制流」
+的张力）。每个采集点附 `// observation-only` 注释，防未来漂移。`ConnectionManager` 类
+docstring 交叉引用本 spec §5.2。**
 
 ### 5.3 `WsGatewayClient` 转发
 
@@ -450,7 +451,8 @@ static const Set<String> redactedKeys = {
 - **Law 18**（keyed-lookup nulls 显式）：`logResponse` 无匹配 req 时 `durationMs` 显式
   为 null（非静默默认值），符合「res 无对应 req」的合法并发场景。
 
-**「采集日志绝不能影响协议路径」不变量**（评审委员会首要关注）由三重保障：
+**「采集日志绝不能影响协议路径」不变量**（评审委员会首要关注）由四重保障：
 (1) `redactAndTruncate` truncate-then-parse 使解析成本 O(阈值) 而非 O(payloadSize)，
 不重新引入 worker-isolate 规避的 jank；(2) `logResponse` 钉在 `completer.complete` 之后；
-(3) throwing-logger 契约测试 + store 内部 try/catch。三者缺一则该不变量不成立。
+(3) store 内部 `logXxx` 全程 try/catch；(4) **每个 CM 调用点经 `_safeLog(() => ...)` 包裹**
+——即使注入的 logger 抛异常也被吞掉（throwing-logger 契约测试验证）。四者缺一则该不变量不成立。

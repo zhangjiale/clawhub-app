@@ -18,7 +18,7 @@
 - **Iron Law 11**: Diagnostics list uses `ListView.builder`.
 - **Iron Law 14**: New diagnostics widget needs ≥2 tests.
 - **Iron Law 17**: TDD per-file — test FIRST, run red, implement, run green, commit.
-- **“采集日志绝不能影响协议路径” invariant**: (1) `redactAndTruncate` truncate-then-parse → O(threshold) not O(payloadSize); (2) `logResponse` called AFTER `completer.complete(frame)`; (3) `logXxx` fully try/catch-wrapped + throwing-logger contract test.
+- **“采集日志绝不能影响协议路径” invariant**: (1) `redactAndTruncate` truncate-then-parse → O(threshold) not O(payloadSize); (2) `logResponse` called AFTER `completer.complete(frame)`; (3) store's `logXxx` fully try/catch-wrapped; (4) **every `ConnectionManager` call site wrapped in `_safeLog(() => ...)` (try/catch + debugPrint breadcrumb)** — so even a throwing-logger fake cannot break the protocol path (throwing-logger contract test, spec §8).
 - **DI**: manual `Provider` (non-`.autoDispose`) for `apiLogStoreProvider` — app-lifetime singleton.
 - **Background isolate**: `callbackDispatcher`'s `buildGatewayClient` call passes `apiLogger: null` (no logging in background; `ApiLogStore` lives in main isolate only).
 - **Conventional Commits**: `feat(api-logging):`, `test(api-logging):`, etc.
@@ -945,14 +945,34 @@ void main() {
   });
 
   test('tick timeout → state recovering + "Tick timeout" message', () async {
-    await connectToHelloOk(cm);
-    // Arm the tick watchdog by simulating a tick, then fire the FakeTimer.
+    // Use a FakeTimerFactory so we can deterministically fire the tick watchdog
+    // (ConnectionManager defaults to Timer.new, which we can't fire from a test).
+    final fakeTimers = FakeTimerFactory();
+    final tickCm = ConnectionManager(
+      instanceId: 'test-instance',
+      gatewayUrl: 'ws://localhost:9999/ws',
+      token: 'test-token',
+      deviceId: 'test-device',
+      config: testConfig(),
+      webSocketFactory: (uri) => ws.channel,
+      timerFactory: fakeTimers.call,
+      apiLogger: logger,
+    );
+    await connectToHelloOk(tickCm);
+    // Arm the tick watchdog by simulating a tick (resets the timeout timer).
     ws.simulateServerFrame(tickJson);
     await pumpMicrotasks();
-    // The tick watchdog timer is the latest timer; fire it to simulate timeout.
-    // (ConnectionManager uses Timer.new by default — we can't easily fire it.
-    //  Instead, inject a FakeTimerFactory so we control it.)
-  }, skip: 'wire FakeTimerFactory variant in follow-up; see note below');
+    // The tick-watchdog FakeTimer is the latest active timer; fire it to
+    // simulate a timeout (no further tick arrives within 2× tickInterval).
+    fakeTimers.fireLast();
+    await pumpMicrotasks();
+    expect(
+      logger.states.any((s) =>
+          s.state == 'recovering' &&
+          (s.message?.contains('Tick timeout') ?? false)),
+      isTrue,
+    );
+  });
 
   test('_immediateReconnect (graceful shutdown) → state disconnected logged', () async {
     await connectToHelloOk(cm);
@@ -1032,22 +1052,35 @@ import '../i_api_logger.dart';
 
 3b. Add a field and constructor param. In the class, near the other `final` fields (after `_deviceTokenStore`):
 ```dart
-  /// API/生命周期日志采集器（spec §5）。纯观察——所有调用点不改控制流。
-  /// null = 不采集（如后台 isolate）。
+  /// API/生命周期日志采集器（spec §5）。所有调用点经 [_safeLog] 包裹，纯观察
+  /// 不改协议控制流。null = 不采集（如后台 isolate）。
   final IApiLogger? _apiLogger;
 ```
 
-3c. In the `ConnectionManager({...})` constructor parameter list, add (after `this._deviceTokenStore,`):
+3c. In the `ConnectionManager({...})` constructor parameter list, add (after `this._deviceTokenStore,`) a **private initializing formal** — mirroring the existing `_deviceTokenStore` pattern (NOT a public `apiLogger` field):
 ```dart
-    this.apiLogger,
+    this._apiLogger,
 ```
-and in the initializer list add `_apiLogger = apiLogger,`. (Add `IApiLogger? apiLogger,` to the constructor params.)
+(No separate initializer line — the initializing formal binds directly to the `_apiLogger` field; the param type is inferred as `IApiLogger?`.)
 
-3d. Add a class-level docstring note at the top of the `class ConnectionManager` doc comment:
+3d. Add a `_safeLog` helper method (near `_setState` or the other private helpers). Every call site goes through it so a throwing logger can never break the protocol path (spec §8 throwing-logger contract):
+```dart
+  /// 防御性日志包裹：吞掉 logger 抛出的异常（含 debugPrint 面包屑），确保采集
+  /// 失败绝不影响协议路径（spec §4.2/§10 不变量）。不改协议控制流。
+  void _safeLog(void Function() log) {
+    try {
+      log();
+    } catch (e, st) {
+      debugPrint('[CM] apiLogger threw: $e\n$st');
+    }
+  }
+```
+
+3e. Add a class-level docstring note at the top of the `class ConnectionManager` doc comment:
 ```dart
 /// 日志采集（spec §5）：通过 [_apiLogger] 在 15 个 observation-only 站点采集
-/// req/res + 生命周期事件。**每个采集点附 `// observation-only` 注释，禁止
-/// 加控制流。** 详见 docs/superpowers/specs/2026-07-07-api-logging-design.md §5.2。
+/// req/res + 生命周期事件。每个采集点经 [_safeLog] 包裹（吞 logger 异常，不改
+/// 协议控制流）。详见 docs/superpowers/specs/2026-07-07-api-logging-design.md §5.2。
 ```
 
 - [ ] **Step 4: Implement — req/res choke points (3 sites)**
@@ -1063,14 +1096,14 @@ and in the initializer list add `_apiLogger = apiLogger,`. (Add `IApiLogger? api
 ```
 Then, immediately before `_channel!.sink.add(requestJson);` inside the `try` block:
 ```dart
-      // observation-only — do not add control flow
-      _apiLogger?.logRequest(
+      // observation-only — wrapped in _safeLog; do not add protocol control flow
+      _safeLog(() => _apiLogger?.logRequest(
         instanceId: _instanceId,
         requestId: id,
         method: method ?? '',
         byteSize: payloadSize,
         rawJson: requestJson,
-      );
+      ));
       _channel!.sink.add(requestJson);
 ```
 
@@ -1086,14 +1119,14 @@ Then, immediately before `_channel!.sink.add(requestJson);` inside the `try` blo
 
 4c. `onConnectChallenge` — log the connect req before its socket write. Immediately before `_channel!.sink.add(requestJson);` in `onConnectChallenge`:
 ```dart
-    // observation-only — do not add control flow
-    _apiLogger?.logRequest(
+    // observation-only — wrapped in _safeLog; do not add protocol control flow
+    _safeLog(() => _apiLogger?.logRequest(
       instanceId: _instanceId,
       requestId: id,
       method: Methods.connect,
       byteSize: utf8.encode(requestJson).length,
       rawJson: requestJson,
-    );
+    ));
     _channel!.sink.add(requestJson);
 ```
 (`utf8` is already imported in this file via `dart:convert`.)
@@ -1101,27 +1134,27 @@ Then, immediately before `_channel!.sink.add(requestJson);` inside the `try` blo
 4d. `_onIncomingData` — log res AFTER `completer.complete(frame)`. In the `ResponseFrame` case, after `completer.complete(frame);` (which is the last statement of the non-early-return path):
 ```dart
           completer.complete(frame);
-          // observation-only — do not add control flow; AFTER complete so a
-          // logging failure can never block response delivery (spec §5.1 #3).
-          _apiLogger?.logResponse(
+          // observation-only — wrapped in _safeLog; AFTER complete so a logging
+          // failure can never block response delivery (spec §5.1 #3).
+          _safeLog(() => _apiLogger?.logResponse(
             instanceId: _instanceId,
             requestId: id,
             ok: ok,
             errorCode: frame.error?.code,
             byteSize: raw.length,
             rawJson: raw,
-          );
+          ));
 ```
 (The `EventFrame` case stays unchanged — no logging. This enforces the “no streaming deltas” rule.)
 
 - [ ] **Step 5: Implement — 9 lifecycle sites**
 
-Each is a single `_apiLogger?.logStateChange(...)` line inserted at the anchor. All carry `// observation-only — do not add control flow`.
+Each is wrapped as `_safeLog(() => <call>)` and inserted at the anchor — the table shows the inner `logStateChange(...)` for brevity. All carry `// observation-only — wrapped in _safeLog`.
 
 | # | Method | Anchor (existing line) | Insertion (add immediately after the anchor) |
 |---|---|---|---|
 | 1 | `_doConnect` | `_setState(GatewayConnectionState.connecting);` | `_apiLogger?.logStateChange(instanceId: _instanceId, state: 'connecting', message: 'Connecting to $_gatewayUrl');` |
-| 2 | `_handleConnectResponse` (hello-ok success) | `_setState(GatewayConnectionState.connected);` | `_apiLogger?.logStateChange(instanceId: _instanceId, state: 'connected', message: 'Connected (protocol: ${payload['protocol']}, maxPayload: $_maxPayloadBytes, tick: ${_tickIntervalMs}ms)');` |
+| 2 | `_handleConnectResponse` (hello-ok success) | `_hasAttemptedDeviceTokenRetry = false;` (end of hello-ok branch, **after** policy parsing — so `_maxPayloadBytes`/`_tickIntervalMs` are negotiated values, not stale defaults) | `_apiLogger?.logStateChange(instanceId: _instanceId, state: 'connected', message: 'Connected (protocol: ${payload['protocol']}, maxPayload: $_maxPayloadBytes, tick: ${_tickIntervalMs}ms)');` |
 | 3 | `_handleAuthFailure` | `_setState(GatewayConnectionState.authFailed);` | `_apiLogger?.logStateChange(instanceId: _instanceId, state: 'authFailed', message: 'Auth failed: $reason${errorCode != null ? ' (code: $errorCode)' : ''}');` |
 | 4 | `_handlePairingRequired` | `_setState(GatewayConnectionState.pairingRequired);` | `_apiLogger?.logStateChange(instanceId: _instanceId, state: 'pairingRequired', message: 'Pairing required — waiting for approval');` |
 | 5 | `_handleDeviceIdMismatch` | `_setState(GatewayConnectionState.recovering);` | `_apiLogger?.logStateChange(instanceId: _instanceId, state: 'recovering', message: 'Device ID mismatch — transient race, retry 2s');` |
@@ -1132,9 +1165,9 @@ Each is a single `_apiLogger?.logStateChange(...)` line inserted at the anchor. 
 
 For `_onConnectionDone`: add a message-only log after the `if (!_intentionalDisconnect && !_state.isTerminal)` block:
 ```dart
-    // observation-only — do not add control flow
-    _apiLogger?.logStateChange(
-        instanceId: _instanceId, state: _state.name, message: 'WebSocket closed');
+    // observation-only — wrapped in _safeLog
+    _safeLog(() => _apiLogger?.logStateChange(
+        instanceId: _instanceId, state: _state.name, message: 'WebSocket closed'));
 ```
 (`GatewayConnectionState` is an enum; `.name` yields `'recovering'`/`'disconnected'` etc.)
 
@@ -1142,26 +1175,26 @@ For the 2 diagnostic-event sites in `sendRawRequest` (before each `throw`):
 
 - Before `throw PayloadTooLargeException(...)`:
 ```dart
-      // observation-only — do not add control flow
-      _apiLogger?.logStateChange(
+      // observation-only — wrapped in _safeLog
+      _safeLog(() => _apiLogger?.logStateChange(
           instanceId: _instanceId,
           state: null,
-          message: 'Payload too large: $payloadSize > maxPayload $maxPayload');
+          message: 'Payload too large: $payloadSize > maxPayload $maxPayload'));
 ```
 - Before `throw BufferOverflowException(...)`:
 ```dart
-      // observation-only — do not add control flow
-      _apiLogger?.logStateChange(
+      // observation-only — wrapped in _safeLog
+      _safeLog(() => _apiLogger?.logStateChange(
           instanceId: _instanceId,
           state: null,
           message:
-              'Buffer overflow: buffered=$_bufferedBytes, attempted=$payloadSize, max=$maxBuffered');
+              'Buffer overflow: buffered=$_bufferedBytes, attempted=$payloadSize, max=$maxBuffered'));
 ```
 
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `flutter test test/core/acl/connection_manager_logging_test.dart`
-Expected: PASS (all non-skipped tests). The skipped tick-timeout test remains skipped.
+Expected: PASS (all tests, including the now-unskipped tick-timeout test).
 
 - [ ] **Step 7: Run the full existing ConnectionManager suite to confirm no regression**
 
@@ -1278,11 +1311,11 @@ In `lib/core/acl/ws_gateway_client.dart`:
 import '../i_api_logger.dart';
 ```
 
-3b. Add a field + constructor param (mirror the existing `_logger` pattern). Add field:
+3b. Add a field + constructor param, mirroring the existing `_deviceTokenStore` private-initializing-formal pattern. Add field:
 ```dart
   final IApiLogger? _apiLogger;
 ```
-Add `this.apiLogger,` to the `WsGatewayClient({...})` constructor params and `_apiLogger = apiLogger,` to the initializer. (Param name `IApiLogger? apiLogger`.)
+Add `this._apiLogger,` to the `WsGatewayClient({...})` constructor params (private initializing formal — binds directly to the `_apiLogger` field; no separate initializer line, no public `apiLogger` field).
 
 3c. In `connect()`, pass it to the `ConnectionManager` ctor (the `final manager = ConnectionManager(...)` block, ~L195):
 ```dart
@@ -1612,10 +1645,9 @@ class _DiagnosticsPageState extends ConsumerState<DiagnosticsPage> {
   }
 
   Future<void> _maybeShowWarning() async {
-    final shown = ref.read(diagnosticsWarningShownProvider).maybeWhen(
-          data: (v) => v,
-          orElse: () => true, // while loading, don't block
-        );
+    // Await the FutureProvider's future so we read the real persisted flag,
+    // not a loading placeholder (an orElse:true short-circuit would never show).
+    final shown = await ref.read(diagnosticsWarningShownProvider).future;
     if (shown || !mounted) return;
     await showDialog<void>(
       context: context,
@@ -1888,6 +1920,7 @@ git commit -m "test(api-logging): perf regression test for truncate-then-parse"
 
 ## Self-Review Notes
 
-- **Spec coverage**: §2 (files/layers) → Tasks 1–7; §3 (entry + redactor) → Tasks 1–2; §4 (store) → Task 3; §5 (CM instrumentation, 15 sites) → Task 4; §5.3 + §6 (forwarding + DI) → Task 5; §7 (UI/providers/route) → Tasks 6–7; §8 (tests) → embedded in each task + Task 8 perf; §9 (constants) → Tasks 2–3; §10 (invariants) → Task 4 throwing-logger + Task 8 perf.
-- **Refinements over spec** (called out inline): `ApiLogDirection { outgoing, incoming }` (not `out, in` — `in` reserved); `ApiLogEntry.direction` nullable for state entries; biometric gating replaced with tap-to-reveal + warning (spec commit `59471dd`).
-- **Known follow-up**: the tick-timeout test in Task 4 is `skip:`ed — either implement the `FakeTimerFactory` variant or delete with a tracking comment before merge.
+- **Spec coverage**: §2 (files/layers) → Tasks 1–7; §3 (entry + redactor) → Tasks 1–2; §4 (store) → Task 3; §5 (CM instrumentation, 15 sites) → Task 4; §5.3 + §6 (forwarding + DI) → Task 5; §7 (UI/providers/route) → Tasks 6–7; §8 (tests) → embedded in each task + Task 8 perf; §9 (constants) → Tasks 2–3; §10 (invariants) → Task 4 `_safeLog` + throwing-logger + Task 8 perf.
+- **Refinements over spec** (called out inline): `ApiLogDirection { outgoing, incoming }` (not `out, in` — `in` reserved); `ApiLogEntry.direction` nullable for state entries; biometric gating replaced with tap-to-reveal + warning (spec commit `59471dd`); `_safeLog` wrapper on every CM call site (resolves spec §5.2 "no control flow" vs §8 "throwing-logger all logXxx" tension — defensive try/catch doesn't alter protocol control flow).
+- **architecture-reviewer fixes applied**: (1) `_safeLog` helper + all 15 call sites wrapped → throwing-logger contract test now passes for all `logXxx`; (2) hello-ok `connected` log moved to after policy parsing (was reading stale default `maxPayload`/`tick`); (3) constructor param syntax unified to `this._apiLogger` private initializing formal (Task 4 & 5); (4) `_maybeShowWarning` awaits the FutureProvider future (the `orElse:true` short-circuit never showed the warning); (6) tick-timeout test un-skipped via `FakeTimerFactory.fireLast()`.
+- **Reviewer minor #5** (orphan res early-return path not logged) — left as a documented non-gap for v1; can add an orphan-res log later.
