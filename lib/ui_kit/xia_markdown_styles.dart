@@ -61,6 +61,10 @@ class XiaMarkdownStyles {
     ),
     tableBody: const TextStyle(color: XiaColors.text1),
     listBullet: const TextStyle(color: XiaColors.text1),
+    // 表格不换行 + 横向滚动条:IntrinsicColumnWidth 触发 flutter_markdown
+    // 原生 Scrollbar > SingleChildScrollView(horizontal) 包裹(builder.dart:515)。
+    tableColumnWidth: const IntrinsicColumnWidth(),
+    tableScrollbarThumbVisibility: true,
   );
 
   /// Lightweight stylesheet for streaming text (p, code, strong only).
@@ -75,5 +79,8 @@ class XiaMarkdownStyles {
       fontFamily: XiaTypography.monoFontFamily,
     ),
     strong: const TextStyle(fontWeight: FontWeight.bold),
+    // 与 message 一致:流式半渲染表格也不换行 + 横向滚动条。
+    tableColumnWidth: const IntrinsicColumnWidth(),
+    tableScrollbarThumbVisibility: true,
   );
 }
