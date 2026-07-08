@@ -111,10 +111,13 @@ class NotificationBootstrap with WidgetsBindingObserver {
     );
 
     // US-018: schedule background sync + observe app lifecycle.
-    await guarded('scheduler init', () async {
-      await _read(backgroundSyncSchedulerProvider).ensureScheduled();
-      WidgetsBinding.instance.addObserver(this);
-    });
+    // Observer registration is NOT best-effort: a Workmanager scheduling
+    // failure must not silently disable app-lifecycle observation.
+    await guarded(
+      'scheduler init',
+      () => _read(backgroundSyncSchedulerProvider).ensureScheduled(),
+    );
+    WidgetsBinding.instance.addObserver(this);
 
     // Mark initialized only after every step has run - a throw above (most
     // importantly the un-guarded service.initialize) must leave this false so a

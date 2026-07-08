@@ -29,20 +29,54 @@ void main() {
       expect(first.first.message, 'second'); // newest first
       expect(first.last.message, 'first');
 
-      // A new entry triggers a re-emission. The store's broadcast controller and
-      // this provider's controller are both async (sync:false), so the re-emission
-      // crosses two microtask hops; pump the event queue before re-reading .future
-      // (which otherwise returns the already-completed seed value immediately).
+      // A new entry triggers a re-emission, now throttled to 100ms to avoid
+      // rebuilding the diagnostics ListView on every single log entry.
       store.logStateChange(
         instanceId: 'i1',
         state: 'connected',
         message: 'third',
       );
-      await Future.delayed(Duration.zero);
+      await Future.delayed(const Duration(milliseconds: 110));
       final updated = await container.read(diagnosticsEntriesProvider.future);
       expect(updated.first.message, 'third');
 
       sub.close();
+    },
+  );
+
+  test(
+    'diagnosticsEntriesProvider throttles rapid entries to one emission',
+    () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final store = container.read(apiLogStoreProvider);
+      final keepAlive = container.listen(diagnosticsEntriesProvider, (_, _) {});
+      await container.read(diagnosticsEntriesProvider.future); // seed
+
+      var emissionCount = 0;
+      final lastEmission = container.listen(diagnosticsEntriesProvider, (
+        prev,
+        next,
+      ) {
+        if (next.hasValue) emissionCount++;
+      });
+
+      store.logStateChange(instanceId: 'i1', state: 's1', message: 'a');
+      store.logStateChange(instanceId: 'i1', state: 's2', message: 'b');
+      store.logStateChange(instanceId: 'i1', state: 's3', message: 'c');
+
+      // Events arrive immediately, but throttle window is still open.
+      await Future.delayed(Duration.zero);
+      expect(emissionCount, 0, reason: 'rapid entries should be batched');
+
+      await Future.delayed(const Duration(milliseconds: 110));
+      expect(emissionCount, 1, reason: 'batched entries emit once');
+      final updated = await container.read(diagnosticsEntriesProvider.future);
+      expect(updated.first.message, 'c');
+
+      lastEmission.close();
+      keepAlive.close();
     },
   );
 

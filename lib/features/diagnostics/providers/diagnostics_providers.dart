@@ -7,18 +7,33 @@ import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/core/i_api_logger.dart';
 
 /// 诊断页条目流（v1 无过滤，spec §7.2）。seed = 当前 snapshot 逆序（最新在最上），
-/// 之后每次 store 新增条目重新发逆序列表。O(500) per emission；autoDispose 使页面
-/// 关闭后释放订阅，避免终身 O(500) 快照拷贝（store 单例常驻，重开页面 re-seed）。
+/// 之后对 store 新增条目做 100ms throttle 批量发射，避免 chatty connection 下每帧
+/// 都重建 ListView（review finding #7）。autoDispose 使页面关闭后释放订阅。
 final diagnosticsEntriesProvider =
     StreamProvider.autoDispose<List<ApiLogEntry>>((ref) {
       final store = ref.watch(apiLogStoreProvider);
       final controller = StreamController<List<ApiLogEntry>>();
+      Timer? throttle;
+      var dirty = false;
+
+      void flush() {
+        throttle = null;
+        if (!dirty) return;
+        dirty = false;
+        controller.add(store.snapshot().reversed.toList());
+      }
+
+      void markDirty() {
+        dirty = true;
+        throttle ??= Timer(const Duration(milliseconds: 100), flush);
+      }
+
       controller.add(store.snapshot().reversed.toList());
-      final sub = store.onEntry.listen(
-        (_) => controller.add(store.snapshot().reversed.toList()),
-      );
+      final sub = store.onEntry.listen((_) => markDirty());
+
       ref.onDispose(() {
         sub.cancel();
+        throttle?.cancel();
         controller.close();
       });
       return controller.stream;

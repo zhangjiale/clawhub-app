@@ -654,7 +654,7 @@ class ConnectionManager {
                 requestId: id,
                 ok: ok,
                 errorCode: frame.error?.code,
-                byteSize: raw.length,
+                byteSize: utf8.encode(raw).length,
                 rawJson: raw,
               ),
             );
@@ -669,7 +669,7 @@ class ConnectionManager {
               requestId: id,
               ok: ok,
               errorCode: frame.error?.code,
-              byteSize: raw.length,
+              byteSize: utf8.encode(raw).length,
               rawJson: raw,
             ),
           );
@@ -1476,19 +1476,21 @@ class ConnectionManager {
     // Only attempt recovery from non-terminal states.
     // Terminal states (authFailed, pairingRequired, reconnectExhausted) must
     // not be clobbered back to recovering — that would prevent the Orchestrator
-    // from emitting the correct terminal event.
+    // from emitting the correct terminal event. The observation log is guarded
+    // too: logging "WebSocket closed" for an intentional disconnect or an
+    // already-terminal state is misleading (review finding #4).
     if (!_intentionalDisconnect && !_state.isTerminal) {
       _setState(GatewayConnectionState.recovering);
       _scheduleReconnect();
+      // observation-only — wrapped in _safeLog
+      _safeLog(
+        () => _apiLogger?.logStateChange(
+          instanceId: _instanceId,
+          state: _state.name,
+          message: 'WebSocket closed',
+        ),
+      );
     }
-    // observation-only — wrapped in _safeLog
-    _safeLog(
-      () => _apiLogger?.logStateChange(
-        instanceId: _instanceId,
-        state: _state.name,
-        message: 'WebSocket closed',
-      ),
-    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1593,11 +1595,28 @@ class ConnectionManager {
       ok: false,
       error: ProtocolError(code: 'CONNECTION_LOST', message: reason),
     );
+    // Capture ids before clearing so we can synthesize a response log entry
+    // for each pending request. Without this, ApiLogStore._pendingReqTs keeps
+    // the unmatched req entries until the 30s TTL sweep (review finding #2).
+    final pendingIds = _pendingRequests.keys.toList();
     for (final completer in _pendingRequests.values) {
       if (!completer.isCompleted) {
         completer.complete(error);
       }
     }
     _pendingRequests.clear();
+
+    for (final id in pendingIds) {
+      _safeLog(
+        () => _apiLogger?.logResponse(
+          instanceId: _instanceId,
+          requestId: id,
+          ok: false,
+          errorCode: 'CONNECTION_LOST',
+          byteSize: 0,
+          rawJson: null,
+        ),
+      );
+    }
   }
 }

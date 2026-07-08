@@ -248,7 +248,7 @@ final connectionInitStateProvider = StateProvider<AsyncValue<void>?>(
 /// teardown 时 observer 重复注册 + prefs 订阅泄漏。
 final notificationBootstrapProvider = Provider<NotificationBootstrap>((ref) {
   final bootstrap = NotificationBootstrap(ref.read);
-  ref.onDispose(bootstrap.dispose);
+  ref.onDispose(() => unawaited(bootstrap.dispose()));
   return bootstrap;
 });
 

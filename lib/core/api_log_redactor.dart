@@ -69,23 +69,102 @@ void _redactInPlace(Object? node) {
   }
 }
 
-/// JSON 字符串字面量匹配（含转义序列）。供 [_redactPattern] 的 value 部分复用。
-///
-/// 用 `(?:[^"\\]|\\.)*` 而非 `[^"]*`（ARB #6）：后者在遇到 `\"` 时停在第一个
-/// 引号，导致含转义引号的 token/签名只脱敏前半段、尾部泄漏且破坏 preview 的 JSON
-/// 合法性。`\\.` 正确吞掉 `\"`/`\\` 等转义序列，使整个字符串值被一次性脱敏。
-const String _jsonStringPattern = r'"(?:[^"\\]|\\.)*"';
-
 /// Precompiled alternation of all redacted keys（Dart 不缓存非字面量 RegExp，
-/// 逐 key 编译会重复付 11 次编译成本）。单趟替换 `"key":"value"` ->
-/// `"key":"<redacted>"`，match group 1 保留命中的具体 key 名。key 全为字母数字，
-/// 无需 regex 转义。
-final RegExp _redactPattern = RegExp(
-  '"(${redactedKeys.join('|')})"\\s*:\\s*$_jsonStringPattern',
-);
+/// 逐 key 编译会重复付 11 次编译成本）。只匹配到 `:` 后的空白，具体 value 用
+/// [_findJsonValueEnd] 做 JSON-aware 扫描，从而覆盖 string / number / object /
+/// array / boolean / null 全部类型（review finding #1）。key 全为字母数字，无需
+/// regex 转义。
+final RegExp _redactPattern = RegExp('"(${redactedKeys.join('|')})"\\s*:\\s*');
 
-String _regexRedact(String s) =>
-    s.replaceAllMapped(_redactPattern, (m) => '"${m[1]}":"<redacted>"');
+String _regexRedact(String s) {
+  // Best-effort: malformed input must not crash the preview pipeline.
+  try {
+    final buffer = StringBuffer();
+    var lastEnd = 0;
+    for (final match in _redactPattern.allMatches(s)) {
+      // 当前 match 若落在已脱敏的 value 区间内，则跳过（嵌套对象里多个 key 命中时）。
+      if (match.start < lastEnd) continue;
+      buffer.write(s.substring(lastEnd, match.end));
+      final valueEnd = _findJsonValueEnd(s, match.end);
+      buffer.write('"<redacted>"');
+      lastEnd = valueEnd;
+    }
+    buffer.write(s.substring(lastEnd));
+    return buffer.toString();
+  } catch (_) {
+    return s;
+  }
+}
+
+int _findJsonValueEnd(String s, int start) {
+  var i = start;
+  while (i < s.length && _isJsonWhitespace(s.codeUnitAt(i))) {
+    i++;
+  }
+  if (i >= s.length) return s.length;
+
+  final first = s[i];
+  if (first == '"') return _endOfString(s, i);
+  if (first == '{') return _endOfStructured(s, i, '{', '}');
+  if (first == '[') return _endOfStructured(s, i, '[', ']');
+
+  // number / true / false / null：读到下一个 delimiter 为止。
+  while (i < s.length) {
+    final c = s[i];
+    if (c == ',' || c == '}' || c == ']') break;
+    i++;
+  }
+  return i;
+}
+
+bool _isJsonWhitespace(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
+int _endOfString(String s, int openQuote) {
+  var i = openQuote + 1;
+  while (i < s.length) {
+    final c = s[i];
+    if (c == '\\') {
+      i += 2;
+    } else if (c == '"') {
+      return i + 1;
+    } else {
+      i++;
+    }
+  }
+  return s.length;
+}
+
+int _endOfStructured(String s, int open, String openChar, String closeChar) {
+  var depth = 1;
+  var inString = false;
+  var escaped = false;
+  for (var i = open + 1; i < s.length; i++) {
+    final c = s[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        inString = false;
+      }
+    } else {
+      if (c == '"') {
+        inString = true;
+      } else if (c == openChar) {
+        depth++;
+      } else if (c == closeChar) {
+        depth--;
+        if (depth == 0) return i + 1;
+      }
+    }
+  }
+  return s.length;
+}
 
 /// 大帧 / 畸形 JSON 的统一脱敏+截断兜底路径。
 String _regexFallback(String rawJson, int maxBytes, int originalBytes) =>

@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:claw_hub/core/acl/connection_manager.dart';
 import 'package:claw_hub/core/acl/gateway_protocol.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/api_log_store.dart';
+import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/utils/retry_strategy.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -1702,6 +1705,95 @@ void main() {
         reason: 'Error during auth phase should trigger recovery',
       );
       expect(states, contains(GatewayConnectionState.recovering));
+    });
+  });
+
+  // ==========================================================================
+  // Group: IApiLogger integration (review findings #2 / #5)
+  // ==========================================================================
+  group('ApiLogger integration', () {
+    Future<({ControllableWebSocket ws, ConnectionManager cm})>
+    connectWithLogger(IApiLogger logger) async {
+      final ws = ControllableWebSocket.ready();
+      final cm = ConnectionManager(
+        instanceId: 'test-instance',
+        gatewayUrl: 'ws://localhost:9999/ws',
+        token: 'test-token',
+        deviceId: 'test-device',
+        config: testConfig(signPayload: (_) async => 'mock-sig'),
+        webSocketFactory: (_) => ws.channel,
+        apiLogger: logger,
+      );
+
+      cm.connect();
+      await pumpMicrotasks();
+
+      ws.simulateServerFrame(challengeJson());
+      await pumpMicrotasks();
+
+      final reqId = extractReqId(ws.sentFrames.first);
+      ws.simulateServerFrame(helloOkJson(reqId));
+      await pumpMicrotasks();
+
+      expect(cm.state, GatewayConnectionState.connected);
+      return (ws: ws, cm: cm);
+    }
+
+    test(
+      'disconnect logs a synthetic CONNECTION_LOST response for each pending request',
+      () async {
+        final store = ApiLogStore();
+        final (:ws, :cm) = await connectWithLogger(store);
+
+        // Kick off a request but never answer it.
+        final responseFuture = cm.sendRequest('agents.list', {});
+        await pumpMicrotasks();
+
+        // Trigger the connection-drop path.
+        await cm.disconnect();
+        await pumpMicrotasks();
+
+        final response = await responseFuture;
+        expect(response.ok, isFalse);
+        expect(response.error?.code, 'CONNECTION_LOST');
+
+        final entries = store.snapshot();
+        final syntheticRes = entries.where(
+          (e) =>
+              e.kind == ApiLogKind.res &&
+              e.errorCode == 'CONNECTION_LOST' &&
+              e.ok == false,
+        );
+        expect(syntheticRes, hasLength(1));
+
+        await cm.dispose();
+      },
+    );
+
+    test('response byteSize is UTF-8 bytes, not UTF-16 code units', () async {
+      final store = ApiLogStore();
+      final (:ws, :cm) = await connectWithLogger(store);
+
+      final responseFuture = cm.sendRequest('agents.list', {});
+      await pumpMicrotasks();
+
+      final reqId = extractReqId(ws.sentFrames.last);
+      // "你好" is 6 UTF-8 bytes but only 2 Dart String length units.
+      final emojiAndCjk =
+          '{"type":"res","id":"$reqId","ok":true,"payload":{"x":"你好🦐"}}';
+      ws.simulateServerFrame(emojiAndCjk);
+      await pumpMicrotasks();
+
+      final response = await responseFuture;
+      expect(response.ok, isTrue);
+
+      final resEntry = store.snapshot().lastWhere(
+        (e) => e.kind == ApiLogKind.res,
+      );
+      expect(resEntry.byteSize, utf8.encode(emojiAndCjk).length);
+      expect(resEntry.byteSize, greaterThan(emojiAndCjk.length));
+
+      await cm.dispose();
     });
   });
 }

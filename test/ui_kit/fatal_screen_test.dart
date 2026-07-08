@@ -95,4 +95,43 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'Retry re-enables when same String error is thrown again with new stack trace',
+    (tester) async {
+      // Regression for value-based `!=`: a String error thrown twice compares
+      // equal, so the gate must use StackTrace identity instead of error value.
+      var retries = 0;
+      const error = 'persistent Workmanager PlatformException';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FatalScreen(
+            error: error,
+            stackTrace: StackTrace.current,
+            onRetry: () => retries++,
+          ),
+        ),
+      );
+      await tester.tap(find.text('重试'));
+      expect(retries, 1);
+      await tester.pump();
+
+      // Same string error, but a fresh throw => new StackTrace instance.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FatalScreen(
+            error: error,
+            stackTrace: StackTrace.current,
+            onRetry: () => retries++,
+          ),
+        ),
+      );
+      await tester.tap(find.text('重试'));
+      expect(
+        retries,
+        2,
+        reason: 'same String error with a new stack trace must be retryable',
+      );
+    },
+  );
 }

@@ -104,5 +104,31 @@ void main() {
         );
       },
     );
+
+    test(
+      'regex fallback redacts non-string values of redacted keys (review #1)',
+      () {
+        const raw =
+            '{"token":12345,"secret":null,"signature":{"alg":"ed25519"},'
+            '"nonce":[1,2,3],"refreshToken":true,"deviceToken":false}';
+        final out = redactAndTruncate(raw);
+        expect(out, contains('"token":"<redacted>"'));
+        expect(out, contains('"secret":"<redacted>"'));
+        expect(out, contains('"signature":"<redacted>"'));
+        expect(out, contains('"nonce":"<redacted>"'));
+        expect(out, contains('"refreshToken":"<redacted>"'));
+        expect(out, contains('"deviceToken":"<redacted>"'));
+        expect(out, isNot(contains('12345')));
+        expect(out, isNot(contains('ed25519')));
+        expect(out, isNot(contains('[1,2,3]')));
+      },
+    );
+
+    test('regex fallback redacts nested objects containing redacted keys', () {
+      const raw = '{"outer":{"inner":{"token":"deep"}},"x":"y"}';
+      final out = redactAndTruncate(raw);
+      expect(out, contains('"token":"<redacted>"'));
+      expect(out, isNot(contains('deep')));
+    });
   });
 }

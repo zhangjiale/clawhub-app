@@ -40,12 +40,14 @@ class _FatalScreenState extends State<FatalScreen> {
     // The root element is reused (same runtimeType, no key) so Flutter
     // reconciles this State in place instead of recreating it - `_retrying`
     // would otherwise stay true from the first failed retry and lock the
-    // user out of retrying the new failure until force-quit. A changed error
-    // object is the signal that a fresh failure replaced the old one, so
-    // re-arm the gate. The double-tap protection within one error display is
-    // preserved: `_retrying` stays true between the first tap and the
-    // re-render with a new error.
-    if (oldWidget.error != widget.error) {
+    // user out of retrying the new failure until force-quit. A fresh throw
+    // always produces a new StackTrace instance, so identity on [stackTrace]
+    // is the reliable signal that a new failure replaced the old one.
+    // Value-based `!=` on [error] fails for String-typed or value-equatable
+    // errors thrown twice. The double-tap protection within one error display
+    // is preserved: `_retrying` stays true between the first tap and the
+    // re-render with a new failure.
+    if (!identical(oldWidget.stackTrace, widget.stackTrace)) {
       _retrying = false;
     }
   }
