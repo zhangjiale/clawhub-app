@@ -192,6 +192,49 @@ void main() {
       ).called(1);
     });
 
+    test(
+      'initialize that throws stays re-initializable (retry re-runs plugin.initialize)',
+      () async {
+        // Regression for architecture-review-board finding #1 (nested layer):
+        // _initialized must be set AFTER the throwable _plugin.initialize(),
+        // not before. Buggy code marks done before the throw -> the retry
+        // short-circuits on `if (_initialized) return` -> plugin.initialize is
+        // called once total. Fixed code leaves the flag false on throw -> the
+        // retry re-invokes -> plugin.initialize is called twice.
+        when(
+          () => plugin.initialize(
+            any(),
+            onDidReceiveNotificationResponse: any(
+              named: 'onDidReceiveNotificationResponse',
+            ),
+          ),
+        ).thenAnswer((_) async => throw Exception('plugin boom'));
+
+        // First call fails (plugin init threw). Escapes - no internal catch.
+        await expectLater(service.initialize(), throwsA(isException));
+
+        // Retry: plugin.initialize now succeeds.
+        when(
+          () => plugin.initialize(
+            any(),
+            onDidReceiveNotificationResponse: any(
+              named: 'onDidReceiveNotificationResponse',
+            ),
+          ),
+        ).thenAnswer((_) async => true);
+        await service.initialize();
+
+        verify(
+          () => plugin.initialize(
+            any(),
+            onDidReceiveNotificationResponse: any(
+              named: 'onDidReceiveNotificationResponse',
+            ),
+          ),
+        ).called(2);
+      },
+    );
+
     test('dispose clears the tap callback', () async {
       await service.initialize();
       String? received;

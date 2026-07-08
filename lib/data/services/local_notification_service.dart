@@ -35,7 +35,6 @@ class LocalNotificationService implements ILocalNotificationService {
   @override
   Future<void> initialize() async {
     if (_initialized) return;
-    _initialized = true;
 
     const initSettings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
@@ -67,6 +66,11 @@ class LocalNotificationService implements ILocalNotificationService {
       _pendingLaunchPayload = launchPayload;
       _flushPendingLaunchPayload();
     }
+    // Mark initialized only after every throwable step has succeeded - a throw
+    // above (e.g. _plugin.initialize) must leave this false so a retry actually
+    // re-runs instead of short-circuiting on `if (_initialized) return`
+    // (ARB finding #1, nested layer).
+    _initialized = true;
   }
 
   void _flushPendingLaunchPayload() {

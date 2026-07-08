@@ -43,7 +43,6 @@ class NotificationBootstrap with WidgetsBindingObserver {
 
   Future<void> init() async {
     if (_initialized) return;
-    _initialized = true;
 
     final logger = _read(loggerProvider);
     final service = _read(iLocalNotificationServiceProvider);
@@ -58,7 +57,15 @@ class NotificationBootstrap with WidgetsBindingObserver {
       }
     }
 
-    await guarded('service initialize', () => service.initialize());
+    // Intentionally NOT guarded: service.initialize() (plugin init) failure must
+    // propagate to the Tier-1 fatal path per the tier-gate design (notifications
+    // = Tier 1 fatal). The remaining guarded() blocks below are explicitly
+    // best-effort - their failure is logged but does NOT block app mount.
+    // (ARB finding #1: previously this was guarded, so a real plugin-init failure
+    // was silently swallowed and init "succeeded" -> the fatal path was never
+    // reached by the realistic failure mode, and the early `_initialized = true`
+    // defeated retry on top of that.)
+    await service.initialize();
 
     // 注册点击深链回调 (路由跳转逻辑留在 app 层，data 层不反向依赖 router)。
     service.setupOnTap(handleNotificationTap);
@@ -108,6 +115,11 @@ class NotificationBootstrap with WidgetsBindingObserver {
       await _read(backgroundSyncSchedulerProvider).ensureScheduled();
       WidgetsBinding.instance.addObserver(this);
     });
+
+    // Mark initialized only after every step has run - a throw above (most
+    // importantly the un-guarded service.initialize) must leave this false so a
+    // retry re-runs init() instead of short-circuiting (ARB finding #1).
+    _initialized = true;
   }
 
   @override
