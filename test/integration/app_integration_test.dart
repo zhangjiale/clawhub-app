@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/native.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
+import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/data/local/database/database.dart' as db;
@@ -42,6 +44,23 @@ class _FakeLocalNotificationService implements ILocalNotificationService {
 final _notificationServiceOverride = iLocalNotificationServiceProvider
     .overrideWith((_) => _FakeLocalNotificationService());
 
+/// Headless fake — real [NotificationBootstrap] opens a Drift prefs stream
+/// whose cancel-on-dispose (provider onDispose) schedules a 0-duration timer
+/// that trips flutter_test's "Timer is still pending" at teardown. These
+/// integration tests exercise the app shell/navigation, not the notification
+/// subsystem, so a no-op init fake is the right seam.
+class _FakeNotificationBootstrap implements NotificationBootstrap {
+  @override
+  Future<void> init() async {}
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+    '_FakeNotificationBootstrap.${invocation.memberName}',
+  );
+}
+
+final _notificationBootstrapOverride = notificationBootstrapProvider
+    .overrideWith((_) => _FakeNotificationBootstrap());
+
 /// Test helper — creates a fully wired app with in-memory SQLite and
 /// MockGatewayClient, matching the production ProviderScope setup but
 /// suitable for headless CI testing.
@@ -57,20 +76,45 @@ ProviderScope appTestHarness({required Widget child}) {
         (ref) => ref.watch(mockGatewayClientProvider),
       ),
       _notificationServiceOverride,
+      _notificationBootstrapOverride,
       noOpBackgroundSyncSchedulerOverride,
     ],
     child: child,
   );
 }
 
+/// StartupGate 在 splash 阶段挂 800ms MinDisplayTimer；`pumpAndSettle` 在
+/// 800ms 之前因「无调度帧」提前停止，app 阶段永不 mount。本 helper 先 pump
+/// 一帧让 initState/postFrameCallback/_runStartup 跑起来，再推进 800ms 越过
+/// MinDisplayTimer，最后 pumpAndSettle 收尾 app 自身的动画/路由过渡。
+Future<void> _settlePastSplashGate(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 800));
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  // StartupGate._runStartup calls PackageInfo.fromPlatform() for the version
+  // string — in the headless test env the platform channel is absent and it
+  // throws MissingPluginException, which StartupGate would treat as a Tier-1
+  // fatal. Mock the singleton so it resolves instantly.
+  setUpAll(() {
+    PackageInfo.setMockInitialValues(
+      appName: 'ClawHub',
+      packageName: 'com.clawhub.app',
+      version: '1.0.0',
+      buildNumber: '1',
+      buildSignature: '',
+    );
+  });
+
   // ===========================================================================
   // App Launch & Initialization
   // ===========================================================================
   group('App launch', () {
     testWidgets('renders 3-tab navigation bar', (tester) async {
       await tester.pumpWidget(appTestHarness(child: const ClawHubApp()));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       expect(find.text('虾列表'), findsAtLeast(1));
       expect(find.text('消息'), findsAtLeast(1));
@@ -79,7 +123,7 @@ void main() {
 
     testWidgets('starts on Claws (agent list) tab', (tester) async {
       await tester.pumpWidget(appTestHarness(child: const ClawHubApp()));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       // Bottom nav should have 3 tabs rendered
       expect(find.byType(BackdropFilter), findsWidgets);
@@ -97,6 +141,7 @@ void main() {
             (ref) => ref.watch(mockGatewayClientProvider),
           ),
           _notificationServiceOverride,
+          _notificationBootstrapOverride,
           noOpBackgroundSyncSchedulerOverride,
         ],
       );
@@ -108,7 +153,7 @@ void main() {
           child: const ClawHubApp(),
         ),
       );
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       final state = container.read(connectionInitStateProvider);
       expect(state, isA<AsyncValue<void>>());
@@ -126,10 +171,10 @@ void main() {
   group('Tab navigation', () {
     testWidgets('switches to Instances tab and shows FAB', (tester) async {
       await tester.pumpWidget(appTestHarness(child: const ClawHubApp()));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       await tester.tap(find.text('实例'));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       // The add instance FAB should be visible
       expect(find.byIcon(Icons.add), findsOneWidget);
@@ -137,10 +182,10 @@ void main() {
 
     testWidgets('switches to Messages tab', (tester) async {
       await tester.pumpWidget(appTestHarness(child: const ClawHubApp()));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       await tester.tap(find.text('消息'));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       // Message hub content should render
       expect(find.text('消息'), findsAtLeast(1));
@@ -148,20 +193,20 @@ void main() {
 
     testWidgets('returns to Claws tab after switching away', (tester) async {
       await tester.pumpWidget(appTestHarness(child: const ClawHubApp()));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       // Go to instances
       await tester.tap(find.text('实例'));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
       expect(find.byIcon(Icons.add), findsOneWidget);
 
       // Go to messages
       await tester.tap(find.text('消息'));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       // Return to claws
       await tester.tap(find.text('虾列表'));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
       expect(find.text('虾列表'), findsAtLeast(1));
     });
   });
@@ -223,7 +268,7 @@ void main() {
   group('Robustness', () {
     testWidgets('survives rapid tab switching without crash', (tester) async {
       await tester.pumpWidget(appTestHarness(child: const ClawHubApp()));
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
 
       const tabs = ['虾列表', '消息', '实例'];
       for (var round = 0; round < 3; round++) {
@@ -251,7 +296,7 @@ void main() {
         );
       }
 
-      await tester.pumpAndSettle();
+      await _settlePastSplashGate(tester);
       expect(tester.takeException(), isNull);
     });
   });

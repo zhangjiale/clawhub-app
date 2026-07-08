@@ -7,11 +7,11 @@ import 'package:claw_hub/app/bootstrap.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/di/providers.dart';
-import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
+import 'package:claw_hub/app/splash/startup_gate.dart';
 import 'package:claw_hub/app/background_sync/callback_dispatcher.dart';
 import 'package:claw_hub/data/local/database/database_initializer.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
-import 'package:claw_hub/ui_kit/default_error_fallback.dart';
+import 'package:claw_hub/ui_kit/fatal_screen.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
 
 Future<void> main() async {
@@ -55,20 +55,16 @@ Future<void> main() async {
           theme: AppTheme.darkTheme,
           darkTheme: AppTheme.darkTheme,
           themeMode: ThemeMode.dark,
-          home: Scaffold(
-            body: SafeArea(
-              child: DefaultErrorFallback(
-                error: error,
-                stackTrace: stackTrace,
-                // `() => main()` (not `main`) keeps the VoidCallback
-                // assignment explicit and lets the framework's
-                // `onPressed` handler fire-and-forget the Future — any
-                // synchronous throw inside `main` is caught by the
-                // framework's error pipeline rather than swallowed by
-                // an implicit Future<void> → VoidCallback cast.
-                onRetry: () => main(),
-              ),
-            ),
+          home: FatalScreen(
+            error: error,
+            stackTrace: stackTrace,
+            // `() => main()` (not `main`) keeps the VoidCallback
+            // assignment explicit and lets the framework's
+            // `onPressed` handler fire-and-forget the Future — any
+            // synchronous throw inside `main` is caught by the
+            // framework's error pipeline rather than swallowed by
+            // an implicit Future<void> → VoidCallback cast.
+            onRetry: () => main(),
           ),
         ),
       ),
@@ -84,83 +80,6 @@ Future<void> main() async {
       stackTrace,
     ),
   );
-}
-
-/// 应用启动后初始化连接编排器。
-///
-/// 在首次 build 时调用，确保 [ConnectionOrchestrator] 在依赖注入容器
-/// 就绪后才开始自动连接。使用 [ConsumerStatefulWidget] 的 initState
-/// 访问 ref 来触发初始化。
-///
-/// 初始化结果写入 [connectionInitStateProvider]，供父级 UI 展示错误状态。
-class _ConnectionInitializer extends ConsumerStatefulWidget {
-  final Widget child;
-
-  const _ConnectionInitializer({required this.child});
-
-  @override
-  ConsumerState<_ConnectionInitializer> createState() =>
-      _ConnectionInitializerState();
-}
-
-class _ConnectionInitializerState
-    extends ConsumerState<_ConnectionInitializer> {
-  bool _initialized = false;
-  bool _disposed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initConnections();
-  }
-
-  @override
-  void dispose() {
-    _disposed = true;
-    super.dispose();
-  }
-
-  Future<void> _initConnections() async {
-    if (_initialized) return;
-    _initialized = true;
-
-    try {
-      // US-018: 通知子系统必须先于连接建立 —— coordinator 的订阅要在
-      // orchestrator.initialize() 发出首次 InstanceConnectedEvent 前就绪，
-      // 否则漏订阅。bootstrap 内部按当前 prefs 决定是否请求权限。
-      //
-      // 注：bootstrap 持有一条 watchPreferences() 订阅，生命周期与 App 进程
-      // 一致，不在 State.dispose 中显式 cancel —— Drift 的 QueryStream 在
-      // cancel 时会内部 schedule 0-duration 定时器 (StreamQueryStore
-      // .markAsClosed)，在 widget unmount 同步 teardown 阶段无后续 pump
-      // flush，会触发 flutter_test 的 "Timer still pending" 断言。残留订阅
-      // 本身无害：coordinator 的 _disposed 守卫 + StateProvider 的
-      // last-write-wins 语义使 hot-reload 后旧订阅回调退化为幂等 no-op。
-      final bootstrap = NotificationBootstrap(ref);
-      await bootstrap.init();
-
-      final orchestrator = ref.read(connectionOrchestratorProvider);
-      await orchestrator.initialize();
-
-      if (_disposed || !mounted) return;
-      ref.read(connectionInitStateProvider.notifier).state =
-          const AsyncValue.data(null);
-    } catch (error, stackTrace) {
-      if (_disposed || !mounted) return;
-      ref.read(connectionInitStateProvider.notifier).state = AsyncValue.error(
-        error,
-        stackTrace,
-      );
-      debugPrint(
-        'ConnectionOrchestrator initialization failed: $error\n$stackTrace',
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return widget.child;
-  }
 }
 
 /// Global key for ScaffoldMessenger so snackbars can be shown from outside
@@ -203,7 +122,7 @@ class ClawHubApp extends ConsumerWidget {
       }
     });
 
-    return _ConnectionInitializer(
+    return StartupGate(
       child: MaterialApp.router(
         title: '虾Hub',
         debugShowCheckedModeBanner: false,

@@ -43,6 +43,7 @@ import 'package:claw_hub/domain/usecases/message_catch_up_service.dart';
 import 'package:claw_hub/app/connection/connection_orchestrator.dart';
 import 'package:claw_hub/app/connection/instance_event.dart';
 import 'package:claw_hub/app/config/device_model_loader.dart';
+import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
 import 'package:claw_hub/app/notifications/notification_coordinator.dart';
 import 'package:claw_hub/core/i_local_notification_service.dart';
 import 'package:claw_hub/data/repositories/drift_notification_repo.dart';
@@ -234,6 +235,23 @@ final connectionInitStateProvider = StateProvider<AsyncValue<void>?>(
   (ref) => null,
 );
 
+/// NotificationBootstrap provider — 让 StartupGate 测试可 override。
+///
+/// 旧 `_ConnectionInitializer` 直接 `new NotificationBootstrap(ref)` 调用，
+/// 没法注入 fake；新 `StartupGate` 走 tier-gate 路径，需要测试在 init 失败时
+/// 验证 FatalScreen 行为，所以包成 provider。
+///
+/// **必须 onDispose（review #3 修订）**：`NotificationBootstrap` 在
+/// `init()` 里 `addObserver(this)` + 持有 `_prefsSub` StreamSubscription，
+/// 类内已有对称 `dispose()` 方法（lib/app/notifications/notification_bootstrap.dart
+/// line 134-138）。包成 provider 后不加 onDispose → hot-restart / 测试
+/// teardown 时 observer 重复注册 + prefs 订阅泄漏。
+final notificationBootstrapProvider = Provider<NotificationBootstrap>((ref) {
+  final bootstrap = NotificationBootstrap(ref.read);
+  ref.onDispose(bootstrap.dispose);
+  return bootstrap;
+});
+
 // --- Gateway Client ---
 
 /// Mock Gateway 客户端（开发/调试用，生产环境默认使用 [wsGatewayClientProvider]）
@@ -356,9 +374,10 @@ final attachmentPickerServiceProvider = Provider<IAttachmentPickerService>((
 
 /// 全局连接编排器 — 管理所有 Gateway 实例的连接生命周期。
 ///
-/// 生命周期与 App 一致；由 `_ConnectionInitializer.initState`（见 main.dart）
-/// 在 widget 树首次 build 时调用 [ConnectionOrchestrator.initialize]，
-/// 以确保 ProviderScope 已就绪后才启动自动连接和网络监听。
+/// 生命周期与 App 一致；由 `StartupGate._runInitialization`（见
+/// lib/app/splash/startup_gate.dart）在 widget 树首次 build 时调用
+/// [ConnectionOrchestrator.initialize]，以确保 ProviderScope 已就绪后才
+/// 启动自动连接和网络监听。
 ///
 /// 同时作为 [IInstanceLifecycle] 注入到 [SaveInstanceUseCase]，
 /// 使 UseCase 在持久化完成后自动触发 WebSocket 连接编排，

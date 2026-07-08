@@ -7,6 +7,15 @@ import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/router/router.dart';
 import 'package:claw_hub/domain/models/user_preferences.dart';
 
+/// Lightweight dependency — `T Function<T>(ProviderListenable<T> provider)`.
+///
+/// `NotificationBootstrap` only needs the ability to call `.read(provider)`;
+/// storing a full `WidgetRef` or `Ref` is unnecessary and creates a
+/// Provider/Widget context mismatch (Riverpod 2.6.x: `WidgetRef` and `Ref` are
+/// sibling abstract classes, not related by inheritance). Method-tear-off from
+/// any `WidgetRef` or `Ref` is assignable here.
+typedef ProviderReader = T Function<T>(ProviderListenable<T> provider);
+
 /// 通知子系统启动器 (US-018 app 装配)。
 ///
 /// 在 [ConnectionOrchestrator.initialize] **之前**调用 [init]，确保
@@ -23,11 +32,11 @@ import 'package:claw_hub/domain/models/user_preferences.dart';
 ///   (paused → 打开 gate, resumed → 关闭 gate)
 /// - US-018: 冷启动时 warmup dispatcher LRU + 确保后台同步已被调度
 class NotificationBootstrap with WidgetsBindingObserver {
-  final WidgetRef _ref;
+  final ProviderReader _read;
   StreamSubscription<UserPreferences>? _prefsSub;
   bool _initialized = false;
 
-  NotificationBootstrap(this._ref);
+  NotificationBootstrap(this._read);
 
   /// 是否已初始化 (供测试/重复调用守卫)。
   bool get isInitialized => _initialized;
@@ -36,8 +45,8 @@ class NotificationBootstrap with WidgetsBindingObserver {
     if (_initialized) return;
     _initialized = true;
 
-    final logger = _ref.read(loggerProvider);
-    final service = _ref.read(iLocalNotificationServiceProvider);
+    final logger = _read(loggerProvider);
+    final service = _read(iLocalNotificationServiceProvider);
 
     // Local helper — most init steps are best-effort and only need a logged
     // failure; this collapses the try/catch boilerplate.
@@ -56,10 +65,10 @@ class NotificationBootstrap with WidgetsBindingObserver {
 
     // 订阅设置变更 → 更新 prefs holder (dispatcher/coordinator 同步读取) +
     // 通知 coordinator 重排 DND Timer (DND 时段/开关变更后立即生效)。
-    _prefsSub = _ref.read(settingsRepoProvider).watchPreferences().listen(
+    _prefsSub = _read(settingsRepoProvider).watchPreferences().listen(
       (prefs) {
-        _ref.read(notificationPrefsHolderProvider.notifier).state = prefs;
-        _ref.read(notificationCoordinatorProvider).onPrefsChanged();
+        _read(notificationPrefsHolderProvider.notifier).state = prefs;
+        _read(notificationCoordinatorProvider).onPrefsChanged();
       },
       onError: (Object e, StackTrace st) =>
           logger.error('[NotificationBootstrap] prefs stream error: $e', st),
@@ -67,8 +76,8 @@ class NotificationBootstrap with WidgetsBindingObserver {
 
     // 首次同步一次当前 prefs (流的首事件可能延迟)。
     await guarded('initial prefs/permission', () async {
-      final prefs = await _ref.read(settingsRepoProvider).getPreferences();
-      _ref.read(notificationPrefsHolderProvider.notifier).state = prefs;
+      final prefs = await _read(settingsRepoProvider).getPreferences();
+      _read(notificationPrefsHolderProvider.notifier).state = prefs;
 
       // 仅当用户已开启通知总开关时请求权限；关闭则延后到首次开启时。
       if (prefs.notificationsEnabled) {
@@ -82,7 +91,7 @@ class NotificationBootstrap with WidgetsBindingObserver {
     // 在   → 排定 DND 结束时刻定时器。
     await guarded(
       'coordinator start',
-      () => _ref.read(notificationCoordinatorProvider).start(),
+      () => _read(notificationCoordinatorProvider).start(),
     );
 
     // US-018: reseed in-memory dedup LRU from persisted pending notifications
@@ -90,21 +99,20 @@ class NotificationBootstrap with WidgetsBindingObserver {
     // isolate already enqueued before this cold start.
     await guarded(
       'warmupDispatcherFromPending',
-      () => _ref
-          .read(notificationCoordinatorProvider)
-          .warmupDispatcherFromPending(),
+      () =>
+          _read(notificationCoordinatorProvider).warmupDispatcherFromPending(),
     );
 
     // US-018: schedule background sync + observe app lifecycle.
     await guarded('scheduler init', () async {
-      await _ref.read(backgroundSyncSchedulerProvider).ensureScheduled();
+      await _read(backgroundSyncSchedulerProvider).ensureScheduled();
       WidgetsBinding.instance.addObserver(this);
     });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final scheduler = _ref.read(backgroundSyncSchedulerProvider);
+    final scheduler = _read(backgroundSyncSchedulerProvider);
     switch (state) {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
@@ -122,9 +130,7 @@ class NotificationBootstrap with WidgetsBindingObserver {
         // messageStream the moment the app comes back to the
         // foreground (duplicate notification bug).
         unawaited(
-          _ref
-              .read(notificationCoordinatorProvider)
-              .warmupDispatcherFromPending(),
+          _read(notificationCoordinatorProvider).warmupDispatcherFromPending(),
         );
       default:
         break;

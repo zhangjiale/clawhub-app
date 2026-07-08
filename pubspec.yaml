@@ -46,6 +46,8 @@ dependencies:
   json_annotation: ^4.9.0
   flutter_markdown: ^0.7.7+1
   mobile_scanner: ^7.2.0
+  # 读取 App 版本号 + build number 显示在 splash 底部
+  package_info_plus: ^8.0.0
   ed25519_edwards: ^0.3.1
   image_picker: ^1.1.2
   file_picker: ^8.1.2
@@ -60,6 +62,7 @@ dev_dependencies:
 
   # 测试
   mocktail: ^1.0.4
+  fake_async: ^1.3.1
   integration_test:
     sdk: flutter
 
@@ -76,6 +79,7 @@ flutter:
 
   assets:
     - assets/mock/
+    - docs/design/assets/xiahub-splash-v3.png
 
 flutter_launcher_icons:
   android: true
@@ -85,11 +89,25 @@ flutter_launcher_icons:
   adaptive_icon_foreground: "docs/design/assets/xiahub-icon-v4.png"
 
 flutter_native_splash:
-  color: "#111110"
+  # 强制暗色（board 评审 + brainstorming 决定）：
+  # color + color_dark 都用 V2 暗色 bg = #08090D = XiaColors.bg
+  # App 本身 ThemeMode.dark，OS 明色时也显示暗色 splash
+  color: "#08090D"
+  color_dark: "#08090D"
   image: "docs/design/assets/xiahub-splash-v3.png"
+
+  # Android 12+ 用 SplashScreen API
+  android_12:
+    color: "#08090D"
+    image: "docs/design/assets/xiahub-splash-v3.png"
+    icon_background_color: "#08090D"
+
+  # iOS：图居中 + 全屏（跟 Android LaunchTheme 对齐）
+  ios_content_mode: center
+  fullscreen: true
+
+  # 现有配置保留
   android: true
   ios: true
   web: false
   android_gravity: center
-  ios_content_mode: center
-  fullscreen: true

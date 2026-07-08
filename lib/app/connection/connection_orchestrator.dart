@@ -41,8 +41,8 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
 
   /// 生命周期事件流。订阅必须在 [initialize] 之前完成 ——
   /// `connectionOrchestratorProvider` 的 body 同步建订阅，
-  /// `initialize()` 由 `_ConnectionInitializer` 在其后异步调用，
-  /// 故晚订阅丢事件的风险不存在（已核对 main.dart:76-77 时序）。
+  /// `initialize()` 由 `StartupGate._runInitialization` 在其后异步调用，
+  /// 故晚订阅丢事件的风险不存在（已核对 startup_gate.dart 时序）。
   Stream<InstanceEvent> get events => _eventController.stream;
 
   /// instanceId → GatewayConnectionState 订阅
