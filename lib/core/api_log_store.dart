@@ -35,12 +35,12 @@ class ApiLogStore implements IApiLogger {
   final int Function() _clock;
   final Uuid _uuid = const Uuid();
 
-  final List<ApiLogEntry> _entries = [];
+  final ListQueue<ApiLogEntry> _entries = ListQueue<ApiLogEntry>();
   final Map<String, int> _pendingReqTs = {}; // requestId → sentAt ms
   final StreamController<ApiLogEntry> _ctrl =
       StreamController<ApiLogEntry>.broadcast();
 
-  List<ApiLogEntry> snapshot() => UnmodifiableListView(_entries);
+  List<ApiLogEntry> snapshot() => List.unmodifiable(_entries.toList());
   Stream<ApiLogEntry> get onEntry => _ctrl.stream;
 
   void clear() {
@@ -139,9 +139,10 @@ class ApiLogStore implements IApiLogger {
   }
 
   void _add(ApiLogEntry entry) {
-    _entries.add(entry);
+    _entries.addLast(entry);
     if (_entries.length > maxEntries) {
-      _entries.removeAt(0); // FIFO
+      _entries
+          .removeFirst(); // O(1) FIFO (was removeAt(0) O(n) on the WS hot path)
     }
     if (!_ctrl.isClosed) _ctrl.add(entry);
   }
