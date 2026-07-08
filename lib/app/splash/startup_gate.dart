@@ -40,10 +40,7 @@ class StartupGateState extends ConsumerState<StartupGate> {
     // 首帧防御，必须 precacheImage）。postFrameCallback 拿到合法 BuildContext。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      precacheImage(
-        const AssetImage('docs/design/assets/xiahub-splash-v3.png'),
-        context,
-      );
+      precacheImage(const AssetImage(kSplashImagePath), context);
     });
     _runStartup();
   }

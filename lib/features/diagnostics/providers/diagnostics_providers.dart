@@ -13,9 +13,9 @@ final diagnosticsEntriesProvider =
     StreamProvider.autoDispose<List<ApiLogEntry>>((ref) {
       final store = ref.watch(apiLogStoreProvider);
       final controller = StreamController<List<ApiLogEntry>>();
-      controller.add(store.snapshot().toList().reversed.toList());
+      controller.add(store.snapshot().reversed.toList());
       final sub = store.onEntry.listen(
-        (_) => controller.add(store.snapshot().toList().reversed.toList()),
+        (_) => controller.add(store.snapshot().reversed.toList()),
       );
       ref.onDispose(() {
         sub.cancel();

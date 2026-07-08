@@ -32,27 +32,18 @@ String redactAndTruncate(
   int maxBytes = defaultMaxPayloadPreviewBytes,
   int? payloadSize,
 }) {
-  final int originalBytes;
-  final bool largeFrame;
-  if (payloadSize != null) {
-    originalBytes = payloadSize;
-    largeFrame = payloadSize > largeFrameThresholdBytes;
-  } else {
-    // 无 payloadSize 时用字符数近似（避免对大帧 utf8.encode 造成 jank）
-    originalBytes = rawJson.length;
-    largeFrame = rawJson.length > largeFrameThresholdBytes;
-  }
+  // payloadSize 缺省时用字符数近似（避免对大帧 utf8.encode 造成 jank）
+  final originalBytes = payloadSize ?? rawJson.length;
+  final largeFrame = originalBytes > largeFrameThresholdBytes;
 
   try {
-    if (largeFrame) {
-      return _truncate(_regexRedact(_head(rawJson)), maxBytes, originalBytes);
-    }
+    if (largeFrame) return _regexFallback(rawJson, maxBytes, originalBytes);
     final decoded = jsonDecode(rawJson);
     _redactInPlace(decoded);
     return _truncate(jsonEncode(decoded), maxBytes, originalBytes);
   } catch (_) {
     // iron-law-allow: Law8 -- redactor 永不抛；畸形 JSON 走 regex 兜底
-    return _truncate(_regexRedact(_head(rawJson)), maxBytes, originalBytes);
+    return _regexFallback(rawJson, maxBytes, originalBytes);
   }
 }
 
@@ -62,7 +53,9 @@ String _head(String s) => s.length > regexFallbackScanBytes
 
 void _redactInPlace(Object? node) {
   if (node is Map) {
-    for (final key in node.keys.toList()) {
+    // value-only put（node[key]=...）不触发结构性变更，Map.keys 迭代器保持有效，
+    // 无需 .toList() 快照。
+    for (final key in node.keys) {
       if (redactedKeys.contains(key)) {
         node[key] = '<redacted>';
       } else {
@@ -76,16 +69,20 @@ void _redactInPlace(Object? node) {
   }
 }
 
-String _regexRedact(String s) {
-  var result = s;
-  for (final key in redactedKeys) {
-    result = result.replaceAll(
-      RegExp('"$key"\\s*:\\s*"[^"]*"'),
-      '"$key":"<redacted>"',
-    );
-  }
-  return result;
-}
+/// Precompiled alternation of all redacted keys（Dart 不缓存非字面量 RegExp，
+/// 逐 key 编译会重复付 11 次编译成本）。单趟替换 `"key":"value"` ->
+/// `"key":"<redacted>"`，match group 1 保留命中的具体 key 名。key 全为字母数字，
+/// 无需 regex 转义。
+final RegExp _redactPattern = RegExp(
+  '"(${redactedKeys.join('|')})"\\s*:\\s*"[^"]*"',
+);
+
+String _regexRedact(String s) =>
+    s.replaceAllMapped(_redactPattern, (m) => '"${m[1]}":"<redacted>"');
+
+/// 大帧 / 畸形 JSON 的统一脱敏+截断兜底路径。
+String _regexFallback(String rawJson, int maxBytes, int originalBytes) =>
+    _truncate(_regexRedact(_head(rawJson)), maxBytes, originalBytes);
 
 String _truncate(String s, int maxBytes, int originalBytes) {
   final bytes = utf8.encode(s);

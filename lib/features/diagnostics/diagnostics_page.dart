@@ -7,6 +7,8 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/core/api_log_store.dart';
 import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/features/diagnostics/providers/diagnostics_providers.dart';
+import 'package:claw_hub/ui_kit/empty_state.dart';
+import 'package:claw_hub/ui_kit/load_error_view.dart';
 import 'package:claw_hub/ui_kit/press_feedback_buttons.dart';
 
 /// 诊断页（spec §7）。v1 扁平逆序列表，payload 默认折叠（tap-to-reveal）。
@@ -84,14 +86,13 @@ class _DiagnosticsPageState extends ConsumerState<DiagnosticsPage> {
       ),
       body: entriesAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('加载失败: $e')),
+        error: (e, _) => LoadErrorView(error: e, title: '加载失败'),
         data: (entries) {
           if (entries.isEmpty) {
-            return const Center(
-              child: Text(
-                '还没有日志 — 连接 Gateway 并发条消息试试',
-                style: TextStyle(color: XiaColors.text4),
-              ),
+            return const EmptyState(
+              icon: Icon(Icons.receipt_long),
+              title: '还没有日志',
+              subtitle: '连接 Gateway 并发条消息试试',
             );
           }
           return ListView.builder(
@@ -105,16 +106,11 @@ class _DiagnosticsPageState extends ConsumerState<DiagnosticsPage> {
 
   Widget _entryTile(ApiLogEntry e) {
     final expanded = _expanded.contains(e.id);
-    final icon = e.direction == ApiLogDirection.outgoing
-        ? Icons.north
-        : e.direction == ApiLogDirection.incoming
-        ? Icons.south
-        : Icons.radio_button_unchecked;
-    final iconColor = e.direction == ApiLogDirection.outgoing
-        ? XiaColors.accent
-        : e.direction == ApiLogDirection.incoming
-        ? Colors.green
-        : XiaColors.text3;
+    final (icon, iconColor) = switch (e.direction) {
+      ApiLogDirection.outgoing => (Icons.north, XiaColors.accent),
+      ApiLogDirection.incoming => (Icons.south, XiaColors.green),
+      null => (Icons.radio_button_unchecked, XiaColors.text3),
+    };
     final title = e.kind == ApiLogKind.state
         ? (e.state ?? 'event')
         : (e.methodOrEvent ?? e.kind.name);

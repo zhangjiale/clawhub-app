@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:claw_hub/app/theme/theme.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
 
+/// Splash 背景图路径（与平台开屏共用）。集中常量避免 [StartupGate] 的
+/// `precacheImage` 与 [SplashScreen] 的 `Image.asset` 漂移到不同资产
+/// （precache 暖一张、渲染另一张 = 首帧 jank，正是 precache 要防的）。
+const String kSplashImagePath = 'docs/design/assets/xiahub-splash-v3.png';
+
 /// 全屏开屏页面。
 ///
 /// 渲染在 `MaterialApp.router` 之外（由 `StartupGate` 在 splash 阶段挂载），
@@ -28,10 +33,7 @@ class SplashScreen extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            Image.asset(
-              'docs/design/assets/xiahub-splash-v3.png',
-              fit: BoxFit.cover,
-            ),
+            Image.asset(kSplashImagePath, fit: BoxFit.cover),
             Positioned(
               left: 0,
               right: 0,

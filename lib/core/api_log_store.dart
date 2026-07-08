@@ -151,14 +151,10 @@ class ApiLogStore implements IApiLogger {
   /// state 诊断条目。直接走 [_add] 避免再入 [logStateChange] 的 try/catch。
   void _maybeSweep(int nowMs) {
     if (_pendingReqTs.length <= pendingReqSweepThreshold) return;
-    final stale = <String>[];
-    _pendingReqTs.forEach((id, ts) {
-      if (nowMs - ts > pendingReqTtlMs) stale.add(id);
-    });
-    for (final id in stale) {
-      _pendingReqTs.remove(id);
-    }
-    if (stale.isNotEmpty) {
+    final before = _pendingReqTs.length;
+    _pendingReqTs.removeWhere((id, ts) => nowMs - ts > pendingReqTtlMs);
+    final evicted = before - _pendingReqTs.length;
+    if (evicted > 0) {
       _add(
         ApiLogEntry(
           id: _uuid.v4(),
@@ -167,7 +163,7 @@ class ApiLogStore implements IApiLogger {
           kind: ApiLogKind.state,
           state: null,
           message:
-              'evicted ${stale.length} pending req entries older than '
+              'evicted $evicted pending req entries older than '
               '${pendingReqTtlMs ~/ 1000}s',
         ),
       );
