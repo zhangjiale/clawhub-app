@@ -155,6 +155,10 @@ class ConnectionOrchestrator implements IInstanceLifecycle {
     if (_isDisposed) return;
 
     // 启动网络监听
+    // 幂等：重复 initialize() 时先取消旧订阅，否则每次重入都泄漏一个订阅并让
+    // 每次 WiFi↔4G 切换双触发 _onConnectivityChanged（ARB #5）。镜像 _connect
+    // 里 _connectionSubscriptions / _pairingInfoSubscriptions 的 cancel-then-reassign。
+    await _connectivitySubscription?.cancel();
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
       _onConnectivityChanged,
     );

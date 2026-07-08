@@ -32,6 +32,25 @@ class _FatalScreenState extends State<FatalScreen> {
   bool _retrying = false;
 
   @override
+  void didUpdateWidget(covariant FatalScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // showFatal reuse path (ARB #4): on a persistent bootstrap failure
+    // (e.g. the 2026-07-01 Workmanager PlatformException), `main.dart`'s
+    // `showFatal` calls `runApp(MaterialApp(home: FatalScreen(e2)))` again.
+    // The root element is reused (same runtimeType, no key) so Flutter
+    // reconciles this State in place instead of recreating it - `_retrying`
+    // would otherwise stay true from the first failed retry and lock the
+    // user out of retrying the new failure until force-quit. A changed error
+    // object is the signal that a fresh failure replaced the old one, so
+    // re-arm the gate. The double-tap protection within one error display is
+    // preserved: `_retrying` stays true between the first tap and the
+    // re-render with a new error.
+    if (oldWidget.error != widget.error) {
+      _retrying = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Material(
       type: MaterialType.canvas,
