@@ -69,12 +69,19 @@ void _redactInPlace(Object? node) {
   }
 }
 
+/// JSON 字符串字面量匹配（含转义序列）。供 [_redactPattern] 的 value 部分复用。
+///
+/// 用 `(?:[^"\\]|\\.)*` 而非 `[^"]*`（ARB #6）：后者在遇到 `\"` 时停在第一个
+/// 引号，导致含转义引号的 token/签名只脱敏前半段、尾部泄漏且破坏 preview 的 JSON
+/// 合法性。`\\.` 正确吞掉 `\"`/`\\` 等转义序列，使整个字符串值被一次性脱敏。
+const String _jsonStringPattern = r'"(?:[^"\\]|\\.)*"';
+
 /// Precompiled alternation of all redacted keys（Dart 不缓存非字面量 RegExp，
 /// 逐 key 编译会重复付 11 次编译成本）。单趟替换 `"key":"value"` ->
 /// `"key":"<redacted>"`，match group 1 保留命中的具体 key 名。key 全为字母数字，
 /// 无需 regex 转义。
 final RegExp _redactPattern = RegExp(
-  '"(${redactedKeys.join('|')})"\\s*:\\s*"[^"]*"',
+  '"(${redactedKeys.join('|')})"\\s*:\\s*$_jsonStringPattern',
 );
 
 String _regexRedact(String s) =>

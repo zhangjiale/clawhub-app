@@ -78,5 +78,31 @@ void main() {
       expect(() => redactAndTruncate(''), returnsNormally);
       expect(() => redactAndTruncate('not json at all {{{'), returnsNormally);
     });
+
+    test(
+      'regex fallback redacts a secret containing an escaped quote (ARB #6)',
+      () {
+        // Malformed JSON (unterminated) -> jsonDecode throws -> regex fallback
+        // path (_regexRedact). The token value contains an escaped quote
+        // (`\"`). The naive regex `"[^"]*"` stops at the first quote, so it
+        // matches only `"abc\"` and leaves the `def"` tail in the preview -
+        // leaking the secret suffix AND corrupting the JSON shown on the
+        // diagnostics page. The fix uses a JSON-string-aware regex that honors
+        // backslash escapes so the whole value is redacted.
+        const raw = '{"token":"abc\\"def","x":"y';
+        final out = redactAndTruncate(raw);
+        expect(out, contains('"token":"<redacted>"'));
+        expect(
+          out,
+          isNot(contains('abc')),
+          reason: 'value prefix must not leak',
+        );
+        expect(
+          out,
+          isNot(contains('def')),
+          reason: 'value suffix must not leak',
+        );
+      },
+    );
   });
 }

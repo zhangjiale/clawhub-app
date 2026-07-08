@@ -239,6 +239,29 @@ void main() {
   });
 
   test(
+    'orphan response (unknown requestId) is logged, not silently dropped (ARB #9)',
+    () async {
+      // Server-side protocol drift: a response whose id the client never
+      // registered (post-timeout duplicate, or a server bug). Previously the
+      // early-return only debugPrinted and the diagnostics page never saw it
+      // - an operator would see healthy req/res pairs while the server sent
+      // ghosts. The fix surfaces it via logResponse so the diagnostics page
+      // records the unmatched res (incl. its error code).
+      await connectToHelloOk(cm);
+      ws.simulateServerFrame(
+        '{"type":"res","id":"ghost-id","ok":false,'
+        '"error":{"code":"UNKNOWN"},"payload":{}}',
+      );
+      await pumpMicrotasks();
+      expect(
+        logger.responses.any((r) => r.requestId == 'ghost-id' && !r.ok),
+        isTrue,
+        reason: 'orphan response must surface in diagnostics, not be dropped',
+      );
+    },
+  );
+
+  test(
     'throwing-logger contract: connect succeeds when every logXxx throws',
     () async {
       final throwingCm = buildCm(apiLogger: ThrowingApiLogger());

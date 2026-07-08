@@ -642,6 +642,22 @@ class ConnectionManager {
               '[CM] Ignoring response for unknown/duplicate id=$id '
               'ok=$ok raw=$raw',
             );
+            // observation-only - wrapped in _safeLog; surfaces orphan /
+            // duplicate responses (server-side protocol drift, post-timeout
+            // duplicates) to the diagnostics page instead of silently
+            // dropping them (ARB #9). logResponse is safe here: it only
+            // reads _pendingReqTs (remove returns null for an unknown id ->
+            // durationMs stays null); no protocol control flow.
+            _safeLog(
+              () => _apiLogger?.logResponse(
+                instanceId: _instanceId,
+                requestId: id,
+                ok: ok,
+                errorCode: frame.error?.code,
+                byteSize: raw.length,
+                rawJson: raw,
+              ),
+            );
             return;
           }
           completer.complete(frame);

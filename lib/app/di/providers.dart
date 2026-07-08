@@ -330,12 +330,17 @@ final loggerProvider = Provider<ILogger>((ref) => const DebugPrintLogger());
 /// API/生命周期日志环形缓冲 — App 生命周期单例（普通 Provider，非 autoDispose）。
 /// 同一实例既注入 [WsGatewayClient] 当采集 sink，又供诊断页 provider 读取（SSOT）。
 /// spec §6。
-final apiLogStoreProvider = Provider<ApiLogStore>(
-  (ref) => ApiLogStore(
+final apiLogStoreProvider = Provider<ApiLogStore>((ref) {
+  final store = ApiLogStore(
     maxEntries: ApiLogStore.defaultMaxEntries,
     logger: ref.watch(loggerProvider),
-  ),
-);
+  );
+  // Close the broadcast StreamController on scope teardown (hot-restart,
+  // test container.dispose) so an in-flight diagnosticsEntriesProvider
+  // subscriber isn't left pointing at a dead controller (ARB #8).
+  ref.onDispose(store.dispose);
+  return store;
+});
 
 /// 面向 ACL 的日志抽象 —— 指向 [apiLogStoreProvider] 同一实例。
 final apiLoggerProvider = Provider<IApiLogger>(
