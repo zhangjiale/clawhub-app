@@ -104,6 +104,43 @@ void main() {
     await tester.pump(const Duration(seconds: 10));
   });
 
+  testWidgets(
+    'SplashScreen shows the version during the splash phase (ARB #2)',
+    (tester) async {
+      // Regression for ARB finding #2: _version was set in the SAME setState as
+      // _phase=app, so SplashScreen always rendered with version='' - the
+      // PackageInfo fetch and version Text were dead code. After the fix, the
+      // version resolves independently and renders during splash.
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            notificationBootstrapProvider.overrideWith(
+              (ref) => FakeNotificationBootstrap(),
+            ),
+            connectionOrchestratorProvider.overrideWith(
+              (ref) =>
+                  FakeOrchestrator(completesAfter: const Duration(seconds: 10)),
+            ),
+          ],
+          child: wrap(const StartupGate(child: Text('APP'))),
+        ),
+      );
+      await tester.pump(); // first frame + postFrameCallback
+      await tester.pump(); // flush PackageInfo.fromPlatform().then -> setState
+
+      // Still in splash (orchestrator takes 10s). Version must be visible.
+      expect(find.byType(SplashScreen), findsOneWidget);
+      expect(
+        find.text('v1.0.0+1'),
+        findsOneWidget,
+        reason: 'version must render during splash, not be dead code',
+      );
+
+      // cleanup: advance past the 10s orchestrator + 800ms min display.
+      await tester.pump(const Duration(seconds: 10));
+    },
+  );
+
   testWidgets('does not transition before 800ms even if init is instant', (
     tester,
   ) async {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -50,6 +52,19 @@ class StartupGateState extends ConsumerState<StartupGate> {
     try {
       // 1. 读版本号（与 init 并行启动）
       final pkgFuture = PackageInfo.fromPlatform();
+      // 版本号就绪即显示（splash 阶段），独立于 phase 切换 -- 原实现把 _version
+      // 与 _phase=app 同帧写，导致 SplashScreen 永远拿空版本（ARB finding #2）。
+      // 非 fatal：取版本号失败只让版本留空，不进 FatalScreen（cosmetic 字符串
+      // 不应 fatal app）。
+      unawaited(
+        pkgFuture
+            .then((pkg) {
+              if (mounted) {
+                setState(() => _version = 'v${pkg.version}+${pkg.buildNumber}');
+              }
+            })
+            .catchError((_) {}),
+      );
 
       // 2. 启动 init 任务 + 最短展示计时器
       await Future.wait<Object?>([
@@ -57,13 +72,9 @@ class StartupGateState extends ConsumerState<StartupGate> {
         MinDisplayTimer.wait(const Duration(milliseconds: 800)),
       ]);
 
-      // 3. 都满足 → 切到 app 阶段
-      final pkg = await pkgFuture;
+      // 都满足 -> 切到 app 阶段（版本号由上面的 pkgFuture.then 独立设置）
       if (!mounted) return;
-      setState(() {
-        _version = 'v${pkg.version}+${pkg.buildNumber}';
-        _phase = StartupPhase.app;
-      });
+      setState(() => _phase = StartupPhase.app);
     } catch (e, st) {
       // 仅 NotificationBootstrap.init() 抛错会逃逸到这里
       // （_runInitialization 里 ConnectionOrchestrator 失败被局部吞掉）
