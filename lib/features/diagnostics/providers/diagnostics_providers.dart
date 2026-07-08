@@ -24,9 +24,30 @@ final diagnosticsEntriesProvider =
       return controller.stream;
     });
 
+/// SharedPreferences key for the "diagnostics warning acknowledged" flag.
+/// Centralized here so the page never references the raw string (ARB #3).
+const String _kDiagnosticsWarningShown = 'diagnostics_warning_shown';
+
 /// 首次进入诊断页的警告是否已确认（spec §7.1）。SharedPreferences 持久化。
-/// 诊断页在确认警告时直接写 SharedPreferences 并 invalidate 本 provider。
-final diagnosticsWarningShownProvider = FutureProvider<bool>((ref) async {
-  final prefs = await SharedPreferences.getInstance();
-  return prefs.getBool('diagnostics_warning_shown') ?? false;
-});
+///
+/// 诊断页通过 [markShown] 确认警告，不再直接写 SharedPreferences（ARB #3：
+/// 原实现读走 provider、写绕过 provider，且 key 字符串双份于两个文件）。
+class DiagnosticsWarningShownNotifier extends AsyncNotifier<bool> {
+  @override
+  Future<bool> build() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kDiagnosticsWarningShown) ?? false;
+  }
+
+  /// 标记警告已确认：落盘 + 原地更新 state（无需 invalidate）。
+  Future<void> markShown() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kDiagnosticsWarningShown, true);
+    state = const AsyncData(true);
+  }
+}
+
+final diagnosticsWarningShownProvider =
+    AsyncNotifierProvider<DiagnosticsWarningShownNotifier, bool>(
+      DiagnosticsWarningShownNotifier.new,
+    );

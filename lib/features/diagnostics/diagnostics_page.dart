@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/theme/tokens.dart';
@@ -47,9 +46,11 @@ class _DiagnosticsPageState extends ConsumerState<DiagnosticsPage> {
         ],
       ),
     );
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('diagnostics_warning_shown', true);
-    ref.invalidate(diagnosticsWarningShownProvider);
+    if (!mounted) return;
+    // ARB #3: route the acknowledgement through the provider's markShown()
+    // instead of writing SharedPreferences directly - the key lives in one
+    // place (the notifier) and the write is testable.
+    await ref.read(diagnosticsWarningShownProvider.notifier).markShown();
   }
 
   String _formatTs(int ms) {
@@ -129,6 +130,9 @@ class _DiagnosticsPageState extends ConsumerState<DiagnosticsPage> {
     ].join(' · ');
 
     return Column(
+      // ARB #4: stable key so a prepended newest-first entry is an O(1) insert
+      // (element reused by key) instead of shifting every index -> full rebuild.
+      key: ValueKey(e.id),
       children: [
         ListTile(
           leading: Icon(icon, color: iconColor, size: 18),

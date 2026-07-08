@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/features/diagnostics/providers/diagnostics_providers.dart';
 
@@ -42,6 +43,36 @@ void main() {
       expect(updated.first.message, 'third');
 
       sub.close();
+    },
+  );
+
+  test(
+    'diagnosticsWarningShownProvider.markShown persists acknowledgement via the provider (ARB #3)',
+    () async {
+      // This file runs in its own isolate, so the SharedPreferences singleton is
+      // fresh here - flag absent -> not yet acknowledged.
+      SharedPreferences.setMockInitialValues({});
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      expect(
+        await container.read(diagnosticsWarningShownProvider.future),
+        isFalse,
+        reason: 'flag absent initially',
+      );
+
+      // The fix: the page calls markShown() instead of prefs.setBool directly,
+      // so the key lives in one place (the notifier).
+      await container
+          .read(diagnosticsWarningShownProvider.notifier)
+          .markShown();
+
+      // Persisted with the centralized key.
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool('diagnostics_warning_shown'), isTrue);
+
+      // Provider state updated in-place (no invalidate needed).
+      expect(container.read(diagnosticsWarningShownProvider).value, isTrue);
     },
   );
 }
