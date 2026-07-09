@@ -100,6 +100,13 @@ class GatewayEventProcessor {
   /// instance churn (add → remove → add → …).
   final Map<String, Set<String>> _sessionKeysByInstance = {};
 
+  /// toolCallId → sessionKey, populated when a start/delta ToolCall is
+  /// emitted and consumed by [_resolveToolMessageId] to re-attach end
+  /// events whose payload omits sessionKey (v2026.6.10 drift, see
+  /// [_resolveToolMessageId]). Bounded by tool-call count per instance
+  /// turn and cleaned in [cleanupInstance] + [dispose].
+  final Map<String, String> _toolCallIdToSessionKey = {};
+
   /// Tracks sessionKeys that have already been logged as unresolvable so a
   /// long streaming turn with hundreds of deltas does not emit hundreds of
   /// identical error logs. Cleared when the corresponding instance is cleaned
@@ -192,6 +199,7 @@ class GatewayEventProcessor {
     _activeRunIdBySession.clear();
     _sessionToAgentId.clear();
     _sessionKeysByInstance.clear();
+    _toolCallIdToSessionKey.clear();
     _unresolvableSessionKeys.clear();
   }
 
@@ -209,6 +217,10 @@ class GatewayEventProcessor {
       for (final key in ownedKeys) {
         _sessionToAgentId.remove(key);
       }
+      // Drop toolCallId → sessionKey entries belonging to this instance.
+      // Bounded by the instance's sessionKey set, so O(N) where N is
+      // that set (typically 1-3), not O(map.size).
+      _toolCallIdToSessionKey.removeWhere((_, sk) => ownedKeys.contains(sk));
     }
     // Reset the unresolvable log-dedup set when an instance is cleaned up.
     // This is instance-level dedup in the sense that a fresh connection context
@@ -537,7 +549,11 @@ class GatewayEventProcessor {
               final isFailed = exitCode is num && exitCode != 0;
               final tc = ToolCall(
                 id: event.data['toolCallId'] as String? ?? _uuid.v4(),
-                messageId: event.sessionKey,
+                messageId: _resolveToolMessageId(
+                  instanceId,
+                  event.sessionKey,
+                  event.data['toolCallId'] as String?,
+                ),
                 toolName: event.data['name'] as String? ?? 'unknown',
                 status: isFailed
                     ? ToolCallStatus.failed
@@ -546,6 +562,11 @@ class GatewayEventProcessor {
                 endedAt: DateTime.now().millisecondsSinceEpoch,
               );
               conn.toolCallCtrl.add(tc);
+              // Populate the toolCallId → sessionKey reverse map so a
+              // later event (e.g. hybrid v2026.6.6 start + v2026.6.10
+              // end) can re-attach the right sessionKey via
+              // [_resolveToolMessageId].
+              _toolCallIdToSessionKey[tc.id] = tc.messageId;
             } catch (error, stackTrace) {
               _logger.error(
                 '[WsGateway] Failed to parse tool result: $error',
@@ -569,7 +590,11 @@ class GatewayEventProcessor {
                   : (rawInput == null ? null : jsonEncode(rawInput));
               final tc = ToolCall(
                 id: event.data['toolCallId'] as String? ?? _uuid.v4(),
-                messageId: event.sessionKey,
+                messageId: _resolveToolMessageId(
+                  instanceId,
+                  event.sessionKey,
+                  event.data['toolCallId'] as String?,
+                ),
                 toolName: event.data['name'] as String? ?? 'unknown',
                 status: ToolCallStatus.running,
                 inputArgs: inputArgs,
@@ -577,6 +602,12 @@ class GatewayEventProcessor {
                 startedAt: DateTime.now().millisecondsSinceEpoch,
               );
               conn.toolCallCtrl.add(tc);
+              // Same reverse-map population as the end/result branch —
+              // a v2026.6.10 start event with no payload sessionKey
+              // resolves via [_resolveToolMessageId] fallback and
+              // stamps the toolCallId → resolvedSessionKey here, so
+              // the end event re-uses the same resolved key.
+              _toolCallIdToSessionKey[tc.id] = tc.messageId;
             } catch (error, stackTrace) {
               _logger.error(
                 '[WsGateway] Failed to parse tool call: $error',
@@ -732,5 +763,40 @@ class GatewayEventProcessor {
       }
     }
     return result;
+  }
+
+  /// Resolve [ToolCall.messageId] for an agent tool event whose payload
+  /// may omit `sessionKey` (v2026.6.10 drift — the bug where exec cards
+  /// only render after app re-enter, because `ToolCall.messageId = ''`
+  /// can never match the final agent message's `metadata.sessionKey`
+  /// in ChatViewModel `_rekeyToolCallForMessage`).
+  ///
+  /// Resolution order:
+  /// 1. Explicit `event.sessionKey` (v2026.6.6 path; preserves the 32
+  ///    existing tests in `gateway_event_processor_test.dart`).
+  /// 2. toolCallId match against already-emitted ToolCalls in this
+  ///    instance (hybrid: v2026.6.6 start with sessionKey →
+  ///    v2026.6.10 end without, the rare cross-version case).
+  /// 3. Latest-registered sessionKey for the instance (typical v2026.6.10
+  ///    case where the entire turn lacks sessionKey; chat UX = 1 active
+  ///    session per instance at a time, so LIFO = current).
+  /// 4. `''` — only when no sessions registered; the VM-level guard
+  ///    in ChatViewModel `_toolCallSubscription.listen` then drops the
+  ///    event with an error log (no silent `state.toolCalls['']`
+  ///    pollution).
+  String _resolveToolMessageId(
+    String instanceId,
+    String eventSessionKey,
+    String? toolCallId,
+  ) {
+    if (eventSessionKey.isNotEmpty) return eventSessionKey;
+    if (toolCallId != null) {
+      final owner = _toolCallIdToSessionKey[toolCallId];
+      if (owner != null) return owner;
+    }
+    final keys = _sessionKeysByInstance[instanceId];
+    if (keys == null || keys.isEmpty) return '';
+    return keys
+        .last; // Dart `{}` default = LinkedHashSet, preserves insertion order
   }
 }

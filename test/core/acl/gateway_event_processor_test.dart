@@ -813,6 +813,63 @@ void main() {
     );
   });
 
+  // v2026.6.10 fix regression sanity: when payload DOES carry sessionKey
+  // (v2026.6.6 path), the new _resolveToolMessageId helper must still
+  // route to that explicit value — not skip to instance-fallback or
+  // reverse-map. The fix is additive and must not change the v2026.6.6
+  // resolution path that the 32 existing tests already verify implicitly.
+  group('tool messageId resolution', () {
+    test(
+      'v2026.6.6 path: explicit payload.sessionKey wins (no fallback)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+        // Also register a *different* session — the resolver must NOT
+        // fall through to keys.last and return 'agent:a2:main' just
+        // because the explicit sessionKey happens to be one of many.
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a2:main',
+          agentId: 'a2',
+        );
+
+        final tools = <ToolCall>[];
+        conn.toolCallCtrl.stream.listen(tools.add);
+
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'agent',
+            payload: {
+              'sessionKey': 'agent:a1:main', // explicit
+              'stream': 'tool',
+              'data': {
+                'phase': 'result',
+                'toolCallId': 'tc-explicit',
+                'name': 'search',
+                'output': 'ok',
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(tools, hasLength(1));
+        expect(
+          tools.first.messageId,
+          'agent:a1:main',
+          reason:
+              'explicit payload.sessionKey (v2026.6.6 path) must '
+              'win over instance-fallback to keys.last',
+        );
+      },
+    );
+  });
+
   group('payload.large diagnostic', () {
     test('emits LargePayloadNotice', () async {
       final notices = <GatewayNotice>[];
