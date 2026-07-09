@@ -25,7 +25,12 @@ void main() {
   );
 
   group('groupToolResultsByOwner', () {
-    test('attaches toolResult to the following agent message', () {
+    test('attaches toolResult to the previous user message (the trigger)', () {
+      // Bug fix (review: exec card position): toolResults now attach to
+      // the previous user message (the turn's trigger) so ToolCallCard
+      // renders below the user bubble (between user and agent in the
+      // reverse-list view). Pre-fix the owner was the next agent message,
+      // which placed the exec card below the agent bubble.
       final messages = [
         msg(clientId: 'user', role: MessageRole.user, logicalClock: 1),
         msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
@@ -35,32 +40,40 @@ void main() {
       final grouped = groupToolResultsByOwner(messages);
 
       expect(grouped.ownedIds, contains('tool'));
-      expect(grouped.byOwner['agent'], hasLength(1));
-      expect(grouped.byOwner['agent']!.first.clientId, 'tool');
+      expect(grouped.byOwner['user']!.first.clientId, 'tool');
+      expect(
+        grouped.byOwner['agent'],
+        isNull,
+        reason: 'agent must not own the toolResult (that was the bug)',
+      );
     });
 
-    // 回归:toolResult 后面紧跟 userPlaceholder/system/user 时,不应把工具卡
-    // 挂到这些非 agent 消息上;否则 agent 回复会缺少工具卡。
+    // 回归:toolResult 前面紧跟 userPlaceholder/system/user 之一时,应回看
+    // 跳过它们找到真正的 user 消息;不应把工具卡挂到这些非 user 消息上。
     test('does NOT attach toolResult to userPlaceholder', () {
+      // scenario: 上一 turn 残留 placeholder 紧贴在 tool 之前 — 新规则
+      // 应该跳过 placeholder,找到更早的 user(t=1)挂上。
       final messages = [
         msg(clientId: 'user', role: MessageRole.user, logicalClock: 1),
-        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),
         msg(
           clientId: 'placeholder',
           role: MessageRole.userPlaceholder,
-          logicalClock: 3,
+          logicalClock: 2,
         ),
+        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 3),
         msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 4),
       ];
 
       final grouped = groupToolResultsByOwner(messages);
 
       expect(grouped.byOwner.containsKey('placeholder'), isFalse);
-      expect(grouped.byOwner['agent'], hasLength(1));
-      expect(grouped.byOwner['agent']!.first.clientId, 'tool');
+      expect(grouped.byOwner['user']!.first.clientId, 'tool');
+      expect(grouped.byOwner['agent'], isNull);
     });
 
     test('does NOT attach toolResult to system message', () {
+      // scenario: tool 前面只有 system,没有 user — orphan(新规则下应
+      // 不挂任何 owner)。
       final messages = [
         msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
         msg(clientId: 'system', role: MessageRole.system, logicalClock: 2),
@@ -70,25 +83,39 @@ void main() {
       final grouped = groupToolResultsByOwner(messages);
 
       expect(grouped.byOwner.containsKey('system'), isFalse);
-      expect(grouped.byOwner['agent'], hasLength(1));
-      expect(grouped.byOwner['agent']!.first.clientId, 'tool');
+      expect(
+        grouped.byOwner,
+        isEmpty,
+        reason: 'no preceding user message → toolResult is orphan',
+      );
     });
 
-    test('does NOT attach toolResult to user message', () {
-      final messages = [
-        msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
-        msg(clientId: 'user', role: MessageRole.user, logicalClock: 2),
-        msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
-      ];
+    test(
+      'does NOT attach toolResult to user message (when user comes AFTER)',
+      () {
+        // scenario: tool 紧接 system,user 出现在 tool 之后(异常时间序)
+        // — 新规则下应不挂任何 owner,user 也不该被挂上(toolResult 不能
+        // 拥有 user;此处验证 user 不是 toolResult 的 owner)。
+        final messages = [
+          msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 1),
+          msg(clientId: 'user', role: MessageRole.user, logicalClock: 2),
+          msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 3),
+        ];
 
-      final grouped = groupToolResultsByOwner(messages);
+        final grouped = groupToolResultsByOwner(messages);
 
-      expect(grouped.byOwner.containsKey('user'), isFalse);
-      expect(grouped.byOwner['agent'], hasLength(1));
-      expect(grouped.byOwner['agent']!.first.clientId, 'tool');
-    });
+        expect(grouped.byOwner.containsKey('user'), isFalse);
+        expect(
+          grouped.byOwner,
+          isEmpty,
+          reason: 'no preceding user message → toolResult is orphan',
+        );
+      },
+    );
 
-    test('orphan toolResult at end is not owned', () {
+    test('orphan toolResult with no preceding user is not owned', () {
+      // toolResult 之前没有任何 user(列表最前)→ orphan,新规则下
+      // 退回独立行渲染。
       final messages = [
         msg(clientId: 'agent', role: MessageRole.agent, logicalClock: 1),
         msg(clientId: 'tool', role: MessageRole.toolResult, logicalClock: 2),

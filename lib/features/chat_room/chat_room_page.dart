@@ -651,9 +651,11 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
   ) {
     final params = (instanceId: widget.instanceId, agentId: widget.agentId);
 
-    // 历史 toolResult 消息挂到它后面那条非 toolResult 消息(通常是 agent 回复)
-    // 下面渲染 —— 和实时路径一致(exec 卡在 agent 气泡下,而不是按时间戳卡在
-    // user 和 agent 之间)。没 owner 的 toolResult(会话最后一条)退回独立行。
+    // 历史 toolResult 消息挂到它**前一条** user 消息(该 turn 的触发者)
+    // 下面渲染 —— exec 卡片紧跟 user 气泡,在 user 和 agent 之间(和实时路
+    // 径一致:实时路径在 ChatViewModel._sendCore 把 sessionKey→userClientId
+    // 映射写进 VM,ToolCall listener 直接 self-key 到 user 消息)。没 owner
+    // 的 toolResult(会话最早一条)退回独立行渲染。
     final grouped = groupToolResultsByOwner(messages);
     final toolResultsByOwner = grouped.byOwner;
     final ownedToolResultIds = grouped.ownedIds;

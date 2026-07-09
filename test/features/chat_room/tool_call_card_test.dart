@@ -330,41 +330,53 @@ void main() {
       status: MessageStatus.delivered,
     );
 
-    test('toolResult attaches to the next non-toolResult message', () {
+    test('toolResult attaches to the previous user message (the trigger)', () {
+      // Bug fix (review: exec card position): toolResults now attach to the
+      // previous user message (the turn's trigger) so ToolCallCard renders
+      // below the user bubble (between user and agent in the reverse-list
+      // view). Pre-fix the owner was the next agent message, which placed
+      // the exec card below the agent bubble.
       final grouped = groupToolResultsByOwner([
         msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
         msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
         msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 3),
       ]);
-      expect(grouped.byOwner['a1']?.map((m) => m.clientId).toList(), ['t1']);
+      expect(grouped.byOwner['u1']?.map((m) => m.clientId).toList(), ['t1']);
+      expect(
+        grouped.byOwner['a1'],
+        isNull,
+        reason: 'agent must not own the toolResult (that was the bug)',
+      );
       expect(grouped.ownedIds, {'t1'});
     });
 
-    test('multiple toolResults before one agent message all attach to it', () {
+    test('multiple toolResults after one user message all attach to it', () {
       final grouped = groupToolResultsByOwner([
         msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
         msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
         msg(clientId: 't2', role: MessageRole.toolResult, logicalClock: 3),
         msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 4),
       ]);
-      expect(grouped.byOwner['a1']?.map((m) => m.clientId).toList(), [
+      expect(grouped.byOwner['u1']?.map((m) => m.clientId).toList(), [
         't1',
         't2',
       ]);
       expect(grouped.ownedIds, {'t1', 't2'});
     });
 
-    test(
-      'toolResult with no following non-toolResult is orphan (not owned)',
-      () {
-        final grouped = groupToolResultsByOwner([
-          msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 1),
-          msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
-        ]);
-        expect(grouped.byOwner, isEmpty);
-        expect(grouped.ownedIds, isEmpty);
-      },
-    );
+    test('toolResult with no preceding user message is orphan (not owned)', () {
+      // Pre-fix the orphan case was "no following non-toolResult" — that
+      // was tested by reversing the list. With the new owner semantics
+      // (previous user), the orphan case is "no preceding user message"
+      // — a toolResult at the very top of the conversation, e.g. from a
+      // pre-existing tool-only turn or a catch-up replay edge.
+      final grouped = groupToolResultsByOwner([
+        msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 1),
+        msg(clientId: 'u1', role: MessageRole.user, logicalClock: 2),
+      ]);
+      expect(grouped.byOwner, isEmpty);
+      expect(grouped.ownedIds, isEmpty);
+    });
 
     test('order-independent: groups by logicalClock even if list is DESC', () {
       final grouped = groupToolResultsByOwner([
@@ -372,8 +384,26 @@ void main() {
         msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
         msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
       ]);
-      expect(grouped.byOwner['a1']?.map((m) => m.clientId).toList(), ['t1']);
+      expect(grouped.byOwner['u1']?.map((m) => m.clientId).toList(), ['t1']);
       expect(grouped.ownedIds, {'t1'});
+    });
+
+    test('consecutive toolResults after one user message all attach to it '
+        '(including across agent reply in middle)', () {
+      // Edge: two user messages with toolResults in between, plus an
+      // agent reply between them. Each toolResult should attach to its
+      // immediately preceding user message.
+      final grouped = groupToolResultsByOwner([
+        msg(clientId: 'u1', role: MessageRole.user, logicalClock: 1),
+        msg(clientId: 't1', role: MessageRole.toolResult, logicalClock: 2),
+        msg(clientId: 'a1', role: MessageRole.agent, logicalClock: 3),
+        msg(clientId: 'u2', role: MessageRole.user, logicalClock: 4),
+        msg(clientId: 't2', role: MessageRole.toolResult, logicalClock: 5),
+        msg(clientId: 'a2', role: MessageRole.agent, logicalClock: 6),
+      ]);
+      expect(grouped.byOwner['u1']?.map((m) => m.clientId).toList(), ['t1']);
+      expect(grouped.byOwner['u2']?.map((m) => m.clientId).toList(), ['t2']);
+      expect(grouped.ownedIds, {'t1', 't2'});
     });
   });
 }

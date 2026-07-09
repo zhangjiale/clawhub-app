@@ -222,6 +222,22 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   /// and cleared on teardown.
   final Map<String, String> _sessionKeyToClientId = {};
 
+  /// sessionKey → clientId of the user message that triggered the turn.
+  ///
+  /// Used by the late-ToolCall self-key path (toolCallStream listener) so a
+  /// ToolCall arriving after the final agent message re-keys to the user
+  /// message (the trigger), not the agent message. The agent message
+  /// re-key path at [_rekeyToolCallForMessage] uses [_findTriggerUserMessage]
+  /// directly and does not read this map.
+  ///
+  /// Why a separate map: the same ToolCall must consistently attach to ONE
+  /// owner (the user message). If both the early re-key (via
+  /// `_rekeyToolCallForMessage`) and the late self-key (via this map) used
+  /// different lookups, the same turn could end up with the ToolCall keyed
+  /// to different clientIds depending on event timing, producing a phantom
+  /// duplicate or a missing card.
+  final Map<String, String> _sessionKeyToUserClientId = {};
+
   /// Bug 2 修复: 标记 [_initStreamsAndHistory] 是否已完成。
   /// - tombstone init 后为 false（早退未订阅）
   /// - refreshAgent 检测到 tombstone→alive 转换时调一次 [_initStreamsAndHistory]，
@@ -670,12 +686,39 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
         .toolCallStream(instanceId)
         .listen(
           (tc) {
+            // Defensive guard: if the processor's source fallback
+            // [_resolveToolMessageId] returned '' (zero sessions
+            // registered for this instance when the tool event arrived,
+            // e.g. a race where the very first tool event lands before
+            // any send() has registered a session), the ToolCall would
+            // be keyed by '' in [state.toolCalls] and silently
+            // disappear from the page's `toolCalls[message.clientId]`
+            // lookup. Mirror the messageStream agent guard at line 571
+            // and drop with a log — never pollute state with a sentinel
+            // key that no real sessionKey can match.
+            if (tc.messageId.isEmpty) {
+              _logger.error(
+                '[ChatViewModel] tool call ${tc.id} arrived with empty '
+                'messageId; dropping (no resolvable sessionKey for '
+                'instance $instanceId).',
+              );
+              return;
+            }
             final current = Map<String, ToolCall>.from(state.toolCalls);
             // Late ToolCall (arrived after the final message): self-key by
             // clientId so the page's toolCalls[message.clientId] lookup finds
             // it. Early ToolCall (final message not yet landed): key by
             // sessionKey, pending _rekeyToolCallForMessage (review #14).
-            final clientId = _sessionKeyToClientId[tc.messageId];
+            //
+            // Prefer the user-message clientId over the agent-message
+            // clientId: the exec card must render below the user bubble
+            // (the trigger), not below the agent bubble. Falling back to
+            // _sessionKeyToClientId (agent) preserves pre-fix behavior
+            // for the narrow case where the user message is missing
+            // (e.g. a tool-only turn with no prior user message).
+            final userClientId = _sessionKeyToUserClientId[tc.messageId];
+            final agentClientId = _sessionKeyToClientId[tc.messageId];
+            final clientId = userClientId ?? agentClientId;
             if (clientId != null) {
               current.remove(tc.messageId);
               current[clientId] = tc.copyWith(messageId: clientId);
@@ -942,6 +985,23 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
       metadata: metadata,
     );
 
+    // Record sessionKey → user message clientId so the live ToolCall and
+    // the late self-key path can both re-key the turn's ToolCall under
+    // the user bubble (the trigger), not the agent bubble. sessionKey is
+    // deterministic from the agent's remoteId per
+    // `ws_gateway_client.sendMessage` (format: 'agent:<remoteId>:main'),
+    // so we can compute it here without going through the ACL.
+    //
+    // Why this lives in _sendCore (not _findTriggerUserClientId which
+    // looks up state.messages): the user message is just inserted; the
+    // _loadMessages below is async; and the agent reply can arrive on
+    // the messageStream listener BEFORE this await _loadMessages
+    // completes — at which point state.messages may not yet contain
+    // the user row. The send-side registration is race-free because it
+    // runs synchronously after the user message is persisted.
+    _sessionKeyToUserClientId['agent:${agent!.remoteId}:main'] =
+        sentMessage.clientId;
+
     await _loadMessages();
 
     // Only start "thinking" state when the message was successfully sent
@@ -1120,38 +1180,59 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     });
   }
 
-  /// Re-key the turn's ToolCall from `sessionKey` → [msg.clientId] so the
-  /// page's `toolCalls[message.clientId]` lookup (chat_room_page
-  /// `_buildMessageList`) finds it. The processor tags agent messages with
-  /// `metadata['sessionKey']`; ToolCalls arrive keyed by the same sessionKey
-  /// (`ToolCall.messageId = event.sessionKey`). Without this re-key the keys
-  /// live in different namespaces and ToolCallCard never renders
-  /// (review #1, Option C).
+  /// Re-key the turn's ToolCall from `sessionKey` → the user message's
+  /// clientId (the trigger for this turn) so the page's
+  /// `toolCalls[message.clientId]` lookup (chat_room_page
+  /// `_buildMessageList`) finds it under the user bubble — not the
+  /// agent bubble. The processor tags agent messages with
+  /// `metadata['sessionKey']`; ToolCalls arrive keyed by the same
+  /// sessionKey (`ToolCall.messageId = event.sessionKey`). Pre-fix the
+  /// ToolCall was re-keyed to the agent's clientId, which placed the
+  /// exec card below the agent bubble; the expected UX is below the
+  /// user bubble (between user and agent in the reverse-list view).
   ///
-  /// Also records the sessionKey → clientId mapping in
-  /// [_sessionKeyToClientId] so a *late* ToolCall (arriving AFTER this final
-  /// message) can self-key in the ToolCall listener — otherwise it would stay
-  /// keyed by sessionKey and never render (review #14).
+  /// Also records the sessionKey → user/agent clientId mappings so:
+  /// - A *late* ToolCall (arriving AFTER this final message) can
+  ///   self-key by user clientId via the ToolCall listener
+  ///   (`_sessionKeyToUserClientId`) — otherwise it would stay keyed
+  ///   by sessionKey and never render (review #14).
+  /// - The agent clientId is kept as a fallback for the narrow case
+  ///   where no user message precedes the agent (tool-only turn).
   ///
   /// **Cross-file contract (R2):** this function MUST be called for both
-  /// [MessageRole.agent] and [MessageRole.toolResult] final messages — see
-  /// `agent_message_finalized` / `tool_result_message_finalized` listeners
-  /// above. The chat_room_page live ToolCall lookup at
-  /// `_buildMessageList` orphan-toolResult branch depends on the re-key
-  /// having happened; if you narrow the callers to agent-only, orphan
-  /// toolResults in pure-tool turns will render with an invisible ToolCall
+  /// [MessageRole.agent] and [MessageRole.toolResult] final messages —
+  /// the chat_room_page live ToolCall lookup at `_buildMessageList`
+  /// orphan-toolResult branch depends on the re-key having happened;
+  /// if you narrow the callers to agent-only, orphan toolResults in
+  /// pure-tool turns will render with an invisible ToolCall
   /// (`toolCalls[toolResult.clientId] == null`) and fall through to
   /// `toolCallFromMessage` reconstruction, losing any running state.
   void _rekeyToolCallForMessage(Message msg) {
     final sk = msg.metadata?['sessionKey'];
     if (sk is! String) return;
     _sessionKeyToClientId[sk] = msg.clientId;
+    // Use the user-message clientId recorded at send time ([_sendCore])
+    // — the user message is the trigger for the turn, and the exec card
+    // must render under the user bubble, not the agent bubble. Fallback
+    // to the agent's own clientId for tool-only turns with no
+    // preceding user send (e.g. a background tool run that arrives
+    // without a recent _sendCore registration).
+    //
+    // The previous heuristic — looking up `state.messages` for the
+    // most recent user row with logicalClock < agentMsg.logicalClock —
+    // was racy: the agent reply can arrive on the messageStream
+    // listener before `_loadMessages` (scheduled in [_sendCore]) has
+    // re-read the user row, so state.messages may not yet contain
+    // the trigger. send-side registration in [_sendCore] is
+    // race-free because it runs synchronously after the user message
+    // is persisted.
+    final triggerClientId = _sessionKeyToUserClientId[sk] ?? msg.clientId;
     final tc = state.toolCalls[sk];
     if (tc == null) return; // No early ToolCall to re-key; mapping recorded
     // above lets a late ToolCall self-key.
     final rekeyed = Map<String, ToolCall>.from(state.toolCalls)
       ..remove(sk)
-      ..[msg.clientId] = tc.copyWith(messageId: msg.clientId);
+      ..[triggerClientId] = tc.copyWith(messageId: triggerClientId);
     _updateState((s) => s.copyWith(toolCalls: rekeyed));
   }
 
@@ -1408,5 +1489,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _streamsInitialized = false;
     // Drop sessionKey → clientId mappings from prior turns (review #14).
     _sessionKeyToClientId.clear();
+    _sessionKeyToUserClientId.clear();
   }
 }

@@ -216,15 +216,20 @@ ToolCall toolCallFromMessage(Message m) {
   );
 }
 
-/// 把历史 toolResult 消息按 logicalClock 排序后,挂到它**后面第一条 agent
-/// 回复**名下 —— 这样 toolResult 会渲染在 agent 气泡下面(和实时路径一致),
-/// 而不是按时间戳卡在 user 和 agent 之间,也不会误挂到 userPlaceholder 或
-/// system 消息上。
+/// 把历史 toolResult 消息按 logicalClock 排序后,挂到它**前一条 user
+/// 消息**名下(该 user 是触发该工具调用的 turn 起点)—— 这样 toolResult
+/// 会渲染在 user 气泡下面、agent 回复之上(和实时路径一致,实时路径在
+/// ChatViewModel._rekeyToolCallForMessage 里把 ToolCall 绑到 user 消息
+/// clientId),而不是按时间戳卡在 user 和 agent 之间,也不会误挂到
+/// userPlaceholder 或 system 消息上。
+///
+/// 历史 toolResult 必须在历史列表里出现前一条 user 消息才能挂上 —— 没找到
+/// owner 的 toolResult(会话最早一条、或 user 消息被清空)退回独立行渲染。
 ///
 /// 返回 `(byOwner, ownedIds)`:
 /// - `byOwner`: owner 的 clientId → 挂到它名下的 toolResult 列表(按时间顺序)。
 /// - `ownedIds`: 被认领的 toolResult clientId 集合(这些不独立渲染)。
-/// 没找到 owner 的 toolResult(会话最后一条)不在 ownedIds 里 → 退回独立行渲染。
+/// 没找到 owner 的 toolResult 不在 ownedIds 里 → 退回独立行渲染。
 ({Map<String, List<Message>> byOwner, Set<String> ownedIds})
 groupToolResultsByOwner(List<Message> messages) {
   final sorted = [...messages]
@@ -233,9 +238,12 @@ groupToolResultsByOwner(List<Message> messages) {
   final ownedIds = <String>{};
   for (var i = 0; i < sorted.length; i++) {
     if (sorted[i].role != MessageRole.toolResult) continue;
-    for (var j = i + 1; j < sorted.length; j++) {
-      // 只挂到 agent 回复名下;userPlaceholder/system/user 都不应拥有工具卡。
-      if (sorted[j].role == MessageRole.agent) {
+    // 只挂到前一条 user 消息名下;userPlaceholder / system / agent
+    // 都不应拥有工具卡。回看而非前瞻:user 是 turn 起点,tool 是 user
+    // 触发的结果,agent 是消费 tool 的最终输出 —— 视觉上 exec 卡
+    // 应紧跟 user。
+    for (var j = i - 1; j >= 0; j--) {
+      if (sorted[j].role == MessageRole.user) {
         byOwner.putIfAbsent(sorted[j].clientId, () => []).add(sorted[i]);
         ownedIds.add(sorted[i].clientId);
         break;

@@ -238,5 +238,46 @@ void main() {
         vm.dispose();
       },
     );
+
+    // v2026.6.10 fix VM guard: when the processor's source fallback
+    // [_resolveToolMessageId] returns '' (zero registered sessions for
+    // this instance, e.g. a race where the first tool event lands before
+    // any send() registers a session), the ToolCall would otherwise be
+    // keyed by '' in state.toolCalls. No real sessionKey can match '',
+    // so the page's toolCalls[message.clientId] lookup would silently
+    // miss and the ToolCallCard would never render. The VM guard
+    // drops the event with an error log instead of polluting state
+    // with a sentinel key.
+    test('tool call with empty messageId is dropped (VM guard)', () async {
+      final vm = await setupVm();
+      gateway.emitToolCallForTesting(
+        'inst-1',
+        ToolCall(
+          id: 'tc-orphan',
+          messageId: '', // processor's _resolveToolMessageId returned ''
+          toolName: 'search',
+          status: ToolCallStatus.success,
+          outputResult: '{}',
+        ),
+      );
+      for (var i = 0; i < 4; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(
+        vm.state.toolCalls,
+        isEmpty,
+        reason:
+            'empty messageId must be dropped, not stored as state '
+            'sentinel key. The page lookup toolCalls[message.clientId] '
+            'can never match "" so storing it would silently break '
+            'the live tool-call render path (review #1, exec-card bug).',
+      );
+      expect(
+        vm.state.toolCalls.containsKey(''),
+        isFalse,
+        reason: 'must not pollute state.toolCalls with the empty-string key',
+      );
+      vm.dispose();
+    });
   });
 }
