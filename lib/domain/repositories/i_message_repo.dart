@@ -1,5 +1,6 @@
 import '../models/message.dart';
 import '../models/message_status.dart';
+import '../models/enums.dart';
 
 /// 消息仓库接口
 /// 对齐: 架构 vFinal 5.3 (消息生命周期), 5.4 (全局搜索), 5.12 (大文件分片)
@@ -44,6 +45,34 @@ abstract class IMessageRepo {
 
   /// 绑定 serverId（SENDING -> SENT）
   Future<Message> bindServerId(String clientId, String serverId);
+
+  /// 按 serverId 更新已有消息的 content / type / metadata。
+  ///
+  /// 用于更完整的入站消息覆盖早期 image-less 占位（v2026.6.10 图片回复：
+  /// chat.final 先到，session.message 后到并携带 imageUrl）。
+  ///
+  /// 返回更新后的消息；找不到 serverId 对应行时返回 null。
+  Future<Message?> updateContentTypeAndMetadata(
+    String serverId, {
+    required String? content,
+    required MessageType type,
+    required Map<String, dynamic>? metadata,
+  });
+
+  /// 按 clientId 绑定 serverId 并同时更新 content / type / metadata。
+  ///
+  /// 用于「chat.final 占位消息没有 serverId(或用了不同的 id),session.message
+  /// 携带权威 serverId 和更完整内容」的场景:把占位行身份补齐,避免重启后历史
+  /// 拉取把同一条消息再插一行。
+  ///
+  /// 返回更新后的消息；找不到 clientId 对应行时返回 null。
+  Future<Message?> bindServerIdAndUpdateContent(
+    String clientId, {
+    required String serverId,
+    required String? content,
+    required MessageType type,
+    required Map<String, dynamic>? metadata,
+  });
 
   /// 获取待发送队列（PENDING 和 FAILED 状态的消息）
   Future<List<Message>> getOutbox(String agentId);

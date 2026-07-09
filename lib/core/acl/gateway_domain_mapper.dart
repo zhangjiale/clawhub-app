@@ -125,8 +125,22 @@ class GatewayDomainMapper {
     } else {
       incomingMetadata.remove('imageUrl');
     }
+    // 4. 原始文本里的 MEDIA: 指令兜底。某些 gateway/agent 组合不会把 MEDIA:
+    //    解析成 attachment/image block,而是直接把指令留在文本里发给客户端。
+    //    此时需要从文本中提取路径作为 imageUrl,并把该指令行从展示内容中剥掉,
+    //    否则用户看到的就是带本地路径的纯文本,图片永远不渲染。
+    final mediaDirectiveImageUrl = _extractImageUrlFromMediaDirective(
+      textContent,
+    );
     final effectiveImageUrl =
-        imageRef ?? _extractMediaUrlFromPayloads(json) ?? normalizedExisting;
+        imageRef ??
+        _extractMediaUrlFromPayloads(json) ??
+        normalizedExisting ??
+        mediaDirectiveImageUrl;
+    // 剥掉 MEDIA: 指令行;仅当确实从该指令提取到图片路径时才剥,避免误伤普通文本。
+    final displayedContent = mediaDirectiveImageUrl != null
+        ? _stripMediaDirective(textContent)
+        : textContent;
     // 类型提升:仅 text → image。toolCall 保留工具调用语义(由 ToolCallCard 渲染);
     // file 保留文件渲染语义(由 MessageFileContent 渲染文件名/大小/下载)。任一携带
     // imageUrl 都不得提升为 image,否则会丢掉各自的渲染语义(#4/#6)。
@@ -164,11 +178,18 @@ class GatewayDomainMapper {
     }
     return Message(
       clientId: json['clientId'] as String? ?? _uuid.v4(),
-      serverId: json['serverId'] as String? ?? json['id'] as String?,
+      // v2026.6.10 drift: the authoritative server id lives in
+      // `__openclaw.id`. `id` is adapter/local and can differ across
+      // chat.final vs session.message, so prefer __openclaw.id to keep
+      // the two finalization paths aligned for upsert/dedup.
+      serverId:
+          json['serverId'] as String? ??
+          (json['__openclaw'] as Map<String, dynamic>?)?['id'] as String? ??
+          json['id'] as String?,
       conversationId: json['conversationId'] as String? ?? '',
       agentId: json['agentId'] as String? ?? '',
       role: role,
-      content: textContent,
+      content: displayedContent,
       type: type,
       // Bug #1 (双对号): 入站消息按角色赋状态，不再一律 delivered。
       // 回传/历史中的 user 消息若被标 delivered，右下角会渲染双对号
@@ -380,5 +401,72 @@ class GatewayDomainMapper {
       }
     }
     return texts.isEmpty ? null : texts.join();
+  }
+
+  /// 从纯文本内容里提取 `MEDIA:` 指令指向的图片路径/URL。
+  ///
+  /// 某些 gateway/agent 组合不会把 `MEDIA:` 解析成结构化 attachment block,
+  /// 而是把原始指令留在文本里。网关解析规则(见 openclaw-media-protocol.md §4.1):
+  ///   \bMEDIA:\s*`?([^\n]+)`?
+  /// 我们只取指向图片文件的路径(按扩展名判断),并去掉可能的反引号。
+  static String? _extractImageUrlFromMediaDirective(String? text) {
+    if (text == null || text.isEmpty) return null;
+    final regex = RegExp(r'\bMEDIA:\s*`?([^\n]+)`?', caseSensitive: false);
+    for (final match in regex.allMatches(text)) {
+      final raw = match.group(1);
+      if (raw == null) continue;
+      final path = raw.replaceAll('`', '').trim();
+      if (path.isEmpty) continue;
+      if (!_isImagePath(path)) continue;
+      return _normalizeImageUrl(path);
+    }
+    return null;
+  }
+
+  /// 把文本内容里的 `MEDIA:` 指令行整行移除。
+  ///
+  /// 与网关行为一致:解析到附件后,该指令不应再出现在可见回复文本里。
+  /// 仅当 [_extractImageUrlFromMediaDirective] 确实提取到图片路径时调用,
+  /// 避免误删用户普通文本中的 `MEDIA:` 字样。
+  static String? _stripMediaDirective(String? text) {
+    if (text == null || text.isEmpty) return text;
+    final regex = RegExp(
+      r'^[^\S\r\n]*MEDIA:\s*`?[^\n]+`?[^\S\r\n]*$',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    final stripped = text.replaceAllMapped(regex, (_) => '');
+    // 删除连续空行,并去掉首尾空白。
+    return stripped
+        .replaceAll(RegExp(r'\n{2,}'), '\n')
+        .trim()
+        .replaceAll(RegExp(r'^\n+|\n+$'), '');
+  }
+
+  /// 判断路径/URL 是否指向图片文件。
+  static bool _isImagePath(String path) {
+    final lower = path.toLowerCase();
+    const extensions = [
+      '.png',
+      '.jpg',
+      '.jpeg',
+      '.gif',
+      '.webp',
+      '.bmp',
+      '.heic',
+      '.heif',
+    ];
+    for (final ext in extensions) {
+      if (lower.contains(ext)) {
+        // 避免把含 `.png` 子串的普通 URL(如 `example.png.com`)误判,
+        // 要求扩展名后面是查询串、锚点或字符串结尾。
+        final idx = lower.indexOf(ext);
+        final after = lower.substring(idx + ext.length);
+        if (after.isEmpty || after.startsWith('?') || after.startsWith('#')) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 }

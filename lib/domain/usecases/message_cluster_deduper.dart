@@ -29,7 +29,7 @@ class MessageClusterDeduper {
   /// 3. 组内按 timestamp 升序，相邻 ≤ [softMatchWindowMs] 视为同一簇。
   /// 4. 每簇保留一条 keeper（优先有 serverId 的，其次最早 logicalClock），其余
   ///    加入删除集合。簇长 < 2 不动。
-  /// 5. 非 text 消息（如 tool_call）不参与 —— 无法安全按内容聚簇。
+  /// 5. 非 text 消息（如 tool_call / image）不参与 —— 无法安全按内容聚簇。
   static Set<String> plan(List<Message> all) {
     final doomed = <String>{};
 

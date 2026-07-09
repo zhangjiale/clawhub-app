@@ -1,11 +1,12 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:claw_hub/domain/models/enums.dart';
 import 'package:claw_hub/domain/models/message.dart';
 import 'package:claw_hub/domain/models/message_status.dart';
 import 'package:claw_hub/domain/repositories/i_message_repo.dart';
 import 'package:claw_hub/domain/usecases/message_cluster_deduper.dart';
-import 'package:drift/drift.dart' show UpdateKind, Variable;
+import 'package:drift/drift.dart' show UpdateKind, Value, Variable;
 
 import '../local/database/database.dart' as db;
 import '../local/mapping/message_mapper.dart';
@@ -342,6 +343,80 @@ class DriftMessageRepo implements IMessageRepo {
       clientId,
     );
     return updated;
+  }
+
+  @override
+  Future<Message?> updateContentTypeAndMetadata(
+    String serverId, {
+    required String? content,
+    required MessageType type,
+    required Map<String, dynamic>? metadata,
+  }) async {
+    final existing = await getByServerId(serverId);
+    if (existing == null) return null;
+
+    // FTS5: re-index content — delete old rowid/content, then insert new.
+    // Rowid is stable across UPDATE, so we reuse the existing rowid.
+    await _database.transaction(() async {
+      final row = await _database.getMessageRowidAndContent(existing.clientId);
+      if (row != null) {
+        await _database.syncFtsDelete(row.rowid, row.content);
+      }
+
+      await _database.updateMessageContentTypeMetadataByServerId(
+        content,
+        type.toInt(),
+        metadata != null ? jsonEncode(metadata) : null,
+        serverId,
+      );
+
+      if (row != null) {
+        await _database.syncFtsInsert(row.rowid, content);
+      }
+    });
+
+    return existing.copyWith(content: content, type: type, metadata: metadata);
+  }
+
+  @override
+  Future<Message?> bindServerIdAndUpdateContent(
+    String clientId, {
+    required String serverId,
+    required String? content,
+    required MessageType type,
+    required Map<String, dynamic>? metadata,
+  }) async {
+    final existing = await getByClientId(clientId);
+    if (existing == null) return null;
+
+    await _database.transaction(() async {
+      final row = await _database.getMessageRowidAndContent(clientId);
+      if (row != null) {
+        await _database.syncFtsDelete(row.rowid, row.content);
+      }
+
+      await (_database.update(
+        _database.messages,
+      )..where((m) => m.clientId.equals(clientId))).write(
+        db.MessagesCompanion(
+          serverId: Value(serverId),
+          content: Value(content),
+          type: Value(type.toInt()),
+          metadata: Value(metadata != null ? jsonEncode(metadata) : null),
+        ),
+      );
+
+      if (row != null) {
+        await _database.syncFtsInsert(row.rowid, content);
+      }
+    });
+
+    return existing.copyWith(
+      serverId: serverId,
+      content: content,
+      type: type,
+      metadata: metadata,
+    );
   }
 
   // ---------------------------------------------------------------------------

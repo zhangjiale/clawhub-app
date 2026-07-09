@@ -524,6 +524,48 @@ class InMemoryMessageRepo implements IMessageRepo {
   }
 
   @override
+  Future<Message?> updateContentTypeAndMetadata(
+    String serverId, {
+    required String? content,
+    required MessageType type,
+    required Map<String, dynamic>? metadata,
+  }) async {
+    final msg = _byServerId[serverId];
+    if (msg == null) return null;
+    final updated = msg.copyWith(
+      content: content,
+      type: type,
+      metadata: metadata,
+    );
+    _byClientId[msg.clientId] = updated;
+    _byServerId[serverId] = updated;
+    _notifyChanged();
+    return updated;
+  }
+
+  @override
+  Future<Message?> bindServerIdAndUpdateContent(
+    String clientId, {
+    required String serverId,
+    required String? content,
+    required MessageType type,
+    required Map<String, dynamic>? metadata,
+  }) async {
+    final msg = _byClientId[clientId];
+    if (msg == null) return null;
+    final updated = msg.copyWith(
+      serverId: serverId,
+      content: content,
+      type: type,
+      metadata: metadata,
+    );
+    _byClientId[clientId] = updated;
+    _byServerId[serverId] = updated;
+    _notifyChanged();
+    return updated;
+  }
+
+  @override
   Future<List<Message>> getOutbox(String agentId) async {
     return _byClientId.values
         .where(

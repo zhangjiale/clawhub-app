@@ -328,9 +328,85 @@ void main() {
       );
 
       await pumpEventQueue();
-      // Only ONE message — whichever handler fires first finalizes the turn.
+      // session.message finalizes first; chat.final sees the key and skips.
       expect(messages, hasLength(1));
     });
+
+    // v2026.6.10 image reply root cause: chat.final (image-less) may arrive
+    // before session.message (image-bearing) for the same turn. The processor
+    // must still emit the richer session.message so the merge layer can upsert
+    // by serverId. Without this, the image is silently dropped.
+    test(
+      'session.message still emits after chat.final for the same turn (richer update)',
+      () async {
+        processor.registerSend(
+          instanceId: 'inst-1',
+          sessionKey: 'agent:a1:main',
+          agentId: 'a1',
+        );
+
+        final messages = <Message>[];
+        conn.messageCtrl.stream.listen(messages.add);
+        final deltas = <StreamingEvent>[];
+        conn.streamingCtrl.stream.listen(deltas.add);
+
+        // chat.final arrives first — image-less, but carries __openclaw.id.
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'chat',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'state': 'final',
+              'message': {
+                'role': 'agent',
+                'content': 'hello',
+                '__openclaw': {'id': 'msg-uuid-1'},
+              },
+            },
+          ),
+        );
+
+        // session.message arrives second — richer, with image block.
+        processor.processEvent(
+          'inst-1',
+          conn,
+          const EventFrame(
+            event: 'session.message',
+            payload: {
+              'sessionKey': 'agent:a1:main',
+              'agentId': 'a1',
+              'messageId': 'msg-uuid-1',
+              'message': {
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'hello'},
+                  {'type': 'image', 'url': '/api/chat/media/outgoing/abc/full'},
+                ],
+                'timestamp': 1783350705336,
+              },
+            },
+          ),
+        );
+
+        await pumpEventQueue();
+        expect(
+          messages,
+          hasLength(2),
+          reason: 'richer session.message must emit',
+        );
+        expect(messages.first.serverId, 'msg-uuid-1');
+        expect(messages.first.type, MessageType.text);
+        expect(messages.last.type, MessageType.image);
+        expect(
+          messages.last.metadata?['imageUrl'],
+          '/api/chat/media/outgoing/abc/full',
+        );
+        // Only one StreamingDone even though both handlers ran.
+        expect(deltas.whereType<StreamingDone>(), hasLength(1));
+      },
+    );
 
     test(
       'non-agent session.message is dropped (no duplicate with local send)',

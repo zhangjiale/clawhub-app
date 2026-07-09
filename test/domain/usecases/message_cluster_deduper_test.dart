@@ -19,6 +19,8 @@ void main() {
     required int timestamp,
     String? serverId,
     int clock = 0,
+    MessageType type = MessageType.text,
+    Map<String, dynamic>? metadata,
   }) {
     return Message(
       clientId: clientId,
@@ -27,12 +29,13 @@ void main() {
       agentId: 'agent-test',
       role: role,
       content: content,
-      type: MessageType.text,
+      type: type,
       status: role == MessageRole.user
           ? MessageStatus.sent
           : MessageStatus.delivered,
       logicalClock: clock,
       timestamp: timestamp,
+      metadata: metadata,
     );
   }
 

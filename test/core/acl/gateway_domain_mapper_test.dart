@@ -349,6 +349,38 @@ void main() {
       expect(msg.logicalClock, 42);
     });
 
+    // v2026.6.10 drift: chat.final message object carries the authoritative
+    // server id under `__openclaw.id`, not `serverId`/`id`. parseMessage must
+    // read it so the merge layer can dedup/upsert the real-time final with the
+    // richer session.message and with history.
+    test('uses __openclaw.id as serverId fallback (v2026.6.10)', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'content': 'hello',
+        '__openclaw': {'id': 'oc-msg-123'},
+      });
+      expect(msg.serverId, 'oc-msg-123');
+    });
+
+    test('serverId precedence: serverId > __openclaw.id > id', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'serverId': 'srv-a',
+        'id': 'id-b',
+        '__openclaw': {'id': 'oc-c'},
+      });
+      expect(msg.serverId, 'srv-a');
+    });
+
+    test('__openclaw.id takes precedence over id (v2026.6.10 alignment)', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'id': 'id-b',
+        '__openclaw': {'id': 'oc-c'},
+      });
+      expect(msg.serverId, 'oc-c');
+    });
+
     test(
       'image_url content block becomes type=image with metadata.imageUrl',
       () {
@@ -628,6 +660,52 @@ void main() {
       });
       expect(msg.type, MessageType.text);
       expect(msg.metadata?['imageUrl'], isNull);
+    });
+
+    // ----- Raw MEDIA: directive fallback (gateway did not transform to block) ----
+    test('MEDIA: directive in text promotes to image and strips directive', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'content':
+            '看这个图\nMEDIA:/root/.openclaw/media/inbound/probe-1783347699.png\n喜欢吗?',
+      });
+      expect(msg.type, MessageType.image);
+      expect(
+        msg.metadata?['imageUrl'],
+        '/root/.openclaw/media/inbound/probe-1783347699.png',
+      );
+      expect(msg.content, '看这个图\n喜欢吗?');
+    });
+
+    test('MEDIA: directive with backticks is stripped', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'content': 'caption\nMEDIA: `/root/.openclaw/media/inbound/a.jpg`',
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], '/root/.openclaw/media/inbound/a.jpg');
+      expect(msg.content, 'caption');
+    });
+
+    test('non-image MEDIA: directive does not promote to image', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'content': '听这个\nMEDIA:/root/.openclaw/media/inbound/clip.mp3',
+      });
+      expect(msg.type, MessageType.text);
+      expect(msg.metadata?['imageUrl'], isNull);
+      // 非图片指令不应被剥掉,避免误改原始文本。
+      expect(msg.content, contains('MEDIA:'));
+    });
+
+    test('MEDIA: directive with media:// URL is extracted', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'content': 'MEDIA:media://inbound/abc123/image.png',
+      });
+      expect(msg.type, MessageType.image);
+      expect(msg.metadata?['imageUrl'], 'media://inbound/abc123/image.png');
+      expect(msg.content, isEmpty);
     });
   });
 

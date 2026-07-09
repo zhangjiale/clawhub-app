@@ -86,13 +86,53 @@ class MergeInboundMessageUseCase {
       }
     }
 
-    // 2. serverId 身份去重（agent 消息稳态去重；user 消息因本地 serverId 是
-    //    runId/随机 UUID 而通常不命中，交给第 3 步软匹配兜底）。
+    // 2. serverId 身份去重 / 富化 upsert（agent 消息稳态去重；user 消息因
+    //    本地 serverId 是 runId/随机 UUID 而通常不命中，交给第 3 步软匹配兜底）。
+    //    v2026.6.10 图片回复：chat.final 先到并插入 image-less 占位，
+    //    session.message 后到并携带同 serverId + imageUrl。此时应更新旧行
+    //    content/type/metadata，而不是返回旧行造成图片永不显示。
     final serverId = inbound.serverId;
     if (serverId != null && serverId.isNotEmpty) {
       final byServer = await _messageRepo.getByServerId(serverId);
       if (byServer != null) {
+        if (_shouldEnrich(byServer, inbound)) {
+          final updated = await _messageRepo.updateContentTypeAndMetadata(
+            serverId,
+            content: inbound.content,
+            type: inbound.type,
+            metadata: inbound.metadata,
+          );
+          if (updated != null) {
+            return MergeResult(message: updated, wasNew: false);
+          }
+        }
         return MergeResult(message: byServer, wasNew: false);
+      }
+
+      // 2b. serverId 未命中,但近期可能已有同 turn 的占位消息(例如 chat.final
+      //     用了不同的 id / 无 serverId 先入库,session.message 后才携带权威
+      //     serverId 到达)。按内容+时间戳软匹配找到占位行,绑定 serverId 并
+      //     富化内容,避免同一回复被插成两行。
+      if (inbound.conversationId.isNotEmpty) {
+        final recentSnapshot =
+            recent ??
+            await _messageRepo.getByConversation(
+              inbound.conversationId,
+              limit: 50,
+            );
+        final match = _softMatch(inbound, recentSnapshot);
+        if (match != null && _shouldEnrich(match, inbound)) {
+          final updated = await _messageRepo.bindServerIdAndUpdateContent(
+            match.clientId,
+            serverId: serverId,
+            content: inbound.content,
+            type: inbound.type,
+            metadata: inbound.metadata,
+          );
+          if (updated != null) {
+            return MergeResult(message: updated, wasNew: false);
+          }
+        }
       }
     }
 
@@ -137,6 +177,58 @@ class MergeInboundMessageUseCase {
       }
     }
     return best;
+  }
+
+  /// 判断 [inbound] 是否比 [existing] 携带更完整的内容（type/metadata/serverId），
+  /// 需要触发更新覆盖旧行。
+  ///
+  /// 触发条件：
+  /// - inbound 是 image 而 existing 不是；或
+  /// - inbound 携带非空 imageUrl 而 existing 没有；或
+  /// - inbound 携带更权威的可渲染 imageUrl(如 /api/... 或 /__openclaw__/...)
+  ///   而 existing 是本地服务器路径(如 /root/.openclaw/...)；或
+  /// - existing 没有 serverId 而 inbound 有,需要补齐身份避免后续重复。
+  bool _shouldEnrich(Message existing, Message inbound) {
+    if (inbound.type == MessageType.image &&
+        existing.type != MessageType.image) {
+      return true;
+    }
+    final existingImageUrl = existing.metadata?['imageUrl'];
+    final inboundImageUrl = inbound.metadata?['imageUrl'];
+    if (inboundImageUrl is String && inboundImageUrl.trim().isNotEmpty) {
+      if (existingImageUrl == null ||
+          (existingImageUrl is String && existingImageUrl.trim().isEmpty)) {
+        return true;
+      }
+      if (_isBetterImageUrl(inboundImageUrl, existingImageUrl)) {
+        return true;
+      }
+    }
+    if ((existing.serverId == null || existing.serverId!.isEmpty) &&
+        inbound.serverId != null &&
+        inbound.serverId!.isNotEmpty) {
+      return true;
+    }
+    return false;
+  }
+
+  /// 判断 [candidate] 是否是比 [existing] 更适合客户端渲染的图片 URL。
+  ///
+  /// 本地服务器路径(如 `/root/.openclaw/media/...`) 客户端无法直接访问,
+  /// 因此 Gateway 相对端点(`/api/...`、`/__openclaw__/...`) 或公开 URL 更优。
+  static bool _isBetterImageUrl(String candidate, String existing) {
+    final candidateLower = candidate.toLowerCase();
+    final existingLower = existing.toLowerCase();
+    final candidateIsEndpoint =
+        candidateLower.startsWith('/api/') ||
+        candidateLower.startsWith('/__openclaw__/') ||
+        candidateLower.startsWith('http://') ||
+        candidateLower.startsWith('https://') ||
+        candidateLower.startsWith('data:');
+    final existingIsLocalPath =
+        existingLower.startsWith('/root/') ||
+        existingLower.contains('/.openclaw/media/');
+    return candidateIsEndpoint && existingIsLocalPath;
   }
 }
 

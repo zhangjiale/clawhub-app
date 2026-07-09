@@ -22,6 +22,7 @@ void main() {
         logicalClock: 0,
       ),
     );
+    registerFallbackValue(MessageType.text);
   });
 
   setUp(() {
@@ -544,6 +545,114 @@ void main() {
       verifyNever(() => messageRepo.insert(any()));
     });
 
+    // v2026.6.10 image reply: chat.final (image-less text placeholder) lands
+    // first and inserts with serverId. session.message (image-bearing) arrives
+    // later with the same serverId. merge must upsert content/type/metadata
+    // rather than silently return the stale placeholder.
+    test(
+      'serverId hit with richer inbound upserts content/type/metadata',
+      () async {
+        final placeholder = local(
+          clientId: 'local-agent',
+          serverId: 'srv-1',
+          role: MessageRole.agent,
+          content: '',
+        );
+        final richer = Message(
+          clientId: 'rt-cid',
+          serverId: 'srv-1',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '看这个图',
+          type: MessageType.image,
+          status: MessageStatus.delivered,
+          timestamp: 1718000000000,
+          logicalClock: 100,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+        final updated = Message(
+          clientId: 'local-agent',
+          serverId: 'srv-1',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '看这个图',
+          type: MessageType.image,
+          status: MessageStatus.delivered,
+          timestamp: 1718000000000,
+          logicalClock: 99,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+
+        when(
+          () => messageRepo.getByClientId('rt-cid'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('srv-1'),
+        ).thenAnswer((_) async => placeholder);
+        when(
+          () => messageRepo.updateContentTypeAndMetadata(
+            'srv-1',
+            content: '看这个图',
+            type: MessageType.image,
+            metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+          ),
+        ).thenAnswer((_) async => updated);
+
+        final result = await useCase.mergeWithStatus(richer, softMatch: false);
+
+        expect(result.wasNew, isFalse);
+        expect(result.message.clientId, 'local-agent');
+        expect(result.message.type, MessageType.image);
+        expect(result.message.content, '看这个图');
+        verify(
+          () => messageRepo.updateContentTypeAndMetadata(
+            'srv-1',
+            content: '看这个图',
+            type: MessageType.image,
+            metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+          ),
+        ).called(1);
+        verifyNever(() => messageRepo.insert(any()));
+      },
+    );
+
+    test(
+      'serverId hit with non-richer inbound does not call updateContentTypeAndMetadata',
+      () async {
+        final existing = local(
+          clientId: 'local-agent',
+          serverId: 'srv-1',
+          role: MessageRole.agent,
+          content: 'already image',
+        );
+        final same = inbound(
+          role: MessageRole.agent,
+          serverId: 'srv-1',
+          content: 'already image',
+        );
+        when(
+          () => messageRepo.getByClientId('inbound-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('srv-1'),
+        ).thenAnswer((_) async => existing);
+
+        final result = await useCase.mergeWithStatus(same);
+
+        expect(result.wasNew, isFalse);
+        verifyNever(
+          () => messageRepo.updateContentTypeAndMetadata(
+            any(),
+            content: any(named: 'content'),
+            type: any(named: 'type'),
+            metadata: any(named: 'metadata'),
+          ),
+        );
+      },
+    );
+
     test('returns wasNew=false when softMatch hits', () async {
       final msg = inbound(
         clientId: 'hist-cid',
@@ -572,5 +681,186 @@ void main() {
       expect(result.message.clientId, 'local-uuid');
       verifyNever(() => messageRepo.insert(any()));
     });
+
+    // -------------------------------------------------------------------------
+    // Placeholder binding: chat.final lands without serverId, session.message
+    // arrives later with the authoritative serverId + richer content.
+    // -------------------------------------------------------------------------
+    test(
+      'serverId miss binds recent placeholder with same content and enriches',
+      () async {
+        final placeholder = local(
+          clientId: 'placeholder-cid',
+          serverId: null,
+          role: MessageRole.agent,
+          content: '看这个图',
+          timestamp: 1718000000000,
+        );
+        final richer = Message(
+          clientId: 'rt-cid',
+          serverId: 'srv-real',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '看这个图',
+          type: MessageType.image,
+          status: MessageStatus.delivered,
+          timestamp: 1718000000100,
+          logicalClock: 100,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+        final updated = Message(
+          clientId: 'placeholder-cid',
+          serverId: 'srv-real',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '看这个图',
+          type: MessageType.image,
+          status: MessageStatus.delivered,
+          timestamp: 1718000000000,
+          logicalClock: 99,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+
+        when(
+          () => messageRepo.getByClientId('rt-cid'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('srv-real'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByConversation(
+            'conv-1',
+            limit: any(named: 'limit'),
+          ),
+        ).thenAnswer((_) async => [placeholder]);
+        when(
+          () => messageRepo.bindServerIdAndUpdateContent(
+            'placeholder-cid',
+            serverId: 'srv-real',
+            content: '看这个图',
+            type: MessageType.image,
+            metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+          ),
+        ).thenAnswer((_) async => updated);
+
+        final result = await useCase.mergeWithStatus(richer, softMatch: false);
+
+        expect(result.wasNew, isFalse);
+        expect(result.message.clientId, 'placeholder-cid');
+        expect(result.message.serverId, 'srv-real');
+        expect(result.message.type, MessageType.image);
+        verifyNever(() => messageRepo.insert(any()));
+      },
+    );
+
+    test(
+      'serverId miss does not bind placeholder when content differs',
+      () async {
+        final placeholder = local(
+          clientId: 'placeholder-cid',
+          serverId: null,
+          role: MessageRole.agent,
+          content: 'old text',
+          timestamp: 1718000000000,
+        );
+        final inboundMsg = inbound(
+          serverId: 'srv-real',
+          role: MessageRole.agent,
+          content: 'new text',
+          timestamp: 1718000000100,
+        );
+
+        when(
+          () => messageRepo.getByClientId('inbound-1'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('srv-real'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByConversation(
+            'conv-1',
+            limit: any(named: 'limit'),
+          ),
+        ).thenAnswer((_) async => [placeholder]);
+
+        final inserted = inboundMsg.copyWith(clientId: 'inserted-cid');
+        when(() => messageRepo.insert(any())).thenAnswer((_) async => inserted);
+
+        final result = await useCase.mergeWithStatus(
+          inboundMsg,
+          softMatch: false,
+        );
+
+        expect(result.wasNew, isTrue);
+        verifyNever(
+          () => messageRepo.bindServerIdAndUpdateContent(
+            any(),
+            serverId: any(named: 'serverId'),
+            content: any(named: 'content'),
+            type: any(named: 'type'),
+            metadata: any(named: 'metadata'),
+          ),
+        );
+      },
+    );
+
+    test(
+      'serverId hit updates imageUrl when inbound has a better endpoint',
+      () async {
+        final existing =
+            local(
+              clientId: 'local-agent',
+              serverId: 'srv-1',
+              role: MessageRole.agent,
+              content: '看这个图',
+            ).copyWith(
+              type: MessageType.image,
+              metadata: const {
+                'imageUrl': '/root/.openclaw/media/inbound/probe.png',
+              },
+            );
+        final richer = Message(
+          clientId: 'rt-cid',
+          serverId: 'srv-1',
+          conversationId: 'conv-1',
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '看这个图',
+          type: MessageType.image,
+          status: MessageStatus.delivered,
+          timestamp: 1718000000000,
+          logicalClock: 100,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+        final updated = existing.copyWith(
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+
+        when(
+          () => messageRepo.getByClientId('rt-cid'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('srv-1'),
+        ).thenAnswer((_) async => existing);
+        when(
+          () => messageRepo.updateContentTypeAndMetadata(
+            'srv-1',
+            content: '看这个图',
+            type: MessageType.image,
+            metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+          ),
+        ).thenAnswer((_) async => updated);
+
+        final result = await useCase.mergeWithStatus(richer, softMatch: false);
+
+        expect(result.wasNew, isFalse);
+        expect(
+          result.message.metadata?['imageUrl'],
+          '/api/chat/media/outgoing/abc/full',
+        );
+      },
+    );
   });
 }

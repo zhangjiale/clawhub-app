@@ -526,6 +526,112 @@ void main() {
       expect(stored.mimeType, 'image/png');
       expect(stored.imagePath, isNull); // 响应侧无本地路径
     });
+
+    test(
+      'updateContentTypeAndMetadata enriches text placeholder to image by serverId',
+      () async {
+        final placeholder = Message(
+          clientId: 'agent-img-2',
+          serverId: 'oc-msg-123',
+          conversationId: Conversation.generateId('inst-1', 'agent-1'),
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: null,
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+        );
+        await messageRepo.insert(placeholder);
+
+        final updated = await messageRepo.updateContentTypeAndMetadata(
+          'oc-msg-123',
+          content: '看这个图',
+          type: MessageType.image,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+
+        expect(updated, isNotNull);
+        expect(updated!.type, MessageType.image);
+        expect(updated.content, '看这个图');
+        expect(
+          updated.metadata?['imageUrl'],
+          '/api/chat/media/outgoing/abc/full',
+        );
+        expect(updated.clientId, 'agent-img-2');
+
+        final stored = await messageRepo.getByServerId('oc-msg-123');
+        expect(stored, isNotNull);
+        expect(stored!.type, MessageType.image);
+        expect(stored.imageUrl, '/api/chat/media/outgoing/abc/full');
+      },
+    );
+
+    test('updateContentTypeAndMetadata returns null for unknown serverId', () {
+      expect(
+        messageRepo.updateContentTypeAndMetadata(
+          'missing-srv',
+          content: 'x',
+          type: MessageType.text,
+          metadata: null,
+        ),
+        completion(isNull),
+      );
+    });
+
+    test(
+      'bindServerIdAndUpdateContent binds serverId and enriches placeholder by clientId',
+      () async {
+        final placeholder = Message(
+          clientId: 'agent-img-3',
+          serverId: null,
+          conversationId: Conversation.generateId('inst-1', 'agent-1'),
+          agentId: 'agent-1',
+          role: MessageRole.agent,
+          content: '占位文本',
+          type: MessageType.text,
+          status: MessageStatus.delivered,
+          logicalClock: 1,
+        );
+        await messageRepo.insert(placeholder);
+
+        final updated = await messageRepo.bindServerIdAndUpdateContent(
+          'agent-img-3',
+          serverId: 'srv-real',
+          content: '看这个图',
+          type: MessageType.image,
+          metadata: const {'imageUrl': '/api/chat/media/outgoing/abc/full'},
+        );
+
+        expect(updated, isNotNull);
+        expect(updated!.serverId, 'srv-real');
+        expect(updated.type, MessageType.image);
+        expect(updated.content, '看这个图');
+        expect(
+          updated.metadata?['imageUrl'],
+          '/api/chat/media/outgoing/abc/full',
+        );
+
+        final byServer = await messageRepo.getByServerId('srv-real');
+        expect(byServer, isNotNull);
+        expect(byServer!.type, MessageType.image);
+
+        final byClient = await messageRepo.getByClientId('agent-img-3');
+        expect(byClient?.serverId, 'srv-real');
+      },
+    );
+
+    test('bindServerIdAndUpdateContent returns null for unknown clientId', () {
+      expect(
+        messageRepo.bindServerIdAndUpdateContent(
+          'missing-cid',
+          serverId: 'srv-real',
+          content: 'x',
+          type: MessageType.text,
+          metadata: null,
+        ),
+        completion(isNull),
+      );
+    });
   });
 }
 

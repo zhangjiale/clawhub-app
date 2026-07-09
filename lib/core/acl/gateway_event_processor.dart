@@ -466,9 +466,17 @@ class GatewayEventProcessor {
     final role = msgJson['role'] as String?;
     if (role != 'agent' && role != 'assistant') return;
 
-    // Dedup against chat.final / agent.lifecycle.end for this turn — first
-    // handler to finalise wins.
-    if (!_finalizedSessions.add(bufferKey)) return;
+    // Coordinate with chat.final / agent.lifecycle.end for this turn. The
+    // first final-like handler marks the session finalized so the others do
+    // not emit a duplicate. However, v2026.6.10 image replies deliver the
+    // image-bearing payload via session.message *after* an image-less chat.final
+    // for the same turn; we must still emit it so the merge layer can upsert
+    // the richer content by serverId. Dropping it here is the root cause of
+    // "agent replies but image never renders".
+    //
+    // Track whether another handler already finalized this turn so we only
+    // emit one StreamingDone.
+    final wasAlreadyFinalized = !_finalizedSessions.add(bufferKey);
 
     final agentId =
         (payload['agentId'] as String?) ?? _resolveAgentId(sessionKey) ?? '';
@@ -477,8 +485,8 @@ class GatewayEventProcessor {
       final parsed = _mapper.parseMessage(msgJson);
       final messageId = payload['messageId'] as String?;
       // Inject agentId (at payload root, not in message) + serverId
-      // (payload.messageId) so the messageStream listener routes by agent
-      // and the merge layer can dedup by serverId.
+      // (payload.messageId or __openclaw.id) so the messageStream listener
+      // routes by agent and the merge layer can dedup/upsert by serverId.
       conn.messageCtrl.add(
         parsed.copyWith(
           agentId: agentId,
@@ -501,7 +509,11 @@ class GatewayEventProcessor {
     _deltaSource.remove(bufferKey);
     _activeRunIdBySession.remove(bufferKey);
 
-    if (agentId.isNotEmpty && !conn.streamingCtrl.isClosed) {
+    // Only emit StreamingDone if this handler is the first to finalize the
+    // turn; otherwise chat.final / lifecycle.end already notified the UI.
+    if (!wasAlreadyFinalized &&
+        agentId.isNotEmpty &&
+        !conn.streamingCtrl.isClosed) {
       conn.streamingCtrl.add(StreamingDone(agentId: agentId));
     }
   }
