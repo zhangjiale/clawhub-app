@@ -5525,6 +5525,25 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     );
   }
 
+  Future<int> updateMessageContentTypeMetadataByServerId(
+    String? content,
+    int type,
+    String? metadata,
+    String? serverId,
+  ) {
+    return customUpdate(
+      'UPDATE messages SET content = ?1, type = ?2, metadata = ?3 WHERE server_id = ?4',
+      variables: [
+        Variable<String>(content),
+        Variable<int>(type),
+        Variable<String>(metadata),
+        Variable<String>(serverId),
+      ],
+      updates: {messages},
+      updateKind: UpdateKind.update,
+    );
+  }
+
   Selectable<Message> getOutboxMessages(String agentId) {
     return customSelect(
       'SELECT * FROM messages WHERE agent_id = ?1 AND status IN (1, 5)',

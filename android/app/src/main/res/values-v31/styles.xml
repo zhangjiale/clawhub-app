@@ -7,8 +7,16 @@
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowSplashScreenBackground">#08090D</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/android12splash</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">#08090D</item>
+        <!-- splash icon 显式指向透明 drawable（不指向 launcher icon）：
+             Android 12+ SplashScreen API 未设置 windowSplashScreenAnimatedIcon
+             时会 fallback 到 android:icon (= launcher icon v4 lobster)，
+             重新引入 native → Flutter 双 logo 重复问题。
+             指向 splash_icon_transparent = 告诉系统"故意不显示 icon"，
+             native splash 阶段只剩纯色 #08090D 背景，handoff 到 Flutter
+             后由 Flutter SplashScreen 渲染唯一带 logo 的页面。
+             不设置 windowSplashScreenIconBackgroundColor：避免系统画
+             圆形 mask 引入额外视觉元素。 -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
     </style>
     <!-- Theme applied to the Android Window as soon as the process has started.
          This theme determines the color of the Android Window while your

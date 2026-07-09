@@ -241,7 +241,9 @@ void main() {
     // 否则 containsKey(AssetImage) 恒为 false。
     final splashKey = AssetBundleImageKey(
       bundle: rootBundle,
-      name: 'docs/design/assets/xiahub-splash-v3.png',
+      // 引用 kSplashImagePath 常量，避免资产路径漂移时测试忘记同步
+      // （splash_screen.dart 改路径，此测试若硬编码会假绿）。
+      name: kSplashImagePath,
       scale: 1.0,
     );
     imageCache.clear();

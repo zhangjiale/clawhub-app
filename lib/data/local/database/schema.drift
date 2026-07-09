@@ -304,6 +304,9 @@ UPDATE messages SET status = :status WHERE client_id = :clientId;
 bindMessageServerId:
 UPDATE messages SET server_id = :serverId, status = :status WHERE client_id = :clientId;
 
+updateMessageContentTypeMetadataByServerId:
+UPDATE messages SET content = :content, type = :type, metadata = :metadata WHERE server_id = :serverId;
+
 getOutboxMessages:
 SELECT * FROM messages WHERE agent_id = :agentId AND status IN (1, 5);
 
