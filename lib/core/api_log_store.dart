@@ -121,8 +121,18 @@ class ApiLogStore implements IApiLogger {
     required String instanceId,
     String? state,
     required String message,
+    String? payloadPreview,
   }) {
     try {
+      // state 条目的 payloadPreview 通常是消息 content 纯文本 —— 没有 JSON
+      // token 字段可脱敏，但仍走 redactAndTruncate 以统一切断/截断策略
+      // （≤2KB UTF-8 字符边界）。永不抛(redactAndTruncate try-catch 兜底)。
+      final preview = payloadPreview == null
+          ? null
+          : redactAndTruncate(
+              payloadPreview,
+              payloadSize: payloadPreview.length,
+            );
       _add(
         ApiLogEntry(
           id: _uuid.v4(),
@@ -131,6 +141,7 @@ class ApiLogStore implements IApiLogger {
           kind: ApiLogKind.state,
           state: state,
           message: message,
+          payloadPreview: preview,
         ),
       );
     } catch (e, st) {

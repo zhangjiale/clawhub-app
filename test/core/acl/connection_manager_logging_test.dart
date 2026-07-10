@@ -42,6 +42,7 @@ class RecordingApiLogger implements IApiLogger {
     required String instanceId,
     String? state,
     required String message,
+    String? payloadPreview,
   }) {
     states.add((state: state, message: message));
   }
@@ -73,6 +74,7 @@ class ThrowingApiLogger implements IApiLogger {
     required String instanceId,
     String? state,
     required String message,
+    String? payloadPreview,
   }) => throw StateError('boom');
 }
 

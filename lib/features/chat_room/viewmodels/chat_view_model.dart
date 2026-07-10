@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
+import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/i_logger.dart';
 import 'package:claw_hub/core/utils/copy_with_nullable.dart';
 import 'package:claw_hub/ui_kit/async_state.dart';
@@ -19,6 +20,12 @@ import 'package:claw_hub/domain/usecases/merge_inbound_message.dart';
 import 'package:claw_hub/features/_shared/agent_reactive_state.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/preview_updater.dart';
 import 'package:claw_hub/features/chat_room/viewmodels/streaming_lifecycle.dart';
+
+// ignore_for_file: prefer_initializing_formals — `this._logger` /
+// `this._apiLogger` library-private initializing formals are blocked by the
+// `_` prefix (Dart 2.17+ allows them but analyzer still flags); the explicit
+// `_logger = logger ?? DebugPrintLogger()` form keeps the nullable default
+// contract visible at the call site.
 
 /// The agent's thinking/waiting state — mutually exclusive states that
 /// replace the previous (isThinking, timeout) boolean pair.
@@ -194,6 +201,19 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   final SendMessageUseCase _sendMessageUseCase;
   final ILogger _logger;
 
+  /// 可选结构化诊断 logger —— 用于把 dedup 决策写入 DiagnosticsPage。
+  ///
+  /// nullable 是为了让现有 ~15 个 ChatViewModel 测试构造点不传参数(为 null)
+  /// 时仍能编译通过 —— 不破坏测试兼容性。生产代码在 chat_providers.dart
+  /// 注入 apiLoggerProvider。null 时所有埋点走 no-op,日志路径与行为不变。
+  ///
+  /// 背景:「重启 App 后历史变两份」类 bug 反复复发,根因是 dedup 路径完全
+  /// 黑盒(0 处 ApiLogger 调用)。本字段让 ChatViewModel 在 merge +
+  /// dedupeConversation 路径上有结构化日志,后续 diagnostics 页面能直接
+  /// 看到每条入站消息走了哪个 dedup 分支。完整方案见 plan:
+  /// `C:\Users\NING MEI\.claude\plans\enumerated-percolating-pascal.md`
+  final IApiLogger? _apiLogger;
+
   /// 入站消息合并用例（Bug #2：历史/实时回传的 user 消息去重）。
   /// 仅依赖 [_messageRepo]，故在内部构造，无需外部注入（避免改动所有
   /// ChatViewModel 测试构造点）。两条入站路径（实时流 + 历史拉取）统一走
@@ -357,7 +377,9 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     this.flushDelay = const Duration(milliseconds: 150),
     this.overallTimeoutDelay = const Duration(seconds: 120),
     ILogger? logger,
+    IApiLogger? apiLogger,
   }) : _logger = logger ?? const DebugPrintLogger(),
+       _apiLogger = apiLogger,
        super(const ChatSessionState());
 
   /// The loaded agent — 由 [AgentReactiveState] mixin 提供 (Finding #8 重构)。
@@ -619,7 +641,15 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
                   : msg.logicalClock,
             );
             try {
-              await _mergeUseCase.merge(fixedMsg, softMatch: false);
+              // 用 mergeWithStatus 而非 merge —— 拿 wasNew/wasSkipped
+              // 用于诊断日志。merge() 内部就是 mergeWithStatus,只是丢了
+              // 这些字段;这里改用更完整的方法零行为变化(softMatch:false
+              // 等同 merge 的软匹配关闭)。
+              final mergeResult = await _mergeUseCase.mergeWithStatus(
+                fixedMsg,
+                softMatch: false,
+              );
+              _logMergeDecision(mergeResult, 'realtime');
             } catch (error, stackTrace) {
               // iron-law-allow: Law8 — 兜底:即使 clearAll 保留骨架,任何
               // FK/约束冲突也不应静默吞掉后续逻辑。旧实现异常会中断
@@ -783,11 +813,12 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           // 用 mergeWithStatus 以传入 recent(merge() 不暴露该参数)。
           // 这里丢弃 wasNew —— history 路径不需要区分是否新增,
           // dedupeConversation 已覆盖清理历史重复的职责。
-          await _mergeUseCase.mergeWithStatus(
+          final mergeResult = await _mergeUseCase.mergeWithStatus(
             fixedMsg,
             softMatch: true,
             recent: recent,
           );
+          _logMergeDecision(mergeResult, 'history');
         } catch (error, stackTrace) {
           // iron-law-allow: Law8 — 历史拉取的逐条兜底,与 messageStream
           // 路径一致,单条 FK 冲突不应中断整批导入。
@@ -807,6 +838,13 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
           _logger.info(
             '[ChatViewModel] dedupeConversation removed $deleted duplicate '
             'rows for $_conversationId',
+          );
+          // 结构化诊断:让 diagnostics page 看到「这条会话这次清理了 N 条」
+          // —— 与 merge 决策共用 state 前缀约定 'merge:dedupeDeleted'。
+          _apiLogger?.logStateChange(
+            instanceId: instanceId,
+            state: 'merge:dedupeDeleted',
+            message: 'count=$deleted path=history conv=$_conversationId',
           );
         }
       } catch (error, stackTrace) {
@@ -1383,6 +1421,42 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   void _updateState(ChatSessionState Function(ChatSessionState) transform) {
     if (!mounted) return;
     state = transform(state);
+  }
+
+  /// 记录一次 dedup 决策到结构化诊断日志。
+  ///
+  /// 诊断约定(state 前缀 `merge:`):
+  /// - `merge:hit:dedup`     — 命中已有行(clientId / serverId / 软匹配)
+  /// - `merge:inserted:new`  — 真新插入(Branch 4 命中,didup 全 miss)
+  /// - `merge:enriched`      — serverId 命中且内容更完整,触发富化 upsert
+  /// - `merge:skipped:emptyContent` — 空内容丢弃(网关历史里的空气泡)
+  /// - `merge:dedupeDeleted` — dedupeConversation 清理 N 条历史重复
+  ///
+  /// [path] 区分实时流(`realtime`)和历史 pull(`history`)两条路径,
+  /// 便于诊断「重启后历史变两份」时区分问题来自 catch-up 还是 chat init。
+  ///
+  /// null logger 时静默返回 —— 现有 ~15 个测试构造点不传 apiLogger,
+  /// 这里确保它们继续工作。
+  void _logMergeDecision(MergeResult result, String path) {
+    final apiLogger = _apiLogger;
+    if (apiLogger == null) return;
+    final m = result.message;
+    final outcome = result.wasSkipped
+        ? 'skipped:emptyContent'
+        : (result.wasNew ? 'inserted:new' : 'hit:dedup');
+    apiLogger.logStateChange(
+      instanceId: instanceId,
+      state: 'merge:$outcome',
+      message:
+          'path=$path '
+          'clientId=${m.clientId} '
+          'serverId=${m.serverId ?? "-"} '
+          'role=${m.role.name} '
+          'conv=${m.conversationId}',
+      // payloadPreview 让 diagnostics 页显示 ▼ 展开按钮 —— 「重启后多出
+      // agent 消息」类 bug 的核心诊断可见性。
+      payloadPreview: m.content,
+    );
   }
 
   /// Retry initialization after a previous failure.

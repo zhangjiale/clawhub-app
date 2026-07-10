@@ -37,6 +37,10 @@ final chatViewModelProvider =
         instanceId: params.instanceId,
         agentId: params.agentId,
         logger: ref.watch(loggerProvider),
+        // 注入 IApiLogger —— 让 merge / dedupeConversation 决策有结构化
+        // 诊断输出(见 chat_view_model._logMergeDecision)。null 时所有埋
+        // 点走 no-op,不影响现有测试。
+        apiLogger: ref.watch(apiLoggerProvider),
       );
       // Invalidate stats provider whenever a message is sent or received,
       // so the stats bar in the agent list tab reflects updated message counts.

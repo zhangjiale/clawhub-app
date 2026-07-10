@@ -26,10 +26,15 @@ abstract interface class IApiLogger {
 
   /// 记录一条连接生命周期/诊断事件。[state] 可为 null（纯 message 诊断条目，
   /// 如 buffer overflow / payload too large）。永不抛。
+  ///
+  /// [payloadPreview] 可选 —— state 条目也能携带可展开预览（如 merge 决策的
+  /// 消息 content）。diagnostics 页据此显示 ▼ 展开按钮。实现需自行截断
+  /// （如 [ApiLogStore] 用 `redactAndTruncate` 上限 2KB）。
   void logStateChange({
     required String instanceId,
     String? state,
     required String message,
+    String? payloadPreview,
   });
 }
 

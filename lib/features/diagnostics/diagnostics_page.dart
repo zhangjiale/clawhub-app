@@ -104,13 +104,42 @@ class _DiagnosticsPageState extends ConsumerState<DiagnosticsPage> {
     );
   }
 
-  Widget _entryTile(ApiLogEntry e) {
-    final expanded = _expanded.contains(e.id);
-    final (icon, iconColor) = switch (e.direction) {
+  /// 根据 entry 类型/方向选 icon + 配色。
+  ///
+  /// 为 state 条目中 `merge:` 前缀(merge decisions)提供配色 —— 这是
+  /// "重启 App 后历史变两份"诊断的核心可观测性：
+  /// - `merge:hit:dedup`        → 绿色 (去重命中,正常)
+  /// - `merge:inserted:new`     → 红色 (真新插入,bug 信号 —— 重点关注)
+  /// - `merge:dedupeDeleted`    → 紫色 (聚簇兜底删除 N 行)
+  /// - 其他 merge:*            → 默认色
+  /// - req/res                  → 原 accent / green
+  /// - 其他 state               → 默认 text3
+  (IconData, Color) _iconForEntry(ApiLogEntry e) {
+    // Merge decision 配色优先级最高(独立于 req/res 方向分类)。
+    final state = e.kind == ApiLogKind.state ? e.state : null;
+    if (state != null && state.startsWith('merge:')) {
+      if (state == 'merge:hit:dedup') {
+        return (Icons.check_circle_outline, XiaColors.green);
+      }
+      if (state == 'merge:inserted:new') {
+        return (Icons.add_circle_outline, XiaColors.red);
+      }
+      if (state == 'merge:dedupeDeleted') {
+        return (Icons.cleaning_services, XiaColors.accent2);
+      }
+      // 其他 merge:* (enriched / skipped)用默认 icon + 黄色提示
+      return (Icons.radio_button_unchecked, XiaColors.yellow);
+    }
+    return switch (e.direction) {
       ApiLogDirection.outgoing => (Icons.north, XiaColors.accent),
       ApiLogDirection.incoming => (Icons.south, XiaColors.green),
       null => (Icons.radio_button_unchecked, XiaColors.text3),
     };
+  }
+
+  Widget _entryTile(ApiLogEntry e) {
+    final expanded = _expanded.contains(e.id);
+    final (icon, iconColor) = _iconForEntry(e);
     final title = e.kind == ApiLogKind.state
         ? (e.state ?? 'event')
         : (e.methodOrEvent ?? e.kind.name);

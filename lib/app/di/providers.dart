@@ -668,6 +668,9 @@ final messageCatchUpServiceProvider = Provider<MessageCatchUpService>((ref) {
     conversationRepo: ref.watch(conversationRepoProvider),
     gatewayClient: ref.watch(gatewayClientProvider),
     logger: ref.watch(loggerProvider),
+    // 注入 IApiLogger —— 让 catch-up 路径上的 merge / dedupeConversation
+    // 决策有结构化诊断输出(见 message_catch_up_service._logMergeDecision)。
+    apiLogger: ref.watch(apiLoggerProvider),
   );
 });
 

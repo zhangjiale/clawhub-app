@@ -122,6 +122,7 @@ class _RecordingApiLogger implements IApiLogger {
     required String instanceId,
     String? state,
     required String message,
+    String? payloadPreview,
   }) => stateNames.add(state ?? '');
 }
 

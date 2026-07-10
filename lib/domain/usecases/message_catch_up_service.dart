@@ -1,10 +1,16 @@
 import '../../core/acl/i_gateway_client.dart';
+import '../../core/i_api_logger.dart';
 import '../../core/i_logger.dart';
 import '../models/conversation.dart';
+import '../models/message.dart';
 import '../repositories/i_agent_repo.dart';
 import '../repositories/i_conversation_repo.dart';
 import '../repositories/i_message_repo.dart';
 import 'merge_inbound_message.dart';
+
+// ignore_for_file: prefer_initializing_formals — `_apiLogger` library-private
+// initializing formal blocked by `_` prefix (Dart 2.17+); explicit
+// assignment keeps nullable param contract visible.
 
 /// 消息增量同步服务 — 断线重连后拉取 Gateway 新消息（US-016 AC-1/AC-2）。
 ///
@@ -31,6 +37,16 @@ class MessageCatchUpService {
   final IConversationRepo _conversationRepo;
   final IGatewayClient _gatewayClient;
   final ILogger _logger;
+
+  /// 可选结构化诊断 logger —— 与 ChatViewModel 同模式。null 时所有埋点
+  /// 走 no-op。生产代码在 providers.dart 注入 apiLoggerProvider。
+  ///
+  /// 背景:「重启 App 后历史变两份」类 bug 反复复发,catch-up 路径的 dedup
+  /// 决策完全黑盒。本字段让 catch-up 路径上的 merge / dedupeConversation
+  /// 决策有结构化日志,便于 DiagnosticsPage 5 分钟内定位 miss 的层级。
+  /// 完整方案见 plan:
+  /// `C:\Users\NING MEI\.claude\plans\enumerated-percolating-pascal.md`
+  final IApiLogger? _apiLogger;
 
   /// 入站合并用例 —— 与 ChatViewModel 共用同一去重逻辑（身份 + 软匹配）。
   /// 在内部从 [_messageRepo] 构造，避免改动 DI 与所有构造点。
@@ -60,8 +76,10 @@ class MessageCatchUpService {
     required this._conversationRepo,
     required this._gatewayClient,
     required this._logger,
+    IApiLogger? apiLogger,
     int? maxPagesPerConversation,
-  }) : _maxPagesPerConversation =
+  }) : _apiLogger = apiLogger,
+       _maxPagesPerConversation =
            maxPagesPerConversation ?? defaultMaxPagesPerConversation;
 
   /// 执行增量同步。
@@ -189,6 +207,10 @@ class MessageCatchUpService {
               softMatch: true,
               recent: recent,
             );
+            // 结构化诊断:让 diagnostics page 看到「catch-up 路径上每条
+            // 入站消息走了哪个 dedup 分支」。state 前缀约定 'merge:'
+            // 与 ChatViewModel 一致,path=catchUp 便于区分来源。
+            _logMergeDecision(result, msg, agentRemoteId);
             if (result.wasSkipped) {
               // 空内容 / 业务规则丢弃 —— 既非新插入也非命中已有行,不计入
               // pageKnown,避免误触发「已追平」停止条件。
@@ -259,6 +281,15 @@ class MessageCatchUpService {
           '[MessageCatchUp] Cleaned $deleted legacy duplicate rows for '
           'agent $agentRemoteId conversation $conversationId',
         );
+        // 结构化诊断:让 diagnostics 看到「这次 catch-up 在这条会话清理了
+        // N 条重复」。state 前缀 'merge:' 与 merge 决策共用一套配色约定。
+        _apiLogger?.logStateChange(
+          instanceId: instanceId,
+          state: 'merge:dedupeDeleted',
+          message:
+              'count=$deleted path=catchUp conv=$conversationId '
+              'agent=$agentRemoteId',
+        );
       }
     } catch (e, st) {
       // dedupeConversation 自身是事务 + 已建索引,失败概率极低;不影响
@@ -271,6 +302,42 @@ class MessageCatchUpService {
     }
 
     return CatchUpResult(inserted: totalInserted, truncated: truncated);
+  }
+
+  /// 记录一次 catch-up dedup 决策到结构化诊断日志。
+  ///
+  /// 与 ChatViewModel._logMergeDecision 同套约定(state 前缀 `merge:`),
+  /// 仅 [path] 不同(`catchUp`)。这是「重启 App 后历史变两份」诊断的主
+  /// 数据源 —— 大量 `merge:inserted:new` 表示 catch-up 路径 Branch 4
+  /// 命中,问题在前 3 层 dedup 全 miss。
+  ///
+  /// null logger 时静默返回 —— 现有 catch-up 测试构造点不传 apiLogger,
+  /// 这里确保它们继续工作。
+  void _logMergeDecision(
+    MergeResult result,
+    Message inbound,
+    String agentRemoteId,
+  ) {
+    final apiLogger = _apiLogger;
+    if (apiLogger == null) return;
+    final m = result.message;
+    final outcome = result.wasSkipped
+        ? 'skipped:emptyContent'
+        : (result.wasNew ? 'inserted:new' : 'hit:dedup');
+    apiLogger.logStateChange(
+      instanceId: inbound.agentId.isNotEmpty ? inbound.agentId : agentRemoteId,
+      state: 'merge:$outcome',
+      message:
+          'path=catchUp '
+          'clientId=${m.clientId} '
+          'serverId=${m.serverId ?? "-"} '
+          'role=${m.role.name} '
+          'conv=${m.conversationId} '
+          'agent=$agentRemoteId',
+      // payloadPreview 让 diagnostics 页显示 ▼ 展开按钮 —— 「重启后多出
+      // agent 消息」类 bug 的核心诊断可见性。
+      payloadPreview: m.content,
+    );
   }
 }
 
