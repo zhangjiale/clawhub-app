@@ -2,14 +2,15 @@
 <resources>
     <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is on -->
     <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <!-- v4 splash 插画桃粉边缘色 #FDD3BC，与插画自带渐变相近 -->
+        <!-- 同 values-v31：透明 android12splash 阻止 icon fallback，避免双龙虾。
+             由 flutter_native_splash 生成自管，重跑 :create 不会丢。 -->
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
-        <item name="android:windowSplashScreenBackground">#08090D</item>
-        <!-- 同 values-v31：暗色模式也用透明 drawable 让 native splash 不显示
-             logo，handoff 到 Flutter 后由 Flutter SplashScreen 唯一渲染 -->
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
+        <item name="android:windowSplashScreenBackground">#FDD3BC</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/android12splash</item>
     </style>
     <!-- Theme applied to the Android Window as soon as the process has started.
          This theme determines the color of the Android Window while your

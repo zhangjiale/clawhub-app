@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#111110</color>
-    <!-- Splash 全屏背景色。与 Flutter XiaColors.bg (#08090D) 同色，与
-         values-v31/styles.xml 的 windowSplashScreenBackground (#08090D) 同色
-         → 三层 splash 背景零跳变。launch_background.xml 引用此 color，
-         pre-v31 设备 splash 全屏填此色。 -->
-    <color name="splash_bg">#08090D</color>
+    <!-- Splash 全屏背景色。取 v4 splash 插画桃粉边缘色 #FDD3BC（与插画自带
+         渐变相近）。与 values-v31/styles.xml 的 windowSplashScreenBackground
+         (#FDD3BC) 同色 → 三层 splash 背景零跳变。launch_background.xml 引用此
+         color，pre-v31 设备 splash 全屏填此色。
+         注：App 主体 XiaColors.bg 仍是 #08090D（暗色），splash→app 是
+         "暖光 → 暗色工作台"过渡，200ms 淡入掩盖。 -->
+    <color name="splash_bg">#FDD3BC</color>
 </resources>
