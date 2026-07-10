@@ -2,76 +2,80 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/splash/min_display_timer.dart';
-import 'package:claw_hub/app/splash/splash_screen.dart';
 import 'package:claw_hub/ui_kit/fatal_screen.dart';
+
+/// Native-only splash 占位背景色（与 Android values/colors.xml 的 splash_bg +
+/// values-v31/styles.xml 的 windowSplashScreenBackground + iOS LaunchScreen +
+/// pubspec.yaml flutter_native_splash.color 同色 #FDD3BC）。
+///
+/// Flutter 侧不再渲染 splash 插画，StartupGate 在 splash 阶段挂一个全屏
+/// ColoredBox 保持背景色一致，避免 Flutter 接管首帧时背景跳变到 #08090D。
+const Color _splashBgColor = Color(0xFFFDD3BC);
 
 enum StartupPhase { splash, app }
 
-/// 启动闸门：splash ↔ app 状态机。
+/// 启动闸门：splash ↔ app 状态机（plan 2026-07-10 native-only）。
 ///
 /// 在 runApp 之后、`MaterialApp.router` 之前挂载。
-/// - splash 阶段：渲染 `SplashScreen`，等 init 完成 + 800ms
-/// - app 阶段：渲染 `child`（= `MaterialApp.router`）
+/// - splash 阶段：渲染纯色 #FDD3BC 占位 + native splash 由 FlutterNativeSplash
+///   .preserve() 维持显示
+/// - app 阶段：渲染 `child`（= `MaterialApp.router`），postFrameCallback 调
+///   FlutterNativeSplash.remove() 让 native 退出
 /// - 错误（board 修订 tier-gate）：
-///   - Tier 1 (Notification fatal) → `FatalScreen`
+///   - Tier 1 (Notification fatal) → `FatalScreen` + 调 onReady 退出 native
 ///   - Tier 2 (Connection soft-fail) → app shell mount，写 connectionInitStateProvider
+///
+/// native-only 形态后 Flutter 侧不再渲染 splash 插画 / "虾Hub" / 版本号——
+/// 这些视觉信息全部由 native 层（Android system splash + iOS LaunchScreen）
+/// 提供。冷启动用户只看到 native 一层。
 class StartupGate extends ConsumerStatefulWidget {
-  const StartupGate({super.key, required this.child});
+  const StartupGate({super.key, required this.child, required this.onAppReady});
+
   final Widget child;
 
+  /// native splash 退出回调。生产由 `ClawHubApp.build` 注入
+  /// `FlutterNativeSplash.remove()`（try/catch + logger 兜底）；测试注入
+  /// no-op 计数器，避免 `MissingPluginException`。
+  ///
+  /// 在以下两种状态机终态触发：
+  /// 1. splash → app 切换（init 成功 + 800ms MinDisplayTimer 到期）
+  /// 2. _initError 写入（Tier 1 fatal，渲染 FatalScreen）
+  ///
+  /// 关键不变量：必须保证只触发一次（避免重复 remove() 行为未定义）。用
+  /// [_StartupGateState._onReadyFired] 守卫。
+  final VoidCallback onAppReady;
+
   @override
-  ConsumerState<StartupGate> createState() => StartupGateState();
+  ConsumerState<StartupGate> createState() => _StartupGateState();
 }
 
-class StartupGateState extends ConsumerState<StartupGate> {
+class _StartupGateState extends ConsumerState<StartupGate> {
   StartupPhase _phase = StartupPhase.splash;
-  String _version = '';
   Object? _initError;
   StackTrace? _initStackTrace;
+  bool _onReadyFired = false;
 
   @override
   void initState() {
     super.initState();
-    // 把 splash 资产 decode 提前到 init 等待期内（board 修订：frameBuilder 不是
-    // 首帧防御，必须 precacheImage）。postFrameCallback 拿到合法 BuildContext。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      precacheImage(const AssetImage(kSplashImagePath), context);
-    });
     _runStartup();
   }
 
   Future<void> _runStartup() async {
     try {
-      // 1. 读版本号（与 init 并行启动）
-      final pkgFuture = PackageInfo.fromPlatform();
-      // 版本号就绪即显示（splash 阶段），独立于 phase 切换 -- 原实现把 _version
-      // 与 _phase=app 同帧写，导致 SplashScreen 永远拿空版本（ARB finding #2）。
-      // 非 fatal：取版本号失败只让版本留空，不进 FatalScreen（cosmetic 字符串
-      // 不应 fatal app）。
-      unawaited(
-        pkgFuture
-            .then((pkg) {
-              if (mounted) {
-                setState(() => _version = 'v${pkg.version}+${pkg.buildNumber}');
-              }
-            })
-            .catchError((_) {}),
-      );
-
-      // 2. 启动 init 任务 + 最短展示计时器
+      // 启动 init 任务 + 最短展示计时器
       await Future.wait<Object?>([
         _runInitialization(),
         MinDisplayTimer.wait(const Duration(milliseconds: 800)),
       ]);
 
-      // 都满足 -> 切到 app 阶段（版本号由上面的 pkgFuture.then 独立设置）
+      // 都满足 -> 切到 app 阶段
       if (!mounted) return;
       setState(() => _phase = StartupPhase.app);
+      _fireOnReady();
     } catch (e, st) {
       // 仅 NotificationBootstrap.init() 抛错会逃逸到这里
       // （_runInitialization 里 ConnectionOrchestrator 失败被局部吞掉）
@@ -86,6 +90,7 @@ class StartupGateState extends ConsumerState<StartupGate> {
           _initStackTrace = st;
         });
       }
+      _fireOnReady();
     }
   }
 
@@ -114,6 +119,19 @@ class StartupGateState extends ConsumerState<StartupGate> {
     }
   }
 
+  /// 调 onAppReady 一次（splash→app 切换成功 或 fatal 都触发）。
+  ///
+  /// postFrameCallback 包一层：让首帧（app child 或 FatalScreen）layout 完
+  /// 再 remove native，避免「Flutter 黑屏 + native 消失」中间空窗。
+  void _fireOnReady() {
+    if (_onReadyFired) return;
+    _onReadyFired = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.onAppReady();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_initError != null) {
@@ -130,19 +148,15 @@ class StartupGateState extends ConsumerState<StartupGate> {
             _initError = null;
             _initStackTrace = null;
             _phase = StartupPhase.splash;
-            _version = '';
+            _onReadyFired = false;
           });
           _runStartup();
         },
       );
     }
     return switch (_phase) {
-      StartupPhase.splash => SplashScreen(version: _version),
+      StartupPhase.splash => ColoredBox(color: _splashBgColor),
       StartupPhase.app => widget.child,
     };
   }
 }
-
-// 注：StartupGate 设计为 public（class StartupGate，非 _StartupGate）——
-// Task 8 的 main.dart 需要跨文件引用它。如果保留下划线前缀，
-// Dart 编译器会判为 library-private 而 break build（参考 review #1）。

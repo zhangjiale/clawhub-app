@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:claw_hub/app/bootstrap.dart';
@@ -18,7 +19,15 @@ Future<void> main() async {
   // ensureInitialized() is documented as safe to call multiple times — the
   // fatal-screen Retry button re-enters main() and we want a fresh binding
   // path (Flutter internally short-circuits re-init).
-  WidgetsFlutterBinding.ensureInitialized();
+  final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
+
+  // Native splash 自管：让 native splash 在 Flutter 接管前继续显示，
+  // 直到 StartupGate 完成 init（或 fatal）后调 FlutterNativeSplash.remove()
+  // 通知系统让 Flutter 接管首帧。否则 Flutter runApp 一调用 native splash
+  // 立即消失，背景是裸 #08090D 暗色，app 第一帧（ChatRoom / 实例列表）还没
+  // layout 完就暴露给用户 = 黑屏闪烁。preserve() 由 StartupGate 在状态机
+  // 终态（splash→app 切换 或 _initError fatal）时 remove()。
+  FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
   runZonedGuarded(
     () => bootstrapApp(
@@ -123,6 +132,19 @@ class ClawHubApp extends ConsumerWidget {
     });
 
     return StartupGate(
+      // onAppReady：splash→app 切换成功 或 fatal 后调，通知 native 退出。
+      // FlutterNativeSplash.remove() 走 MethodChannel，测试环境无插件注册
+      // 会抛 MissingPluginException —— 此处 try/catch + logger 兜底，让
+      // widget_test / app_integration_test 直接进 ClawHubApp 不爆。
+      onAppReady: () {
+        try {
+          FlutterNativeSplash.remove();
+        } catch (e, st) {
+          ref
+              .read(loggerProvider)
+              .error('[splash] FlutterNativeSplash.remove() skipped: $e', st);
+        }
+      },
       child: MaterialApp.router(
         title: '虾Hub',
         debugShowCheckedModeBanner: false,

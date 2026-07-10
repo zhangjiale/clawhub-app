@@ -53,12 +53,15 @@ dependencies:
   file_picker: ^8.1.2
   flutter_local_notifications: ^18.0.1
 
+  # Native splash 运行时 API（FlutterNativeSplash.preserve/remove），让 native
+  # splash 跨 init 阶段持续显示，去掉 Flutter SplashScreen 后只露 native 一层
+  flutter_native_splash: ^2.4.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.3
-  flutter_native_splash: ^2.4.4
 
   # 测试
   mocktail: ^1.0.4
@@ -79,40 +82,43 @@ flutter:
 
   assets:
     - assets/mock/
-    # mascot logo（v6 透明 PNG，1024×1024 RGBA）。
-    # 当前字节与 docs/design/assets/xiahub-icon-v6.png 完全一致（MD5 同），
-    # Flutter SplashScreen (ClipOval 192dp) + Android 12+ windowSplashScreenAnimatedIcon
-    # + pre-v31 launch_background 共用此资源 → 启动 handoff 三层视觉对齐。
-    # 已知限制：右下角"豆包AI生成"水印可见（用户接受为临时方案）；
-    # 后续干净抠图版替换为单独 PR，路径不要擅自动。
-    - docs/design/assets/xiahub-logo.png
 
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "docs/design/assets/xiahub-icon-v7.png"
+  image_path: "docs/design/assets/xiahub-icon-v9.png"
   adaptive_icon_background: "#111110"
-  adaptive_icon_foreground: "docs/design/assets/xiahub-icon-v7.png"
+  adaptive_icon_foreground: "docs/design/assets/xiahub-icon-v9.png"
 
 flutter_native_splash:
-  # 强制暗色（board 评审 + brainstorming 决定）：
-  # color + color_dark 都用 V2 暗色 bg = #08090D = XiaColors.bg
-  # App 本身 ThemeMode.dark，OS 明色时也显示暗色 splash
-  color: "#08090D"
-  color_dark: "#08090D"
-  # native 阶段纯色无图（plan 2026-07-08）：mascot 只在 Flutter SplashScreen
-  # 层渲染，native->Flutter handoff 唯一变化 = mascot 淡入，零尺寸/位置/背景
-  # 跳变。原单张海报 center/cover/fill 跨层缩放矛盾由此根除。不设 image ->
-  # 插件 showImage=false，launch_background.xml 只剩 background item（纯色 fill）。
+  # 暖色 native splash（#FDD3BC 桃粉）。与 Android values/colors.xml 的
+  # splash_bg + values-v31/styles.xml 的 windowSplashScreenBackground +
+  # iOS LaunchScreen 三处同色 → 启动 native->Flutter handoff 零背景跳变。
+  # 注：App 主体 ThemeMode.dark（XiaColors.bg = #08090D），splash→app 是
+  # "晨光 → 暗色工作台"过渡，由 Flutter 侧 router 自然衔接（无 SplashScreen
+  # 插画过渡）。
+  color: "#FDD3BC"
+  color_dark: "#FDD3BC"
 
-  # Android 12+ SplashScreen API 结构性强制 icon-based（圆形遮罩 ≤240dp）。
-  # 不设 image -> 回退 launcher icon（~100ms 圆形闪现）-> 纯色。接受此结构性
-  # 过渡，不做 postSplashScreenTheme 抑制（代价过大，列 future work）。
-  # mascot 仍只 Flutter 显示，与其他平台一致。
+  # native splash 唯一图源 = xiahub-icon-v6-splash.png（v6 缩到 90% 后
+  # 居中放回 1024 画布，留约 5% × 2 透明 padding 安全边）。Flutter 侧
+  # SplashScreen 已删除（plan 2026-07-10 native-only 方案），native splash
+  # 在 Flutter 接管前独显 → 这是用户冷启动唯一看见的 splash 层。
+  # 注：launcher icon（mipmap/ic_launcher.png + iOS AppIcon）仍用 v9，splash
+  # 图与 app icon 解耦由本块单独管理。splash 资源由 scripts/make_splash_asset.py
+  # 生成（重跑脚本需重新 :create）。
+  image: docs/design/assets/xiahub-icon-v6-splash.png
+
+  # Android 12+ SplashScreen API 结构性强制 icon-based（圆形遮罩 ≤240dp
+  # viewport）。v6 原图贴边（钳子/腿/触角几乎到画布边），直接用作 splash
+  # 会被 240dp 圆切掉钳尖和触角。改用 90% 缩放 + 居中 padding 版本：
+  # 实测圆形 viewport 内钳尖/触角/腿尖都在边界内，约 140px（19.4%）安全边。
+  # 见 docs/design/assets/xiahub-icon-v6-splash_preview.png（不入版本）。
   android_12:
-    color: "#08090D"
+    color: "#FDD3BC"
+    image: docs/design/assets/xiahub-icon-v6-splash.png
 
-  # iOS：纯色下 contentMode 无视觉影响，scaleAspectFill 避免任何 letterbox。
+  # iOS：scaleAspectFill 让 v9 全屏铺满 launch_background，无 letterbox。
   ios_content_mode: scaleAspectFill
   fullscreen: true
 
@@ -120,4 +126,3 @@ flutter_native_splash:
   android: true
   ios: true
   web: false
-  # android_gravity 已移除：无 image 时此字段无效（插件不写 splash item）。

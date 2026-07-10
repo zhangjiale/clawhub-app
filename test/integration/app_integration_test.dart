@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/native.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:claw_hub/app/di/providers.dart';
 import 'package:claw_hub/app/notifications/notification_bootstrap.dart';
@@ -85,7 +84,7 @@ ProviderScope appTestHarness({required Widget child}) {
 
 /// StartupGate 在 splash 阶段挂 800ms MinDisplayTimer；`pumpAndSettle` 在
 /// 800ms 之前因「无调度帧」提前停止，app 阶段永不 mount。本 helper 先 pump
-/// 一帧让 initState/postFrameCallback/_runStartup 跑起来，再推进 800ms 越过
+/// 一帧让 initState/_runStartup 跑起来，再推进 800ms 越过
 /// MinDisplayTimer，最后 pumpAndSettle 收尾 app 自身的动画/路由过渡。
 Future<void> _settlePastSplashGate(WidgetTester tester) async {
   await tester.pump();
@@ -94,20 +93,6 @@ Future<void> _settlePastSplashGate(WidgetTester tester) async {
 }
 
 void main() {
-  // StartupGate._runStartup calls PackageInfo.fromPlatform() for the version
-  // string — in the headless test env the platform channel is absent and it
-  // throws MissingPluginException, which StartupGate would treat as a Tier-1
-  // fatal. Mock the singleton so it resolves instantly.
-  setUpAll(() {
-    PackageInfo.setMockInitialValues(
-      appName: 'ClawHub',
-      packageName: 'com.clawhub.app',
-      version: '1.0.0',
-      buildNumber: '1',
-      buildSignature: '',
-    );
-  });
-
   // ===========================================================================
   // App Launch & Initialization
   // ===========================================================================
