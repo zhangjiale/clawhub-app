@@ -735,26 +735,35 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
               return;
             }
             final current = Map<String, ToolCall>.from(state.toolCalls);
-            // Late ToolCall (arrived after the final message): self-key by
-            // clientId so the page's toolCalls[message.clientId] lookup finds
-            // it. Early ToolCall (final message not yet landed): key by
-            // sessionKey, pending _rekeyToolCallForMessage (review #14).
+            // Key the live ToolCall by its OWN toolCallId (tc.id), NOT by the
+            // message owner. A single turn can carry multiple tool calls that
+            // all resolve to the same owner -- v2026.6.10 omits per-tool
+            // sessionKey, so _resolveToolMessageId's LIFO fallback returns the
+            // same sessionKey for every tool in the turn. Keying by owner
+            // (clientId / sessionKey) would make them overwrite each other and
+            // only the last tool call would render live, while history reload
+            // (toolResult message rows, 1:N via groupToolResultsByOwner) shows
+            // all of them -> "1 exec card live, multiple after restart".
+            //
+            // The messageId FIELD records the owner so the page can group tool
+            // calls by message (chat_room_page._buildMessageList filters
+            // `tc.messageId == message.clientId`), matching the reload path's
+            // 1-owner-to-N-cards cardinality.
+            //
+            // Self-key: if the owner is already known (user message clientId
+            // from _sendCore, or agent clientId from a prior rekey), stamp it
+            // onto messageId now. Otherwise leave messageId = sessionKey,
+            // pending _rekeyToolCallForMessage when the final message lands.
             //
             // Prefer the user-message clientId over the agent-message
             // clientId: the exec card must render below the user bubble
-            // (the trigger), not below the agent bubble. Falling back to
-            // _sessionKeyToClientId (agent) preserves pre-fix behavior
-            // for the narrow case where the user message is missing
-            // (e.g. a tool-only turn with no prior user message).
+            // (the trigger), not below the agent bubble.
             final userClientId = _sessionKeyToUserClientId[tc.messageId];
             final agentClientId = _sessionKeyToClientId[tc.messageId];
-            final clientId = userClientId ?? agentClientId;
-            if (clientId != null) {
-              current.remove(tc.messageId);
-              current[clientId] = tc.copyWith(messageId: clientId);
-            } else {
-              current[tc.messageId] = tc;
-            }
+            final ownerClientId = userClientId ?? agentClientId;
+            current[tc.id] = ownerClientId != null
+                ? tc.copyWith(messageId: ownerClientId)
+                : tc;
             _updateState((s) => s.copyWith(toolCalls: current));
           },
           onError: (error, stackTrace) {
@@ -1265,12 +1274,24 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // race-free because it runs synchronously after the user message
     // is persisted.
     final triggerClientId = _sessionKeyToUserClientId[sk] ?? msg.clientId;
-    final tc = state.toolCalls[sk];
-    if (tc == null) return; // No early ToolCall to re-key; mapping recorded
+    // Re-key ALL live ToolCalls currently owned by sessionKey `sk` (could be
+    // multiple in a multi-tool turn). Live tool calls are keyed by toolCallId
+    // (tc.id), so we update the messageId FIELD, not the map key. Pre-fix the
+    // map was keyed by owner and this did a single state.toolCalls[sk] lookup
+    // -> only the survivor of the per-owner overwrite was re-keyed; the rest
+    // stayed stranded on sessionKey and the page's owner lookup never found
+    // them -> invisible live, visible after restart (symptom 1).
+    var changed = false;
+    final rekeyed = Map<String, ToolCall>.from(state.toolCalls);
+    // Snapshot entries before mutating values so the iteration is safe.
+    for (final entry in rekeyed.entries.toList()) {
+      if (entry.value.messageId == sk) {
+        rekeyed[entry.key] = entry.value.copyWith(messageId: triggerClientId);
+        changed = true;
+      }
+    }
+    if (!changed) return; // No early ToolCall to re-key; mapping recorded
     // above lets a late ToolCall self-key.
-    final rekeyed = Map<String, ToolCall>.from(state.toolCalls)
-      ..remove(sk)
-      ..[triggerClientId] = tc.copyWith(messageId: triggerClientId);
     _updateState((s) => s.copyWith(toolCalls: rekeyed));
   }
 

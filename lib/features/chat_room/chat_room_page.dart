@@ -674,32 +674,33 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
         }
         // 孤儿 toolResult(后面没有非 toolResult 消息)→ 独立渲染。
         if (message.role == MessageRole.toolResult) {
-          // 优先用 live ToolCall(如有):纯工具结果回合里它仍 keyed by
-          // sessionKey,经 ChatViewModel._rekeyToolCallForMessage 转到
-          // toolResult.clientId。**该 re-key 是本分支的前提**(R2 contract)—
-          // 改 _rekeyToolCallForMessage 的调用方(去掉 toolResult 一支)
-          // 会让本行永远 null,孤儿 toolResult 失去 running 态。
-          final live = toolCalls[message.clientId];
-          if (live != null) return ToolCallCard(toolCall: live);
-          // 若同 toolCallId 的 live 卡已挂在别的消息(如 agent 回复)下,
-          // 避免重复渲染历史卡。
+          // 优先用 live ToolCall(按 toolCallId 取),保留 running 态;无 live
+          // 则用历史 toolResult 重建。归别的消息所有的 live 卡跳过避免重复。
           final toolCallId = message.metadata?['toolCallId'] as String?;
-          final hasLiveElsewhere =
-              toolCallId != null &&
-              toolCalls.values.any((tc) => tc.id == toolCallId);
-          if (hasLiveElsewhere) return const SizedBox.shrink();
+          final live = toolCallId != null ? toolCalls[toolCallId] : null;
+          if (live != null) {
+            // live 卡归本消息所有 -> 在此渲染(保留 running 态)。
+            // 否则它已挂在别的消息(如 agent 回复)下,跳过避免重复。
+            if (live.messageId == message.clientId) {
+              return ToolCallCard(toolCall: live);
+            }
+            return const SizedBox.shrink();
+          }
           return ToolCallCard(toolCall: toolCallFromMessage(message));
         }
-        final tc = toolCalls[message.clientId];
+        // live ToolCalls 归本消息所有(按 messageId == message.clientId 过滤)。
+        // 一个 turn 可含多个工具调用 -> 全部渲染,与重载路径
+        // groupToolResultsByOwner 的 1:N 基数对齐(修「实时 1 张、重启多张」)。
+        final liveTools = toolCalls.values
+            .where((tc) => tc.messageId == message.clientId)
+            .toList();
         final historyTools = (toolResultsByOwner[message.clientId] ?? const [])
-            // 同 toolCallId 的 live 卡已存在时,跳过历史卡,避免与 agent 气泡下
-            // 的 live 卡重复渲染。
+            // 同 toolCallId 的 live 卡已存在时,跳过历史卡,避免与 live 卡
+            // 重复渲染。toolCalls 现以 toolCallId 为 key,直接 containsKey。
             .where(
               (ht) =>
                   !(ht.metadata?['toolCallId'] is String &&
-                      toolCalls.values.any(
-                        (tc) => tc.id == ht.metadata!['toolCallId'],
-                      )),
+                      toolCalls.containsKey(ht.metadata!['toolCallId'])),
             )
             .toList();
         return Column(
@@ -717,7 +718,7 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                         .retryMessage(message.clientId)
                   : null,
             ),
-            if (tc != null) ToolCallCard(toolCall: tc),
+            for (final tc in liveTools) ToolCallCard(toolCall: tc),
             for (final ht in historyTools)
               ToolCallCard(toolCall: toolCallFromMessage(ht)),
           ],

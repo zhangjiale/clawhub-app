@@ -98,11 +98,15 @@ void main() {
           await Future<void>.delayed(Duration.zero);
         }
         expect(
-          vm.state.toolCalls.containsKey(sessionKey),
+          vm.state.toolCalls.containsKey('tc-1'),
           isTrue,
-          reason: 'sanity: tool call stored by sessionKey',
+          reason: 'sanity: tool call stored by toolCallId',
         );
-        expect(vm.state.toolCalls[sessionKey]!.messageId, sessionKey);
+        expect(
+          vm.state.toolCalls['tc-1']!.messageId,
+          sessionKey,
+          reason: 'before re-key, messageId is the sessionKey (owner pending)',
+        );
 
         // 2. Final agent message arrives, tagged with metadata.sessionKey.
         gateway.emitMessageForTesting(
@@ -126,20 +130,19 @@ void main() {
           await Future<void>.delayed(Duration.zero);
         }
 
-        // 3. Re-keyed: toolCalls now keyed by clientId, ToolCall.messageId
-        //    updated to match.
+        // 3. Re-keyed: ToolCall stays keyed by toolCallId; its messageId
+        //    field is updated from sessionKey -> agent message clientId.
         expect(
-          vm.state.toolCalls.containsKey('msg-1'),
+          vm.state.toolCalls.containsKey('tc-1'),
           isTrue,
-          reason: 'tool call re-keyed to message clientId',
+          reason: 'tool call still keyed by toolCallId after re-key',
         );
         expect(
-          vm.state.toolCalls.containsKey(sessionKey),
-          isFalse,
-          reason: 'sessionKey entry removed after re-key',
+          vm.state.toolCalls['tc-1']!.messageId,
+          'msg-1',
+          reason: 'messageId field re-keyed to agent message clientId',
         );
-        expect(vm.state.toolCalls['msg-1']!.messageId, 'msg-1');
-        expect(vm.state.toolCalls['msg-1']!.id, 'tc-1');
+        expect(vm.state.toolCalls['tc-1']!.id, 'tc-1');
         vm.dispose();
       },
     );
@@ -196,17 +199,16 @@ void main() {
 
         // 3. Late tool call self-keyed by clientId — page lookup finds it.
         expect(
-          vm.state.toolCalls.containsKey('msg-late'),
+          vm.state.toolCalls.containsKey('tc-late'),
           isTrue,
-          reason: 'late tool call re-keyed to message clientId',
+          reason: 'late tool call stored by toolCallId',
         );
         expect(
-          vm.state.toolCalls.containsKey(sessionKey),
-          isFalse,
-          reason: 'sessionKey entry not left dangling',
+          vm.state.toolCalls['tc-late']!.messageId,
+          'msg-late',
+          reason: 'messageId self-keyed to agent message clientId',
         );
-        expect(vm.state.toolCalls['msg-late']!.messageId, 'msg-late');
-        expect(vm.state.toolCalls['msg-late']!.id, 'tc-late');
+        expect(vm.state.toolCalls['tc-late']!.id, 'tc-late');
         vm.dispose();
       },
     );

@@ -123,14 +123,14 @@ void main() {
           await Future<void>.delayed(Duration.zero);
         }
         expect(
-          vm.state.toolCalls.containsKey(userClientId),
+          vm.state.toolCalls.containsKey('tc-1'),
           isTrue,
           reason:
               'live ToolCall self-keys immediately to user message '
               'clientId via _sessionKeyToUserClientId (populated by '
               '_sendCore at send time)',
         );
-        expect(vm.state.toolCalls[userClientId]!.messageId, userClientId);
+        expect(vm.state.toolCalls['tc-1']!.messageId, userClientId);
         // The sessionKey entry must not exist — the ToolCall was
         // self-keyed, not stored as a sessionKey-keyed entry.
         expect(
@@ -167,7 +167,7 @@ void main() {
         // and renders ToolCallCard below the user bubble (between user
         // and agent in the visual list with reverse:true).
         expect(
-          vm.state.toolCalls.containsKey(userClientId),
+          vm.state.toolCalls.containsKey('tc-1'),
           isTrue,
           reason:
               'ToolCall must be keyed by user message clientId so it '
@@ -177,13 +177,13 @@ void main() {
               'and renders ToolCallCard in that message\'s Column.',
         );
         expect(
-          vm.state.toolCalls[userClientId]!.messageId,
+          vm.state.toolCalls['tc-1']!.messageId,
           userClientId,
           reason:
               'ToolCall.messageId must equal the user message clientId '
               'so the page lookup is consistent',
         );
-        expect(vm.state.toolCalls[userClientId]!.id, 'tc-1');
+        expect(vm.state.toolCalls['tc-1']!.id, 'tc-1');
 
         // The sessionKey-keyed entry must be removed after re-key.
         expect(

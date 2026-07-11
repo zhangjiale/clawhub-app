@@ -777,9 +777,9 @@ void main() {
       gateway.emitToolCall('inst-1', tc);
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
-      expect(vm.state.toolCalls, contains('msg-1'));
-      expect(vm.state.toolCalls['msg-1']!.toolName, 'search');
-      expect(vm.state.toolCalls['msg-1']!.status, ToolCallStatus.running);
+      expect(vm.state.toolCalls, contains('tc-1'));
+      expect(vm.state.toolCalls['tc-1']!.toolName, 'search');
+      expect(vm.state.toolCalls['tc-1']!.status, ToolCallStatus.running);
     });
 
     test(
@@ -801,7 +801,7 @@ void main() {
           ),
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
-        expect(vm.state.toolCalls['msg-2']!.status, ToolCallStatus.running);
+        expect(vm.state.toolCalls['tc-2']!.status, ToolCallStatus.running);
 
         gateway.emitToolCall(
           'inst-1',
@@ -818,8 +818,8 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(vm.state.toolCalls['msg-2']!.status, ToolCallStatus.success);
-        expect(vm.state.toolCalls['msg-2']!.outputResult, 'File contents');
+        expect(vm.state.toolCalls['tc-2']!.status, ToolCallStatus.success);
+        expect(vm.state.toolCalls['tc-2']!.outputResult, 'File contents');
       },
     );
 

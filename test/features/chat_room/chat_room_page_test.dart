@@ -957,8 +957,9 @@ void main() {
           logicalClock: 1,
           timestamp: 1000,
         );
-        // ToolCall already re-keyed to the message's clientId (what the VM
-        // produces after _rekeyToolCallForMessage).
+        // ToolCall keyed by its toolCallId; messageId field holds the owner
+        // (what the VM produces after self-key / _rekeyToolCallForMessage).
+        // The page filters toolCalls.values by messageId == message.clientId.
         final tc = ToolCall(
           id: 'tc-1',
           messageId: 'msg-1',
@@ -968,7 +969,7 @@ void main() {
         );
         vm.state = ChatSessionState(
           messages: LoadData(<Message>[msg]),
-          toolCalls: {'msg-1': tc},
+          toolCalls: {'tc-1': tc},
         );
 
         await tester.pumpWidget(
@@ -985,6 +986,107 @@ void main() {
           find.byType(ToolCallCard),
           findsOneWidget,
           reason: 'ToolCallCard 必须在 toolCalls key 与 message.clientId 对齐时渲染',
+        );
+      },
+    );
+
+    // Symptom 2 fix: a single turn can carry multiple tool calls that share
+    // one owner (v2026.6.10 omits per-tool sessionKey -> LIFO fallback). The
+    // page must render one card per tool call (1:N), matching the reload path
+    // (groupToolResultsByOwner). Pre-fix the live map was keyed by owner and
+    // the page did toolCalls[message.clientId] (single) -> only one card.
+    testWidgets(
+      'multiple live tool calls sharing one owner render as separate cards',
+      (tester) async {
+        final agentRepo = InMemoryAgentRepo();
+        await agentRepo.syncFromGateway('inst-1', [
+          Agent(
+            localId: 'local-1',
+            remoteId: 'r-1',
+            instanceId: 'inst-1',
+            name: '产品虾',
+          ),
+        ]);
+        final messageRepo = InMemoryMessageRepo();
+        final conversationRepo = InMemoryConversationRepo();
+        final instanceRepo = InMemoryInstanceRepo();
+        final gateway = MockGatewayClient();
+
+        final vm = ChatViewModel(
+          agentRepo: agentRepo,
+          conversationRepo: conversationRepo,
+          messageRepo: messageRepo,
+          instanceRepo: instanceRepo,
+          gatewayClient: gateway,
+          sendMessageUseCase: SendMessageUseCase(
+            messageRepo: messageRepo,
+            conversationRepo: conversationRepo,
+            instanceRepo: instanceRepo,
+            gatewayClient: gateway,
+          ),
+          instanceId: 'inst-1',
+          agentId: 'local-1',
+          achievementChecker: _MockAchievementChecker(),
+          flushDelay: Duration.zero,
+        );
+        vm.debugSetAgent(
+          Agent(
+            localId: 'local-1',
+            remoteId: 'r-1',
+            instanceId: 'inst-1',
+            name: '产品虾',
+          ),
+        );
+        final msg = Message(
+          clientId: 'msg-1',
+          conversationId: 'conv',
+          agentId: 'local-1',
+          role: MessageRole.agent,
+          content: 'reply',
+          type: MessageType.text,
+          logicalClock: 1,
+          timestamp: 1000,
+        );
+        // Two distinct tool calls, both owned by msg-1 (same messageId),
+        // keyed by their own toolCallIds - exactly what the VM produces for a
+        // multi-tool turn after the fix.
+        vm.state = ChatSessionState(
+          messages: LoadData(<Message>[msg]),
+          toolCalls: {
+            'tc-a': ToolCall(
+              id: 'tc-a',
+              messageId: 'msg-1',
+              toolName: 'exec',
+              status: ToolCallStatus.success,
+              outputResult: 'ls',
+            ),
+            'tc-b': ToolCall(
+              id: 'tc-b',
+              messageId: 'msg-1',
+              toolName: 'exec',
+              status: ToolCallStatus.success,
+              outputResult: 'pwd',
+            ),
+          },
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [chatViewModelProvider(_key).overrideWith((ref) => vm)],
+            child: const MaterialApp(
+              home: ChatRoomPage(agentId: 'local-1', instanceId: 'inst-1'),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          find.byType(ToolCallCard),
+          findsNWidgets(2),
+          reason:
+              '两个共享同一 owner 的 tool call 必须各渲染一张卡(1:N)。'
+              'Pre-fix live map 按 owner 为 key,页面查 toolCalls[message.clientId] '
+              '只取单个 -> 实时只显示一张,重启后重载路径才显示多张(症状 2)。',
         );
       },
     );
