@@ -235,6 +235,58 @@ void main() {
     );
 
     // -------------------------------------------------------------------------
+    // 空白归一化软匹配：同一条 agent 回复经不同事件路径解析时，String vs
+    // 结构化 blocks 拼接可能产生换行差异。serverId 不同 -> 身份去重 miss；
+    // 内容只差 \n -> 精确软匹配也 miss -> 插入重复行 -> 重载渲染成两个气泡
+    // （用户 2026-07-11 真机复现）。归一化后软匹配命中，不重复入库。
+    // -------------------------------------------------------------------------
+    test(
+      'agent message whose content differs only by whitespace soft-matches existing',
+      () async {
+        final msg = inbound(
+          clientId: 'history-cid',
+          serverId: 'srv-new', // 与本地行 serverId 不同 -> byServer miss
+          role: MessageRole.agent,
+          content: '让我先查一下记录。乐哥，老实说没有记忆。', // 无换行
+          timestamp: 1718000000000,
+        );
+        final existingLocal = local(
+          clientId: 'local-agent',
+          serverId: 'srv-old',
+          role: MessageRole.agent,
+          content: '让我先查一下记录。\n乐哥，老实说没有记忆。', // 有换行
+          timestamp: 1718000003000, // +3s, 在 ±60s 窗口内
+        );
+        when(
+          () => messageRepo.getByClientId('history-cid'),
+        ).thenAnswer((_) async => null);
+        when(
+          () => messageRepo.getByServerId('srv-new'),
+        ).thenAnswer((_) async => null); // 身份 miss
+        when(
+          () => messageRepo.getByConversation(
+            'conv-1',
+            limit: any(named: 'limit'),
+          ),
+        ).thenAnswer((_) async => [existingLocal]);
+        when(() => messageRepo.insert(any())).thenAnswer((_) async => msg);
+
+        final result = await useCase.merge(
+          msg,
+        ); // softMatch=true (history path)
+
+        expect(
+          result.clientId,
+          'local-agent',
+          reason:
+              '只差空白字符(\\n)的 agent 回复应软匹配命中，而非新插一行。'
+              'Pre-fix 精确 content 比较让 \\n 差异导致 miss -> 重复入库。',
+        );
+        verifyNever(() => messageRepo.insert(any()));
+      },
+    );
+
+    // -------------------------------------------------------------------------
     // Bug #2 核心：user 消息无身份匹配时，按 content+时间戳软匹配兜底去重
     // (网关不回传 clientId，本地 serverId 是 runId/随机UUID 永不匹配)
     // -------------------------------------------------------------------------

@@ -196,4 +196,76 @@ void main() {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // 空白归一化聚簇：同一条 agent 回复经不同事件路径(chat.final /
+  // session.message / chat.history)解析时，String vs 结构化 blocks 拼接可能
+  // 产生换行/空白差异。精确 content 比较会把它们误判为不同消息 -> 重载时
+  // 渲染成两个气泡（用户 2026-07-11 真机复现：同一回复存两行，只差一个 \n）。
+  // 归一化（移除空白）后聚簇去重。**仅用于去重 key，不改变展示内容**。
+  // -------------------------------------------------------------------------
+  group('MessageClusterDeduper.plan - whitespace normalization', () {
+    test(
+      'two agent messages differing only by a newline cluster as duplicates',
+      () {
+        final msgs = [
+          makeMsg(
+            clientId: 'c0',
+            role: MessageRole.agent,
+            content: '让我先查一下记录。\n乐哥，老实说没有记忆。',
+            timestamp: 1718000000000,
+            serverId: 's0',
+            clock: 100,
+          ),
+          makeMsg(
+            clientId: 'c1',
+            role: MessageRole.agent,
+            content: '让我先查一下记录。乐哥，老实说没有记忆。',
+            timestamp: 1718000000000 + 3000, // +3s, within ±60s
+            serverId: 's1',
+            clock: 101,
+          ),
+        ];
+
+        final doomed = MessageClusterDeduper.plan(msgs);
+
+        expect(
+          doomed.length,
+          1,
+          reason:
+              '只差一个换行(\\n)的两条 agent 消息应聚簇去重，'
+              '而非保留为两个独立气泡。Pre-fix 精确 content 比较让它们落进'
+              '不同分组 -> 重载渲染成两条。',
+        );
+      },
+    );
+
+    test(
+      'messages with genuinely different content (not just whitespace) do NOT cluster',
+      () {
+        final msgs = [
+          makeMsg(
+            clientId: 'c0',
+            role: MessageRole.agent,
+            content: '这是第一句不同的话。',
+            timestamp: 1718000000000,
+            serverId: 's0',
+            clock: 100,
+          ),
+          makeMsg(
+            clientId: 'c1',
+            role: MessageRole.agent,
+            content: '这是第二句完全不同的话。',
+            timestamp: 1718000000000 + 3000,
+            serverId: 's1',
+            clock: 101,
+          ),
+        ];
+
+        final doomed = MessageClusterDeduper.plan(msgs);
+
+        expect(doomed, isEmpty, reason: '内容实质不同(非仅空白差异)的两条消息不应被归一化合并。');
+      },
+    );
+  });
 }

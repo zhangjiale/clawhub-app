@@ -163,12 +163,22 @@ class MergeInboundMessageUseCase {
   /// 本地消息。多条命中时取时间戳最接近者。返回 null 表示无匹配。
   ///
   /// 同角色过滤避免"用户发的'好的'"与"agent 回的'好的'"被错误合并。
+  ///
+  /// 内容比较用 [MessageClusterDeduper.normalizeContentForDedup] 归一化（移除
+  /// 空白）-- 同一条回复经不同事件路径解析可能产生换行差异，精确比较会让
+  /// 只差 `\n` 的两条内容 miss，导致重复入库（用户 2026-07-11 真机复现）。
   Message? _softMatch(Message inbound, List<Message> candidates) {
+    final inboundNorm = MessageClusterDeduper.normalizeContentForDedup(
+      inbound.content,
+    );
     Message? best;
     var bestDelta = 0x7FFFFFFFFFFFFFFF; // int.maxValue
     for (final m in candidates) {
       if (m.role != inbound.role) continue;
-      if (m.content != inbound.content) continue;
+      if (MessageClusterDeduper.normalizeContentForDedup(m.content) !=
+          inboundNorm) {
+        continue;
+      }
       final delta = (m.timestamp - inbound.timestamp).abs();
       if (delta > MessageClusterDeduper.softMatchWindowMs) continue;
       if (delta < bestDelta) {

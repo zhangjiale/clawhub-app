@@ -19,6 +19,26 @@ class MessageClusterDeduper {
   /// 的相同内容"识别为不同消息。
   static const int softMatchWindowMs = 60000;
 
+  /// 归一化消息内容用于**去重比较**：移除所有空白字符（空格/换行/制表符等）。
+  ///
+  /// 背景：同一条 agent 回复经不同事件路径（`chat.final` / `session.message` /
+  /// `chat.history`）解析时，`GatewayDomainMapper.extractTextContent` 对 String
+  /// vs 结构化 content blocks 的拼接可能产生换行/空白差异 -- 例如一段回复被存成
+  /// 两行，一行在句间保留 `\n`、另一行没有。精确字符串比较会把它们误判为不同
+  /// 消息 -> 身份去重（serverId 也常不同）miss、软匹配 miss、聚簇 miss -> 重载
+  /// 时同一回复渲染成两个气泡（用户 2026-07-11 真机复现）。
+  ///
+  /// 归一化后只差空白的两条内容视为相同，供 [plan] 聚簇与
+  /// `MergeInboundMessageUseCase._softMatch` 软匹配使用。
+  ///
+  /// **仅用于去重比较，绝不改变展示内容** -- 展示仍用原始 `content`（保留换行
+  /// 可读性）。中文内容无词间空格，移除空白无损语义；英文场景下两条仅空白差异
+  /// 的消息本就是重复，误合并风险可忽略，且受 ±60s 窗口 + 同 role 约束。
+  static String normalizeContentForDedup(String? content) {
+    if (content == null) return '';
+    return content.replaceAll(RegExp(r'\s+'), '');
+  }
+
   /// 给定会话内全部消息，规划应删除的 `clientId` 集合（聚簇去重 + 空 text 清理）。
   ///
   /// 返回空 Set 表示无重复 —— 调用方可直接跳过后续删除事务。
@@ -44,7 +64,7 @@ class MessageClusterDeduper {
         doomed.add(m.clientId);
         continue;
       }
-      final key = '${m.role.toInt()}|${m.content}';
+      final key = '${m.role.toInt()}|${normalizeContentForDedup(m.content)}';
       (textByKey[key] ??= <Message>[]).add(m);
     }
 
