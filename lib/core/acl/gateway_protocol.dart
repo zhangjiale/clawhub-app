@@ -100,6 +100,7 @@ class Methods {
   static const String agentsList = 'agents.list';
   static const String chatSend = 'chat.send';
   static const String chatHistory = 'chat.history';
+  static const String chatMessageGet = 'chat.message.get';
   static const String chatAbort = 'chat.abort';
   static const String agentWait = 'agent.wait';
   static const String sessionsList = 'sessions.list';
@@ -293,6 +294,26 @@ String buildChatHistoryRequest({
   if (cursor != null) params['cursor'] = cursor;
 
   return buildRequest(id: id, method: Methods.chatHistory, params: params);
+}
+
+/// 构造 chat.message.get 请求 - 拉取单条完整消息（避开 chat.history 的
+/// display-normalization 截断，见 docs/technical/openclaw-gateway-client-reference.md
+/// §3.2 line 219/233）。
+///
+/// 参数对齐文档 `(sessionKey, messageId)`：
+/// - [sessionKey] 同 `chat.send`（格式 `agent:{agentId}:main`）。
+/// - [messageId] 目标消息的服务端 ID（即本地 [Message.serverId]，来自
+///   `__openclaw.id`）。
+String buildChatMessageGetRequest({
+  required String id,
+  required String sessionKey,
+  required String messageId,
+}) {
+  final params = <String, dynamic>{
+    'sessionKey': sessionKey,
+    'messageId': messageId,
+  };
+  return buildRequest(id: id, method: Methods.chatMessageGet, params: params);
 }
 
 /// 构造 sessions.resolve 请求（将 agentId 解析为 sessionId）。

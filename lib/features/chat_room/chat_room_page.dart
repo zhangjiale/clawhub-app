@@ -717,6 +717,12 @@ class _ChatRoomPageState extends ConsumerState<ChatRoomPage> {
                         .read(chatViewModelProvider(params).notifier)
                         .retryMessage(message.clientId)
                   : null,
+              // chat.history omitted placeholder -> lazy chat.message.get backfill.
+              onLoadFull: message.metadata?['contentOmitted'] == true
+                  ? () => ref
+                        .read(chatViewModelProvider(params).notifier)
+                        .loadFullMessage(message.clientId)
+                  : null,
             ),
             for (final tc in liveTools) ToolCallCard(toolCall: tc),
             for (final ht in historyTools)

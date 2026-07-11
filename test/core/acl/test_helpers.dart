@@ -302,3 +302,21 @@ String chatHistoryResponseJson({
       '"payload":{"messages":[],$cursorField$nextCursorField'
       '"hasMore":false}}';
 }
+
+/// Build a `chat.message.get` response frame.
+///
+/// [messageJson] is the complete message object. Two wire shapes are tested
+/// (verification gap V3 - doc doesn't pin the shape):
+/// - [atRoot: false] (default): message nested under `payload.message`.
+/// - [atRoot: true]: message fields live directly in `payload`.
+String chatMessageGetResponseJson({
+  required String id,
+  required String messageJson,
+  bool atRoot = false,
+}) {
+  if (atRoot) {
+    return '{"type":"res","id":"$id","ok":true,"payload":$messageJson}';
+  }
+  return '{"type":"res","id":"$id","ok":true,'
+      '"payload":{"message":$messageJson}}';
+}

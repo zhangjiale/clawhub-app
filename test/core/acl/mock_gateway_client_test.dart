@@ -123,6 +123,31 @@ void main() {
       expect(result.serverId, isNotEmpty);
       expect(result.timestamp, isNotNull);
     });
+
+    test(
+      'fetchSingleMessage returns canned full content for a known id',
+      () async {
+        await client.loadMockData();
+        final msg = await client.fetchSingleMessage(
+          instanceId: 'inst-mock-001',
+          agentId: 'agent-001',
+          messageId: 'msg-mock-1',
+        );
+        expect(msg, isNotNull);
+        expect(msg!.serverId, 'msg-mock-1');
+        expect(msg.content, isNotEmpty);
+      },
+    );
+
+    test('fetchSingleMessage returns null for unknown sentinel id', () async {
+      await client.loadMockData();
+      final msg = await client.fetchSingleMessage(
+        instanceId: 'inst-mock-001',
+        agentId: 'agent-001',
+        messageId: '__not_found__',
+      );
+      expect(msg, isNull);
+    });
   });
 
   group('gatewayNoticeStream (Gap #6 — sealed union diagnostic stream)', () {

@@ -2957,6 +2957,134 @@ void _replayableConnectionStateTests() {
   });
 
   // ============================================================================
+  // chat.message.get - lazy backfill for chat.history omitted placeholders.
+  //
+  // chat.history applies display-normalization that replaces oversized message
+  // content with `[chat.history omitted: message too large]`. The full message
+  // is recoverable via chat.message.get(sessionKey, messageId) per
+  // docs/technical/openclaw-gateway-client-reference.md §3.2 line 219.
+  // ============================================================================
+  group('fetchSingleMessage (chat.message.get)', () {
+    /// Helper: send a chat.message.get request and inject a server response.
+    /// The 1st sent frame is connect; the 2nd is chat.message.get.
+    Future<Message?> sendGet(
+      WsGatewayClient client,
+      ControllableWebSocket ws, {
+      required String messageId,
+      required String responseJson,
+    }) async {
+      final future = client.fetchSingleMessage(
+        instanceId: 'test-instance',
+        agentId: 'a-1',
+        messageId: messageId,
+      );
+      await pumpMicrotasks();
+      final reqId = extractReqId(ws.sentFrames[1]);
+      ws.simulateServerFrame(responseJson.replaceAll('__REQID__', reqId));
+      return future;
+    }
+
+    test(
+      'builds chat.message.get request with sessionKey + messageId',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+        final future = client.fetchSingleMessage(
+          instanceId: 'test-instance',
+          agentId: 'a-1',
+          messageId: 'msg-42',
+        );
+        await pumpMicrotasks();
+
+        final decoded = jsonDecode(ws.sentFrames[1]) as Map<String, dynamic>;
+        expect(decoded['method'], 'chat.message.get');
+        final params = decoded['params'] as Map<String, dynamic>;
+        expect(params['sessionKey'], 'agent:a-1:main');
+        expect(params['messageId'], 'msg-42');
+
+        // Complete the pending request cleanly so its future doesn't throw
+        // an unhandled error before dispose.
+        final reqId = extractReqId(ws.sentFrames[1]);
+        ws.simulateServerFrame(
+          chatMessageGetResponseJson(
+            id: reqId,
+            messageJson: '{"role":"agent","content":"x"}',
+          ),
+        );
+        await future;
+        await client.dispose();
+      },
+    );
+
+    test('parses message nested under payload.message', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      const messageJson =
+          '{"role":"agent","content":"full content backfilled",'
+          '"__openclaw":{"id":"msg-42"}}';
+      final msg = await sendGet(
+        client,
+        ws,
+        messageId: 'msg-42',
+        responseJson: chatMessageGetResponseJson(
+          id: '__REQID__',
+          messageJson: messageJson,
+        ),
+      );
+      expect(msg, isNotNull);
+      expect(msg!.content, 'full content backfilled');
+      expect(msg.serverId, 'msg-42');
+      await client.dispose();
+    });
+
+    test(
+      'parses message when fields live directly in payload (defensive)',
+      () async {
+        final (:client, :ws) = await connectAndHandshake();
+        const messageJson = '{"role":"agent","content":"root-shape content"}';
+        final msg = await sendGet(
+          client,
+          ws,
+          messageId: 'msg-42',
+          responseJson: chatMessageGetResponseJson(
+            id: '__REQID__',
+            messageJson: messageJson,
+            atRoot: true,
+          ),
+        );
+        expect(msg, isNotNull);
+        expect(msg!.content, 'root-shape content');
+        await client.dispose();
+      },
+    );
+
+    test('returns null when response has no message object', () async {
+      final (:client, :ws) = await connectAndHandshake();
+      final msg = await sendGet(
+        client,
+        ws,
+        messageId: 'msg-42',
+        responseJson:
+            '{"type":"res","id":"__REQID__","ok":true,"payload":{"note":"none"}}',
+      );
+      expect(msg, isNull);
+      await client.dispose();
+    });
+
+    test('throws NotConnectedException when not connected', () async {
+      final client = WsGatewayClient(
+        identityProvider: FakeDeviceIdentityProvider(),
+      );
+      expect(
+        () => client.fetchSingleMessage(
+          instanceId: 'test-instance',
+          agentId: 'a-1',
+          messageId: 'msg-42',
+        ),
+        throwsA(isA<NotConnectedException>()),
+      );
+    });
+  });
+
+  // ============================================================================
   // Gap #6: payload.large diagnostic event (spec §2.7).
   //
   // When the Gateway rejects an over-sized payload, it pushes a

@@ -18,6 +18,7 @@ import 'gateway_protocol.dart';
 import 'i_device_identity_provider.dart';
 import 'i_device_token_store.dart';
 import 'i_gateway_client.dart';
+import 'i_message_backfill_client.dart';
 
 /// 真实 WebSocket Gateway 客户端 — 实现 [IGatewayClient] 接口。
 ///
@@ -31,7 +32,7 @@ import 'i_gateway_client.dart';
 /// 领域对象映射委托给 [GatewayDomainMapper]。
 ///
 /// 每个实例的连接相关资源内聚于 [GatewayInstanceConnection]。
-class WsGatewayClient implements IGatewayClient {
+class WsGatewayClient implements IGatewayClient, IMessageBackfillClient {
   final Uuid _uuid = const Uuid();
   final GatewayDomainMapper _mapper = GatewayDomainMapper();
   final GatewayEventProcessor _eventProcessor;
@@ -407,6 +408,48 @@ class WsGatewayClient implements IGatewayClient {
     final nextCursor = p?['nextCursor'] as String? ?? p?['cursor'] as String?;
 
     return (messages: messages, nextCursor: nextCursor);
+  }
+
+  @override
+  Future<Message?> fetchSingleMessage({
+    required String instanceId,
+    required String agentId,
+    required String messageId,
+  }) async {
+    final manager = _requireManager(instanceId);
+
+    // sessionKey 对齐 chat.send / chat.history（格式 agent:{agentId}:main）。
+    final sessionKey = 'agent:$agentId:main';
+    final params = <String, dynamic>{
+      'sessionKey': sessionKey,
+      'messageId': messageId,
+    };
+
+    final res = await manager.sendRequest(Methods.chatMessageGet, params);
+
+    if (!res.ok) {
+      throw Exception(
+        'Failed to fetch single message: ${res.error?.message ?? "unknown"}',
+      );
+    }
+
+    // Verification gap V3: doc records that chat.message.get returns "单条完整
+    // 消息" but does not pin the payload shape. Defensively accept either:
+    //   1. { "message": {...} }  (nested - most likely per OpenClaw conventions)
+    //   2. { ...message fields } (message at payload root)
+    // Neither present -> null (message gone / wrong id); caller degrades.
+    final p = res.payload;
+    final nested = p?['message'];
+    if (nested is Map<String, dynamic>) {
+      return _mapper.parseMessage(nested);
+    }
+    if (p is Map<String, dynamic> &&
+        (p.containsKey('content') ||
+            p.containsKey('role') ||
+            p.containsKey('__openclaw'))) {
+      return _mapper.parseMessage(p);
+    }
+    return null;
   }
 
   /// 轮换当前实例的 cached deviceToken。

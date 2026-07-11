@@ -176,6 +176,13 @@ class GatewayDomainMapper {
     if (mediaPaths != null) {
       incomingMetadata['mediaPaths'] = mediaPaths;
     }
+    // chat.history display-normalization: oversized message content is replaced
+    // with a placeholder. Flag it so the UI offers a lazy "tap to load" backfill
+    // via chat.message.get (see [isChatHistoryOmitted]). serverId (above) is the
+    // messageId the backfill needs.
+    if (isChatHistoryOmitted(displayedContent)) {
+      incomingMetadata['contentOmitted'] = true;
+    }
     return Message(
       clientId: json['clientId'] as String? ?? _uuid.v4(),
       // v2026.6.10 drift: the authoritative server id lives in
@@ -315,6 +322,26 @@ class GatewayDomainMapper {
       return text.isEmpty ? null : text;
     }
     return raw.toString();
+  }
+
+  /// Detect the chat.history display-normalization placeholder.
+  ///
+  /// The Gateway replaces oversized message content with a placeholder string
+  /// (`[chat.history omitted: message too large]` - see
+  /// docs/technical/openclaw-gateway-client-reference.md §3.2 line 217) when a
+  /// message is too large to inline in a `chat.history` batch. The full message
+  /// is recoverable via `chat.message.get(sessionKey, messageId)`.
+  ///
+  /// Detection is **prefix-based** (`[chat.history omitted:`) rather than
+  /// exact-equal: the doc records the behaviour but not the literal string, and
+  /// a prefix match tolerates minor server-side wording shifts. A real user
+  /// message starting with this literal is conservatively flagged too - the
+  /// backfill is a no-op if the message isn't truly omitted (the server returns
+  /// the same content), and the string is not something users type in practice.
+  /// Trailing whitespace is tolerated.
+  static bool isChatHistoryOmitted(String? content) {
+    if (content == null) return false;
+    return content.trim().startsWith('[chat.history omitted:');
   }
 
   /// PROTOCOL-VERIFY (appendix F.5, 2026-07-03): chat.history 响应的 image block

@@ -11,6 +11,7 @@ import 'package:claw_hub/app/theme/tokens.dart';
 import 'package:claw_hub/ui_kit/xia_markdown_styles.dart';
 import 'message_image_content.dart';
 import 'message_file_content.dart';
+import 'message_omitted_content.dart';
 
 /// Message bubble — matching V2 ComponentSpec Section 4.2.2.
 ///
@@ -34,6 +35,11 @@ class MessageBubble extends StatelessWidget {
   // absolute URLs. null in tests / when instance context is unavailable.
   final GatewayMediaAuth? mediaAuth;
 
+  /// chat.history omitted placeholder -> lazy backfill via chat.message.get.
+  /// 当 `metadata.contentOmitted == true` 时渲染「点击加载」气泡；
+  /// 调用方传入 [ChatViewModel.loadFullMessage]。null 时回退到占位文本。
+  final Future<void> Function()? onLoadFull;
+
   const MessageBubble({
     super.key,
     required this.message,
@@ -42,6 +48,7 @@ class MessageBubble extends StatelessWidget {
     this.onRetry,
     this.isHighlighted = false,
     this.mediaAuth,
+    this.onLoadFull,
   });
 
   bool get _isUser => message.role == MessageRole.user;
@@ -258,6 +265,11 @@ class MessageBubble extends StatelessWidget {
 
   /// 按消息类型分派渲染:image/file 走专用 widget,text/toolCall 走原有文本/Markdown。
   Widget _buildContent(Message message) {
+    // chat.history omitted placeholder -> 「点击加载」气泡 (chat.message.get backfill)。
+    // onLoadFull 为 null（测试 / 无 VM 上下文）时回退到占位文本渲染。
+    if (message.metadata?['contentOmitted'] == true && onLoadFull != null) {
+      return MessageOmittedContent(message: message, onLoad: onLoadFull!);
+    }
     switch (message.type) {
       case MessageType.image:
         return MessageImageContent(

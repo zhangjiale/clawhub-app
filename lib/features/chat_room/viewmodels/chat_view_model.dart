@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:claw_hub/core/acl/i_gateway_client.dart';
+import 'package:claw_hub/core/acl/i_message_backfill_client.dart';
 import 'package:claw_hub/core/debug_print_logger.dart';
 import 'package:claw_hub/core/i_api_logger.dart';
 import 'package:claw_hub/core/i_logger.dart';
@@ -356,6 +357,11 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
   );
 
   Timer? _messageReloadCoalesceTimer;
+
+  /// chat.message.get backfill 防重入:正在拉取完整内容的 clientId 集合。
+  /// 用户连点「点击加载」或重试时,只允许一个 fetchSingleMessage 在途。
+  /// cleared on teardown。
+  final Set<String> _loadingMessageIds = {};
 
   /// Called when stats should be refreshed (message sent or received).
   VoidCallback? onStatsChanged;
@@ -1439,6 +1445,107 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     _updateState((s) => s.copyWith(retryFeedback: null));
   }
 
+  /// Lazy backfill of a chat.history omitted placeholder via `chat.message.get`.
+  ///
+  /// 当消息因 chat.history display-normalization 被替换为占位符
+  /// `[chat.history omitted: message too large]` 时，ACL mapper 置
+  /// `metadata.contentOmitted = true`。UI 据此渲染「点击加载」气泡，用户点击
+  /// 触发本方法拉取原始完整内容。
+  ///
+  /// 流程：
+  /// 1. 守卫：消息存在、contentOmitted 为 true、未在拉取中。
+  /// 2. 能力探测：gateway 必须实现 [IMessageBackfillClient]（真实客户端实现，
+  ///    纯 IGatewayClient fake 不实现）。不支持时走 retryFeedback 降级。
+  /// 3. 守卫：serverId 非空（作为 chat.message.get 的 messageId）。
+  /// 4. 调 [IMessageBackfillClient.fetchSingleMessage]。
+  /// 5. 成功：用真实内容 + 清除标志更新 DB 行（updateContentTypeAndMetadata，
+  ///    FTS5 自动重索引使回填内容可搜索），reload。
+  /// 6. 失败/null：rethrow，widget 据此展示「加载失败，点击重试」。
+  Future<void> loadFullMessage(String clientId) async {
+    // 1. 在当前 state 中找到该消息。
+    final loaded = state.messages;
+    if (loaded is! LoadData<List<Message>>) return;
+    final list = loaded.value;
+    Message? msg;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].clientId == clientId) {
+        msg = list[i];
+        break;
+      }
+    }
+    if (msg == null) return; // 消息不在当前列表（已滚动出视野 / 已删）
+
+    // 守卫：必须是 omitted 占位消息。
+    if (msg.metadata?['contentOmitted'] != true) return;
+
+    // 防重入：连点 / 重试时只允许一个 fetchSingleMessage 在途。
+    if (_loadingMessageIds.contains(clientId)) return;
+    _loadingMessageIds.add(clientId);
+    try {
+      // 2. 能力探测：gateway 不实现 IMessageBackfillClient 时降级。
+      //    显式赋给强类型局部变量，避免在 try/await 跨语句下 smart-cast 失效。
+      final IMessageBackfillClient backfill;
+      if (_gatewayClient is IMessageBackfillClient) {
+        backfill = _gatewayClient as IMessageBackfillClient;
+      } else {
+        _updateState((s) => s.copyWith(retryFeedback: '当前网关不支持加载完整消息'));
+        return;
+      }
+
+      // 3. 守卫：需要 serverId 作为 chat.message.get 的 messageId。
+      final serverId = msg.serverId;
+      if (serverId == null || serverId.isEmpty) {
+        _updateState((s) => s.copyWith(retryFeedback: '该消息缺少 ID，无法加载完整内容'));
+        return;
+      }
+
+      // agent.remoteId 构造 sessionKey（agent:{remoteId}:main），与 chat.send 对齐。
+      final activeAgent = agent;
+      if (activeAgent == null) {
+        _updateState((s) => s.copyWith(retryFeedback: 'Agent 信息缺失，无法加载完整内容'));
+        return;
+      }
+
+      // 4. 拉取完整消息。
+      final full = await backfill.fetchSingleMessage(
+        instanceId: instanceId,
+        agentId: activeAgent.remoteId,
+        messageId: serverId,
+      );
+      if (full == null) {
+        throw Exception(
+          'chat.message.get returned null for messageId=$serverId',
+        );
+      }
+
+      // 5. 用真实内容更新 DB 行，清除 contentOmitted 标志。FTS5 自动重索引。
+      final cleanedMetadata = Map<String, dynamic>.from(
+        full.metadata ?? const {},
+      );
+      cleanedMetadata.remove('contentOmitted');
+      await _messageRepo.updateContentTypeAndMetadata(
+        serverId,
+        content: full.content,
+        type: full.type,
+        metadata: cleanedMetadata,
+      );
+      _apiLogger?.logStateChange(
+        instanceId: instanceId,
+        state: 'backfill:success',
+        message: 'clientId=$clientId serverId=$serverId',
+      );
+      await _loadMessages();
+    } catch (error, stackTrace) {
+      _logger.error(
+        '[ChatViewModel] loadFullMessage failed for $clientId: $error',
+        stackTrace,
+      );
+      rethrow; // widget 据此展示「加载失败，点击重试」
+    } finally {
+      _loadingMessageIds.remove(clientId);
+    }
+  }
+
   void _updateState(ChatSessionState Function(ChatSessionState) transform) {
     if (!mounted) return;
     state = transform(state);
@@ -1585,5 +1692,6 @@ class ChatViewModel extends StateNotifier<ChatSessionState>
     // Drop sessionKey → clientId mappings from prior turns (review #14).
     _sessionKeyToClientId.clear();
     _sessionKeyToUserClientId.clear();
+    _loadingMessageIds.clear();
   }
 }

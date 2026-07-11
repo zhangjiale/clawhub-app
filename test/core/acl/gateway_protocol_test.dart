@@ -59,6 +59,42 @@ void main() {
     });
   });
 
+  group('chat.message.get method constant', () {
+    test('defines chatMessageGet method name (spec §3.2 chat.message.get)', () {
+      expect(Methods.chatMessageGet, 'chat.message.get');
+    });
+  });
+
+  group('buildChatMessageGetRequest', () {
+    test('should include sessionKey and messageId in the request params', () {
+      const id = 'req-001';
+      const sessionKey = 'agent:product-shrimp:main';
+      const messageId = 'msg-server-42';
+
+      final json = buildChatMessageGetRequest(
+        id: id,
+        sessionKey: sessionKey,
+        messageId: messageId,
+      );
+
+      final decoded = jsonDecode(json) as Map<String, dynamic>;
+
+      expect(decoded['type'], 'req');
+      expect(decoded['id'], id);
+      expect(decoded['method'], Methods.chatMessageGet);
+
+      final params = decoded['params'] as Map<String, dynamic>;
+      expect(params['sessionKey'], sessionKey);
+      expect(
+        params['messageId'],
+        messageId,
+        reason:
+            'chat.message.get takes (sessionKey, messageId) per '
+            'docs/technical/openclaw-gateway-client-reference.md §3.2 / line 219',
+      );
+    });
+  });
+
   group('parseChatEvent', () {
     test('should parse delta state', () {
       final payload = {

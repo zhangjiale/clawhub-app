@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:uuid/uuid.dart';
 import 'gateway_protocol.dart';
 import 'i_gateway_client.dart';
+import 'i_message_backfill_client.dart';
 import 'replayable_connection_state.dart';
 import '../../domain/models/models.dart';
 
@@ -14,7 +15,7 @@ import '../../domain/models/models.dart';
 ///
 /// 从 assets/mock/agents.json 读取预设数据，模拟 Gateway 行为。
 /// 支持在开发阶段无需真实 OpenClaw 实例即可开发和测试全功能。
-class MockGatewayClient implements IGatewayClient {
+class MockGatewayClient implements IGatewayClient, IMessageBackfillClient {
   final Uuid _uuid = const Uuid();
   final Random _random = Random();
 
@@ -300,6 +301,31 @@ class MockGatewayClient implements IGatewayClient {
     await loadMockData();
     // 返回空历史（mock 环境不保留历史）
     return (messages: <Message>[], nextCursor: null);
+  }
+
+  @override
+  Future<Message?> fetchSingleMessage({
+    required String instanceId,
+    required String agentId,
+    required String messageId,
+  }) async {
+    await loadMockData();
+    // Mock backfill for the chat.history omitted-placeholder path: a known id
+    // returns canned full content; an unknown id returns null (mirrors the real
+    // Gateway's "message gone" case so the UI's degraded state is exercised in
+    // offline dev / unit tests).
+    if (messageId == '__not_found__') return null;
+    return Message(
+      clientId: _uuid.v4(),
+      serverId: messageId,
+      conversationId: '',
+      agentId: agentId,
+      role: MessageRole.agent,
+      content: '[mock full content for $messageId]',
+      type: MessageType.text,
+      status: MessageStatus.delivered,
+      logicalClock: DateTime.now().millisecondsSinceEpoch,
+    );
   }
 
   @override

@@ -254,6 +254,69 @@ void main() {
       expect(msg.role, MessageRole.userPlaceholder);
     });
 
+    // ----- regression #4: chat.history display-normalization replaces oversized
+    // message content with a placeholder string. The client must detect it and
+    // flag the message so the UI can offer a lazy "tap to load" backfill via
+    // chat.message.get (docs/technical/openclaw-gateway-client-reference.md
+    // §3.2 line 217-219). Without detection the raw placeholder renders as a
+    // normal bubble - the reported bug.
+    test(
+      'chat.history omitted placeholder sets metadata.contentOmitted = true',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'agent',
+          'content': '[chat.history omitted: message too large]',
+          '__openclaw': {'id': 'msg-server-42'},
+        });
+        expect(msg.content, '[chat.history omitted: message too large]');
+        expect(msg.metadata?['contentOmitted'], isTrue);
+        // role/type are unchanged - the flag drives rendering, not the role.
+        expect(msg.role, MessageRole.agent);
+        expect(msg.type, MessageType.text);
+        // serverId preserved so chat.message.get can backfill.
+        expect(msg.serverId, 'msg-server-42');
+      },
+    );
+    test(
+      'omitted placeholder detection works for structured content blocks',
+      () {
+        final msg = mapper.parseMessage({
+          'role': 'agent',
+          'content': [
+            {
+              'type': 'text',
+              'text': '[chat.history omitted: message too large]',
+            },
+          ],
+        });
+        expect(msg.metadata?['contentOmitted'], isTrue);
+      },
+    );
+    test('omitted placeholder detection tolerates trailing whitespace', () {
+      final msg = mapper.parseMessage({
+        'role': 'agent',
+        'content': '[chat.history omitted: message too large]\n',
+      });
+      expect(msg.metadata?['contentOmitted'], isTrue);
+    });
+    test('normal content does NOT set contentOmitted', () {
+      final msg = mapper.parseMessage({'role': 'agent', 'content': '这是一条普通回复'});
+      // Empty metadata is normalised to null (mapper line 216); either way the
+      // flag must not be true.
+      expect(msg.metadata?['contentOmitted'], isNot(isTrue));
+    });
+    test('user-typed literal placeholder is still flagged (conservative)', () {
+      // A user message whose body happens to be the literal is conservatively
+      // flagged too - the backfill path is a no-op if the message isn't truly
+      // omitted (server returns the same content). Acceptable: the string is
+      // not something a user types in practice.
+      final msg = mapper.parseMessage({
+        'role': 'user',
+        'content': '[chat.history omitted: message too large]',
+      });
+      expect(msg.metadata?['contentOmitted'], isTrue);
+    });
+
     // ----- regression #3: unknown role strings must NOT silently become user. -----
     // The switch's default arm was `_ => MessageRole.user` — any unrecognized role
     // string (e.g. a future 'function' / 'moderator') would render as a yellow user
